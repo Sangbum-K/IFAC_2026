@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<robot name="f1tenth_vehicle">
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.03" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.45 0.24 0.06"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <link name="laser">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.04"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="base_to_laser" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser"/>
+    <origin xyz="0.27 0.0 0.08" rpy="0 0 0"/>
+  </joint>
+</robot>

@@ -1,0 +1,7 @@
+integration:
+  ros__parameters:
+    planning_service: /planning/compute_plan
+    control_service: /control/set_mode
+    perception_topic: /perception/objects
+    service_check_timeout: 1.0
+    timer_period: 5.0

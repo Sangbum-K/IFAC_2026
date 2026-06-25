@@ -1,0 +1,6 @@
+control:
+  ros__parameters:
+    control_rate: 10
+    input_topic: /planning/plan
+    output_topic: /control/cmd
+    service_name: /control/set_mode

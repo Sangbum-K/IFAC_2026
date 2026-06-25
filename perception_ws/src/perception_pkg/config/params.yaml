@@ -1,0 +1,5 @@
+perception:
+  ros__parameters:
+    detection_threshold: 0.5
+    publish_topic: /perception/objects
+    publish_period: 1.0

@@ -7,9 +7,13 @@ class PerceptionNode(Node):
     def __init__(self):
         super().__init__('perception')
         self.declare_parameter('detection_threshold', 0.5)
+        self.declare_parameter('publish_topic', '/perception/objects')
+        self.declare_parameter('publish_period', 1.0)
         self.detection_threshold = self.get_parameter('detection_threshold').value
-        self.pub = self.create_publisher(String, '/perception/objects', 10)
-        self.timer = self.create_timer(1.0, self.timer_callback)
+        publish_topic = self.get_parameter('publish_topic').value
+        publish_period = self.get_parameter('publish_period').value
+        self.pub = self.create_publisher(String, publish_topic, 10)
+        self.timer = self.create_timer(publish_period, self.timer_callback)
         self.get_logger().info('Perception node started')
 
     def timer_callback(self):

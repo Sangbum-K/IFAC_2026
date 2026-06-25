@@ -6,6 +6,7 @@
   <maintainer email="you@example.com">you</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>example_interfaces</depend>

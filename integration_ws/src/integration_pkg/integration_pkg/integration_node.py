@@ -7,10 +7,28 @@ from example_interfaces.srv import Trigger
 class IntegrationNode(Node):
     def __init__(self):
         super().__init__('integration')
-        self.cli_plan = self.create_client(Trigger, '/planning/compute_plan')
-        self.cli_mode = self.create_client(Trigger, '/control/set_mode')
-        self.sub = self.create_subscription(String, '/perception/objects', self.objects_cb, 10)
-        self.timer = self.create_timer(5.0, self.timer_cb)
+        self.declare_parameter('use_sim_time', False)
+        self.declare_parameter('planning_service', '/planning/compute_plan')
+        self.declare_parameter('control_service', '/control/set_mode')
+        self.declare_parameter('perception_topic', '/perception/objects')
+        self.declare_parameter('service_check_timeout', 1.0)
+        self.declare_parameter('timer_period', 5.0)
+        self.declare_parameter('system_mode', 'sim')
+        self.declare_parameter('slam_enabled', False)
+        self.declare_parameter('map_mode', False)
+        self.declare_parameter('localization_mode', 'none')
+        self.declare_parameter('localization_map_file', '')
+        self.declare_parameter('localization_scan_topic', '/scan')
+        self.declare_parameter('localization_odom_topic', '/odom')
+        planning_service = self.get_parameter('planning_service').value
+        control_service = self.get_parameter('control_service').value
+        perception_topic = self.get_parameter('perception_topic').value
+        self.service_check_timeout = self.get_parameter('service_check_timeout').value
+        timer_period = self.get_parameter('timer_period').value
+        self.cli_plan = self.create_client(Trigger, planning_service)
+        self.cli_mode = self.create_client(Trigger, control_service)
+        self.sub = self.create_subscription(String, perception_topic, self.objects_cb, 10)
+        self.timer = self.create_timer(timer_period, self.timer_cb)
         self.get_logger().info('Integration node started')
 
     def objects_cb(self, msg):
@@ -18,7 +36,7 @@ class IntegrationNode(Node):
 
     def timer_cb(self):
         # call planning service
-        if self.cli_plan.wait_for_service(timeout_sec=1.0):
+        if self.cli_plan.wait_for_service(timeout_sec=self.service_check_timeout):
             req = Trigger.Request()
             future = self.cli_plan.call_async(req)
             future.add_done_callback(self.plan_response)
@@ -26,7 +44,7 @@ class IntegrationNode(Node):
             self.get_logger().warn('Planning service not available')
 
         # call control service
-        if self.cli_mode.wait_for_service(timeout_sec=1.0):
+        if self.cli_mode.wait_for_service(timeout_sec=self.service_check_timeout):
             req2 = Trigger.Request()
             future2 = self.cli_mode.call_async(req2)
             future2.add_done_callback(self.mode_response)

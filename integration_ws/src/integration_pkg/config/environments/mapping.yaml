@@ -1,0 +1,15 @@
+integration:
+  ros__parameters:
+    planning_service: /planning/compute_plan
+    control_service: /control/set_mode
+    perception_topic: /perception/objects
+    service_check_timeout: 1.0
+    timer_period: 5.0
+    use_sim_time: false
+    system_mode: mapping
+    slam_enabled: true
+    map_mode: true
+    localization_mode: none
+    localization_map_file: ''
+    localization_scan_topic: /scan
+    localization_odom_topic: /odom

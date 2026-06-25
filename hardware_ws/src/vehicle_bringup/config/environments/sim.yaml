@@ -1,0 +1,16 @@
+joy_node:
+  ros__parameters:
+    dev: /dev/input/js0
+    autorepeat_rate: 20.0
+
+estop_node:
+  ros__parameters:
+    button_index: 4
+
+vehicle:
+  ros__parameters:
+    wheelbase: 0.33
+    max_speed: 3.0
+    max_steering_angle: 0.4189
+    vesc_odom_topic: /ego_racecar/odom
+    lidar_scan_topic: /scan

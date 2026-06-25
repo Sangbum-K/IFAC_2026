@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+joy_node:
+  ros__parameters:
+    dev: /dev/input/js0
+    deadzone: 0.1
+    autorepeat_rate: 20.0
+
+estop_node:
+  ros__parameters:
+    joy_topic: /joy
+    estop_topic: /safety/emergency_stop
+    button_index: 4
+    latch_estop: true
+
+robot_state_publisher:
+  ros__parameters:
+    publish_frequency: 30.0
+
+vehicle:
+  ros__parameters:
+    wheelbase: 0.33
+    max_speed: 4.0
+    max_steering_angle: 0.4189
+    vesc_odom_topic: /odom
+    lidar_scan_topic: /scan
+    base_frame: base_link
+    laser_frame: laser
+    map_frame: map
+    odom_frame: odom

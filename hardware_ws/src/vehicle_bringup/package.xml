@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>vehicle_bringup</name>
+  <version>0.0.0</version>
+  <description>Hardware bringup package for F1TENTH vehicle.</description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>joy</depend>
+  <depend>tf2_ros</depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+</package>
