@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>perception_pkg</name>
+  <version>0.0.0</version>
+  <description>Perception package</description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+</package>
