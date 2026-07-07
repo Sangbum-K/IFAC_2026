@@ -1,4 +1,4 @@
-Integration workspace with a minimal ROS2 Python package `integration_pkg`.
+Integration workspace with a minimal ROS 2 C++ package `integration_pkg`.
 
 To build:
 

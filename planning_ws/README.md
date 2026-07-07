@@ -1,4 +1,4 @@
-Planning workspace with a minimal ROS2 Python package `planning_pkg`.
+Planning workspace with a minimal ROS 2 C++ package `planning_pkg`.
 
 To build:
 

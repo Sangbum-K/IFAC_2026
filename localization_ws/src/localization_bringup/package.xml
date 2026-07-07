@@ -5,9 +5,6 @@
   <description>Localization bringup package for F1TENTH vehicle.</description>
   <maintainer email="you@example.com">you</maintainer>
   <license>Apache-2.0</license>
-
-  <buildtool_depend>ament_python</buildtool_depend>
-
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
@@ -15,5 +12,7 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
 </package>

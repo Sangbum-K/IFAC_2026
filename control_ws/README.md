@@ -1,4 +1,4 @@
-Control workspace with a minimal ROS2 Python package `control_pkg`.
+Control workspace with a minimal ROS 2 C++ package `control_pkg`.
 
 To build:
 

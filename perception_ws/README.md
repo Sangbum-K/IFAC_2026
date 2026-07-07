@@ -1,4 +1,4 @@
-Perception workspace with a minimal ROS2 Python package `perception_pkg`.
+Perception workspace with a minimal ROS 2 C++ package `perception_pkg`.
 
 To build:
 
