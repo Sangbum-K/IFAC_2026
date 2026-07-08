@@ -1,114 +1,92 @@
 # IFAC_ws
 
-F1TENTH 대회용으로 확장 가능한 ROS 2 분리형 스택입니다. 현재는 `perception -> planning -> control -> integration` 흐름이 실제로 실행되는 최소 골격으로 정리되어 있습니다.
+ROS 2 Humble 기반 F1TENTH 실차/매핑 워크스페이스입니다. 현재 기준 메인 실행 진입점은 `hardware_ws/src/f1tenth_stack`이며, `joy -> ackermann -> vesc -> odom -> slam_toolbox` 흐름을 한 번에 올릴 수 있게 정리되어 있습니다.
 
 ## Structure
 
-- `perception_ws`: 센서 입력을 받아 인지 결과를 publish하는 노드
-- `planning_ws`: 인지 결과를 받아 계획을 생성하는 노드
-- `control_ws`: 계획을 받아 제어 명령을 생성하는 노드
-- `integration_ws`: 서비스 호출과 전체 스택 실행을 담당하는 노드
-- `hardware_ws`: VESC, LiDAR, TF, URDF, joystick, emergency stop을 위한 하드웨어 bringup 워크스페이스
-- `localization_ws`: `slam_toolbox`, `AMCL`, `map_server` 기반 localization 워크스페이스
-- `launch/`: 루트에서 참고용으로 보는 launch 파일
+- `hardware_ws`: 실차 하드웨어, teleop, VESC, LiDAR, TF/URDF bringup
+- `localization_ws`: `slam_toolbox`, `AMCL`, `map_server` 기반 localization
+- `perception_ws`: 인지 실험용 워크스페이스
+- `planning_ws`: 경로 계획 실험용 워크스페이스
+- `control_ws`: 제어 실험용 워크스페이스
+- `integration_ws`: 통합 실험용 워크스페이스
+
+핵심 패키지는 아래와 같습니다.
+
+- `f1tenth_stack`: F1TENTH-style 상위 launch/config 패키지
+- `vehicle_bringup`: e-stop, URDF/TF, 기존 bringup 유틸리티
+- `vehicle_teleop`: `/joy -> /ackermann_cmd` 변환 teleop 노드
+- `localization_bringup`: SLAM/Localization launch 패키지
 
 ## Build
 
-각 워크스페이스는 분리되어 있으므로 아래 순서로 빌드하고 source 해야 합니다.
+실차 주행과 매핑에 필요한 최소 빌드 순서는 아래입니다.
 
 ```bash
-cd /home/seok/IFAC_ws/perception_ws
-colcon build
-source install/setup.bash
-
-cd /home/seok/IFAC_ws/planning_ws
-colcon build
-source install/setup.bash
-
-cd /home/seok/IFAC_ws/control_ws
-colcon build
-source install/setup.bash
-
-cd /home/seok/IFAC_ws/integration_ws
-colcon build
-source install/setup.bash
-
 cd /home/seok/IFAC_ws/hardware_ws
 colcon build
-source install/setup.bash
 
 cd /home/seok/IFAC_ws/localization_ws
 colcon build
-source install/setup.bash
 ```
 
-한 터미널에서 순서대로 source 해야 `integration_pkg` launch가 다른 패키지 실행 파일을 모두 찾을 수 있습니다.
+## Source
+
+실행 전에는 아래 순서로 source 합니다.
+
+```bash
+source /opt/ros/humble/setup.zsh
+source /home/miru/IFAC_ws/hardware_ws/install/setup.zsh
+source /home/miru/IFAC_ws/localization_ws/install/setup.zsh
+```
+
+`hardware_ws`만 쓸 때는 마지막 줄은 생략해도 됩니다.
 
 ## Run
 
-전체 스택 실행:
+하드웨어 수동주행 bringup:
 
 ```bash
-ros2 launch integration_pkg stack.launch.py
+ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet
 ```
 
-하드웨어 bringup:
+SLAM Toolbox 매핑:
 
 ```bash
-ros2 launch vehicle_bringup hardware.launch.py
-ros2 launch vehicle_bringup hardware.launch.py env:=real_car
+ros2 launch f1tenth_stack mapping.launch.py env:=mapping sensor_interface:=ethernet
 ```
 
-Localization bringup:
+위 `mapping.launch.py`는 아래를 함께 실행합니다.
 
-```bash
-ros2 launch localization_bringup localization.launch.py backend:=slam_toolbox mode:=mapping
-ros2 launch localization_bringup localization.launch.py backend:=slam_toolbox mode:=localization
-ros2 launch localization_bringup localization.launch.py backend:=amcl mode:=localization
-```
+- `joy_node`
+- `vehicle_teleop/ackermann_joy_teleop`
+- `vesc_driver`
+- `vesc_ackermann/ackermann_to_vesc_node`
+- `vesc_ackermann/vesc_to_odom_node`
+- `urg_node`
+- `robot_state_publisher` / TF
+- `estop_node`
+- `slam_toolbox`
 
-환경별 실행:
+## Parameters
 
-```bash
-ros2 launch integration_pkg stack.launch.py env:=sim
-ros2 launch integration_pkg stack.launch.py env:=mapping
-ros2 launch integration_pkg stack.launch.py env:=race_map
-ros2 launch integration_pkg stack.launch.py env:=real_car
-```
+F1TENTH-style 파라미터 엔트리포인트:
 
-파라미터 파일 위치:
+- `hardware_ws/src/f1tenth_stack/config/params.yaml`
+- `hardware_ws/src/f1tenth_stack/config/environments/mapping.yaml`
+- `hardware_ws/src/f1tenth_stack/config/environments/race_map.yaml`
+- `hardware_ws/src/f1tenth_stack/config/environments/real_car.yaml`
+- `hardware_ws/src/f1tenth_stack/config/environments/sim.yaml`
 
-- `perception_ws/src/perception_pkg/config/params.yaml`
-- `planning_ws/src/planning_pkg/config/params.yaml`
-- `control_ws/src/control_pkg/config/params.yaml`
-- `integration_ws/src/integration_pkg/config/params.yaml`
+Localization 설정:
 
-환경별 override 파일 위치:
+- `localization_ws/src/localization_bringup/config/localization/slam_toolbox_mapping.yaml`
+- `localization_ws/src/localization_bringup/config/localization/slam_toolbox_localization.yaml`
+- `localization_ws/src/localization_bringup/config/localization/amcl.yaml`
+- `localization_ws/src/localization_bringup/config/localization/map_server.yaml`
 
-- `*/config/environments/sim.yaml`
-- `*/config/environments/mapping.yaml`
-- `*/config/environments/race_map.yaml`
-- `*/config/environments/real_car.yaml`
+## Notes
 
-현재 `integration_pkg`의 launch는 기본 `params.yaml`을 읽은 뒤, 선택한 `env` YAML을 덮어씁니다.
-특히 `mapping`은 SLAM용, `race_map`은 저장된 map 기반 주행용, `real_car`는 실차 bringup용 시작점으로 보면 됩니다.
-
-개별 노드 실행:
-
-```bash
-ros2 run perception_pkg perception_node
-ros2 run planning_pkg planning_node
-ros2 run control_pkg control_node
-ros2 run integration_pkg integration_node
-```
-
-## Current Scope
-
-현재 구현은 실제 차량 제어 전의 최소 통신 검증용 골격입니다.
-
-- `perception_pkg`는 mock object 문자열을 publish합니다.
-- `planning_pkg`는 perception 결과를 받아 mock plan을 publish합니다.
-- `control_pkg`는 planning 결과를 받아 mock control command를 publish합니다.
-- `integration_pkg`는 planning/control 서비스를 주기적으로 호출합니다.
-
-실전 F1TENTH용으로 확장할 때 필요한 항목은 [F1TENTH_CHECKLIST.md](/home/seok/IFAC_ws/F1TENTH_CHECKLIST.md) 에 정리해두었습니다.
+- 이 레포는 ROS 2 Humble 기준으로 정리되어 있습니다.
+- `f1tenth_stack`은 `f1tenth/f1tenth_system`의 구조를 참고했지만, 드라이버와 launch는 현재 레포에 맞게 재구성한 것입니다.
+- 실전 F1TENTH 확장 체크리스트는 [F1TENTH_CHECKLIST.md](/home/seok/IFAC_ws/F1TENTH_CHECKLIST.md)에 정리되어 있습니다.
