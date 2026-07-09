@@ -23,45 +23,39 @@ ROS 2 **Humble** 기반 F1TENTH 자율주행 스택입니다. LiDAR로 장애물
 | `control_ws` | pure pursuit 제어 (C++) | `control_pkg` |
 | `integration_ws` | 전체 스택을 한 번에 기동 + 헬스 모니터 | `integration_pkg` |
 
-> `unicorn-racing-stack-jazzy/` 는 별도 참조용(ROS 2 Jazzy + conda) 스택으로, 위
-> Humble 스택과 독립입니다. 이 README/HOW_TO_RUN의 절차와 무관하니 혼동하지 마세요.
+가장 단순한 방법은 레포 루트에서 한 번에 빌드하는 것입니다.
 
-메시지 패키지(`f1tenth_planning_msgs`, `f1tenth_perception_msgs`)가
-`planning_ws`에 있어서, **planning_ws를 항상 가장 먼저 빌드**해야 나머지가
-그 메시지를 참조할 수 있습니다.
+```bash
+source /opt/ros/humble/setup.zsh
 
-----
-
-## 데이터 흐름 (실차·시뮬 공통)
-
+cd /home/miru/IFAC_ws
+colcon build
 ```
-LiDAR /scan
-  → [perception] 장애물 탐지        → /perception/obstacles
-  → [planning]  frenet 변환·회피 경로 → /local_waypoints
-  → [control]   pure pursuit         → /autonomy/ackermann_cmd (실차) / /drive (시뮬)
+
+워크스페이스를 나눠서 빌드할 때는 `f1tenth_stack`가 `localization_bringup`를 참조하므로 아래 순서를 권장합니다.
+
+```bash
+source /opt/ros/humble/setup.zsh
+
+cd /home/miru/IFAC_ws/localization_ws
+colcon build
+
+source /home/miru/IFAC_ws/localization_ws/install/setup.zsh
+
+cd /home/miru/IFAC_ws/hardware_ws
+colcon build
 ```
 
 실차는 여기에 **명령 mux**가 붙습니다 (`vehicle_teleop/ackermann_cmd_mux`):
 
+루트에서 빌드했다면 아래 한 줄이면 충분합니다.
+
+```bash
+source /opt/ros/humble/setup.zsh
+source /home/miru/IFAC_ws/install/setup.zsh
 ```
-조이스틱 수동 → /manual_ackermann_cmd ┐
-자율주행     → /autonomy/ackermann_cmd ┼→ [mux] → /ackermann_cmd → VESC → 차량
-e-stop      → /safety/emergency_stop  ┘   (버튼5 토글, estop 최우선)
-```
 
-- **버튼 5**를 누르는 순간마다 수동 ↔ 자율 **토글**(엣지 트리거)
-- `/safety/emergency_stop`(latched Bool)이 true면 mux가 무조건 정지 명령으로 덮어씀
-- 각 소스가 `command_timeout`(0.5s) 넘게 끊기면 그 소스는 무시(idle 정지)
-
-위치 추정은 `localization_ws`의 particle_filter가 `map→odom` TF와
-`/pf/pose/odom`을 발행해 스택에 좌표계를 제공합니다.
-
----
-
-## 빌드 (최초 1회 · 순서 중요)
-
-경로는 각자 홈에 맞게 바꾸세요. 아래는 `~/IFAC_ws` 기준입니다.
-`zsh`면 `.zsh`, `bash`면 `.bash`를 쓰세요.
+워크스페이스를 나눠서 빌드했다면 실행 전에는 아래 순서로 source 합니다.
 
 ```bash
 source /opt/ros/humble/setup.zsh

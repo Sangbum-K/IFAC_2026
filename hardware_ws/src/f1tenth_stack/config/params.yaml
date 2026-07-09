@@ -34,10 +34,11 @@ vehicle:
 ackermann_joy_teleop:
   ros__parameters:
     joy_topic: /joy
-    ackermann_topic: /manual_ackermann_cmd
-    speed_axis: 1
+    ackermann_topic: /ackermann_cmd
+    speed_axis: 7
     steering_axis: 3
     reverse_button: 0
+    require_enable_button: false
     max_speed: 1.5
     max_speed_reverse: 0.8
     max_steering_angle: 0.4189
