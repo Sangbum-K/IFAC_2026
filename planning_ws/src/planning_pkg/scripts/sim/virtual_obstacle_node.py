@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RViz 'Publish Point' 클릭으로 가상 정적 장애물을 만드는 시뮬레이션 전용 노드.
+"""RViz 'Publish Point' 가상 정적 장애물 + Perception Injection (시뮬 전용).
 
 unicorn(HMCL) 튜토리얼의 virtual_perception 역할:
   /clicked_point 클릭 -> Frenet 변환 -> /perception/obstacles (10 Hz 상시 발행)
@@ -7,11 +7,16 @@ unicorn(HMCL) 튜토리얼의 virtual_perception 역할:
 /sim/clear_obstacles (Empty, 패널 버튼)로 전체 삭제된다.
 장애물이 없어도 빈 배열을 계속 발행한다 (spliner의 stale 타임아웃과 연동).
 
-perception 주입 모드 (/sim/perception_mode):
+perception 주입 모드 (/sim/perception_mode, 패널 콤보박스):
   - tracking_merge (기본): ground-truth를 /perception/obstacles로 직접 주입
-  - lidar_overlay: /perception/obstacles는 빈 배열 — 장애물은
-    scan_overlay_node가 /scan_overlay에 합성점으로 삽입 (파이프라인 검증용)
-어느 모드든 ground-truth 원본은 /sim/virtual_obstacles로 계속 발행한다.
+    (플래너 단독 검증 — 상대 관측 /perception/opponent도 여기서 합쳐짐)
+  - lidar_overlay: /perception/obstacles는 빈 배열. 대신 가상 장애물의
+    합성 반사점을 ego /scan에 삽입해 /scan_overlay로 재발행한다 —
+    perception 팀 파이프라인이 /scan_overlay를 구독하면 탐지->추적->플래너
+    전체 체인을 시뮬에서 검증할 수 있다. (상대 차량은 gym 2-agent 실차라
+    /scan에 이미 물리적으로 찍힌다 — 삽입 불필요.)
+
+/sim/ego_lidar_enable (Bool, 패널 체크박스): false면 overlay 발행 중단.
 
 perception 팀 노드가 준비되면 이 노드 대신 실제 perception이
 /perception/obstacles를 발행하게 된다.
@@ -23,7 +28,9 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import Empty, String
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool, Empty, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from ae_hyu_msgs.msg import Obstacle, ObstacleArray, WpntArray
@@ -39,9 +46,11 @@ class VirtualObstacleNode(Node):
         self.declare_parameter('virtual_obstacle/publish_rate_hz', 10.0)
         self.declare_parameter('virtual_obstacle/obstacle_size_m', 0.3)
         self.declare_parameter('virtual_obstacle/remove_radius_m', 0.5)
+        self.declare_parameter('virtual_obstacle/laser_offset_m', 0.275)  # base_link -> laser
         rate = self.get_parameter('virtual_obstacle/publish_rate_hz').value
         self.size = self.get_parameter('virtual_obstacle/obstacle_size_m').value
         self.remove_radius = self.get_parameter('virtual_obstacle/remove_radius_m').value
+        self.laser_offset = self.get_parameter('virtual_obstacle/laser_offset_m').value
 
         self.wpnts = None       # np.array [N, 4]: s, x, y, psi
         self.track_length = 0.0
@@ -50,14 +59,19 @@ class VirtualObstacleNode(Node):
         self.opponent = None    # 상대 관측 (opponent_driver_node)
         self.opponent_stamp = None
         self.tracking_merge = True   # /sim/perception_mode
+        self.lidar_enable = True     # /sim/ego_lidar_enable
+        self.odom = None
 
         self.create_subscription(WpntArray, '/global_waypoints', self.cb_gb, 10)
         self.create_subscription(PointStamped, '/clicked_point', self.cb_click, 10)
         self.create_subscription(ObstacleArray, '/perception/opponent', self.cb_opponent, 10)
         self.create_subscription(Empty, '/sim/clear_obstacles', self.cb_clear, 10)
         self.create_subscription(String, '/sim/perception_mode', self.cb_pmode, 10)
+        self.create_subscription(Bool, '/sim/ego_lidar_enable', self.cb_lidar, 10)
+        self.create_subscription(Odometry, '/ego_racecar/odom', self.cb_odom, 10)
+        self.create_subscription(LaserScan, '/scan', self.cb_scan, 10)
         self.pub_obs = self.create_publisher(ObstacleArray, '/perception/obstacles', 10)
-        self.pub_truth = self.create_publisher(ObstacleArray, '/sim/virtual_obstacles', 10)
+        self.pub_scan = self.create_publisher(LaserScan, '/scan_overlay', 10)
         self.pub_mrk = self.create_publisher(MarkerArray, '/perception/obstacle_markers', 10)
         self.create_timer(1.0 / rate, self.publish)
 
@@ -126,31 +140,78 @@ class VirtualObstacleNode(Node):
         pitwall.event(f'정적 장애물 {n}개 전체 삭제')
 
     def cb_pmode(self, msg: String):
-        self.tracking_merge = (msg.data.strip().lower() != 'lidar_overlay')
+        mode = msg.data.strip().lower()
+        merge = (mode != 'lidar_overlay')
+        if merge != self.tracking_merge:
+            self.tracking_merge = merge
+            self.get_logger().info(f'perception 주입 모드: {mode}')
+            pitwall.event(f'perception 모드: {mode}')
+
+    def cb_lidar(self, msg: Bool):
+        self.lidar_enable = bool(msg.data)
+
+    def cb_odom(self, msg: Odometry):
+        self.odom = msg
+
+    def cb_scan(self, msg: LaserScan):
+        """lidar_overlay 모드: 가상 장애물 합성점을 /scan에 삽입 -> /scan_overlay."""
+        if self.tracking_merge or not self.lidar_enable:
+            return
+        if self.odom is None:
+            self.pub_scan.publish(msg)
+            return
+
+        p = self.odom.pose.pose.position
+        q = self.odom.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        lx = p.x + self.laser_offset * math.cos(yaw)
+        ly = p.y + self.laser_offset * math.sin(yaw)
+
+        ranges = np.array(msg.ranges, dtype=np.float32)
+        n = len(ranges)
+        r = max(self.size / 2.0, 0.05)
+        for obs in self.obstacles:
+            rho = math.hypot(obs.position.x - lx, obs.position.y - ly)
+            if rho <= r or rho > msg.range_max:
+                continue
+            bearing = math.atan2(obs.position.y - ly, obs.position.x - lx) - yaw
+            bearing = math.atan2(math.sin(bearing), math.cos(bearing))
+            half = math.asin(min(r / rho, 1.0))
+            i0 = int((bearing - half - msg.angle_min) / msg.angle_increment)
+            i1 = int((bearing + half - msg.angle_min) / msg.angle_increment)
+            if i1 < 0 or i0 >= n:
+                continue
+            idx = np.arange(max(i0, 0), min(i1 + 1, n))
+            ranges[idx] = np.minimum(ranges[idx], rho - r)
+
+        out = LaserScan()
+        out.header = msg.header
+        out.angle_min = msg.angle_min
+        out.angle_max = msg.angle_max
+        out.angle_increment = msg.angle_increment
+        out.time_increment = msg.time_increment
+        out.scan_time = msg.scan_time
+        out.range_min = msg.range_min
+        out.range_max = msg.range_max
+        out.ranges = ranges.tolist()
+        self.pub_scan.publish(out)
 
     def publish(self):
         arr = ObstacleArray()
         arr.header.stamp = self.get_clock().now().to_msg()
         arr.header.frame_id = 'map'
-        arr.obstacles = list(self.obstacles)
 
-        # ground-truth 원본 (scan_overlay_node 등 시뮬 내부용, 모드 무관)
-        truth = ObstacleArray()
-        truth.header = arr.header
-        truth.obstacles = list(self.obstacles)
-        self.pub_truth.publish(truth)
-
-        # lidar_overlay 모드에서는 플래너 직접 주입 중단 (빈 배열 유지)
-        if not self.tracking_merge:
-            arr.obstacles = []
-            self.pub_obs.publish(arr)
-        else:
+        # lidar_overlay 모드에서는 플래너 직접 주입 중단 (빈 배열 유지,
+        # 장애물은 cb_scan이 /scan_overlay에 합성점으로 삽입)
+        if self.tracking_merge:
+            arr.obstacles = list(self.obstacles)
             # 상대 관측(동적)을 정적 장애물과 합쳐 발행 (0.5s 타임아웃)
             if (self.opponent and self.opponent_stamp is not None and
                     (self.get_clock().now() - self.opponent_stamp).nanoseconds
                     * 1e-9 < 0.5):
                 arr.obstacles += self.opponent
-            self.pub_obs.publish(arr)
+        self.pub_obs.publish(arr)
 
         mrks = MarkerArray()
         clear = Marker()

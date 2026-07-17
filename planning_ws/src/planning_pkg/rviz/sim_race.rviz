@@ -276,6 +276,26 @@ Visualization Manager:
       Reliability Policy: Reliable
       Value: /opponent_prediction/markers
     Value: true
+  - Class: rviz_default_plugins/InteractiveMarkers
+    Enable Transparency: true
+    Enabled: true
+    Interactive Markers Namespace: /raceline_tuner
+    Name: TunerHandles
+    Show Axes: false
+    Show Descriptions: false
+    Show Visual Aids: true
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: TunedRaceline
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /raceline_tuner/preview
+    Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

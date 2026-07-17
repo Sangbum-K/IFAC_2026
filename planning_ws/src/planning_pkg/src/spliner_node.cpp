@@ -39,6 +39,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/side_switch_d_tresh", 0.25);
     this->declare_parameter("spliner/obs_timeout_sec", 0.5);
     this->declare_parameter("spliner/use_prediction", true);
+    this->declare_parameter("spliner/trailing_gap_m", 1.5);
+    this->declare_parameter("spliner/trailing_decel", 3.0);
 
     loop_rate_hz_ = this->get_parameter("spliner/loop_rate_hz").as_double();
     lookahead_m_ = this->get_parameter("spliner/lookahead_m").as_double();
@@ -53,6 +55,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     side_switch_d_tresh_ = this->get_parameter("spliner/side_switch_d_tresh").as_double();
     obs_timeout_sec_ = this->get_parameter("spliner/obs_timeout_sec").as_double();
     use_prediction_ = this->get_parameter("spliner/use_prediction").as_bool();
+    trailing_gap_m_ = this->get_parameter("spliner/trailing_gap_m").as_double();
+    trailing_decel_ = this->get_parameter("spliner/trailing_decel").as_double();
 
     RCLCPP_INFO(this->get_logger(),
         "spliner params: lookahead=%.1fm evasion_dist=%.2fm obs_traj_tresh=%.2fm",
@@ -161,6 +165,7 @@ void SplinerNode::Run() {
     visualization_msgs::msg::MarkerArray mrks;
 
     bool evasion_valid = false;
+    bool used_trailing = false;
     if (!obs_copy.obstacles.empty()) {
         std::lock_guard<std::mutex> lock(mutex_gb_wpnts_);
         auto close_obs = FilterObstacles(obs_copy.obstacles);
@@ -173,8 +178,22 @@ void SplinerNode::Run() {
                            Mod(b.s_center - cur_s_, gb_max_s_);
                 });
             evasion_valid = DoSpline(closest, evasion_wpnts, mrks);
+            if (!evasion_valid) {
+                // 회피 불가(트랙경계 abort / 사이드 스위치 거부) 폴백:
+                // raceline을 유지한 채 장애물 뒤 trailing_gap에서 장애물
+                // 속도(정적이면 0)까지 감속하는 궤적 발행 — ForzaETH 상태머신의
+                // TRAILING 대응. 없으면 ego가 감속 없이 정면으로 돌진한다.
+                evasion_wpnts.wpnts.clear();
+                mrks.markers.clear();
+                evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks);
+                used_trailing = evasion_valid;
+            }
         }
     }
+    if (used_trailing && !trailing_active_) {
+        pitwall::Event("TRAILING 폴백 (회피 불가 — 감속 추종)");
+    }
+    trailing_active_ = used_trailing;
 
     if (!evasion_valid) {
         evasion_wpnts.wpnts.clear();
@@ -373,6 +392,50 @@ bool SplinerNode::DoSpline(
         "Evasion spline: side=%s d_apex=%.2f s_apex=%.1f (%zu wpnts)",
         more_space.c_str(), d_apex, Mod(s_apex, gb_max_s_), out_wpnts.wpnts.size());
     pitwall::Log("evasion_d_apex", d_apex);
+    return true;
+}
+
+bool SplinerNode::BuildTrailing(
+    const ae_hyu_msgs::msg::Obstacle &obs,
+    ae_hyu_msgs::msg::WpntArray &out_wpnts,
+    visualization_msgs::msg::MarkerArray &out_mrks) {
+
+    int gb_size = static_cast<int>(gb_wpnts_.size());
+    if (gb_size < 2) {
+        return false;
+    }
+    // 목표 속도: 동적(또는 예측) 장애물이면 그 진행 속도, 정적이면 0
+    double v_target = std::max(obs.vs, 0.0);
+
+    // 정지 목표점: 장애물 앞 가장자리에서 trailing_gap 만큼 뒤
+    double span = Mod(obs.s_start - trailing_gap_m_ - cur_s_, gb_max_s_);
+    if (span > lookahead_m_ + 5.0) {
+        span = 0.0;  // 이미 gap 안쪽 -> 즉시 목표 속도로
+    }
+
+    // 정지점 뒤로도 v_target 구간을 연장한다 — 컨트롤러 lookahead(수 m)가
+    // 궤적 밖의 원본 raceline 속도(전속)를 집어 재가속하는 것을 방지
+    const double extend = 5.0;
+    int n = std::max(static_cast<int>((span + extend) / wpnt_dist_), 2);
+    out_wpnts.wpnts.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        double s = Mod(cur_s_ + i * wpnt_dist_, gb_max_s_);
+        int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
+        ae_hyu_msgs::msg::Wpnt w = gb_wpnts_[gi];
+        w.id = i;
+        w.d_m = 0.0;
+        // 감속 프로파일: 남은 거리에서 trailing_decel로 v_target까지 감속 가능한
+        // 속도. 정지점 이후(rem=0)는 v_target 유지 (정적이면 0 = 정지)
+        double rem = std::max(span - i * wpnt_dist_, 0.0);
+        double v_allow = std::sqrt(v_target * v_target + 2.0 * trailing_decel_ * rem);
+        w.vx_mps = std::min(w.vx_mps, v_allow);
+        out_wpnts.wpnts.push_back(w);
+        out_mrks.markers.push_back(MakeWpntMarker(w.x_m, w.y_m, w.vx_mps, i));
+    }
+
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+        "Trailing fallback: obs s=%.1f gap=%.1fm v_target=%.1f (%zu wpnts)",
+        obs.s_center, span, v_target, out_wpnts.wpnts.size());
     return true;
 }
 

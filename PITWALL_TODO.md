@@ -26,6 +26,12 @@ Phase 1(T1.1~T1.4)과 Phase 2(T2.1~T2.6) 전부 + "오늘 범위 제외"였던
 남은 것 (다음 이터레이션): H2H 상태머신(BehaviorState) → STATE 배너 정식
 연동, perception 팀 파이프라인이 /scan_overlay를 소비하는 E2E 검증.
 
+**추가 (같은 날 오후)**: 시뮬 파일 정리 — scripts/sim은 3개 노드만 남김
+(scan_overlay는 virtual_obstacle에 병합, ghost 상대·raceline_viz 삭제),
+RViz 설정 sim_race.rviz 하나로 통합(`tuner:=true`로 튜너 동시 실행).
+spliner에 **TRAILING 폴백** 추가: 좁은 구간에서 회피 불가 시 장애물 뒤
+1.5 m에서 감속·정지(정적) 또는 상대 속도 추종(동적) — 관통/충돌 방지.
+
 ---
 
 ## 무엇을 만드는가

@@ -48,6 +48,13 @@ private:
     ae_hyu_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
+  // 회피 불가 시 폴백: raceline 유지 + 장애물 뒤 trailing_gap에서
+  // 장애물 속도까지 감속하는 궤적 (ForzaETH 상태머신 TRAILING 대응)
+  bool BuildTrailing(
+    const ae_hyu_msgs::msg::Obstacle & closest_obs,
+    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks);
+
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
 
@@ -74,6 +81,9 @@ private:
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
   bool use_prediction_{true};   // Predictive Spliner: 예측 장애물이 원시 관측을 대체
+  double trailing_gap_m_{1.5};
+  double trailing_decel_{3.0};
+  bool trailing_active_{false};
 
   // State
   ae_hyu_msgs::msg::ObstacleArray obstacles_;

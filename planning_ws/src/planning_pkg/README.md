@@ -26,7 +26,9 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 | `config/centerline/*.csv` | centerline + wall boundary | 생성됨 |
 | `maps/` | 개발용 트랙 맵 (대회 맵은 교체) | Spielberg |
 | `scripts/global_traj_sim/` | **오프라인 개발 도구** (.venv Python) | 완성·검증됨 |
-| `scripts/global_traj_sim/ros2/raceline_viz_node.py` | RViz 시각화 노드 (rclpy) | 완성 |
+| `scripts/sim/` | 시뮬 전용 노드 3개 (tracker/obstacle/opponent) | 완성·검증됨 |
+| `scripts/tuner/`, `scripts/lib/` | 레이스라인 튜너, pitwall 텔레메트리 | 완성 |
+| `../pitwall_panel/` | RViz Pitwall 패널 (Qt 플러그인) | 완성 |
 | `../ae_hyu_msgs/` | 공용 메시지 (Wpnt/Obstacle/BehaviorState) | 이식됨 — perception/control도 이 타입 사용 권장 |
 
 > **이식 노트**: 원본 `planning_ws/planner_pkg`(리포 최상위)는 헤더 4개,
@@ -81,20 +83,26 @@ RViz에서 (unicorn pitwall-panel-usage 튜토리얼과 동일):
 | `waypoint_tracker_node.py` | `/local_waypoints` pure pursuit → `/drive`. **speed_scale 0.5 기본** (7 m/s 전속은 스핀아웃, 0.5에서 횡편차 ±6 cm 검증). **벽 충돌 복구 내장** (스턱 감지 → 후진 → 재개). **ego 모드 먹스**: `/sim/ego_mode`("autonomous"/"manual") 또는 `/joy` LB=manual·RB=autonomous. manual이면 정지 1회 발행 후 침묵 → gym kb_teleop(`/cmd_vel`)이 조종. control 팀 컨트롤러로 대체 예정. |
 | `virtual_obstacle_node.py` | `/clicked_point` → Frenet 변환 → `/perception/obstacles` 10 Hz 상시 발행. `/sim/clear_obstacles`로 전체 삭제. perception 주입 모드 게이팅(아래). perception 팀 노드로 대체 예정. |
 | `opponent_driver_node.py` | gym 2번째 차량 조종. 모드 `/sim/opp_mode`: **path**(레이스라인 pure pursuit, 기본) / **ftg**(`/opp_scan` follow-the-gap) / **manual**(`/opp_cmd_vel` Twist — `teleop_twist_keyboard --ros-args -r cmd_vel:=/opp_cmd_vel`). `/sim/opp_speed_delta`(±0.5 m/s 상한 조절), `/sim/remove_opponent`(주차), `/sim/opp_lidar_enable`(false면 FTG 정지). ground-truth 관측을 `/perception/opponent`로 발행 (tracking_merge 모드일 때). |
-| `scan_overlay_node.py` | Perception Injection **lidar_overlay** 모드에서 가상 장애물의 합성 반사점을 `/scan`에 삽입해 `/scan_overlay` 발행 (perception 파이프라인 검증용). 상대 차량은 실제 gym 에이전트라 `/scan`에 이미 물리적으로 찍힌다. |
-
-Perception Injection (`/sim/perception_mode`, 패널 콤보박스):
+Perception Injection (`/sim/perception_mode`, 패널 콤보박스 —
+virtual_obstacle_node에 내장):
 - **tracking_merge** (기본): ground-truth 장애물/상대를 `/perception/obstacles`로
   직접 주입 — 플래너 단독 검증 (지금까지의 동작).
-- **lidar_overlay**: GT 주입 중단, `/scan_overlay`만 발행 — perception 팀
-  파이프라인이 생기면 탐지→추적→플래너 전체 체인을 시뮬에서 검증.
+- **lidar_overlay**: GT 주입 중단, 가상 장애물의 합성 반사점을 `/scan`에 삽입한
+  `/scan_overlay`만 발행 — perception 팀 파이프라인이 생기면 탐지→추적→플래너
+  전체 체인을 시뮬에서 검증. (상대 차량은 실제 gym 에이전트라 `/scan`에 이미
+  물리적으로 찍힌다.)
 
 검증(headless 26/26 PASS): 2-agent에서 ego 3.5 m/s 주행, 장애물 회피,
 상대 스폰 → GP 예측(4 s) → 추월(10 s, 최소 이격 0.65 m·접촉 없음), FTG 주행,
 LiDAR 토글, Remove/Clear, Manual/Autonomous 전환, 텔레메트리 수신.
+좁은 구간(좌우 여유 < 1 m) 장애물은 TRAILING 폴백으로 3 m 앞 정지 확인.
 
 > `spliner/evasion_dist`는 0.65가 이 raceline(safe-dist 0.5)의 실질 최대다.
 > 0.7 이상이면 한쪽 벽 여유(~1.05 m)를 넘어 트랙경계 abort로 회피가 무산된다.
+> 회피가 불가능한 구간에서는 spliner가 **TRAILING 폴백**을 발행한다: raceline을
+> 유지한 채 장애물 뒤 `trailing_gap_m`(1.5 m)에서 장애물 속도(정적이면 0)까지
+> `trailing_decel`(3 m/s²)로 감속 — 정면 돌진/관통 방지 (ForzaETH 상태머신의
+> TRAILING 대응, 실차에서도 동일하게 동작).
 
 ## Pitwall (텔레메트리 + RViz 패널)
 
@@ -159,16 +167,8 @@ python scripts/global_traj_sim/step4_main.py --map Spielberg_map --raceline iqp 
 ### 2. 런타임 노드 (ROS 2, colcon 빌드)
 
 - `planning_node` — 현재는 std_msgs/String 골격. 실제 로직은 아래 포팅 TODO.
-- `raceline_viz_node.py` — config의 raceline/centerline/walls CSV를 읽어
-  RViz MarkerArray로 발행 (주황 raceline + 속도 막대 + 3D 벽). rqt_reconfigure
-  실시간 튜닝 + CSV 자동 리로드 지원.
-
-```bash
-ros2 run planning_pkg raceline_viz_node.py --ros-args \
-  -p raceline_csv:=$(ros2 pkg prefix planning_pkg)/share/planning_pkg/config/global_trajectory/Spielberg_map_iqp_max7.00ms_margin0.15m_mu0.85.csv \
-  -p centerline_csv:=$(ros2 pkg prefix planning_pkg)/share/planning_pkg/config/centerline/Spielberg_map_centerline.csv \
-  -p walls_csv:=$(ros2 pkg prefix planning_pkg)/share/planning_pkg/config/centerline/Spielberg_map_walls.csv
-```
+- 나머지 raceline 추종/회피 노드는 위 표 참고. 시뮬 실행은 위
+  "RViz 시뮬레이션" 절, raceline 시각화·편집은 아래 "레이스라인 튜너" 절.
 
 ## 장애물 회피 (spliner_node)
 
@@ -219,12 +219,17 @@ vs(s)를 학습**하고, 자차/상대 속도 프로파일을 전방 적분해 "
 검증: colcon 빌드 + 가짜 odom/장애물 시나리오 (장애물 등장 → apex d=0.8 m
 회피 스플라인 + local 67/80 wpt 치환, 소멸 → 0.5 s 내 raceline 복귀 확인).
 
-## RViz 인터랙티브 레이스라인 튜너 (raceline_tuner.launch.py)
+## RViz 인터랙티브 레이스라인 튜너
 
 HMCL unicorn 튜토리얼의 raceline_tuner를 ROS2로 구현한 것. 코너별로
-라인과 속도를 RViz에서 드래그로 조절한다:
+라인과 속도를 RViz에서 드래그로 조절한다. RViz 설정은 `sim_race.rviz`
+하나로 통합돼 있다 (튜너 핸들/미리보기 디스플레이 포함):
 
 ```bash
+# 방법 1: 시뮬과 함께 (같은 RViz에서 주행 보면서 편집)
+ros2 launch planning_pkg sim_race.launch.py tuner:=true
+
+# 방법 2: 튜너만 단독 실행 (gym 불필요, 맵 + 튜너 + RViz)
 ros2 launch planning_pkg raceline_tuner.launch.py            # 기본 IQP 라인 편집
 ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
 ```

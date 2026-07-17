@@ -1,0 +1,27 @@
+planning:
+  ros__parameters:
+    planning_horizon: 5.0
+    input_topic: /perception/objects
+    output_topic: /planning/plan
+    service_name: /planning/compute_plan
+
+# --- 실차 보수값 (params.yaml 기본값 override) ---
+spliner_node:
+  ros__parameters:
+    spliner/lookahead_m: 8.0
+    spliner/evasion_dist: 0.75          # 실차: 횡 여유 확대
+    spliner/inside_speed_scale: 0.7     # 회피 구간 감속 강화
+    spliner/path_check_margin: 0.20
+    spliner/stop_margin_m: 1.2
+    spliner/stop_ramp_dist_m: 3.0
+
+recovery_supervisor_node:
+  ros__parameters:
+    recovery/stuck_timeout_sec: 1.5
+    recovery/boundary_stop_margin_m: 0.20
+    recovery/rear_check_dist_m: 2.0
+    recovery/recovery_reverse_speed_mps: 0.4
+    recovery/recovery_max_reverse_distance_m: 0.4
+    recovery/recovery_max_attempts: 1   # 실차: 자동 복구 1회만
+    recovery/align_speed_mps: 0.4
+    recovery/pose_odom_topic: /pf/pose/odom

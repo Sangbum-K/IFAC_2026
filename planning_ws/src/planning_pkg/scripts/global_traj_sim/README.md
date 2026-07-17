@@ -32,26 +32,17 @@ python3 -m venv .venv
   `--safe-dist 0.30`(차 반폭+여유)으로 벽 접근 한계 조절 — UNICORN의
   safety_width에 해당. 줄이면 빠르지만 벽에 붙는다.
 
-### RViz 시각화 (`ros2/raceline_viz_node.py`)
+### RViz 시각화
 
-ROS2 환경(도커/Jetson)에서 raceline + 속도 마커 + 3D 벽을 RViz로 본다:
+생성된 raceline은 RViz에서 본다 (별도 시각화 노드는 레이스라인 튜너로 통합):
 
 ```bash
-# ROS2 환경에서 (rclpy만 있으면 됨, 패키지 등록 불필요)
-python3 ros2/raceline_viz_node.py --ros-args \
-    -p raceline_csv:=<...>/Spielberg_map_iqp_max7.00ms_margin0.15m_mu0.85.csv \
-    -p centerline_csv:=<...>/Spielberg_map_centerline.csv \
-    -p walls_csv:=<...>/Spielberg_map_walls.csv
-# RViz: Add -> By topic -> /raceline_viz/markers (MarkerArray)
-# 인터랙티브 튜너: ros2 run rqt_reconfigure rqt_reconfigure
+# 결과 확인 + 드래그 편집 (맵 + 미리보기 + 인터랙티브 핸들)
+ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
+# 또는 시뮬 주행과 함께: ros2 launch planning_pkg sim_race.launch.py tuner:=true
 ```
 
-- 주황 선 = IQP raceline, 수직 막대 = 속도(초록 빠름/빨강 느림, 높이=vx),
-  노란 리본 = 속도 프로파일 능선, 반투명 벽 = wall boundary 3D
-- rqt_reconfigure로 speed_scale/wall_height/show_* 실시간 조정
-- CSV 수정시각을 감시하므로 step4_main.py를 다른 인자로 재실행하면
-  RViz에 자동 반영 ("재최적화 -> 즉시 확인" 튜닝 루프)
-- 로컬 미리보기: `outputs/rviz_preview_3d.png` (matplotlib 3D로 렌더한 예상 화면)
+정적 미리보기는 step4가 저장하는 `outputs/*_trajectory.png` 참고.
 
 지원 맵: Spielberg처럼 트랙이 폐곡선 링 형태인 맵 (`f1tenth_gym_ros/maps/`).
 levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 있어

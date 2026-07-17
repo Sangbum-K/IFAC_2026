@@ -129,13 +129,17 @@ def generate_launch_description():
         parameters=[params_file],
         output='screen',
     )
-    # Perception Injection: lidar_overlay 모드에서 /scan + 가상 장애물 -> /scan_overlay
-    scan_overlay_node = Node(
+    # 레이스라인 튜너 (tuner:=true 로 시뮬과 함께 실행 — 같은 RViz에서
+    # 보라 핸들 드래그로 라인/속도 편집. 소스 CSV를 편집하므로 저장 후 재빌드)
+    tuner_node = Node(
         package='planning_pkg',
-        executable='scan_overlay_node.py',
-        name='scan_overlay_node',
-        parameters=[params_file],
+        executable='raceline_tuner_node.py',
+        name='raceline_tuner_node',
+        parameters=[{'tuner/raceline_csv': os.path.expanduser(
+            '~/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory/'
+            'Spielberg_map_iqp_max7.00ms_margin0.15m_mu0.85.csv')}],
         output='screen',
+        condition=IfCondition(LaunchConfiguration('tuner')),
     )
     opponent_predictor_node = Node(
         package='planning_pkg',
@@ -158,6 +162,8 @@ def generate_launch_description():
                               description='RViz 실행 여부'),
         DeclareLaunchArgument('tracker', default_value='true',
                               description='Python 트래커 실행 여부 (false면 C++ control_node 사용)'),
+        DeclareLaunchArgument('tuner', default_value='false',
+                              description='레이스라인 튜너 함께 실행 (같은 RViz에서 편집)'),
         bridge_node,
         map_server_node,
         nav_lifecycle_node,
@@ -165,9 +171,9 @@ def generate_launch_description():
         opp_robot_publisher,
         planner_stack,
         tracker_node,
+        tuner_node,
         virtual_obstacle_node,
         opponent_driver_node,
-        scan_overlay_node,
         opponent_predictor_node,
         rviz_node,
     ])

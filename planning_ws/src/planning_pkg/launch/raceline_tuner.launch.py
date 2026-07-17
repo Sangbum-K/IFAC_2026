@@ -48,11 +48,13 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{'tuner/raceline_csv': csv_path}],
         output='screen',
     )
+    # rviz 설정은 sim_race와 통합 (튜너 단독 실행 시 gym 토픽 디스플레이는
+    # 데이터 없음으로 비어 있을 뿐 문제없다)
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz_tuner',
-        arguments=['-d', os.path.join(planning_share, 'rviz', 'raceline_tuner.rviz')],
+        arguments=['-d', os.path.join(planning_share, 'rviz', 'sim_race.rviz')],
     )
     return [map_server_node, nav_lifecycle_node, tuner_node, rviz_node]
 

@@ -86,26 +86,19 @@ install(DIRECTORY maps
   DESTINATION share/${PROJECT_NAME}
 )
 
-# RViz raceline 시각화 노드 (rclpy).
-#   ros2 run planning_pkg raceline_viz_node.py --ros-args -p raceline_csv:=...
-install(PROGRAMS scripts/global_traj_sim/ros2/raceline_viz_node.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 # pitwall 텔레메트리 (import pitwall — 노드와 같은 디렉터리에 설치)
 install(FILES scripts/lib/pitwall.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # 시뮬레이션 데모 노드 (rclpy): sim_race.launch.py에서 사용.
-# tracker는 control 팀 노드로 대체 예정, virtual_obstacle은 perception 대역
-# opponent_driver는 gym 2-agent 상대 조종, scan_overlay는 perception 주입
+# tracker는 control 팀 노드로 대체 예정.
+# virtual_obstacle = 정적 장애물 + perception 주입(tracking merge / scan overlay).
+# opponent_driver = gym 2-agent 상대 조종 (path/ftg/manual).
 install(PROGRAMS
   scripts/sim/waypoint_tracker_node.py
   scripts/sim/virtual_obstacle_node.py
-  scripts/sim/virtual_opponent_node.py
   scripts/sim/opponent_driver_node.py
-  scripts/sim/scan_overlay_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
