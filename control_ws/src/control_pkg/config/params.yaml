@@ -1,6 +1,30 @@
+# control_node: /local_waypoints pure pursuit + 스턱 복구 + E-stop
+# 환경별 차이(토픽, 속도, 자율주행 시작 모드)는 environments/*.yaml이 override.
 control:
   ros__parameters:
-    control_rate: 20
-    input_topic: /planning/plan
-    output_topic: /control/cmd
-    service_name: /control/set_mode
+    control_rate: 40.0
+    local_waypoints_topic: /local_waypoints
+    odom_topic: /ego_racecar/odom          # env가 override (real: /pf/pose/odom)
+    ackermann_topic: /drive                # env가 override (real: /ackermann_cmd)
+    estop_topic: /safety/emergency_stop
+    service_name: /control/set_mode        # Trigger: autonomous ON/OFF 토글
+    autonomous_on_start: false             # 실차 안전 기본값. sim은 true로 override
+
+    # pure pursuit (planning_ws sim tracker에서 검증한 값)
+    pp/t_lookahead: 0.5                    # lookahead = clip(t*v, min, max) [s]
+    pp/min_lookahead_m: 1.2
+    pp/max_lookahead_m: 3.0
+    pp/wheelbase_m: 0.33                   # hardware_ws bringup wheelbase와 일치
+    pp/max_steer_rad: 0.4189               # 서보 한계 (hardware max_steering_angle)
+    pp/speed_scale: 0.5                    # raceline 속도 스케일
+    pp/max_speed_mps: 4.0                  # 하드웨어 상한 (hardware vehicle.max_speed)
+    pp/waypoint_timeout_sec: 0.5           # 로컬 경로 두절 시 정지
+
+    # 벽 충돌/스턱 복구 (전진 명령 중 정지 지속 -> 후진 탈출)
+    recovery/enable: true
+    recovery/stuck_detect_sec: 0.6
+    recovery/reverse_speed_mps: 1.2
+    recovery/reverse_max_sec: 3.0
+    recovery/reverse_min_dist_m: 0.3
+    recovery/resume_speed_cap_mps: 2.0
+    recovery/resume_cap_sec: 1.5

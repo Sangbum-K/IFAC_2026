@@ -1,6 +1,9 @@
+# 대회 트랙: real_car 기반, 검증 후 속도 상향용 프로파일
 control:
   ros__parameters:
-    control_rate: 30
-    input_topic: /planning/plan
-    output_topic: /control/cmd
-    service_name: /control/set_mode
+    odom_topic: /pf/pose/odom
+    ackermann_topic: /ackermann_cmd
+    autonomous_on_start: false
+    pp/speed_scale: 0.5
+    pp/max_speed_mps: 4.0
+    recovery/enable: false

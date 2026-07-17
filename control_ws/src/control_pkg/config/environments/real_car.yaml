@@ -1,6 +1,10 @@
+# 실차: 파티클필터 odom + vesc_ackermann(/ackermann_cmd), 수동 시작
+# 자율주행 시작: ros2 service call /control/set_mode example_interfaces/srv/Trigger
 control:
   ros__parameters:
-    control_rate: 25
-    input_topic: /planning/plan
-    output_topic: /control/cmd
-    service_name: /control/set_mode
+    odom_topic: /pf/pose/odom
+    ackermann_topic: /ackermann_cmd
+    autonomous_on_start: false
+    pp/speed_scale: 0.3        # 실차 첫 주행은 보수적으로. 검증 후 상향
+    pp/max_speed_mps: 4.0      # hardware vehicle.max_speed와 일치
+    recovery/enable: false     # 실차 후진 복구는 실험 검증 전까지 비활성

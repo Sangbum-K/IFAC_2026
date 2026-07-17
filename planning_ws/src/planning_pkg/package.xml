@@ -9,6 +9,16 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>example_interfaces</depend>
+  <!-- raceline 추종 파이프라인 노드들 (planner_pkg에서 이식) -->
+  <depend>ae_hyu_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>ament_index_cpp</depend>
+  <!-- raceline_viz_node.py (rclpy) 런타임 의존 -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:hmcl-unist.github.io)",
+      "Read(//home/sangbum/sim_ws/src/f1tenth_gym_ros/config/**)",
+      "Read(//home/sangbum/sim_ws/install/f1tenth_gym_ros/share/f1tenth_gym_ros/config/**)"
+    ]
+  }
+}

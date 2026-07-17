@@ -11,6 +11,9 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>example_interfaces</depend>
+  <depend>nav_msgs</depend>
+  <depend>ackermann_msgs</depend>
+  <depend>ae_hyu_msgs</depend>
 
   <exec_depend>ament_index_python</exec_depend>
 
