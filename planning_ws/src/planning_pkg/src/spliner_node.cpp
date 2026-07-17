@@ -41,6 +41,20 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/use_prediction", true);
     this->declare_parameter("spliner/trailing_gap_m", 1.5);
     this->declare_parameter("spliner/trailing_decel", 3.0);
+    // 컨트롤러가 wpnt 속도에 곱하는 스케일 (sim tracker 0.5, 실차 1.0).
+    // 장애물 실측 속도를 wpnt 속도 단위로 환산할 때 필요 — 안 맞추면
+    // 동적 상대 trailing 시 상대보다 느리게 따라가 격차가 벌어진다.
+    this->declare_parameter("spliner/cmd_speed_scale", 1.0);
+    // 이중장애물 재계획 / 안전 정지 (mina Task 2)
+    this->declare_parameter("spliner/path_check_margin", 0.15);
+    this->declare_parameter("spliner/stop_margin_m", 1.0);
+    this->declare_parameter("spliner/stop_ramp_dist_m", 2.5);
+    this->declare_parameter("spliner/sector_gating", true);
+    this->declare_parameter("spliner/ot_min_clearance", 0.95);
+    this->declare_parameter("spliner/ot_sector_min_len_m", 8.0);
+    this->declare_parameter("spliner/ot_bound_mindist", 0.1);
+    this->declare_parameter("spliner/ot_speed_scale", 1.1);
+    this->declare_parameter("spliner/ot_sectors", std::vector<double>{});
 
     loop_rate_hz_ = this->get_parameter("spliner/loop_rate_hz").as_double();
     lookahead_m_ = this->get_parameter("spliner/lookahead_m").as_double();
@@ -57,6 +71,17 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     use_prediction_ = this->get_parameter("spliner/use_prediction").as_bool();
     trailing_gap_m_ = this->get_parameter("spliner/trailing_gap_m").as_double();
     trailing_decel_ = this->get_parameter("spliner/trailing_decel").as_double();
+    cmd_speed_scale_ = this->get_parameter("spliner/cmd_speed_scale").as_double();
+    path_check_margin_ = this->get_parameter("spliner/path_check_margin").as_double();
+    stop_margin_m_ = this->get_parameter("spliner/stop_margin_m").as_double();
+    stop_ramp_dist_m_ = this->get_parameter("spliner/stop_ramp_dist_m").as_double();
+    sector_gating_ = this->get_parameter("spliner/sector_gating").as_bool();
+    ot_min_clearance_ = this->get_parameter("spliner/ot_min_clearance").as_double();
+    ot_sector_min_len_m_ = this->get_parameter("spliner/ot_sector_min_len_m").as_double();
+    ot_bound_mindist_ = this->get_parameter("spliner/ot_bound_mindist").as_double();
+    ot_speed_scale_ = this->get_parameter("spliner/ot_speed_scale").as_double();
+    ot_sectors_param_ = this->get_parameter("spliner/ot_sectors").as_double_array();
+    active_bound_mindist_ = spline_bound_mindist_;
 
     RCLCPP_INFO(this->get_logger(),
         "spliner params: lookahead=%.1fm evasion_dist=%.2fm obs_traj_tresh=%.2fm",
@@ -86,6 +111,9 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         "/planner/avoidance/otwpnts", qos_profile);
     p_markers_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
         "/planner/avoidance/markers", qos_profile);
+    p_sector_markers_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+        "/planner/ot_sectors/markers",
+        rclcpp::QoS(rclcpp::KeepLast(1)).transient_local());
 
     // Timer init
     t_run_ = this->create_wall_timer(
@@ -126,8 +154,119 @@ void SplinerNode::CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::Sha
         for (const auto &w : gb_wpnts_) {
             gb_vmax_ = std::max(gb_vmax_, w.vx_mps);
         }
+        bool first = !has_gb_wpnts_;
         has_gb_wpnts_ = true;
+        if (first) {
+            ComputeOtSectors();
+            PublishSectorMarkers();
+        }
     }
+}
+
+void SplinerNode::ComputeOtSectors() {
+    ot_sectors_.clear();
+    // 수동 지정이 있으면 그대로 사용
+    if (ot_sectors_param_.size() >= 2) {
+        for (size_t i = 0; i + 1 < ot_sectors_param_.size(); i += 2) {
+            ot_sectors_.emplace_back(ot_sectors_param_[i], ot_sectors_param_[i + 1]);
+        }
+        RCLCPP_INFO(this->get_logger(), "OT sectors: %zu manual", ot_sectors_.size());
+        return;
+    }
+
+    // 자동 산출: 한쪽 벽 여유가 ot_min_clearance 이상인 연속 구간
+    // (필요 여유 = 장애물 반폭 + evasion_dist + spline_bound_mindist)
+    int n = static_cast<int>(gb_wpnts_.size());
+    std::vector<bool> feasible(n);
+    for (int i = 0; i < n; ++i) {
+        double clearance = std::max(std::abs(gb_wpnts_[i].d_left),
+                                    std::abs(gb_wpnts_[i].d_right));
+        feasible[i] = clearance >= ot_min_clearance_;
+    }
+
+    // wrap을 고려한 연속 run 추출: s=0을 걸치는 run은 시작 인덱스를 회전시켜 처리
+    int start = 0;
+    while (start < n && feasible[start]) {
+        ++start;
+    }
+    if (start == n) {
+        // 트랙 전체가 feasible -> 전 구간 섹터 하나
+        ot_sectors_.emplace_back(0.0, gb_max_s_);
+    } else {
+        int run_begin = -1;
+        for (int k = 0; k <= n; ++k) {
+            int idx = (start + k) % n;
+            bool f = (k < n) ? feasible[idx] : false;
+            if (f && run_begin < 0) {
+                run_begin = idx;
+            } else if (!f && run_begin >= 0) {
+                int run_end = (start + k - 1) % n;
+                double len = Mod((run_end - run_begin) * wpnt_dist_, gb_max_s_);
+                if (len >= ot_sector_min_len_m_) {
+                    ot_sectors_.emplace_back(gb_wpnts_[run_begin].s_m,
+                                             gb_wpnts_[run_end].s_m);
+                }
+                run_begin = -1;
+            }
+        }
+    }
+
+    double total = 0.0;
+    for (const auto &[s0, s1] : ot_sectors_) {
+        total += Mod(s1 - s0, gb_max_s_);
+    }
+    double pct = 100.0 * total / std::max(gb_max_s_, 0.1);
+    RCLCPP_INFO(this->get_logger(),
+        "OT sectors: %zu auto (%.0f%% of track, clearance>=%.2fm, min_len=%.0fm)",
+        ot_sectors_.size(), pct, ot_min_clearance_, ot_sector_min_len_m_);
+    char buf[80];
+    std::snprintf(buf, sizeof(buf), "추월 섹터 %zu개 산출 (트랙 %.0f%%)",
+                  ot_sectors_.size(), pct);
+    pitwall::Event(buf);
+}
+
+bool SplinerNode::InOtSector(double s) const {
+    for (const auto &[s0, s1] : ot_sectors_) {
+        if (s0 <= s1) {
+            if (s >= s0 && s <= s1) return true;
+        } else {
+            if (s >= s0 || s <= s1) return true;  // s=0 wrap 구간
+        }
+    }
+    return false;
+}
+
+void SplinerNode::PublishSectorMarkers() {
+    visualization_msgs::msg::MarkerArray arr;
+    visualization_msgs::msg::Marker del;
+    del.action = visualization_msgs::msg::Marker::DELETEALL;
+    arr.markers.push_back(del);
+
+    int id = 0;
+    for (const auto &[s0, s1] : ot_sectors_) {
+        visualization_msgs::msg::Marker m;
+        m.header.frame_id = "map";
+        m.header.stamp = this->now();
+        m.ns = "ot_sectors";
+        m.id = id++;
+        m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        m.scale.x = 0.25;
+        m.color.g = 1.0;
+        m.color.a = 0.35;
+        m.pose.orientation.w = 1.0;
+        double len = Mod(s1 - s0, gb_max_s_);
+        if (len <= 0.0) len = gb_max_s_;
+        for (double ds = 0.0; ds <= len; ds += 0.5) {
+            auto [x, y] = FrenetToCartesian(Mod(s0 + ds, gb_max_s_), 0.0);
+            geometry_msgs::msg::Point p;
+            p.x = x;
+            p.y = y;
+            p.z = 0.02;
+            m.points.push_back(p);
+        }
+        arr.markers.push_back(m);
+    }
+    p_sector_markers_->publish(arr);
 }
 
 void SplinerNode::Run() {
@@ -166,6 +305,7 @@ void SplinerNode::Run() {
 
     bool evasion_valid = false;
     bool used_trailing = false;
+    bool used_stop = false;
     if (!obs_copy.obstacles.empty()) {
         std::lock_guard<std::mutex> lock(mutex_gb_wpnts_);
         auto close_obs = FilterObstacles(obs_copy.obstacles);
@@ -177,9 +317,46 @@ void SplinerNode::Run() {
                     return Mod(a.s_center - cur_s_, gb_max_s_) <
                            Mod(b.s_center - cur_s_, gb_max_s_);
                 });
-            evasion_valid = DoSpline(closest, evasion_wpnts, mrks);
+            // 경로 검증은 raceline 근접 여부와 무관하게 lookahead 내 모든
+            // 장애물 대상 (mina Task 2: 회피로 옆 차선에 있는 장애물도
+            // 새 경로에 걸릴 수 있음)
+            auto all_ahead = ObstaclesInLookahead(obs_copy.obstacles);
+            double blocking_s = -1.0;
+            // 섹터 게이팅: 장애물(예측 장애물이면 따라잡는 지점)이 추월 섹터
+            // 안일 때만 회피 시도. 섹터 안은 공격 모드(경계 마진 완화 + 속도
+            // 부스트), 밖은 TRAILING으로 따라가다 섹터에서 승부한다.
+            bool in_sector = !sector_gating_ ||
+                             InOtSector(Mod(closest.s_center, gb_max_s_));
+            active_bound_mindist_ = in_sector ? ot_bound_mindist_ : spline_bound_mindist_;
+            active_speed_scale_ = in_sector ? ot_speed_scale_ : 1.0;
+            if (in_sector) {
+                if (!in_ot_sector_) {
+                    pitwall::Event("추월 섹터 — 공격 회피 시도");
+                }
+                evasion_valid = DoSpline(closest, evasion_wpnts, mrks);
+                // 이중장애물 재검증 (mina Task 2): 후보 경로가 두 번째 장애물에
+                // 막히면 반대 사이드로 재계획, 그것도 막히면 회피 포기
+                if (evasion_valid &&
+                    !CheckPathCollision(evasion_wpnts.wpnts, all_ahead,
+                                        closest.id, &blocking_s)) {
+                    std::string other = (last_ot_side_ == "left") ? "right" : "left";
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                        "Avoidance path blocked by 2nd obstacle (s=%.1f), "
+                        "replanning on %s side", blocking_s, other.c_str());
+                    pitwall::Event("2차 장애물 — 반대 사이드 재계획");
+                    evasion_wpnts.wpnts.clear();
+                    mrks.markers.clear();
+                    evasion_valid = DoSpline(closest, evasion_wpnts, mrks, other);
+                    if (evasion_valid &&
+                        !CheckPathCollision(evasion_wpnts.wpnts, all_ahead,
+                                            closest.id, &blocking_s)) {
+                        evasion_valid = false;  // 좌·우 모두 불가
+                    }
+                }
+            }
+            in_ot_sector_ = in_sector;
             if (!evasion_valid) {
-                // 회피 불가(트랙경계 abort / 사이드 스위치 거부) 폴백:
+                // 회피 불가(트랙경계 abort / 사이드 스위치 거부 / 양쪽 차단) 폴백:
                 // raceline을 유지한 채 장애물 뒤 trailing_gap에서 장애물
                 // 속도(정적이면 0)까지 감속하는 궤적 발행 — ForzaETH 상태머신의
                 // TRAILING 대응. 없으면 ego가 감속 없이 정면으로 돌진한다.
@@ -187,6 +364,21 @@ void SplinerNode::Run() {
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks);
                 used_trailing = evasion_valid;
+                // trailing 경로(d=0)마저 "다른" 장애물에 막히면 그 앞
+                // stop_margin에서 정지하는 안전 경로로 대체 (mina Task 2)
+                if (evasion_valid &&
+                    !CheckPathCollision(evasion_wpnts.wpnts, all_ahead,
+                                        closest.id, &blocking_s)) {
+                    evasion_wpnts.wpnts.clear();
+                    mrks.markers.clear();
+                    BuildStopWpnts(blocking_s, evasion_wpnts, mrks);
+                    evasion_valid = !evasion_wpnts.wpnts.empty();
+                    used_trailing = false;
+                    used_stop = evasion_valid;
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                        "Trailing path blocked by 2nd obstacle -> "
+                        "STOP wpnts before s=%.1f", blocking_s);
+                }
             }
         }
     }
@@ -194,6 +386,10 @@ void SplinerNode::Run() {
         pitwall::Event("TRAILING 폴백 (회피 불가 — 감속 추종)");
     }
     trailing_active_ = used_trailing;
+    if (used_stop && !stop_active_) {
+        pitwall::Event("이중 장애물 — 안전 정지");
+    }
+    stop_active_ = used_stop;
 
     if (!evasion_valid) {
         evasion_wpnts.wpnts.clear();
@@ -248,7 +444,7 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
     // 트랙 좌/우 빈 공간과 회피에 필요한 최소 공간 비교
     double left_gap = std::abs(gb_wpnts_[gb_idx].d_left - obs.d_left);
     double right_gap = std::abs(gb_wpnts_[gb_idx].d_right + obs.d_right);
-    double min_space = evasion_dist_ + spline_bound_mindist_;
+    double min_space = evasion_dist_ + active_bound_mindist_;
 
     if (right_gap > min_space && left_gap < min_space) {
         // 오른쪽 회피인데 apex가 raceline 왼쪽이면 0으로 클램프
@@ -271,7 +467,8 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
 bool SplinerNode::DoSpline(
     const ae_hyu_msgs::msg::Obstacle &closest_obs,
     ae_hyu_msgs::msg::WpntArray &out_wpnts,
-    visualization_msgs::msg::MarkerArray &out_mrks) {
+    visualization_msgs::msg::MarkerArray &out_mrks,
+    const std::string &forced_side) {
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
 
@@ -293,8 +490,19 @@ bool SplinerNode::DoSpline(
 
     auto [more_space, d_apex] = MoreSpace(closest_obs, apex_idx);
 
-    // raceline에서 벗어나 있으면 사이드 스위치 금지 (ForzaETH danger_flag)
-    if (std::abs(cur_d_) > side_switch_d_tresh_ &&
+    // 이중장애물 재계획에서 반대 사이드가 강제되면 apex를 해당 사이드로 재계산
+    if (!forced_side.empty() && forced_side != more_space) {
+        more_space = forced_side;
+        d_apex = (forced_side == "left")
+            ? std::max(closest_obs.d_left + evasion_dist_, 0.0)
+            : std::min(closest_obs.d_right - evasion_dist_, 0.0);
+    }
+
+    // raceline에서 벗어나 있으면 사이드 스위치 금지 (ForzaETH danger_flag).
+    // 단, 강제 재계획(forced_side)은 기존 경로가 이미 차단된 상황이므로 예외 —
+    // 이때는 아래 ego-anchor 절점이 현재 d에서 연속적으로 이어준다.
+    if (forced_side.empty() &&
+        std::abs(cur_d_) > side_switch_d_tresh_ &&
         !last_ot_side_.empty() && more_space != last_ot_side_) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "Can't switch OT side (%s -> %s): not on raceline (d=%.2f)",
@@ -323,14 +531,35 @@ bool SplinerNode::DoSpline(
         knot_d.push_back(dst == 0.0 ? d_apex : 0.0);
     }
 
+    // path jump 방지 (mina Task 2): 차량이 이미 스플라인 구간 안에 있으면
+    // (회피 중 재계획) 차량 뒤쪽 절점을 버리고 현재 위치 (cur_s, cur_d)를
+    // 첫 절점으로 삼아 새 경로가 차량 현재 상태에서 연속적으로 시작하게 한다.
+    {
+        double cur_unwrapped = s_apex - Mod(s_apex - cur_s_, gb_max_s_);
+        if (cur_unwrapped > knot_s.front() &&
+            cur_unwrapped < s_apex - wpnt_dist_) {
+            size_t keep = 0;
+            while (keep < knot_s.size() && knot_s[keep] <= cur_unwrapped + wpnt_dist_) {
+                ++keep;
+            }
+            knot_s.erase(knot_s.begin(), knot_s.begin() + keep);
+            knot_d.erase(knot_d.begin(), knot_d.begin() + keep);
+            knot_s.insert(knot_s.begin(), cur_unwrapped);
+            knot_d.insert(knot_d.begin(), cur_d_);
+        }
+    }
+
     // d(s) 자연 3차 스플라인을 0.1m 간격으로 샘플
     std::vector<double> evasion_s;
     for (double s = knot_s.front(); s < knot_s.back(); s += spline_resolution_) {
         evasion_s.push_back(s);
     }
     std::vector<double> evasion_d = NaturalCubicSpline(knot_s, knot_d, evasion_s);
+    // 클램프 범위에 첫 절점 d(ego-anchor 시 cur_d)를 포함해 시작점 연속성 유지
+    double d_lo = std::min({0.0, d_apex, knot_d.front()});
+    double d_hi = std::max({0.0, d_apex, knot_d.front()});
     for (auto &d : evasion_d) {
-        d = (d_apex < 0.0) ? std::clamp(d, d_apex, 0.0) : std::clamp(d, 0.0, d_apex);
+        d = std::clamp(d, d_lo, d_hi);
     }
 
     // 궤적 생성 + 트랙 경계 안전 검사
@@ -344,7 +573,7 @@ bool SplinerNode::DoSpline(
         if (std::abs(evasion_d[i]) > spline_resolution_) {
             double tb_dist = (more_space == "left") ?
                 gb_wpnts_[gb_idx].d_left : gb_wpnts_[gb_idx].d_right;
-            if (std::abs(evasion_d[i]) > std::abs(tb_dist) - spline_bound_mindist_) {
+            if (std::abs(evasion_d[i]) > std::abs(tb_dist) - active_bound_mindist_) {
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                     "Evasion trajectory too close to TRACKBOUNDS, aborting evasion");
                 pitwall::Event("회피 포기(트랙경계)");
@@ -366,9 +595,10 @@ bool SplinerNode::DoSpline(
         wpnt.d_right = gb_wpnts_[gb_idx].d_right + evasion_d[i];
         wpnt.psi_rad = gb_wpnts_[gb_idx].psi_rad;  // 아래에서 실제 헤딩으로 갱신
         wpnt.kappa_radpm = gb_wpnts_[gb_idx].kappa_radpm;
-        // 코너 안쪽 통과 시 감속
+        // 코너 안쪽 통과 시 감속 + 추월 섹터 내 공격 부스트 (raceline 최고속 캡)
         wpnt.vx_mps = (outside == more_space) ?
             gb_wpnts_[gb_idx].vx_mps : gb_wpnts_[gb_idx].vx_mps * inside_speed_scale_;
+        wpnt.vx_mps = std::min(wpnt.vx_mps * active_speed_scale_, gb_vmax_);
         wpnt.ax_mps2 = gb_wpnts_[gb_idx].ax_mps2;
         out_wpnts.wpnts.push_back(wpnt);
     }
@@ -404,8 +634,9 @@ bool SplinerNode::BuildTrailing(
     if (gb_size < 2) {
         return false;
     }
-    // 목표 속도: 동적(또는 예측) 장애물이면 그 진행 속도, 정적이면 0
-    double v_target = std::max(obs.vs, 0.0);
+    // 목표 속도: 동적(또는 예측) 장애물이면 그 진행 속도, 정적이면 0.
+    // 실측 속도(m/s)를 wpnt 속도 단위로 환산 (컨트롤러가 다시 scale을 곱함)
+    double v_target = std::max(obs.vs, 0.0) / std::max(cmd_speed_scale_, 0.05);
 
     // 정지 목표점: 장애물 앞 가장자리에서 trailing_gap 만큼 뒤
     double span = Mod(obs.s_start - trailing_gap_m_ - cur_s_, gb_max_s_);
@@ -437,6 +668,89 @@ bool SplinerNode::BuildTrailing(
         "Trailing fallback: obs s=%.1f gap=%.1fm v_target=%.1f (%zu wpnts)",
         obs.s_center, span, v_target, out_wpnts.wpnts.size());
     return true;
+}
+
+std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::ObstaclesInLookahead(
+    const std::vector<ae_hyu_msgs::msg::Obstacle> &obstacles) const {
+    std::vector<ae_hyu_msgs::msg::Obstacle> out;
+    for (const auto &raw : obstacles) {
+        auto obs = PredictObstacleMovement(raw);
+        // 장애물 몸통 일부라도 lookahead 안이면 검증 대상
+        if (Mod(obs.s_start - cur_s_, gb_max_s_) < lookahead_m_ ||
+            Mod(obs.s_end - cur_s_, gb_max_s_) < lookahead_m_) {
+            out.push_back(obs);
+        }
+    }
+    return out;
+}
+
+bool SplinerNode::CheckPathCollision(
+    const std::vector<ae_hyu_msgs::msg::Wpnt> &path,
+    const std::vector<ae_hyu_msgs::msg::Obstacle> &obstacles,
+    int32_t exclude_id, double *blocking_s) const {
+    // 경로 각 점의 (s, d)가 어떤 장애물의 확장 (s,d) 박스 안이면 충돌.
+    // 횡방향은 path_check_margin만큼 확장 (차폭/오차 여유).
+    // exclude_id 장애물은 제외 — 회피 스플라인은 그 옆을, trailing은 그
+    // 뒤(속도 프로파일로 정지)를 의도적으로 지나므로 기하 검사 대상이 아니다.
+    for (const auto &obs : obstacles) {
+        if (obs.id == exclude_id) continue;
+        double span = Mod(obs.s_end - obs.s_start, gb_max_s_);
+        for (const auto &wp : path) {
+            // 차량 뒤쪽/lookahead 밖 경로 점은 검사 대상 아님
+            if (Mod(wp.s_m - cur_s_, gb_max_s_) > lookahead_m_) continue;
+            double off = Mod(wp.s_m - obs.s_start, gb_max_s_);
+            if (off > span) continue;  // s 구간 밖
+            if (wp.d_m > obs.d_right - path_check_margin_ &&
+                wp.d_m < obs.d_left + path_check_margin_) {
+                if (blocking_s) {
+                    *blocking_s = Mod(obs.s_start, gb_max_s_);
+                }
+                return false;  // 충돌
+            }
+        }
+    }
+    return true;  // 충돌 없음
+}
+
+void SplinerNode::BuildStopWpnts(
+    double blocking_s, ae_hyu_msgs::msg::WpntArray &out_wpnts,
+    visualization_msgs::msg::MarkerArray &out_mrks) {
+    // 최후 폴백: raceline을 따라가되 차단 지점 앞 stop_margin_m에서 vx=0.
+    // 감속은 trailing_decel 물리 한계(sqrt)와 정지점 앞 stop_ramp 선형 램프 중
+    // 낮은 쪽 — 원거리에선 물리적으로 제때 감속을 시작하고(관통 방지),
+    // 근거리에선 선형으로 부드럽게 0에 붙는다.
+    int gb_size = static_cast<int>(gb_wpnts_.size());
+    if (gb_size < 2) {
+        return;
+    }
+    double dist_to_block = Mod(blocking_s - cur_s_, gb_max_s_);
+    double stop_dist = std::max(dist_to_block - stop_margin_m_, 0.0);
+
+    // 정지점 뒤로도 vx=0 구간을 연장 — 컨트롤러 lookahead가 궤적 밖의 원본
+    // raceline 속도(전속)를 집어 재가속하는 것을 방지 (BuildTrailing과 동일)
+    const double extend = 5.0;
+    int n = std::max(static_cast<int>((stop_dist + extend) / wpnt_dist_), 2);
+    out_wpnts.wpnts.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        double s = Mod(cur_s_ + i * wpnt_dist_, gb_max_s_);
+        int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
+        ae_hyu_msgs::msg::Wpnt w = gb_wpnts_[gi];
+        w.id = i;
+        w.d_m = 0.0;
+        double remain = std::max(stop_dist - i * wpnt_dist_, 0.0);
+        double v_phys = std::sqrt(2.0 * trailing_decel_ * remain);
+        double v_ramp = (remain < stop_ramp_dist_m_)
+            ? w.vx_mps * (remain / std::max(stop_ramp_dist_m_, 0.01))
+            : w.vx_mps;
+        w.vx_mps = std::min({w.vx_mps, v_phys, v_ramp});
+        w.ax_mps2 = 0.0;
+        out_wpnts.wpnts.push_back(w);
+        out_mrks.markers.push_back(MakeWpntMarker(w.x_m, w.y_m, w.vx_mps, i));
+    }
+
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+        "Stop fallback: blocking s=%.1f stop_dist=%.1fm (%zu wpnts)",
+        blocking_s, stop_dist, out_wpnts.wpnts.size());
 }
 
 std::pair<double, double> SplinerNode::FrenetToCartesian(double s, double d) const {

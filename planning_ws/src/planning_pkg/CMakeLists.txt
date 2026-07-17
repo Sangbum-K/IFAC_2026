@@ -53,6 +53,13 @@ ament_target_dependencies(spliner_node
   rclcpp nav_msgs visualization_msgs ae_hyu_msgs
 )
 
+# 벽 충돌/진행불능(stuck) 판정·복구 감독 (mina Task 4).
+# /planner/recovery/{state,target_speed} — 실차 control_node가 소비
+add_executable(recovery_supervisor_node src/recovery_supervisor_node.cpp)
+ament_target_dependencies(recovery_supervisor_node
+  rclcpp nav_msgs std_msgs visualization_msgs ae_hyu_msgs
+)
+
 # waypoints/centerline RViz 마커
 add_executable(planner_visualizer_node src/planner_visualizer_node.cpp)
 ament_target_dependencies(planner_visualizer_node
@@ -65,6 +72,7 @@ install(TARGETS
   frenet_frame_node
   local_trajectory_node
   spliner_node
+  recovery_supervisor_node
   planner_visualizer_node
   DESTINATION lib/${PROJECT_NAME}
 )

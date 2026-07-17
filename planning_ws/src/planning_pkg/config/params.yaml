@@ -12,9 +12,10 @@ planning:
 # ---------------------------------------------------------------------------
 global_trajectory_node:
   ros__parameters:
-    global_trajectory/trajectory_csv_file: Spielberg_map_iqp_max7.00ms_margin0.15m_mu0.85.csv
+    # v-max 15: 마찰/가속 한계가 프로파일을 결정 (v7은 트랙 91%가 캡에 붙어 비현실적)
+    global_trajectory/trajectory_csv_file: Spielberg_map_iqp_max15.00ms_margin0.15m_mu0.85.csv
     # SP 추월 라인 -> /global_waypoints/overtaking (H2H lane-change용, 없으면 미발행)
-    global_trajectory/overtaking_csv_file: Spielberg_map_sp_max7.00ms_margin0.15m_mu0.85.csv
+    global_trajectory/overtaking_csv_file: Spielberg_map_sp_max15.00ms_margin0.15m_mu0.85.csv
     global_trajectory/publish_rate_hz: 2.0
     global_trajectory/velocity_scale: 1.0   # 주행 중 ros2 param set으로 0.5~1.4 조정 가능
 
@@ -34,7 +35,9 @@ local_trajectory_node:
 spliner_node:
   ros__parameters:
     spliner/loop_rate_hz: 20.0
-    spliner/lookahead_m: 10.0            # 이 거리 안 전방 장애물만 회피
+    spliner/lookahead_m: 15.0            # 이 거리 안 전방 장애물만 회피/감속
+                                         # gym 제동은 속도비례(정지거리 ~ v/1.0s)라 v15 raceline
+                                         # 접근속도(~7.5m/s 실속)에선 10m로는 못 멈추고 관통한다
     spliner/evasion_dist: 0.65           # 장애물 가장자리 - apex 횡간격 [m]
                                          # 주의: 이 raceline(safe-dist 0.5)은 한쪽 벽 여유가 대개 ~1.05m라
                                          # 0.7 이상이면 트랙경계 abort로 회피가 무산된다 (0.65 = 실질 최대)
@@ -52,6 +55,55 @@ spliner_node:
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속 — 정면 돌진 방지
     spliner/trailing_gap_m: 1.5
     spliner/trailing_decel: 3.0
+    # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.5, 실차 1.0).
+    # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
+    spliner/cmd_speed_scale: 0.5
+    # 추월 섹터: 벽 여유가 충분한 s 구간을 자동 산출해 그 안에서만 회피 시도.
+    # 밖에서는 TRAILING으로 따라가다 섹터에서 공격 모드(마진 완화+속도 부스트)로 승부.
+    # RViz /planner/ot_sectors/markers (초록 라인)로 섹터 확인 가능.
+    spliner/sector_gating: true
+    spliner/ot_min_clearance: 0.95       # 섹터 판정 최소 벽 여유 [m] = 장애물반폭(0.2)+evasion_dist+ot_bound_mindist
+                                         # Spielberg(safe-dist 0.5) 기준 86% 커버, Budapest는 100%
+    spliner/ot_sector_min_len_m: 8.0     # 이보다 짧은 구간은 섹터에서 제외 (스플라인 길이 확보)
+    # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
+                                         # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
+    spliner/ot_bound_mindist: 0.1        # 섹터 내 공격 모드: 트랙 경계 마진 완화 [m]
+    spliner/ot_speed_scale: 1.1          # 섹터 내 회피 궤적 속도 부스트 (raceline vmax 캡)
+    # 이중장애물 재계획 (mina Task 2): 회피 후보 경로를 lookahead 내 모든
+    # 장애물과 충돌검사 -> 막히면 반대 사이드 재계획 -> 좌·우 모두 막히면
+    # TRAILING, trailing 경로마저 다른 장애물에 막히면 그 앞에서 안전 정지.
+    spliner/path_check_margin: 0.15      # 경로-장애물 충돌 판정 횡 여유 [m]
+    spliner/stop_margin_m: 1.0           # 정지 폴백 시 차단 지점 앞 여유 [m]
+    spliner/stop_ramp_dist_m: 2.5        # 정지점 앞 최종 선형 감속 구간 [m]
+
+# 벽 충돌/진행불능(stuck) 판정·복구 감독 (mina Task 4).
+# Planning은 판정+요청만: /planner/recovery/state (String),
+# /planner/recovery/target_speed (Float64; DRIVING=NaN, 정지=0.0, 후진=음수).
+# 실행(최종 속도·조향, 후진 하드리밋, E-stop)은 control_node 책임.
+# STOP은 래치 — /planner/recovery/reset (Bool true)로만 해제.
+# 주: sim의 waypoint_tracker는 이 토픽을 소비하지 않고 자체 후진 복구를 씀
+#     (tracker/stuck_* 참조) — sim에서 이 노드는 판정 모니터로만 동작.
+recovery_supervisor_node:
+  ros__parameters:
+    recovery/loop_rate_hz: 20.0
+    recovery/stuck_timeout_sec: 1.0            # 전진 명령인데 이 시간 무진행 -> stuck
+    recovery/stuck_min_progress_m: 0.10        # stuck 판정 최소 s 진행량 [m]
+    recovery/min_forward_cmd_mps: 0.2          # 이 이상이 "전진 명령"으로 간주 [m/s]
+    recovery/boundary_stop_margin_m: 0.05      # 경계 여유가 이보다 작으면 COLLISION_STOP
+                                               # 주의: v15 raceline은 코너 벽 여유가 ~0.3m라
+                                               # 0.15면 정상 주행도 걸림. 섹터 공격 모드
+                                               # (ot_bound_mindist 0.1)보다 반드시 작아야 함
+    recovery/boundary_persist_sec: 0.2         # 위반이 이 시간 지속돼야 정지 (코너 스파이크 오탐 방지)
+    recovery/rear_check_dist_m: 1.5            # 후진 전 후방 안전 확인 거리 [m]
+    recovery/recovery_reverse_speed_mps: 0.5   # 제한 후진 속도 (Control이 재리밋)
+    recovery/recovery_max_reverse_distance_m: 0.5
+    recovery/recovery_timeout_sec: 4.0
+    recovery/recovery_max_attempts: 2
+    recovery/align_tolerance_rad: 0.35         # 재정렬 완료 heading 오차 [rad]
+    recovery/align_speed_mps: 0.5              # 재정렬/재출발 저속 [m/s]
+    recovery/odom_timeout_sec: 0.5             # odom 두절 -> STOP
+    recovery/perception_timeout_sec: 0.5       # perception 두절 -> STOP
+    recovery/pose_odom_topic: /pf/pose/odom    # yaw 소스 (sim launch가 /ego_racecar/odom로 override)
 
 # --- 시뮬레이션 전용 (sim_race.launch.py) ---
 waypoint_tracker_node:

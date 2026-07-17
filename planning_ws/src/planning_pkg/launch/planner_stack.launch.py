@@ -36,15 +36,24 @@ def launch_setup(context, *args, **kwargs):
         'frenet_frame_node': {},
         'local_trajectory_node': {},
         'spliner_node': {},
+        'recovery_supervisor_node': {},
         'planner_visualizer_node': {},
     }
     traj_csv = LaunchConfiguration('trajectory_csv_file').perform(context)
     if traj_csv:
         overrides['global_trajectory_node'][
             'global_trajectory/trajectory_csv_file'] = traj_csv
+    ot_csv = LaunchConfiguration('overtaking_csv_file').perform(context)
+    if ot_csv:
+        overrides['global_trajectory_node'][
+            'global_trajectory/overtaking_csv_file'] = ot_csv
     odom_mode = LaunchConfiguration('odom_mode').perform(context)
     if odom_mode:
         overrides['frenet_frame_node']['frenet_frame/odom_mode'] = odom_mode
+    pose_topic = LaunchConfiguration('pose_odom_topic').perform(context)
+    if pose_topic:
+        overrides['recovery_supervisor_node'][
+            'recovery/pose_odom_topic'] = pose_topic
     center_csv = LaunchConfiguration('centerline_csv_file').perform(context)
     if center_csv:
         overrides['planner_visualizer_node'][
@@ -67,6 +76,7 @@ def launch_setup(context, *args, **kwargs):
         make_node('frenet_frame_node'),
         make_node('local_trajectory_node'),
         make_node('spliner_node'),
+        make_node('recovery_supervisor_node'),
         make_node('planner_visualizer_node'),
     ]
 
@@ -75,9 +85,14 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('trajectory_csv_file', default_value='',
                               description='raceline CSV 파일명 (config/global_trajectory/)'),
+        DeclareLaunchArgument('overtaking_csv_file', default_value='',
+                              description='SP 추월 라인 CSV 파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('odom_mode', default_value='',
                               description='sim_gt | sim_pf | real'),
         DeclareLaunchArgument('centerline_csv_file', default_value='',
                               description='centerline CSV 파일명 (config/centerline/)'),
+        DeclareLaunchArgument('pose_odom_topic', default_value='',
+                              description='recovery yaw 소스 odom 토픽 '
+                                          '(실차 /pf/pose/odom, sim /ego_racecar/odom)'),
         OpaqueFunction(function=launch_setup),
     ])

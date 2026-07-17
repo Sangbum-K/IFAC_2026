@@ -24,7 +24,7 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 | `config/params.yaml`, `config/environments/*` | ROS 파라미터 (env 스위치) | 4개 노드 섹션 추가됨 |
 | `config/global_trajectory/*.csv` | IQP raceline (런타임 입력) | 생성됨 |
 | `config/centerline/*.csv` | centerline + wall boundary | 생성됨 |
-| `maps/` | 개발용 트랙 맵 (대회 맵은 교체) | Spielberg |
+| `maps/` | 개발용 트랙 맵 (대회 맵은 교체) | Spielberg, Budapest |
 | `scripts/global_traj_sim/` | **오프라인 개발 도구** (.venv Python) | 완성·검증됨 |
 | `scripts/sim/` | 시뮬 전용 노드 3개 (tracker/obstacle/opponent) | 완성·검증됨 |
 | `scripts/tuner/`, `scripts/lib/` | 레이스라인 튜너, pitwall 텔레메트리 | 완성 |
@@ -55,15 +55,27 @@ unicorn 튜토리얼(basic-simulator-usage)의 `race.launch sim:=true`에 대응
 `~/sim_ws`의 f1tenth_gym_ros(ROS2) 시뮬레이터에 이 planning 스택을 연결했다.
 
 ```bash
-source /opt/ros/humble/setup.bash
+
 source ~/sim_ws/install/setup.bash                  # f1tenth_gym_ros (필수)
 source ~/IFAC_ws/planning_ws/install/setup.bash
-ros2 launch planning_pkg sim_race.launch.py         # rviz:=false로 headless
+ros2 launch planning_pkg sim_race.launch.py                    # Spielberg (기본)
+ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
 ```
 
-구성: gym 시뮬(Spielberg 맵, **2-agent** — ego + 물리 상대 차량) + planner
+구성: gym 시뮬(**2-agent** — ego + 물리 상대 차량) + planner
 스택 + pure pursuit 트래커 + Pitwall 시뮬 노드들 + RViz. 상대 차량은 시작
-시 맵 구석 '주차장'(레이스라인에서 ~49 m, ego LiDAR 사거리 밖)에 있다.
+시 맵 구석 '주차장'(레이스라인에서 30 m+, ego LiDAR 사거리 밖)에 있다.
+
+**맵 전환/추가** (`map:=` 인자): 맵별 raceline CSV·centerline·시작 포즈(CSV
+첫 행에서 자동)·주차 위치를 launch가 알아서 맞춘다. 새 맵 추가는
+`maps/<맵>_map.{png,yaml}` 넣고 → `step4_main.py --map <맵>_map --raceline iqp
+--safe-dist 0.5 --v-max 15` → launch의 `PARK_POSES`에 주차 좌표 한 줄 →
+colcon build. f1tenth_racetracks(github.com/f1tenth/f1tenth_racetracks)의
+맵을 그대로 쓸 수 있다 (Budapest가 그 예).
+
+**속도 프로파일**: raceline은 `--v-max 15`로 생성 — v7 시절엔 트랙 91%가
+캡에 붙어 속도가 일정했지만, 지금은 마찰(mu 0.85)·가속 한계가 프로파일을
+결정해 구간별로 3.7~15 m/s(시뮬 실속 1.9~7.5)로 변한다.
 
 RViz에서 (unicorn pitwall-panel-usage 튜토리얼과 동일):
 
@@ -92,17 +104,41 @@ virtual_obstacle_node에 내장):
   전체 체인을 시뮬에서 검증. (상대 차량은 실제 gym 에이전트라 `/scan`에 이미
   물리적으로 찍힌다.)
 
-검증(headless 26/26 PASS): 2-agent에서 ego 3.5 m/s 주행, 장애물 회피,
-상대 스폰 → GP 예측(4 s) → 추월(10 s, 최소 이격 0.65 m·접촉 없음), FTG 주행,
-LiDAR 토글, Remove/Clear, Manual/Autonomous 전환, 텔레메트리 수신.
-좁은 구간(좌우 여유 < 1 m) 장애물은 TRAILING 폴백으로 3 m 앞 정지 확인.
+검증(headless): Spielberg 7/7 · Budapest 5/5 PASS — 섹터 마커 발행(13개/5개),
+속도 변화(실속 1.9~7.5 m/s), 비섹터 장애물 TRAILING 정지(3.0 m 앞, 관통 없음),
+제거 후 재가속, 상대 스폰 → 섹터 추월(최소 이격 0.51 m / 0.45 m).
+테스트: `test/sim/run_sector_test.sh [맵]` (시뮬을 직접 띄우고 검사 —
+주의: 러너 호출 명령줄에 "planning_pkg" 문자열이 있으면 cleanup pkill이
+자기 셸을 죽인다. 경로로만 실행할 것).
+
+### 추월 섹터 (sector gating)
+
+"대부분의 상황에서 추월 못 하고 뒤만 따라가는" 문제의 해결책. spliner가
+raceline CSV의 좌우 벽 여유에서 **추월 가능 섹터를 자동 산출**하고
+(`clearance >= ot_min_clearance`, `ot_sector_min_len_m` 이상 연속 구간),
+
+- **섹터 안**: 공격 모드로 회피 시도 — 트랙 경계 마진 완화
+  (`ot_bound_mindist` 0.1, 평소 0.2) + 회피 궤적 속도 부스트
+  (`ot_speed_scale` 1.1, raceline vmax 캡)
+- **섹터 밖**: 회피 자체를 시도하지 않고 **TRAILING**으로 따라붙어
+  다음 섹터에서 승부
+
+RViz의 초록 반투명 라인(`/planner/ot_sectors/markers`)이 섹터다.
+`spliner/sector_gating: false`로 끄면 이전 동작(전 구간 시도),
+`spliner/ot_sectors: [s0,s1, ...]`로 수동 지정도 가능 (빈 리스트는 금지 —
+rclcpp 타입 오류로 노드가 죽는다). 섹터 진입/산출은 pitwall 이벤트로 찍힌다.
 
 > `spliner/evasion_dist`는 0.65가 이 raceline(safe-dist 0.5)의 실질 최대다.
 > 0.7 이상이면 한쪽 벽 여유(~1.05 m)를 넘어 트랙경계 abort로 회피가 무산된다.
-> 회피가 불가능한 구간에서는 spliner가 **TRAILING 폴백**을 발행한다: raceline을
-> 유지한 채 장애물 뒤 `trailing_gap_m`(1.5 m)에서 장애물 속도(정적이면 0)까지
-> `trailing_decel`(3 m/s²)로 감속 — 정면 돌진/관통 방지 (ForzaETH 상태머신의
-> TRAILING 대응, 실차에서도 동일하게 동작).
+> TRAILING 폴백: raceline을 유지한 채 장애물 뒤 `trailing_gap_m`(1.5 m)에서
+> 장애물 속도(정적이면 0)까지 `trailing_decel`(3 m/s²)로 감속 — 정면
+> 돌진/관통 방지 (ForzaETH 상태머신의 TRAILING 대응, 실차에서도 동일).
+>
+> **주의 (시뮬↔실차 스케일)**: `spliner/cmd_speed_scale`은 컨트롤러의 wpnt
+> 속도 스케일(`tracker/speed_scale`)과 반드시 일치해야 한다 (sim 0.5, 실차
+> 1.0). 불일치하면 동적 상대 trailing에서 상대보다 느리게 명령돼 격차가
+> 벌어진다 (시뮬 실측: 8 m 표류). `spliner/lookahead_m`도 접근 속도에 맞출
+> 것 — gym 제동은 속도비례라 실속 7.5 m/s에선 10 m 감지로는 못 멈춘다 (15 m로 상향).
 
 ## Pitwall (텔레메트리 + RViz 패널)
 
@@ -198,6 +234,41 @@ ForzaETH `unicorn-racing-stack-main/planner/spliner`(ROS1 Python)의 C++ ROS2
 
 원본 대비 추가된 안전장치: perception 두절 시 유령 장애물을 계속 피하지
 않도록 `obs_timeout_sec`(spliner) / `avoidance_timeout_sec`(local) 타임아웃.
+
+### 이중장애물 재계획 + 안전 정지 (mina Task 2 병합)
+
+회피 후보 경로를 **lookahead 내 모든 장애물**(raceline 근접 여부 무관)과
+(s,d) 박스 충돌검사(`path_check_margin` 횡 여유)한다. 폴백 사다리:
+
+1. 1차 후보(MoreSpace 사이드)가 다른 장애물에 막히면 → **반대 사이드 재계획**
+   (`DoSpline(forced_side)`; 이때 사이드 스위치 금지 예외 + 차량 현재
+   (cur_s, cur_d)를 첫 절점으로 쓰는 ego-anchor로 path jump 방지)
+2. 좌·우 모두 막히면 → TRAILING (장애물 뒤 감속 추종)
+3. trailing 경로(d=0)마저 **다른** 장애물에 막히면 → 차단 지점 앞
+   `stop_margin_m`에서 vx=0 **안전 정지 경로** (`BuildStopWpnts`,
+   감속은 `trailing_decel` 물리 한계와 `stop_ramp_dist_m` 선형 램프 중 낮은 쪽)
+
+충돌검사에서 회피/추종 대상 장애물 자신은 id로 제외한다 (스플라인은 그
+옆을, trailing은 그 뒤를 의도적으로 지나므로).
+
+### 복구 감독 (recovery_supervisor_node, mina Task 4 병합)
+
+벽 충돌/진행불능(stuck) 판정 상태머신. Planning은 판정+요청만 하고 실행은
+control_node 책임: `/planner/recovery/state`(String),
+`/planner/recovery/target_speed`(Float64; DRIVING=NaN, 정지=0.0, 후진=음수).
+STOP은 래치 — `/planner/recovery/reset`(Bool true)로만 해제.
+E-stop(`/safety/emergency_stop`)과 odom/perception 두절은 항상 최우선 STOP.
+
+- **sim에서는 판정 모니터로만 동작** (waypoint_tracker는 자체 후진 복구 사용,
+  이 토픽을 소비하지 않음). yaw 소스는 launch가 `/ego_racecar/odom`으로 override.
+- 경계 위반은 `boundary_persist_sec`(0.2s) 이상 지속돼야 COLLISION_STOP —
+  코너 순간 스파이크(벽 여유 ~0.3m + 추적오차 ~0.2m) 오탐 방지 (통합 시 추가).
+- **주의**: `boundary_stop_margin_m`은 반드시 섹터 공격 모드의
+  `ot_bound_mindist`(0.1)보다 작아야 한다. 크면 공격 추월 중 정상 주행이
+  COLLISION_STOP으로 판정된다 (sim 검증값 0.05; real_car.yaml의 0.20은
+  TODO로 팀 논의 필요).
+- 실차 보수 파라미터: `config/environments/real_car.yaml`
+  (params.yaml 다음 순서로 로드; **cmd_speed_scale 1.0 포함** — 필수).
 
 ### Predictive Spliner (동적 상대 추월, arXiv:2410.04868)
 

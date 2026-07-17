@@ -1,10 +1,17 @@
 """RViz 시뮬레이션 데모 launch (unicorn 튜토리얼의 race.launch sim:=true 대응).
 
-f1tenth_gym_ros 시뮬레이터(Spielberg 맵, 2-agent) + planning 스택 +
-pure pursuit 컨트롤러 + Pitwall 시뮬 노드들 + RViz를 한 번에 실행한다.
+f1tenth_gym_ros 시뮬레이터(2-agent) + planning 스택 + pure pursuit 컨트롤러 +
+Pitwall 시뮬 노드들 + RViz를 한 번에 실행한다.
 
-  ros2 launch planning_pkg sim_race.launch.py
+  ros2 launch planning_pkg sim_race.launch.py                    # Spielberg (기본)
+  ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
   ros2 launch planning_pkg sim_race.launch.py rviz:=false
+
+맵 추가 방법: maps/에 <맵>_map.{png,yaml}을 넣고
+scripts/global_traj_sim/step4_main.py --map <맵>_map --raceline iqp \
+    --safe-dist 0.5 --v-max 15 로 raceline을 생성한 뒤 colcon build.
+시작 포즈는 raceline CSV 첫 행에서 자동으로 읽고, 상대 주차 위치만
+아래 PARK_POSES에 추가하면 된다 (레이스라인에서 30m 이상 떨어진 맵 구석).
 
 상대 차량은 실제 gym 2번째 에이전트(자체 LiDAR/물리 포함)로, 시작 시
 맵 구석 '주차장'에 있다 (ego LiDAR 사거리 밖 = 없는 것과 동일).
@@ -14,6 +21,7 @@ RViz 사용법 (unicorn 튜토리얼과 동일):
     (같은 장애물 근처를 다시 클릭하면 제거, 패널 버튼으로 전체 삭제)
   - "2D Goal Pose" -> 상대 차량을 그 위치로 텔레포트 = 스폰
   - "2D Pose Estimate" -> ego 위치 재배치 (gym_bridge 지원)
+  - 초록 반투명 라인 = 추월 섹터 (/planner/ot_sectors/markers)
   - Pitwall 패널 (Panels > PitwallPanel): STATE 배너 / 이벤트 로그 /
     ego Autonomous·Manual / 상대 모드·속도±·제거 / 장애물 Clear /
     LiDAR 토글 / Perception 주입 모드
@@ -26,33 +34,65 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 
+# raceline 생성 파라미터와 일치해야 하는 CSV 파일명 접미사
+RACELINE_SUFFIX = 'max15.00ms_margin0.15m_mu0.85'
 
-def generate_launch_description():
+# 상대 차량 '주차장' (제거 시 이동 위치): 레이스라인에서 30m+ 떨어진 맵 구석
+PARK_POSES = {
+    'Spielberg_map': (-79.81, -31.26),
+    'Budapest_map': (-56.0, 103.0),
+}
+
+
+def _read_start_pose(csv_path):
+    """raceline CSV 첫 행에서 ego 시작 포즈 (x, y, psi)를 읽는다."""
+    with open(csv_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            cols = [float(c) for c in line.split(';')]
+            return cols[1], cols[2], cols[5]
+    raise RuntimeError(f'raceline CSV가 비어 있음: {csv_path}')
+
+
+def launch_setup(context, *args, **kwargs):
     planning_share = get_package_share_directory('planning_pkg')
     gym_share = get_package_share_directory('f1tenth_gym_ros')
 
     params_file = os.path.join(planning_share, 'config', 'params.yaml')
     gym_config = os.path.join(gym_share, 'config', 'sim.yaml')
-    map_stem = os.path.join(planning_share, 'maps', 'Spielberg_map')
 
-    # gym 기본 설정 위에 Spielberg 맵과 시작 포즈를 덮어쓴다.
-    # 상대(agent 2)는 주차장(레이스라인에서 ~49m, ego LiDAR 밖)에서 시작 —
+    map_name = LaunchConfiguration('map').perform(context)
+    map_stem = os.path.join(planning_share, 'maps', map_name)
+    if not os.path.exists(map_stem + '.yaml'):
+        raise RuntimeError(f'맵 없음: {map_stem}.yaml (maps/ 에 추가 필요)')
+
+    traj_csv = f'{map_name}_iqp_{RACELINE_SUFFIX}.csv'
+    ot_csv = f'{map_name}_sp_{RACELINE_SUFFIX}.csv'
+    center_csv = f'{map_name}_centerline.csv'
+    traj_csv_path = os.path.join(planning_share, 'config', 'global_trajectory', traj_csv)
+    sx, sy, stheta = _read_start_pose(traj_csv_path)
+    park_x, park_y = PARK_POSES[map_name]
+
+    # gym 기본 설정 위에 맵과 시작 포즈를 덮어쓴다.
+    # 상대(agent 2)는 주차장(레이스라인에서 30m+, ego LiDAR 밖)에서 시작 —
     # RViz "2D Goal Pose"로 트랙에 텔레포트하면 스폰된다.
     gym_overrides = {
         'map_path': map_stem,
         'map_img_ext': '.png',
         'num_agent': 2,
-        'sx': 0.15,       # raceline 시작점 (config/global_trajectory CSV 첫 행)
-        'sy': -0.688,
-        'stheta': 0.262,
-        'sx1': -79.81,    # 주차장 (opponent_driver_node opponent/park_* 와 일치)
-        'sy1': -31.26,
+        'sx': sx,
+        'sy': sy,
+        'stheta': stheta,
+        'sx1': park_x,
+        'sy1': park_y,
         'stheta1': 0.0,
     }
 
@@ -99,7 +139,14 @@ def generate_launch_description():
     planner_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(planning_share, 'launch', 'planner_stack.launch.py')),
-        launch_arguments={'odom_mode': 'sim_gt'}.items(),
+        launch_arguments={
+            'odom_mode': 'sim_gt',
+            'trajectory_csv_file': traj_csv,
+            'overtaking_csv_file': ot_csv,
+            'centerline_csv_file': center_csv,
+            # recovery yaw 소스: sim은 pf가 없으므로 gym GT odom 사용
+            'pose_odom_topic': '/ego_racecar/odom',
+        }.items(),
     )
 
     # tracker:=false 로 끄면 control_ws의 C++ control_node로 대체 가능:
@@ -126,7 +173,8 @@ def generate_launch_description():
         package='planning_pkg',
         executable='opponent_driver_node.py',
         name='opponent_driver_node',
-        parameters=[params_file],
+        parameters=[params_file,
+                    {'opponent/park_x': park_x, 'opponent/park_y': park_y}],
         output='screen',
     )
     # 레이스라인 튜너 (tuner:=true 로 시뮬과 함께 실행 — 같은 RViz에서
@@ -137,7 +185,7 @@ def generate_launch_description():
         name='raceline_tuner_node',
         parameters=[{'tuner/raceline_csv': os.path.expanduser(
             '~/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory/'
-            'Spielberg_map_iqp_max7.00ms_margin0.15m_mu0.85.csv')}],
+            + traj_csv)}],
         output='screen',
         condition=IfCondition(LaunchConfiguration('tuner')),
     )
@@ -157,13 +205,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
-    return LaunchDescription([
-        DeclareLaunchArgument('rviz', default_value='true',
-                              description='RViz 실행 여부'),
-        DeclareLaunchArgument('tracker', default_value='true',
-                              description='Python 트래커 실행 여부 (false면 C++ control_node 사용)'),
-        DeclareLaunchArgument('tuner', default_value='false',
-                              description='레이스라인 튜너 함께 실행 (같은 RViz에서 편집)'),
+    return [
         bridge_node,
         map_server_node,
         nav_lifecycle_node,
@@ -176,4 +218,19 @@ def generate_launch_description():
         opponent_driver_node,
         opponent_predictor_node,
         rviz_node,
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument('map', default_value='Spielberg_map',
+                              description='맵 이름 (maps/<이름>.yaml, ' +
+                                          ', '.join(PARK_POSES)),
+        DeclareLaunchArgument('rviz', default_value='true',
+                              description='RViz 실행 여부'),
+        DeclareLaunchArgument('tracker', default_value='true',
+                              description='Python 트래커 실행 여부 (false면 C++ control_node 사용)'),
+        DeclareLaunchArgument('tuner', default_value='false',
+                              description='레이스라인 튜너 함께 실행 (같은 RViz에서 편집)'),
+        OpaqueFunction(function=launch_setup),
     ])

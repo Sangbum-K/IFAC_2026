@@ -1,6 +1,37 @@
+# --- 실차 보수값 (params.yaml 기본값 override, mina 제공) ---
+# 사용: planner_stack 노드 parameters에 params.yaml 다음 순서로 추가 로드.
 planning:
   ros__parameters:
     planning_horizon: 5.0
     input_topic: /perception/objects
     output_topic: /planning/plan
     service_name: /planning/compute_plan
+
+spliner_node:
+  ros__parameters:
+    spliner/lookahead_m: 8.0
+    spliner/evasion_dist: 0.75          # 실차: 횡 여유 확대
+                                        # 주의: 비섹터 bound 0.2와 합이 0.95 — 벽 여유
+                                        # ~1.05m 구간에선 abort 잦음. 섹터(0.1)에선 여유 있음
+    spliner/inside_speed_scale: 0.7     # 회피 구간 감속 강화
+    spliner/path_check_margin: 0.20
+    spliner/stop_margin_m: 1.2
+    spliner/stop_ramp_dist_m: 3.0
+    # 실차 컨트롤러는 wpnt 속도를 그대로 사용 -> 반드시 1.0 (sim은 0.5).
+    # 틀리면 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
+    spliner/cmd_speed_scale: 1.0
+
+recovery_supervisor_node:
+  ros__parameters:
+    recovery/stuck_timeout_sec: 1.5
+    # TODO(팀 논의): 0.20은 섹터 공격 모드(ot_bound_mindist 0.1)와 상충 —
+    # 공격 추월 중 정상적으로 벽 여유 0.1까지 접근하므로 그대로면 추월 중
+    # COLLISION_STOP이 걸린다. sim 검증값(0.05)처럼 ot_bound_mindist보다
+    # 작게 두거나, 회피 중 boundary 판정을 완화하는 로직이 필요.
+    recovery/boundary_stop_margin_m: 0.20
+    recovery/rear_check_dist_m: 2.0
+    recovery/recovery_reverse_speed_mps: 0.4
+    recovery/recovery_max_reverse_distance_m: 0.4
+    recovery/recovery_max_attempts: 1   # 실차: 자동 복구 1회만
+    recovery/align_speed_mps: 0.4
+    recovery/pose_odom_topic: /pf/pose/odom

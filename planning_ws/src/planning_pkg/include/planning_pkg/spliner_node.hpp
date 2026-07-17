@@ -43,8 +43,30 @@ private:
   // 반환: {side("left"/"right"), d_apex}
   std::pair<std::string, double> MoreSpace(
     const ae_hyu_msgs::msg::Obstacle & obs, int gb_idx) const;
+  // forced_side: ""이면 MoreSpace가 결정, "left"/"right"면 해당 사이드 강제
+  // (이중장애물 재계획 시 사용)
   bool DoSpline(
     const ae_hyu_msgs::msg::Obstacle & closest_obs,
+    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks,
+    const std::string & forced_side = "");
+
+  // --- 이중장애물 재계획 / 안전 정지 (mina Task 2 병합) ---
+  // 후보 경로를 lookahead 내 "모든" 장애물과 (s,d) 충돌 검사.
+  // exclude_id: 회피/추종 대상 장애물 자신은 제외 (경로가 의도적으로
+  // 그 주변/뒤를 지나므로). 반환 true=충돌 없음, false=충돌(blocking_s에
+  // 막은 장애물의 s_start).
+  bool CheckPathCollision(
+    const std::vector<ae_hyu_msgs::msg::Wpnt> & path,
+    const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles,
+    int32_t exclude_id, double * blocking_s) const;
+  // lookahead 내 전체 장애물 (raceline 근접 여부 무관 — 경로 검증용)
+  std::vector<ae_hyu_msgs::msg::Obstacle> ObstaclesInLookahead(
+    const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles) const;
+  // 좌·우 회피와 trailing까지 모두 막혔을 때: 차단 지점 앞 stop_margin에서
+  // vx=0이 되는 정지 경로 생성 (최후 폴백)
+  void BuildStopWpnts(
+    double blocking_s,
     ae_hyu_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
@@ -54,6 +76,13 @@ private:
     const ae_hyu_msgs::msg::Obstacle & closest_obs,
     ae_hyu_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
+
+  // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하는 s 구간을
+  // raceline에서 자동 산출. 섹터 안에서만 회피를 시도하고(밖은 TRAILING 대기)
+  // 섹터 안에서는 경계 마진 완화 + 속도 부스트로 공격적으로 추월한다.
+  void ComputeOtSectors();
+  bool InOtSector(double s) const;
+  void PublishSectorMarkers();
 
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
@@ -83,7 +112,26 @@ private:
   bool use_prediction_{true};   // Predictive Spliner: 예측 장애물이 원시 관측을 대체
   double trailing_gap_m_{1.5};
   double trailing_decel_{3.0};
+  double cmd_speed_scale_{1.0};
   bool trailing_active_{false};
+  // 이중장애물 재계획 파라미터 (mina Task 2)
+  double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
+  double stop_margin_m_{1.0};        // 정지 폴백 시 차단 지점 앞 안전거리 [m]
+  double stop_ramp_dist_m_{2.5};     // 정지점 앞 최종 선형 감속 구간 길이 [m]
+  bool stop_active_{false};
+
+  // 추월 섹터 파라미터
+  bool sector_gating_{true};
+  double ot_min_clearance_{0.95};
+  double ot_sector_min_len_m_{8.0};
+  double ot_bound_mindist_{0.1};
+  double ot_speed_scale_{1.1};
+  std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
+  std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
+  bool in_ot_sector_{false};
+  // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
+  double active_bound_mindist_{0.2};
+  double active_speed_scale_{1.0};
 
   // State
   ae_hyu_msgs::msg::ObstacleArray obstacles_;
@@ -111,6 +159,7 @@ private:
   rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
   rclcpp::Publisher<ae_hyu_msgs::msg::WpntArray>::SharedPtr p_evasion_wpnts_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_markers_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_sector_markers_;
   rclcpp::TimerBase::SharedPtr t_run_;
 };
 
