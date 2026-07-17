@@ -1,0 +1,10 @@
+<library path="pitwall_panel">
+  <class name="pitwall_panel/PitwallPanel"
+         type="pitwall_panel::PitwallPanel"
+         base_class_type="rviz_common::Panel">
+    <description>
+      F1TENTH Pitwall 패널: STATE 배너, 이벤트 로그, ego/상대 제어,
+      장애물 관리, LiDAR 토글, perception 주입 모드.
+    </description>
+  </class>
+</library>

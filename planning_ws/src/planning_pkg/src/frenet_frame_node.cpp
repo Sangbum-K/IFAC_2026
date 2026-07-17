@@ -1,10 +1,13 @@
 #include "planning_pkg/frenet_frame_node.hpp"
 
+#include "planning_pkg/pitwall.hpp"
+
 FrenetFrameNode::FrenetFrameNode(const std::string &node_name, const rclcpp::NodeOptions &options)
     : Node(node_name, options) {
-    
+
     // QoS init - Use RELIABLE QoS to match simulator's /ego_racecar/odom
     auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    pitwall::Init(this);
     
     // Parameters - declare and get values
     this->declare_parameter("frenet_frame/loop_rate_hz", 40.0);
@@ -150,6 +153,7 @@ void FrenetFrameNode::ProcessFrenetConversion(const nav_msgs::msg::Odometry& odo
     
     // Publish Frenet coordinates with velocities
     PublishFrenetOdometry(odom_copy.header.stamp, frenet_coords, vs, vd);
+    pitwall::Log("lat_err", frenet_coords.d);
 }
 
 int FrenetFrameNode::FindClosestWaypoint(double vehicle_x, double vehicle_y, 
@@ -220,6 +224,7 @@ int FrenetFrameNode::FindClosestWaypoint(double vehicle_x, double vehicle_y,
         }
         RCLCPP_WARN(this->get_logger(),
             "Pose jump detected, global re-search -> closest index %d", closest_index);
+        pitwall::Event("pose jump — 전체 재탐색");
     }
 
     // Save for next search

@@ -59,24 +59,83 @@ source ~/IFAC_ws/planning_ws/install/setup.bash
 ros2 launch planning_pkg sim_race.launch.py         # rviz:=false로 headless
 ```
 
-구성: gym 시뮬(Spielberg 맵, raceline 시작점 스폰) + planner 스택 + pure
-pursuit 트래커 + 가상 장애물 노드 + RViz. RViz에서:
+구성: gym 시뮬(Spielberg 맵, **2-agent** — ego + 물리 상대 차량) + planner
+스택 + pure pursuit 트래커 + Pitwall 시뮬 노드들 + RViz. 상대 차량은 시작
+시 맵 구석 '주차장'(레이스라인에서 ~49 m, ego LiDAR 사거리 밖)에 있다.
+
+RViz에서 (unicorn pitwall-panel-usage 튜토리얼과 동일):
 
 - **Publish Point**로 트랙 위 클릭 → 정적 장애물 생성 → spliner가 회피
-  (빨간 실린더 = 장애물, 보라 실린더 = 회피 스플라인)
-- 장애물 근처(0.5 m)를 **다시 클릭 → 제거**
-- **2D Pose Estimate** → 차량 위치 재배치 (frenet/local 노드에 pose-jump
+  (빨간 실린더 = 장애물, 보라 실린더 = 회피 스플라인). 근처(0.5 m) 재클릭
+  → 제거, 패널의 **Clear static obstacles** → 전체 삭제
+- **2D Goal Pose** → 상대 차량을 그 위치로 텔레포트 = **스폰**.
+  패널의 **Remove opponent** → 주차장으로 복귀 = 제거
+- **2D Pose Estimate** → ego 위치 재배치 (frenet/local 노드에 pose-jump
   전체 재탐색 폴백이 있어 어디로 옮겨도 즉시 재추종한다)
+- **PitwallPanel** (Panels 메뉴에서 추가 가능, 기본 표시): 아래 Pitwall 절
 
 시뮬 전용 노드 (`scripts/sim/`, 실차에선 팀 노드로 대체):
 
 | 노드 | 역할 |
 |---|---|
-| `waypoint_tracker_node.py` | `/local_waypoints` pure pursuit → `/drive`. **speed_scale 0.5 기본** — 순정 pure pursuit는 raceline 최고속(7 m/s)에서 스핀아웃하므로 절반 속도로 데모 (0.5에서 횡편차 ±6 cm 검증). **벽 충돌 복구 내장**: gym은 충돌 시 차를 정지시키므로, 전진 명령 중 0.6 s 이상 정지하면 스턱으로 판정하고 경로 방향으로 기수가 돌아가게 후진(1.2 m/s, 최대 3 s) 후 감속 재개한다. control 팀 컨트롤러로 대체 예정. |
-| `virtual_obstacle_node.py` | `/clicked_point` → Frenet 변환 → `/perception/obstacles` 10 Hz 상시 발행 (튜토리얼의 virtual_perception 역할). perception 팀 노드로 대체 예정. |
+| `waypoint_tracker_node.py` | `/local_waypoints` pure pursuit → `/drive`. **speed_scale 0.5 기본** (7 m/s 전속은 스핀아웃, 0.5에서 횡편차 ±6 cm 검증). **벽 충돌 복구 내장** (스턱 감지 → 후진 → 재개). **ego 모드 먹스**: `/sim/ego_mode`("autonomous"/"manual") 또는 `/joy` LB=manual·RB=autonomous. manual이면 정지 1회 발행 후 침묵 → gym kb_teleop(`/cmd_vel`)이 조종. control 팀 컨트롤러로 대체 예정. |
+| `virtual_obstacle_node.py` | `/clicked_point` → Frenet 변환 → `/perception/obstacles` 10 Hz 상시 발행. `/sim/clear_obstacles`로 전체 삭제. perception 주입 모드 게이팅(아래). perception 팀 노드로 대체 예정. |
+| `opponent_driver_node.py` | gym 2번째 차량 조종. 모드 `/sim/opp_mode`: **path**(레이스라인 pure pursuit, 기본) / **ftg**(`/opp_scan` follow-the-gap) / **manual**(`/opp_cmd_vel` Twist — `teleop_twist_keyboard --ros-args -r cmd_vel:=/opp_cmd_vel`). `/sim/opp_speed_delta`(±0.5 m/s 상한 조절), `/sim/remove_opponent`(주차), `/sim/opp_lidar_enable`(false면 FTG 정지). ground-truth 관측을 `/perception/opponent`로 발행 (tracking_merge 모드일 때). |
+| `scan_overlay_node.py` | Perception Injection **lidar_overlay** 모드에서 가상 장애물의 합성 반사점을 `/scan`에 삽입해 `/scan_overlay` 발행 (perception 파이프라인 검증용). 상대 차량은 실제 gym 에이전트라 `/scan`에 이미 물리적으로 찍힌다. |
 
-검증(headless): 3.5 m/s로 d ±6 cm 추종, 전방 8 m 클릭 장애물에 대해
-|d|=0.67 m로 회피 통과 후 raceline 복귀, 재클릭 제거 확인.
+Perception Injection (`/sim/perception_mode`, 패널 콤보박스):
+- **tracking_merge** (기본): ground-truth 장애물/상대를 `/perception/obstacles`로
+  직접 주입 — 플래너 단독 검증 (지금까지의 동작).
+- **lidar_overlay**: GT 주입 중단, `/scan_overlay`만 발행 — perception 팀
+  파이프라인이 생기면 탐지→추적→플래너 전체 체인을 시뮬에서 검증.
+
+검증(headless 26/26 PASS): 2-agent에서 ego 3.5 m/s 주행, 장애물 회피,
+상대 스폰 → GP 예측(4 s) → 추월(10 s, 최소 이격 0.65 m·접촉 없음), FTG 주행,
+LiDAR 토글, Remove/Clear, Manual/Autonomous 전환, 텔레메트리 수신.
+
+> `spliner/evasion_dist`는 0.65가 이 raceline(safe-dist 0.5)의 실질 최대다.
+> 0.7 이상이면 한쪽 벽 여유(~1.05 m)를 넘어 트랙경계 abort로 회피가 무산된다.
+
+## Pitwall (텔레메트리 + RViz 패널)
+
+unicorn의 pitwall-telemetry / pitwall-panel-usage 대응.
+
+**텔레메트리** — 토픽 정의 없이 내부 변수를 한 줄로 노출:
+
+```python
+import pitwall                       # scripts/lib/pitwall.py (노드와 같은 폴더에 설치됨)
+pitwall.init(self)                   # __init__ 1회
+pitwall.log("cmd_speed", v)          # -> /pitwall/cmd_speed (Float32)
+pitwall.event("벽 충돌 감지")          # -> /pitwall/events (String)
+```
+
+```cpp
+#include "planning_pkg/pitwall.hpp"  // header-only, control_ws에서도 사용 가능
+pitwall::Init(this); pitwall::Log("lat_err", d); pitwall::Event("...");
+```
+
+init을 안 하면 전부 조용히 no-op — 계측이 주행 코드를 죽이지 않는다.
+현재 계측: tracker(cmd_speed/cmd_steer/lookahead, 스턱·복구 이벤트),
+frenet(lat_err, pose-jump), local(spliced_wpnts), spliner(evasion_d_apex,
+회피 포기·사이드 스위치 거부), predictor(opp_gap/pred_catch_s, GP·예측 이벤트).
+
+```bash
+ros2 run rqt_plot rqt_plot /pitwall/lat_err/data /pitwall/cmd_speed/data
+ros2 topic echo /pitwall/events
+ros2 bag record -s mcap -e '/pitwall/.*' -o pitwall_$(date +%m%d)
+```
+
+**패널** (`pitwall_panel` 패키지, rviz_common::Panel 플러그인):
+STATE 배너(GB_TRACK 초록 / TRAILING 노랑 / OVERTAKE 보라 / RECOVERY 빨강 /
+MANUAL 회색 — H2H 상태머신 전까지 otwpnts·예측·이벤트에서 유도),
+이벤트 로그(200줄), ego Autonomous/Manual 버튼, 상대 모드 콤보(path/ftg/manual)·
+속도 ±0.5·Remove, Clear static obstacles, ego/상대 LiDAR 체크박스,
+Perception 주입 콤보. `sim_race.rviz`에 기본 포함.
+
+패널 ↔ 노드 토픽 계약: `/sim/ego_mode`, `/sim/ego_status`, `/sim/opp_mode`,
+`/sim/opp_status`, `/sim/opp_speed_delta`(Float32), `/sim/remove_opponent`(Empty),
+`/sim/clear_obstacles`(Empty), `/sim/ego_lidar_enable`·`/sim/opp_lidar_enable`(Bool),
+`/sim/perception_mode`(String).
 
 ## 두 개의 층으로 나뉜다
 

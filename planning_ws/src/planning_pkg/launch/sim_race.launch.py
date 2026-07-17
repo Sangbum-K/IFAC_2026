@@ -1,15 +1,22 @@
 """RViz 시뮬레이션 데모 launch (unicorn 튜토리얼의 race.launch sim:=true 대응).
 
-f1tenth_gym_ros 시뮬레이터(Spielberg 맵) + planning 스택 + pure pursuit
-컨트롤러 + 가상 장애물 노드 + RViz를 한 번에 실행한다.
+f1tenth_gym_ros 시뮬레이터(Spielberg 맵, 2-agent) + planning 스택 +
+pure pursuit 컨트롤러 + Pitwall 시뮬 노드들 + RViz를 한 번에 실행한다.
 
   ros2 launch planning_pkg sim_race.launch.py
   ros2 launch planning_pkg sim_race.launch.py rviz:=false
 
+상대 차량은 실제 gym 2번째 에이전트(자체 LiDAR/물리 포함)로, 시작 시
+맵 구석 '주차장'에 있다 (ego LiDAR 사거리 밖 = 없는 것과 동일).
+
 RViz 사용법 (unicorn 튜토리얼과 동일):
   - "Publish Point"로 트랙 위 클릭 -> 정적 장애물 생성 -> spliner가 회피
-  - 같은 장애물 근처를 다시 클릭 -> 장애물 제거
-  - "2D Pose Estimate" -> 차량 위치 재배치 (gym_bridge 지원)
+    (같은 장애물 근처를 다시 클릭하면 제거, 패널 버튼으로 전체 삭제)
+  - "2D Goal Pose" -> 상대 차량을 그 위치로 텔레포트 = 스폰
+  - "2D Pose Estimate" -> ego 위치 재배치 (gym_bridge 지원)
+  - Pitwall 패널 (Panels > PitwallPanel): STATE 배너 / 이벤트 로그 /
+    ego Autonomous·Manual / 상대 모드·속도±·제거 / 장애물 Clear /
+    LiDAR 토글 / Perception 주입 모드
 
 전제: ~/sim_ws 에 f1tenth_gym_ros가 빌드돼 있어야 한다.
   source ~/sim_ws/install/setup.bash 후 planning_ws setup.bash를 source.
@@ -34,14 +41,19 @@ def generate_launch_description():
     gym_config = os.path.join(gym_share, 'config', 'sim.yaml')
     map_stem = os.path.join(planning_share, 'maps', 'Spielberg_map')
 
-    # gym 기본 설정 위에 Spielberg 맵과 raceline 시작 포즈만 덮어쓴다
+    # gym 기본 설정 위에 Spielberg 맵과 시작 포즈를 덮어쓴다.
+    # 상대(agent 2)는 주차장(레이스라인에서 ~49m, ego LiDAR 밖)에서 시작 —
+    # RViz "2D Goal Pose"로 트랙에 텔레포트하면 스폰된다.
     gym_overrides = {
         'map_path': map_stem,
         'map_img_ext': '.png',
-        'num_agent': 1,
+        'num_agent': 2,
         'sx': 0.15,       # raceline 시작점 (config/global_trajectory CSV 첫 행)
         'sy': -0.688,
         'stheta': 0.262,
+        'sx1': -79.81,    # 주차장 (opponent_driver_node opponent/park_* 와 일치)
+        'sy1': -31.26,
+        'stheta1': 0.0,
     }
 
     bridge_node = Node(
@@ -75,6 +87,14 @@ def generate_launch_description():
             ['xacro ', os.path.join(gym_share, 'launch', 'ego_racecar.xacro')])}],
         remappings=[('/robot_description', 'ego_robot_description')],
     )
+    opp_robot_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='opp_robot_state_publisher',
+        parameters=[{'robot_description': Command(
+            ['xacro ', os.path.join(gym_share, 'launch', 'opp_racecar.xacro')])}],
+        remappings=[('/robot_description', 'opp_robot_description')],
+    )
 
     planner_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -101,11 +121,19 @@ def generate_launch_description():
         parameters=[params_file],
         output='screen',
     )
-    # 가상 동적 상대 (2D Goal Pose로 스폰) + Predictive Spliner 예측기
-    virtual_opponent_node = Node(
+    # 상대 차량 드라이버 (gym agent 2: Path/FTG/Manual) + Predictive Spliner 예측기
+    opponent_driver_node = Node(
         package='planning_pkg',
-        executable='virtual_opponent_node.py',
-        name='virtual_opponent_node',
+        executable='opponent_driver_node.py',
+        name='opponent_driver_node',
+        parameters=[params_file],
+        output='screen',
+    )
+    # Perception Injection: lidar_overlay 모드에서 /scan + 가상 장애물 -> /scan_overlay
+    scan_overlay_node = Node(
+        package='planning_pkg',
+        executable='scan_overlay_node.py',
+        name='scan_overlay_node',
         parameters=[params_file],
         output='screen',
     )
@@ -134,10 +162,12 @@ def generate_launch_description():
         map_server_node,
         nav_lifecycle_node,
         ego_robot_publisher,
+        opp_robot_publisher,
         planner_stack,
         tracker_node,
         virtual_obstacle_node,
-        virtual_opponent_node,
+        opponent_driver_node,
+        scan_overlay_node,
         opponent_predictor_node,
         rviz_node,
     ])

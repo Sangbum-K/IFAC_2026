@@ -36,6 +36,8 @@ spliner_node:
     spliner/loop_rate_hz: 20.0
     spliner/lookahead_m: 10.0            # 이 거리 안 전방 장애물만 회피
     spliner/evasion_dist: 0.65           # 장애물 가장자리 - apex 횡간격 [m]
+                                         # 주의: 이 raceline(safe-dist 0.5)은 한쪽 벽 여유가 대개 ~1.05m라
+                                         # 0.7 이상이면 트랙경계 abort로 회피가 무산된다 (0.65 = 실질 최대)
     spliner/obs_traj_tresh: 0.3          # raceline에서 이 이내 장애물만 대상 [m]
     spliner/spline_bound_mindist: 0.2    # 회피 궤적 - 트랙 경계 최소 간격 [m]
     spliner/pre_apex_dists: [-4.0, -3.0, -1.5]   # apex 앞 스플라인 절점 [m]
@@ -71,15 +73,27 @@ virtual_obstacle_node:
     virtual_obstacle/obstacle_size_m: 0.3
     virtual_obstacle/remove_radius_m: 0.5   # 이 반경 내 재클릭 시 장애물 제거
 
-# 가상 동적 상대 (RViz 2D Goal Pose로 스폰/제거 토글)
-virtual_opponent_node:
+# 상대 차량 드라이버 (gym 2번째 에이전트, RViz 2D Goal Pose로 스폰)
+opponent_driver_node:
   ros__parameters:
-    opponent/speed_scale: 0.3        # raceline 속도 대비 (tracker 0.5보다 느리게 -> 추월 성립)
-    opponent/d_offset_m: 0.0         # 상대 주행 라인의 횡 오프셋
+    opponent/mode: path              # path | ftg | manual (패널/토픽으로 런타임 변경)
+    opponent/max_speed_mps: 2.0      # 패널 ±0.5 버튼으로 조절되는 공통 상한
+    opponent/speed_scale: 0.3        # path 모드: raceline 속도 대비 (tracker 0.5보다 느리게)
     opponent/size_m: 0.4
-    opponent/update_rate_hz: 20.0
-    opponent/autostart: false        # true면 spawn_s에서 자동 스폰
-    opponent/spawn_s: 15.0
+    opponent/drive_rate_hz: 40.0
+    opponent/wheelbase_m: 0.33
+    opponent/max_steer_rad: 0.4
+    opponent/park_x: -79.81          # '제거' 시 주차 위치 (launch sx1/sy1과 일치)
+    opponent/park_y: -31.26
+    opponent/park_radius_m: 5.0
+    opponent/ftg_max_range_m: 8.0    # FTG: 스캔 클리핑 거리
+    opponent/ftg_bubble_m: 0.4       # FTG: 최근접점 safety bubble 반경
+    opponent/ftg_gap_min_m: 1.5      # FTG: 통과 가능 갭 최소 거리
+
+# Perception Injection (lidar_overlay 모드에서만 /scan_overlay 발행)
+scan_overlay_node:
+  ros__parameters:
+    scan_overlay/laser_offset_m: 0.275   # base_link -> laser 전방 오프셋
 
 # Predictive Spliner 상대 예측 (arXiv:2410.04868)
 opponent_predictor_node:

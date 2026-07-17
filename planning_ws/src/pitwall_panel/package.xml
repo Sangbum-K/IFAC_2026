@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>pitwall_panel</name>
+  <version>0.1.0</version>
+  <description>
+    RViz 도킹 패널 (unicorn/HMCL Pitwall Panel 대응): 주행 STATE 배너,
+    이벤트 로그, ego/상대 제어, 장애물 관리, LiDAR 토글, perception 주입 모드.
+  </description>
+  <maintainer email="sangbumm0123@gmail.com">Sangbum-K</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rviz_common</depend>
+  <depend>pluginlib</depend>
+  <depend>std_msgs</depend>
+  <depend>ae_hyu_msgs</depend>
+  <depend>qtbase5-dev</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

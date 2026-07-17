@@ -4,6 +4,30 @@
 > [Pitwall Telemetry](https://hmcl-unist.github.io/unicorn-racing/posts/pitwall-telemetry/)
 > 작성: planning 팀, 2026-07-17
 
+## ✅ 2026-07-17 완료 — 튜토리얼 전체 기능 구현 (원래 범위 초과 달성)
+
+Phase 1(T1.1~T1.4)과 Phase 2(T2.1~T2.6) 전부 + "오늘 범위 제외"였던
+항목까지 구현·검증 완료 (헤드리스 통합 테스트 26/26 PASS):
+
+- 상대를 **gym 2-agent 실차량**으로 전환 (자체 LiDAR/물리) — 2D Goal Pose가
+  gym 텔레포트로 동작, '제거'는 맵 구석 주차장으로 이동
+- 상대 주행 모드 **Path / FTG(실제 /opp_scan follow-the-gap) / Manual**
+  (`teleop_twist_keyboard --ros-args -r cmd_vel:=/opp_cmd_vel`)
+- **ego Joy/Keyboard**: /sim/ego_mode + /joy LB=manual·RB=autonomous,
+  manual 시 트래커 침묵 → gym kb_teleop이 조종
+- **LiDAR 토글**: /sim/ego_lidar_enable(오버레이 게이트), /sim/opp_lidar_enable
+  (off면 FTG 정지)
+- **Perception Injection**: tracking_merge(GT 직접 주입, 기본) ↔
+  lidar_overlay(/scan_overlay에 합성점 삽입, GT 주입 중단)
+- 신규 토픽 계약은 planning_pkg/README.md "Pitwall" 절 참고
+- 튜닝 노트: `spliner/evasion_dist`는 0.65가 이 raceline의 실질 최대
+  (0.7↑는 트랙경계 abort로 회피 무산 — 물리 상대 관통 사고의 원인이었음)
+
+남은 것 (다음 이터레이션): H2H 상태머신(BehaviorState) → STATE 배너 정식
+연동, perception 팀 파이프라인이 /scan_overlay를 소비하는 E2E 검증.
+
+---
+
 ## 무엇을 만드는가
 
 1. **Pitwall 텔레메트리** — 코드 내부 변수를 토픽 정의 없이 한 줄로 노출하는

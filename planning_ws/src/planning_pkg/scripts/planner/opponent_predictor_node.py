@@ -25,6 +25,8 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from ae_hyu_msgs.msg import Obstacle, ObstacleArray, WpntArray
 
+import pitwall
+
 
 class GP1D:
     """s -> y 1차원 GP 회귀 (RBF 커널). 트랙 s 경계는 데이터 wrap 증강으로 처리."""
@@ -68,6 +70,7 @@ class GP1D:
 class OpponentPredictorNode(Node):
     def __init__(self):
         super().__init__('opponent_predictor_node')
+        pitwall.init(self)
 
         self.declare_parameter('predictor/min_samples', 40)      # GP 학습 최소 관측 수
         self.declare_parameter('predictor/sample_min_ds', 0.15)  # 관측 간 최소 s 간격 [m]
@@ -154,8 +157,11 @@ class OpponentPredictorNode(Node):
         gpd.fit(b['S'], b['D'])
         gpv = GP1D(self.gp_ls, sigma_f=2.0, sigma_n=0.2, track_len=self.track_len)
         gpv.fit(b['S'], b['V'])
+        first_fit = oid not in self.gp_d
         self.gp_d[oid] = gpd
         self.gp_v[oid] = gpv
+        if first_fit:
+            pitwall.event(f'GP 학습 완료 (opp {oid}, {len(b["S"])} 관측)')
         self.get_logger().info(
             f'GP 재학습: opp {oid}, {len(b["S"])} 관측 '
             f'(트랙 커버 {len(b["S"])*self.sample_min_ds/self.track_len*100:.0f}%+)',
@@ -176,12 +182,21 @@ class OpponentPredictorNode(Node):
 
         if self.gb is not None:
             for oid, b in self.buf.items():
+                if b['last_s'] is not None:
+                    pitwall.log('opp_gap',
+                                (b['last_s'] - self.ego_s) % self.track_len)
                 if oid not in self.gp_v or b['last_s'] is None:
                     continue
                 pred = self._predict_catch(oid, b)
                 if pred is not None:
                     arr.obstacles.append(pred)
                     self._make_markers(mrks, oid, pred)
+                    pitwall.log('pred_catch_s', pred.s_center)
+
+        pred_active = len(arr.obstacles) > 0
+        if pred_active and not getattr(self, '_pred_was_active', False):
+            pitwall.event(f'예측 발동: 충돌구간 s={arr.obstacles[0].s_center:.1f}')
+        self._pred_was_active = pred_active
 
         self.pub_pred.publish(arr)
         self.pub_mrk.publish(mrks)

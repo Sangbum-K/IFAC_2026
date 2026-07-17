@@ -1,5 +1,7 @@
 #include "planning_pkg/local_trajectory_node.hpp"
 
+#include "planning_pkg/pitwall.hpp"
+
 namespace {
 // 음수 안전 modulo (트랙 s 좌표 wrap-around 용)
 double Mod(double a, double m) {
@@ -13,6 +15,7 @@ LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rcl
 
     // QoS init - Use RELIABLE QoS to match frenet_frame_node
     auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    pitwall::Init(this);
 
     // Parameters - declare and get values
     this->declare_parameter("local_trajectory/loop_rate_hz", 40.0);
@@ -234,6 +237,7 @@ void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<ae_hyu_msgs::m
             (global_waypoints_copy.back().s_m - global_waypoints_copy[trajectory_size - 2].s_m);
         SpliceAvoidanceWaypoints(local_waypoints.wpnts, avoidance_copy, track_length);
     }
+    pitwall::Log("spliced_wpnts", static_cast<double>(avoidance_copy.size()));
 
     // Publish local waypoints
     p_local_waypoints_->publish(local_waypoints);

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <limits>
 
+#include "planning_pkg/pitwall.hpp"
+
 namespace {
 // 음수 안전 modulo (트랙 s 좌표 wrap-around 용)
 double Mod(double a, double m) {
@@ -21,6 +23,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     : Node(node_name, options) {
 
     auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    pitwall::Init(this);
 
     // Parameters - declare and get values
     this->declare_parameter("spliner/loop_rate_hz", 20.0);
@@ -277,6 +280,7 @@ bool SplinerNode::DoSpline(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "Can't switch OT side (%s -> %s): not on raceline (d=%.2f)",
             last_ot_side_.c_str(), more_space.c_str(), cur_d_);
+        pitwall::Event("사이드 스위치 거부 (" + last_ot_side_ + " -> " + more_space + ")");
         return false;
     }
 
@@ -324,6 +328,7 @@ bool SplinerNode::DoSpline(
             if (std::abs(evasion_d[i]) > std::abs(tb_dist) - spline_bound_mindist_) {
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                     "Evasion trajectory too close to TRACKBOUNDS, aborting evasion");
+                pitwall::Event("회피 포기(트랙경계)");
                 out_wpnts.wpnts.clear();
                 return false;
             }
@@ -367,6 +372,7 @@ bool SplinerNode::DoSpline(
     RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
         "Evasion spline: side=%s d_apex=%.2f s_apex=%.1f (%zu wpnts)",
         more_space.c_str(), d_apex, Mod(s_apex, gb_max_s_), out_wpnts.wpnts.size());
+    pitwall::Log("evasion_d_apex", d_apex);
     return true;
 }
 
