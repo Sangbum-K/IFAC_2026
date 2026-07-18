@@ -89,12 +89,26 @@ private:
     ae_hyu_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
-  // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하는 s 구간을
-  // raceline에서 자동 산출. 섹터 안에서만 회피를 시도하고(밖은 TRAILING 대기)
-  // 섹터 안에서는 경계 마진 완화 + 속도 부스트로 공격적으로 추월한다.
+  // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
+  // 아닌(|kappa| <= ot_max_kappa) s 구간을 raceline에서 자동 산출.
+  // 섹터 안에서만 회피를 시도하고(밖은 TRAILING 대기) 섹터 안에서는 경계
+  // 마진 완화 + 속도 부스트로 공격적으로 추월한다. 코너를 제외하는 이유:
+  // 코너 아웃라인 추월은 경로가 길어져 페이스 우위가 상쇄된다 — 코너에선
+  // 바짝 붙고 직선에서 속도 차로 제치는 것이 정석.
   void ComputeOtSectors();
   bool InOtSector(double s) const;
   void PublishSectorMarkers();
+
+  // SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋
+  // 스플라인 대신 SP 라인으로 갈아타 통과 구간을 지나고 복귀한다 —
+  // 코너 진입 인사이드 찌르기 등 레이싱다운 추월 기하가 나온다.
+  void CallbackSpWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
+  void BuildSpMapping();   // SP 라인을 IQP frenet (d_sp(s), vx_sp(s))로 변환
+  bool BuildSpLaneChange(
+    const ae_hyu_msgs::msg::Obstacle & closest_obs,
+    const std::vector<ae_hyu_msgs::msg::Obstacle> & all_ahead,
+    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks);
 
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
@@ -122,13 +136,13 @@ private:
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
   bool use_prediction_{true};   // Predictive Spliner: 예측 장애물이 원시 관측을 대체
-  double trailing_gap_m_{1.5};
-  double trailing_decel_{3.0};
+  double trailing_gap_m_{2.5};
+  double trailing_decel_{2.5};
   double cmd_speed_scale_{1.0};
   bool trailing_active_{false};
   // 이중장애물 재계획 파라미터 (mina Task 2)
   double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
-  double cluster_gap_s_m_{3.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
+  double cluster_gap_s_m_{8.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
   double cluster_gap_d_m_{0.8};      // 사이 corridor가 이보다 좁으면 병합 [m]
   // 벽이 좁아 evasion_dist를 다 못 챙길 때 apex를 벽 마진 안으로 줄여서라도
   // 회피를 시도하는 최소 장애물 간격 (차 반폭 ~0.15 + 여유)
@@ -136,6 +150,10 @@ private:
   // apex가 벽 마진으로 축소(squeeze)된 회피는 이 배율로 감속 — 좁은
   // corridor를 섹터 부스트 속도로 지나면 추적오차(속도비례)로 벽에 닿는다
   double squeeze_speed_scale_{0.35};
+  // 공격성 파라미터: 접근 구간은 감속하지 않고 장애물 직전에서만 제동한다
+  double squeeze_brake_dist_m_{6.0};      // squeeze 감속을 시작하는 s_front 앞 거리 [m]
+  double trailing_engage_dist_m_{12.0};   // trailing 감속을 시작하는 정지점 앞 거리 [m]
+  double dyn_pass_speed_ratio_{1.4};     // 동적 상대 추월 중 최소 속도 = 상대 x 이 배율
   double stop_margin_m_{1.0};        // 정지 폴백 시 차단 지점 앞 안전거리 [m]
   double stop_ramp_dist_m_{2.5};     // 정지점 앞 최종 선형 감속 구간 길이 [m]
   bool stop_active_{false};
@@ -143,6 +161,7 @@ private:
   // 추월 섹터 파라미터
   bool sector_gating_{true};
   double ot_min_clearance_{0.95};
+  double ot_max_kappa_{0.1};         // 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m)
   double ot_sector_min_len_m_{8.0};
   double ot_bound_mindist_{0.25};
   double ot_speed_scale_{1.1};
@@ -158,6 +177,14 @@ private:
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
   double active_bound_mindist_{0.2};
   double active_speed_scale_{1.0};
+
+  // SP 레인체인지 상태
+  bool sp_lane_change_{true};
+  std::vector<ae_hyu_msgs::msg::Wpnt> sp_raw_;   // SP 라인 원본 (자체 s 좌표)
+  std::vector<double> sp_d_;    // gb 인덱스별 SP 라인의 IQP frenet 횡 오프셋
+  std::vector<double> sp_vx_;   // gb 인덱스별 SP 라인 속도
+  bool has_sp_{false};          // 매핑 완료 여부
+  bool lc_active_{false};
 
   // State
   ae_hyu_msgs::msg::ObstacleArray obstacles_;
@@ -183,6 +210,7 @@ private:
   rclcpp::Subscription<ae_hyu_msgs::msg::ObstacleArray>::SharedPtr s_predicted_obstacles_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
   rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
+  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_sp_waypoints_;
   rclcpp::Publisher<ae_hyu_msgs::msg::WpntArray>::SharedPtr p_evasion_wpnts_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_markers_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_sector_markers_;

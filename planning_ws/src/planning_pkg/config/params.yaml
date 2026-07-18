@@ -46,6 +46,15 @@ spliner_node:
     spliner/evasion_dist_min: 0.35       # 축소 허용 하한 [m] = 차 반폭 ~0.15 + 여유 0.2
     spliner/squeeze_speed_scale: 0.35    # 축소(squeeze) 회피 시 감속 배율 — 좁은 corridor를
                                          # 전속/부스트로 지나면 추적오차로 벽 접촉 (실측)
+    # --- 접근 공격성: 감속은 장애물 직전에서만, 접근 구간은 기존 속도 유지 ---
+    # (감지 즉시 감속하면 접근 내내 느려져 상대를 못 따라잡고 꽁무니만 쫓는다)
+    spliner/squeeze_brake_dist_m: 6.0    # squeeze 감속 시작: 횡이동 시작점 앞 이 거리부터 [m]
+    spliner/trailing_engage_dist_m: 12.0 # trailing 감속 시작: 정지 목표점 앞 이 거리부터 [m]
+                                         # 주의: 정적 장애물 제동거리(gym ~v/1s, 7.5m/s면 ~7.5m)
+                                         # 보다 짧게 잡으면 관통한다
+    spliner/dyn_pass_speed_ratio: 1.4    # 동적 상대 추월 중 최소 속도 = 상대 속도 x 이 배율.
+                                         # 횡이동 후 이 부스트로 단숨에 옆을 지나가야 추월이
+                                         # 끝난다 (1.15에선 나란히 달리며 결정적 순간을 놓침)
     spliner/obs_traj_tresh: 0.3          # raceline에서 이 이내 장애물만 대상 [m]
     spliner/spline_bound_mindist: 0.2    # 회피 궤적 - 트랙 경계 최소 간격 [m]
     spliner/pre_apex_dists: [-4.0, -3.0, -1.5]   # apex 앞 스플라인 절점 [m]
@@ -58,8 +67,8 @@ spliner_node:
     spliner/use_prediction: true         # Predictive Spliner: 예측 충돌구간이 원시 관측 대체
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속 — 정면 돌진 방지
-    spliner/trailing_gap_m: 1.5
-    spliner/trailing_decel: 3.0
+    spliner/trailing_gap_m: 2.5   # gym 1s 시정수 지연으로 감속 램프 추종오차 ~1.3m — 1.5면 범퍼 추돌 (실측)
+    spliner/trailing_decel: 2.5
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.5, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.5
@@ -68,7 +77,13 @@ spliner_node:
     # RViz /planner/ot_sectors/markers (초록 라인)로 섹터 확인 가능.
     spliner/sector_gating: true
     spliner/ot_min_clearance: 0.95       # 섹터 판정 최소 벽 여유 [m] = 장애물반폭(0.2)+evasion_dist+ot_bound_mindist
-                                         # Spielberg(safe-dist 0.5) 기준 86% 커버, Budapest는 100%
+    spliner/ot_max_kappa: 0.1            # 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m 이상만)
+                                         # 코너 아웃 추월은 경로 손실로 페이스 우위가 상쇄됨 —
+                                         # 코너에선 TRAILING으로 붙고 직선에서 승부.
+                                         # 두 조건 합산 커버: Spielberg ~75%, Budapest ~75%
+    # SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋 대신
+    # SP 라인으로 갈아타 통과 (라인이 상대와 겹치는 구간이면 자동 폴백)
+    spliner/sp_lane_change: true
     spliner/ot_sector_min_len_m: 8.0     # 이보다 짧은 구간은 섹터에서 제외 (스플라인 길이 확보)
     # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
                                          # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
@@ -84,7 +99,8 @@ spliner_node:
     # 장애물 클러스터링: 사이를 통과 못 하는 배치(대각선 이중장애물 등)를
     # 하나의 박스로 병합해 "바깥으로 크게 도는" 회피를 후보에 넣는다.
     # 개별로 보면 최근접 기준 고정 폭 회피만 시도하다 트랙경계 abort로 포기.
-    spliner/cluster_gap_s_m: 3.0         # 이 s 간격 이내면 병합 후보 [m]
+    spliner/cluster_gap_s_m: 8.0         # 이 s 간격 이내면 병합 후보 [m] — 원시 상대와 예측
+                                         # 충돌구간(수 m 앞)이 한 박스로 합쳐져야 교착이 없다
     spliner/cluster_gap_d_m: 0.8         # 사이 corridor가 이보다 좁으면 병합 [m]
     spliner/stop_margin_m: 1.0           # 정지 폴백 시 차단 지점 앞 여유 [m]
     spliner/stop_ramp_dist_m: 2.5        # 정지점 앞 최종 선형 감속 구간 [m]

@@ -300,6 +300,10 @@ def main():
             min_sep = sep
         es, os_ = tr_e.s(pe.x, pe.y), tr_o.s(po.x, po.y)
         now = time.time() - t0
+        if sep < 0.5:
+            print(f'  [E-CONTACT] t={now:5.1f} sep={sep:.2f} es={es:.1f} os={os_:.1f} '
+                  f've={t.ego.twist.twist.linear.x:.1f} vo={t.opp.twist.twist.linear.x:.1f} '
+                  f'ego=({pe.x:.1f},{pe.y:.1f})', flush=True)
         if now - last_dbg > 5.0:
             last_dbg = now
             print(f'  [E] t={now:5.1f} gap_s={(os_ - es) % MAX_S:6.1f} sep={sep:5.1f} '
