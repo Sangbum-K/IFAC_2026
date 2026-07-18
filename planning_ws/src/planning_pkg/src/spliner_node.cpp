@@ -458,7 +458,12 @@ void SplinerNode::Run() {
                             !closest.is_static;
             bool in_sector = !sector_gating_ || mid_pass ||
                              InOtSector(Mod(closest.s_center, gb_max_s_));
-            active_bound_mindist_ = in_sector ? ot_bound_mindist_ : spline_bound_mindist_;
+            // 정적 장애물은 섹터(직선) 밖이어도 회피해야 한다 — trailing으로
+            // 빠지면 v_target=0이라 그 뒤에 영원히 정지 (헤어핀 정적 장애물
+            // 실측). 속도 부스트 없이 회피만 허용하고, 경계 마진은 차
+            // 반폭(ot_bound)까지 완화 — 좁은 corridor 감속은 squeeze 로직 몫.
+            bool try_evade = in_sector || closest.is_static;
+            active_bound_mindist_ = try_evade ? ot_bound_mindist_ : spline_bound_mindist_;
             active_speed_scale_ = in_sector ? ot_speed_scale_ : 1.0;
             // SP 레인체인지: 동적 상대 전용, 섹터(직선) 여부와 무관하게 시도.
             // 직선에선 SP≈IQP라 상대와 겹쳐 검증에서 자연 탈락하고, 코너에서
@@ -475,9 +480,10 @@ void SplinerNode::Run() {
             lc_active_ = lc_done;
             if (lc_done) {
                 evasion_valid = true;
-            } else if (in_sector) {
+            } else if (try_evade) {
                 if (!in_ot_sector_) {
-                    pitwall::Event("추월 섹터 — 공격 회피 시도");
+                    pitwall::Event(in_sector ? "추월 섹터 — 공격 회피 시도"
+                                             : "코너 정적 장애물 — 회피 시도");
                 }
                 evasion_valid = DoSpline(closest, evasion_wpnts, mrks);
                 // 이중장애물 재검증 (mina Task 2): 후보 경로가 두 번째 장애물에
@@ -500,7 +506,7 @@ void SplinerNode::Run() {
                     }
                 }
             }
-            in_ot_sector_ = in_sector;
+            in_ot_sector_ = try_evade;
             if (!evasion_valid) {
                 // 회피 불가(트랙경계 abort / 사이드 스위치 거부 / 양쪽 차단) 폴백:
                 // raceline을 유지한 채 장애물 뒤 trailing_gap에서 장애물
@@ -915,6 +921,26 @@ bool SplinerNode::BuildTrailing(
         v_target *= 0.85;  // 살짝 느리게 가서 간격을 다시 벌린다 (범퍼 접촉 방지)
     }
 
+    // 상대는 코너에서 감속한다 — 지금 측정 속도로만 프로파일을 짜면 상대가
+    // 헤어핀 진입 중 감속할 때 gap이 무너져 상대를 관통한다 (실측).
+    // 상대도 코너 한계속도(raceline 속도 프로파일) 이상으로는 못 돈다고
+    // 가정하고, 정지점~장애물 구간 raceline 최저 속도를 목표 속도 상한으로.
+    // (raceline 대비 비율 유지 모델은 정속 주행 상대를 과잉 감속 예측해
+    //  ego가 상대 절반 속도로 기어가는 부작용 — 실측 폐기)
+    double v_target_prof = v_target;
+    if (obs.vs > 0.1) {
+        int stop_gi = static_cast<int>(
+            Mod(obs.s_start - trailing_gap_m_, gb_max_s_) / wpnt_dist_) % gb_size;
+        int n_ahead = static_cast<int>(
+            (trailing_gap_m_ + 5.0) / std::max(wpnt_dist_, 0.05));
+        double v_corner = gb_wpnts_[stop_gi].vx_mps;
+        for (int i = 1; i <= n_ahead; ++i) {
+            v_corner = std::min(
+                v_corner, gb_wpnts_[(stop_gi + i) % gb_size].vx_mps);
+        }
+        v_target_prof = std::min(v_target, v_corner);
+    }
+
     // 정지점 뒤로도 v_target 구간을 연장한다 — 컨트롤러 lookahead(수 m)가
     // 궤적 밖의 원본 raceline 속도(전속)를 집어 재가속하는 것을 방지
     const double extend = 5.0;
@@ -947,7 +973,8 @@ bool SplinerNode::BuildTrailing(
         double engage = std::max(trailing_engage_dist_m_, cur_vs_ * 1.6 + 3.0);
         double rem = std::max(span - dist, 0.0);
         if (rem <= engage) {
-            double v_allow = std::sqrt(v_target * v_target + 2.0 * trailing_decel_ * rem);
+            double v_allow = std::sqrt(
+                v_target_prof * v_target_prof + 2.0 * trailing_decel_ * rem);
             w.vx_mps = std::min(w.vx_mps, v_allow);
         }
         out_wpnts.wpnts.push_back(w);

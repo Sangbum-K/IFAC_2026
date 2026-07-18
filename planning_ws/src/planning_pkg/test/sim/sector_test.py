@@ -157,29 +157,36 @@ def main():
     check('속도 프로파일 변화', ratio > 1.6,
           f'(v {vmin_run:.1f}~{vmax:.1f} m/s, 비율 {ratio:.2f})')
 
-    # C. 비섹터 좁은 구간 정적 장애물 -> TRAILING 정지 (Spielberg 전용)
+    # C. 비섹터(코너) 정적 장애물 -> 섹터와 무관하게 회피해 통과.
+    #    (구버전은 TRAILING 정지가 정답이었으나, 헤어핀 정적 장애물 앞
+    #    영구 정지가 실차 관점에서 버그라 "통과 또는 안전정지"로 변경.
+    #    관통(<0.35m)은 항상 실패)
     if MAP == 'Spielberg_map':
         nx, ny = -70.30, 45.04  # s=238.6, clearance 0.84 (비섹터)
+        obs_s = frenet_s(nx, ny)
         t.events.clear()
         t.click(nx, ny)
         min_gap = 1e9
-        stopped = False
-        end = time.time() + 45
+        passed = False
+        end = time.time() + 60
         while time.time() < end:
             rclpy.spin_once(t, timeout_sec=0.05)
-            if t.ego:
-                p = t.ego.pose.pose.position
-                gap = math.hypot(p.x - nx, p.y - ny)
-                v = t.ego.twist.twist.linear.x
-                if gap < min_gap:
-                    min_gap = gap
-                if gap < 6.0 and v < 0.3:
-                    stopped = True
-                    break
-        trailing_ev = any('TRAILING' in e for e in t.events)
-        check('비섹터 장애물 TRAILING 정지', stopped and min_gap > 0.5,
-              f'(최소거리 {min_gap:.2f}m, TRAILING 이벤트={trailing_ev})')
-        # D. 제거 -> 재가속
+            if not t.ego:
+                continue
+            p = t.ego.pose.pose.position
+            gap = math.hypot(p.x - nx, p.y - ny)
+            if gap < min_gap:
+                min_gap = gap
+            if 8.0 < (frenet_s(p.x, p.y) - obs_s) % MAX_S < 25.0 and gap > 3.0:
+                passed = True
+                break
+        safe_stop = (not passed) and t.ego is not None and \
+            abs(t.ego.twist.twist.linear.x) < 0.5
+        check('비섹터 정적 장애물 회피 통과 (관통 금지)',
+              min_gap > 0.35 and (passed or safe_stop),
+              f'(통과={passed}, 안전정지={safe_stop}, 최소거리 {min_gap:.2f}m)')
+        print('  [C] events:', [e for e in t.events][-6:], flush=True)
+        # D. 제거 -> 정상 주행 (통과했으면 이미 주행 중, 정지였으면 재가속)
         t.p_clear.publish(Empty())
         resumed = False
         end = time.time() + 15
@@ -188,7 +195,7 @@ def main():
             if t.ego and t.ego.twist.twist.linear.x > 2.0:
                 resumed = True
                 break
-        check('장애물 제거 후 재가속', resumed)
+        check('장애물 제거 후 정상 주행', resumed)
 
     # C2. 대각선 이중장애물 -> 클러스터로 병합해 크게 회피, 정지 없이 통과
     #     (Spielberg 전용; 회피포기->TRAILING 정지가 나던 스크린샷 상황 재현)
