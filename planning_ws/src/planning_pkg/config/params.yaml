@@ -35,12 +35,17 @@ local_trajectory_node:
 spliner_node:
   ros__parameters:
     spliner/loop_rate_hz: 20.0
-    spliner/lookahead_m: 15.0            # 이 거리 안 전방 장애물만 회피/감속
+    spliner/lookahead_m: 20.0            # 이 거리 안 전방 장애물만 회피/감속
                                          # gym 제동은 속도비례(정지거리 ~ v/1.0s)라 v15 raceline
-                                         # 접근속도(~7.5m/s 실속)에선 10m로는 못 멈추고 관통한다
-    spliner/evasion_dist: 0.65           # 장애물 가장자리 - apex 횡간격 [m]
-                                         # 주의: 이 raceline(safe-dist 0.5)은 한쪽 벽 여유가 대개 ~1.05m라
-                                         # 0.7 이상이면 트랙경계 abort로 회피가 무산된다 (0.65 = 실질 최대)
+                                         # 접근속도(~7.5m/s 실속)에선 10m로는 못 멈추고 관통한다.
+                                         # squeeze 스플라인은 장애물 ~12m 앞에서 시작하므로
+                                         # 15면 감지=경로시작이라 수렴 예고거리가 0 -> 20 필요
+    spliner/evasion_dist: 0.65           # 장애물 가장자리 - apex "목표" 횡간격 [m]
+                                         # 벽이 좁으면 apex를 벽 마진 안으로 줄여서라도 회피 시도,
+                                         # 최소 evasion_dist_min까지 허용 (쉬운 회피포기 방지)
+    spliner/evasion_dist_min: 0.35       # 축소 허용 하한 [m] = 차 반폭 ~0.15 + 여유 0.2
+    spliner/squeeze_speed_scale: 0.35    # 축소(squeeze) 회피 시 감속 배율 — 좁은 corridor를
+                                         # 전속/부스트로 지나면 추적오차로 벽 접촉 (실측)
     spliner/obs_traj_tresh: 0.3          # raceline에서 이 이내 장애물만 대상 [m]
     spliner/spline_bound_mindist: 0.2    # 회피 궤적 - 트랙 경계 최소 간격 [m]
     spliner/pre_apex_dists: [-4.0, -3.0, -1.5]   # apex 앞 스플라인 절점 [m]
@@ -67,12 +72,20 @@ spliner_node:
     spliner/ot_sector_min_len_m: 8.0     # 이보다 짧은 구간은 섹터에서 제외 (스플라인 길이 확보)
     # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
                                          # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
-    spliner/ot_bound_mindist: 0.1        # 섹터 내 공격 모드: 트랙 경계 마진 완화 [m]
+    spliner/ot_bound_mindist: 0.25       # 섹터 내 회피의 벽 마진 [m] = 차 반폭 0.15 + 추적오차 0.1
+                                         # 0.1이었을 때 기하 판정은 통과인데 차 모서리가 벽을 스침 (실측).
+                                         # 공격성은 evasion_dist_min 축소 + 속도 부스트가 담당 —
+                                         # 적응형 apex라 벽 마진을 깎지 않아도 회피가 성립한다
     spliner/ot_speed_scale: 1.1          # 섹터 내 회피 궤적 속도 부스트 (raceline vmax 캡)
     # 이중장애물 재계획 (mina Task 2): 회피 후보 경로를 lookahead 내 모든
     # 장애물과 충돌검사 -> 막히면 반대 사이드 재계획 -> 좌·우 모두 막히면
     # TRAILING, trailing 경로마저 다른 장애물에 막히면 그 앞에서 안전 정지.
     spliner/path_check_margin: 0.15      # 경로-장애물 충돌 판정 횡 여유 [m]
+    # 장애물 클러스터링: 사이를 통과 못 하는 배치(대각선 이중장애물 등)를
+    # 하나의 박스로 병합해 "바깥으로 크게 도는" 회피를 후보에 넣는다.
+    # 개별로 보면 최근접 기준 고정 폭 회피만 시도하다 트랙경계 abort로 포기.
+    spliner/cluster_gap_s_m: 3.0         # 이 s 간격 이내면 병합 후보 [m]
+    spliner/cluster_gap_d_m: 0.8         # 사이 corridor가 이보다 좁으면 병합 [m]
     spliner/stop_margin_m: 1.0           # 정지 폴백 시 차단 지점 앞 여유 [m]
     spliner/stop_ramp_dist_m: 2.5        # 정지점 앞 최종 선형 감속 구간 [m]
 
@@ -134,8 +147,12 @@ virtual_obstacle_node:
 opponent_driver_node:
   ros__parameters:
     opponent/mode: path              # path | ftg | manual (패널/토픽으로 런타임 변경)
-    opponent/max_speed_mps: 2.0      # 패널 ±0.5 버튼으로 조절되는 공통 상한
-    opponent/speed_scale: 0.3        # path 모드: raceline 속도 대비 (tracker 0.5보다 느리게)
+    # 실제 F1TENTH 대회 페이스 기준 (ForzaETH, IROS 2024: 평균 ~5 m/s,
+    # 직선 최고 7~10 m/s): ego 실속 1.9~7.5 평균 ~4는 대회 수준과 일치.
+    # opp는 ego의 ~85% 페이스(scale 0.42 vs tracker 0.5) — 살짝 느린 경쟁자.
+    # 이전 값(cap 2.0)은 opp를 상수 2 m/s로 눌러 추월 데모가 무의미했음.
+    opponent/max_speed_mps: 8.0      # 패널 ±0.5 버튼으로 조절되는 공통 상한
+    opponent/speed_scale: 0.42       # path 모드: raceline 속도 대비 (ego의 ~85%)
     opponent/size_m: 0.4
     opponent/drive_rate_hz: 40.0
     opponent/wheelbase_m: 0.33
@@ -159,7 +176,8 @@ opponent_predictor_node:
     predictor/refit_every: 20        # N 관측마다 GP 재학습
     predictor/horizon_sec: 8.0       # 따라잡기 탐색 호라이즌
     predictor/catch_gap_m: 0.8
-    predictor/pass_length_m: 1.2
+    predictor/pass_length_m: 5.0     # 추월 소요(~3-4s) 동안 상대가 전진하는 거리까지 커버
+                                     # (1.2였을 때 복귀 지점에 상대가 와 있어 접촉 — 실측)
     predictor/publish_rate_hz: 10.0
 
 planner_visualizer_node:

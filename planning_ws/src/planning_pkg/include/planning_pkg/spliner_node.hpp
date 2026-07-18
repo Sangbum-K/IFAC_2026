@@ -43,6 +43,12 @@ private:
   // 반환: {side("left"/"right"), d_apex}
   std::pair<std::string, double> MoreSpace(
     const ae_hyu_msgs::msg::Obstacle & obs, int gb_idx) const;
+  // 해당 사이드의 apex d 계산: 목표는 장애물 가장자리 + evasion_dist지만,
+  // corridor(장애물-벽)가 좁으면 여유를 장애물/벽 양쪽에 균등 배분한
+  // 지점으로 축소 (벽에 최대한 붙이는 방식은 추적오차로 벽 접촉)
+  double ApexFor(
+    const std::string & side,
+    const ae_hyu_msgs::msg::Obstacle & obs, int gb_idx) const;
   // forced_side: ""이면 MoreSpace가 결정, "left"/"right"면 해당 사이드 강제
   // (이중장애물 재계획 시 사용)
   bool DoSpline(
@@ -63,6 +69,12 @@ private:
   // lookahead 내 전체 장애물 (raceline 근접 여부 무관 — 경로 검증용)
   std::vector<ae_hyu_msgs::msg::Obstacle> ObstaclesInLookahead(
     const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles) const;
+  // 사이를 통과할 수 없을 만큼 가까운 장애물들(s 간격 < cluster_gap_s,
+  // d corridor < cluster_gap_d)을 하나의 (s,d) 박스로 병합.
+  // 대각선 이중장애물을 개별로 보면 최근접 기준 고정 폭 회피만 시도하다
+  // 트랙경계 abort로 포기한다 — 병합해야 "바깥으로 크게 도는" 해가 나온다.
+  std::vector<ae_hyu_msgs::msg::Obstacle> ClusterObstacles(
+    std::vector<ae_hyu_msgs::msg::Obstacle> obstacles) const;
   // 좌·우 회피와 trailing까지 모두 막혔을 때: 차단 지점 앞 stop_margin에서
   // vx=0이 되는 정지 경로 생성 (최후 폴백)
   void BuildStopWpnts(
@@ -116,6 +128,14 @@ private:
   bool trailing_active_{false};
   // 이중장애물 재계획 파라미터 (mina Task 2)
   double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
+  double cluster_gap_s_m_{3.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
+  double cluster_gap_d_m_{0.8};      // 사이 corridor가 이보다 좁으면 병합 [m]
+  // 벽이 좁아 evasion_dist를 다 못 챙길 때 apex를 벽 마진 안으로 줄여서라도
+  // 회피를 시도하는 최소 장애물 간격 (차 반폭 ~0.15 + 여유)
+  double evasion_dist_min_{0.35};
+  // apex가 벽 마진으로 축소(squeeze)된 회피는 이 배율로 감속 — 좁은
+  // corridor를 섹터 부스트 속도로 지나면 추적오차(속도비례)로 벽에 닿는다
+  double squeeze_speed_scale_{0.35};
   double stop_margin_m_{1.0};        // 정지 폴백 시 차단 지점 앞 안전거리 [m]
   double stop_ramp_dist_m_{2.5};     // 정지점 앞 최종 선형 감속 구간 길이 [m]
   bool stop_active_{false};
@@ -124,11 +144,17 @@ private:
   bool sector_gating_{true};
   double ot_min_clearance_{0.95};
   double ot_sector_min_len_m_{8.0};
-  double ot_bound_mindist_{0.1};
+  double ot_bound_mindist_{0.25};
   double ot_speed_scale_{1.1};
   std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
   bool in_ot_sector_{false};
+  // 진행 중인 정적 회피 커밋 (경로 끝까지 유지 — 도중 소멸 시 벽 충돌)
+  ae_hyu_msgs::msg::WpntArray committed_wpnts_;
+  visualization_msgs::msg::MarkerArray committed_mrks_;
+  int32_t committed_id_{-1};
+  double committed_start_s_{-1.0};
+  double committed_until_s_{-1.0};
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
   double active_bound_mindist_{0.2};
   double active_speed_scale_{1.0};
