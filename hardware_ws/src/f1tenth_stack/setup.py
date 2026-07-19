@@ -28,6 +28,7 @@ setup(
             'share/' + package_name + '/launch',
             [
                 'launch/bringup.launch.py',
+                'launch/bringup_launch.py',
                 'launch/mapping.launch.py',
                 'launch/teleop.launch.py',
             ],

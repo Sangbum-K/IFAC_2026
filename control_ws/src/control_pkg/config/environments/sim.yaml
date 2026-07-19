@@ -1,8 +1,8 @@
-# f1tenth_gym 시뮬: GT odom + /drive, 부팅 즉시 자율주행
 control:
   ros__parameters:
     odom_topic: /ego_racecar/odom
     ackermann_topic: /drive
     autonomous_on_start: true
-    pp/speed_scale: 0.5
-    pp/max_speed_mps: 7.0      # 시뮬은 하드웨어 상한 없음 (raceline 최고속)
+    "map/steering_lut_file": "SIM_linear_lookup_table.csv"
+    "vehicle/max_speed_mps": 4.0
+    "vehicle/speed_scale": 0.5

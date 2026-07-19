@@ -27,8 +27,17 @@ from launch_ros.actions import Node
 
 
 def launch_setup(context, *args, **kwargs):
-    params_file = os.path.join(
-        get_package_share_directory('planning_pkg'), 'config', 'params.yaml')
+    share_dir = get_package_share_directory('planning_pkg')
+    params_file = os.path.join(share_dir, 'config', 'params.yaml')
+
+    # 환경 프로파일: params.yaml 위에 environments/<env>.yaml을 덮어쓴다.
+    # 실차: env:=real_car (frenet odom_mode real, 브릿지 토픽 전환 포함)
+    env = LaunchConfiguration('env').perform(context)
+    env_file = None
+    if env:
+        env_file = os.path.join(share_dir, 'config', 'environments', env + '.yaml')
+        if not os.path.isfile(env_file):
+            raise RuntimeError(f'environments/{env}.yaml 없음: {env_file}')
 
     # CLI override: 값이 주어진 것만 params.yaml 위에 덮어쓴다
     overrides = {
@@ -61,17 +70,19 @@ def launch_setup(context, *args, **kwargs):
 
     def make_node(executable):
         params = [params_file]
-        if overrides[executable]:
+        if env_file:
+            params.append(env_file)
+        if overrides.get(executable):
             params.append(overrides[executable])
         return Node(
             package='planning_pkg',
             executable=executable,
-            name=executable,
+            name=executable.removesuffix('.py'),
             parameters=params,
             output='screen',
         )
 
-    return [
+    nodes = [
         make_node('global_trajectory_node'),
         make_node('frenet_frame_node'),
         make_node('local_trajectory_node'),
@@ -80,9 +91,21 @@ def launch_setup(context, *args, **kwargs):
         make_node('planner_visualizer_node'),
     ]
 
+    # 실차 인터페이스 브릿지 (sim은 virtual_obstacle/gym GT가 대체):
+    #  - perception 팀 laser-frame 장애물 -> frenet (/perception/obstacles_frenet)
+    #  - TF map->base_link + /odom -> /pf/pose/odom (localization엔 pf가 없음)
+    if env in ('real_car', 'race_map'):
+        nodes.append(make_node('perception_obstacle_bridge_node.py'))
+        nodes.append(make_node('pose_odom_bridge_node.py'))
+
+    return nodes
+
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('env', default_value='',
+                              description='환경 프로파일 (config/environments/<env>.yaml): '
+                                          '빈 값=sim 기본, real_car | race_map | mapping'),
         DeclareLaunchArgument('trajectory_csv_file', default_value='',
                               description='raceline CSV 파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('overtaking_csv_file', default_value='',

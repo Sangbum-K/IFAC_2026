@@ -34,6 +34,7 @@
 #include <string>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <vesc_msgs/msg/vesc_state_stamped.hpp>
 
 namespace vesc_ackermann
@@ -50,6 +51,11 @@ VescToOdom::VescToOdom(const rclcpp::NodeOptions & options)
   odom_frame_("odom"),
   base_frame_("base_link"),
   use_servo_cmd_(true),
+  use_imu_angular_velocity_(false),
+  imu_topic_("sensors/imu/raw"),
+  imu_angular_velocity_offset_(0.0),
+  imu_angular_velocity_scale_(1.0),
+  imu_angular_velocity_deadband_(0.0),
   publish_tf_(false),
   x_(0.0),
   y_(0.0),
@@ -59,11 +65,21 @@ VescToOdom::VescToOdom(const rclcpp::NodeOptions & options)
   odom_frame_ = declare_parameter("odom_frame", odom_frame_);
   base_frame_ = declare_parameter("base_frame", base_frame_);
   use_servo_cmd_ = declare_parameter("use_servo_cmd_to_calc_angular_velocity", use_servo_cmd_);
+  use_imu_angular_velocity_ =
+    declare_parameter("use_imu_to_calc_angular_velocity", use_imu_angular_velocity_);
 
   speed_to_erpm_gain_ = declare_parameter<double>("speed_to_erpm_gain");
   speed_to_erpm_offset_ = declare_parameter<double>("speed_to_erpm_offset");
 
-  if (use_servo_cmd_) {
+  if (use_imu_angular_velocity_) {
+    imu_topic_ = declare_parameter("imu_topic", imu_topic_);
+    imu_angular_velocity_offset_ =
+      declare_parameter("imu_angular_velocity_offset", imu_angular_velocity_offset_);
+    imu_angular_velocity_scale_ =
+      declare_parameter("imu_angular_velocity_scale", imu_angular_velocity_scale_);
+    imu_angular_velocity_deadband_ =
+      declare_parameter("imu_angular_velocity_deadband", imu_angular_velocity_deadband_);
+  } else if (use_servo_cmd_) {
     steering_to_servo_gain_ =
       declare_parameter<double>("steering_angle_to_servo_gain");
     steering_to_servo_offset_ =
@@ -85,7 +101,10 @@ VescToOdom::VescToOdom(const rclcpp::NodeOptions & options)
   vesc_state_sub_ = create_subscription<VescStateStamped>(
     "sensors/core", 10, std::bind(&VescToOdom::vescStateCallback, this, _1));
 
-  if (use_servo_cmd_) {
+  if (use_imu_angular_velocity_) {
+    imu_sub_ = create_subscription<Imu>(
+      imu_topic_, 10, std::bind(&VescToOdom::imuCallback, this, _1));
+  } else if (use_servo_cmd_) {
     servo_sub_ = create_subscription<Float64>(
       "sensors/servo_position_command", 10, std::bind(&VescToOdom::servoCmdCallback, this, _1));
   }
@@ -94,7 +113,10 @@ VescToOdom::VescToOdom(const rclcpp::NodeOptions & options)
 void VescToOdom::vescStateCallback(const VescStateStamped::SharedPtr state)
 {
   // check that we have a last servo command if we are depending on it for angular velocity
-  if (use_servo_cmd_ && !last_servo_cmd_) {
+  if (use_imu_angular_velocity_ && !last_imu_) {
+    return;
+  }
+  if (!use_imu_angular_velocity_ && use_servo_cmd_ && !last_servo_cmd_) {
     return;
   }
 
@@ -104,7 +126,14 @@ void VescToOdom::vescStateCallback(const VescStateStamped::SharedPtr state)
     current_speed = 0.0;
   }
   double current_steering_angle(0.0), current_angular_velocity(0.0);
-  if (use_servo_cmd_) {
+  if (use_imu_angular_velocity_) {
+    current_angular_velocity =
+      imu_angular_velocity_scale_ *
+      (last_imu_->angular_velocity.z - imu_angular_velocity_offset_);
+    if (std::fabs(current_angular_velocity) < imu_angular_velocity_deadband_) {
+      current_angular_velocity = 0.0;
+    }
+  } else if (use_servo_cmd_) {
     current_steering_angle =
       (last_servo_cmd_->data - steering_to_servo_offset_) / steering_to_servo_gain_;
     current_angular_velocity = current_speed * tan(current_steering_angle) / wheelbase_;
@@ -125,7 +154,7 @@ void VescToOdom::vescStateCallback(const VescStateStamped::SharedPtr state)
   double y_dot = current_speed * sin(yaw_);
   x_ += x_dot * dt.seconds();
   y_ += y_dot * dt.seconds();
-  if (use_servo_cmd_) {
+  if (use_imu_angular_velocity_ || use_servo_cmd_) {
     yaw_ += current_angular_velocity * dt.seconds();
   }
 
@@ -183,6 +212,11 @@ void VescToOdom::vescStateCallback(const VescStateStamped::SharedPtr state)
 void VescToOdom::servoCmdCallback(const Float64::SharedPtr servo)
 {
   last_servo_cmd_ = servo;
+}
+
+void VescToOdom::imuCallback(const Imu::SharedPtr imu)
+{
+  last_imu_ = imu;
 }
 
 }  // namespace vesc_ackermann

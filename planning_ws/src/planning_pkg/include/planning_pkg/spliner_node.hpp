@@ -7,6 +7,8 @@
 #define PLANNING_PKG__SPLINER_NODE_HPP_
 
 #include <cmath>
+#include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -49,19 +51,15 @@ private:
   double ApexFor(
     const std::string & side,
     const ae_hyu_msgs::msg::Obstacle & obs, int gb_idx) const;
-  // forced_side: ""이면 MoreSpace가 결정, "left"/"right"면 해당 사이드 강제
-  // (이중장애물 재계획 시 사용)
   bool DoSpline(
     const ae_hyu_msgs::msg::Obstacle & closest_obs,
     ae_hyu_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks,
-    const std::string & forced_side = "");
+    visualization_msgs::msg::MarkerArray & out_mrks);
 
-  // --- 이중장애물 재계획 / 안전 정지 (mina Task 2 병합) ---
-  // 후보 경로를 lookahead 내 "모든" 장애물과 (s,d) 충돌 검사.
-  // exclude_id: 회피/추종 대상 장애물 자신은 제외 (경로가 의도적으로
-  // 그 주변/뒤를 지나므로). 반환 true=충돌 없음, false=충돌(blocking_s에
-  // 막은 장애물의 s_start).
+  // 경로를 lookahead 내 장애물들과 (s,d) 충돌 검사 (정적 커밋 유효성 검증,
+  // SP 레인체인지 검증에 사용). exclude_id: 회피/추종 대상 장애물 자신은
+  // 제외 (경로가 의도적으로 그 주변/뒤를 지나므로).
+  // 반환 true=충돌 없음, false=충돌(blocking_s에 막은 장애물의 s_start).
   bool CheckPathCollision(
     const std::vector<ae_hyu_msgs::msg::Wpnt> & path,
     const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles,
@@ -75,12 +73,12 @@ private:
   // 트랙경계 abort로 포기한다 — 병합해야 "바깥으로 크게 도는" 해가 나온다.
   std::vector<ae_hyu_msgs::msg::Obstacle> ClusterObstacles(
     std::vector<ae_hyu_msgs::msg::Obstacle> obstacles) const;
-  // 좌·우 회피와 trailing까지 모두 막혔을 때: 차단 지점 앞 stop_margin에서
-  // vx=0이 되는 정지 경로 생성 (최후 폴백)
-  void BuildStopWpnts(
-    double blocking_s,
-    ae_hyu_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks);
+
+  // 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식):
+  // 관측 이력의 위치 std 투표(min_std/max_std) + 정지 재분류(vs_reset)로
+  // perception의 is_static 플래그를 덮어쓴다. 파킹한 상대를 동적으로 두면
+  // 예측 유령/섹터 게이팅/커밋 비활성이 겹쳐 회피가 무너진다.
+  void ClassifyObstacles(std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles);
 
   // 회피 불가 시 폴백: raceline 유지 + 장애물 뒤 trailing_gap에서
   // 장애물 속도까지 감속하는 궤적 (ForzaETH 상태머신 TRAILING 대응)
@@ -109,6 +107,18 @@ private:
     const std::vector<ae_hyu_msgs::msg::Obstacle> & all_ahead,
     ae_hyu_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
+  // 추월 마무리: 상대가 아직 옆이면(opp_beside) 간격이 벌어질 때까지,
+  // 코너 안이면 코너 출구까지 SP 인코스를 유지한 뒤 raceline(아웃코스)으로
+  // 복귀. v_floor(wpnt 단위)는 나란히 달리는 동안의 추월 페이스 하한.
+  // 복귀 완료 시 false 반환
+  bool BuildSpExit(
+    bool opp_beside, double v_floor,
+    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks);
+  // s_from부터 raceline 복귀 블렌드 창(blend_len)이 코너(|kappa| >
+  // ot_max_kappa)와 겹치지 않게 되는 최소 추가 SP 유지 거리 (최대 25m).
+  // "인코스 진입 - 아웃코스 탈출"의 복귀 지연을 담당한다
+  double SpHoldExtension(double s_from, double blend_len) const;
 
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
@@ -154,9 +164,26 @@ private:
   double squeeze_brake_dist_m_{6.0};      // squeeze 감속을 시작하는 s_front 앞 거리 [m]
   double trailing_engage_dist_m_{12.0};   // trailing 감속을 시작하는 정지점 앞 거리 [m]
   double dyn_pass_speed_ratio_{1.4};     // 동적 상대 추월 중 최소 속도 = 상대 x 이 배율
-  double stop_margin_m_{1.0};        // 정지 폴백 시 차단 지점 앞 안전거리 [m]
-  double stop_ramp_dist_m_{2.5};     // 정지점 앞 최종 선형 감속 구간 길이 [m]
-  bool stop_active_{false};
+
+  // 정적/동적 분류 파라미터 (unicorn opponent_tracker_params.yaml 기본값)
+  int cls_min_nb_meas_{5};       // 분류 시작 최소 관측 수
+  double cls_min_std_{0.16};     // std_s, std_d 둘 다 미만이면 정적 표 [m]
+  double cls_max_std_{0.2};      // 하나라도 초과하면 정적 표 리셋 [m]
+  double cls_vs_reset_{0.1};     // 최근 |vs| 평균이 미만이면 정지 재분류 [m/s]
+  static constexpr size_t kClsWindow{20};     // 위치 std 계산 관측 창
+  static constexpr size_t kClsVsWindow{10};   // vs 평균 관측 창 (unicorn vs_list 10)
+  struct ObsClsTrack {
+    std::deque<double> s_hist;   // s_ref 기준 unwrap된 s 관측
+    std::deque<double> d_hist;
+    std::deque<double> vs_hist;
+    double s_ref{0.0};
+    int static_count{0};
+    int total_count{0};
+    bool has_flag{false};        // 분류 확정 여부 (미확정이면 perception 플래그 유지)
+    bool static_flag{false};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+  std::map<int32_t, ObsClsTrack> cls_tracks_;
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
@@ -180,6 +207,8 @@ private:
 
   // SP 레인체인지 상태
   bool sp_lane_change_{true};
+  // 추월 완료 판정: 상대 앞머리가 ego 뒤로 이 간격만큼 벌어져야 복귀 [m]
+  double lc_pass_clear_m_{4.0};
   std::vector<ae_hyu_msgs::msg::Wpnt> sp_raw_;   // SP 라인 원본 (자체 s 좌표)
   std::vector<double> sp_d_;    // gb 인덱스별 SP 라인의 IQP frenet 횡 오프셋
   std::vector<double> sp_vx_;   // gb 인덱스별 SP 라인 속도

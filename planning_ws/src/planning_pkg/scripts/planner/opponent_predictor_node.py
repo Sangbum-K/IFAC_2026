@@ -82,6 +82,10 @@ class OpponentPredictorNode(Node):
         self.declare_parameter('predictor/catch_gap_m', 0.8)     # 이 간격이면 충돌 임박
         self.declare_parameter('predictor/pass_length_m', 1.2)   # 추월에 필요한 상대 s 여유
         self.declare_parameter('predictor/publish_rate_hz', 10.0)
+        # 정지 상대 가드 (unicorn multi_tracking vs_reset 대응): 최근 실측
+        # |vs| 평균이 미만이면 예측 중단 — 파킹한 상대를 GP의 과거 주행
+        # 속도로 적분하면 수십 m짜리 유령 충돌구간이 나온다.
+        self.declare_parameter('predictor/vs_reset', 0.1)
         gp = lambda n: self.get_parameter(n).value
         self.min_samples = int(gp('predictor/min_samples'))
         self.sample_min_ds = gp('predictor/sample_min_ds')
@@ -92,6 +96,7 @@ class OpponentPredictorNode(Node):
         self.horizon = gp('predictor/horizon_sec')
         self.catch_gap = gp('predictor/catch_gap_m')
         self.pass_len = gp('predictor/pass_length_m')
+        self.vs_reset = gp('predictor/vs_reset')
 
         self.track_len = 0.0
         self.gb = None                 # [s, vx]
@@ -133,7 +138,11 @@ class OpponentPredictorNode(Node):
                 continue
             b = self.buf.setdefault(o.id, {
                 'S': [], 'D': [], 'V': [], 'last_s': None,
-                'size': o.size, 'n_new': 0})
+                'size': o.size, 'n_new': 0, 'vs_recent': [], 't_last': None})
+            # 실측 vs / 최종 관측 시각은 데시메이션과 무관하게 항상 갱신 —
+            # 파킹(정지) 감지와 소멸 감지는 "안 움직이는" 동안에도 돌아야 한다
+            b['vs_recent'] = (b['vs_recent'] + [o.vs])[-10:]
+            b['t_last'] = self.get_clock().now()
             if b['last_s'] is not None:
                 ds = (o.s_center - b['last_s']) % self.track_len
                 if ds < self.sample_min_ds:
@@ -203,6 +212,15 @@ class OpponentPredictorNode(Node):
 
     def _predict_catch(self, oid, b):
         """자차/상대 속도 프로파일 전방 적분 -> 따라잡는 s 구간 계산."""
+        # 관측 두절(상대 제거) 또는 정지(파킹) 상대는 예측하지 않는다 —
+        # GP는 과거 주행 속도만 알고 있어 정지 상대에게 유령 충돌구간을 만든다.
+        # 정지 상대의 원시 관측은 spliner가 정적 장애물로 재분류해 처리한다.
+        if b['t_last'] is None or \
+                (self.get_clock().now() - b['t_last']).nanoseconds * 1e-9 > 1.0:
+            return None
+        vr = b['vs_recent']
+        if len(vr) >= 5 and sum(abs(v) for v in vr) / len(vr) < self.vs_reset:
+            return None
         L = self.track_len
         gpv, gpd = self.gp_v[oid], self.gp_d[oid]
         s_e, s_o = self.ego_s, float(b['last_s'])

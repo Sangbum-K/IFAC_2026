@@ -14,9 +14,14 @@
 ## Build
 
 ```bash
-cd /home/seok/IFAC_ws/hardware_ws
+source /opt/ros/humble/setup.zsh
+source /home/miru/IFAC_ws/localization_ws/install/setup.zsh
+
+cd /home/miru/IFAC_ws/hardware_ws
 colcon build
 ```
+
+`f1tenth_stack`는 `localization_bringup`를 참조하므로, `hardware_ws`만 따로 빌드할 때도 위처럼 `localization_ws/install/setup.zsh`를 먼저 source 해야 합니다.
 
 ## Source
 

@@ -19,6 +19,10 @@
   <!-- raceline_viz_node.py (rclpy) 런타임 의존 -->
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <!-- 실차 브릿지 노드: perception 팀 메시지 변환 + TF 합성 -->
+  <exec_depend>f1tenth_perception_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_ros_py</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

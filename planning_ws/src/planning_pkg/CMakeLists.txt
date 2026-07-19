@@ -115,6 +115,14 @@ install(PROGRAMS scripts/planner/opponent_predictor_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# 실차 인터페이스 브릿지 (planner_stack env:=real_car에서만 실행):
+# perception 팀 laser-frame 장애물 -> frenet, TF+/odom -> /pf/pose/odom
+install(PROGRAMS
+  scripts/planner/perception_obstacle_bridge_node.py
+  scripts/planner/pose_odom_bridge_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # RViz 인터랙티브 레이스라인 튜너 (raceline_tuner.launch.py)
 install(PROGRAMS scripts/tuner/raceline_tuner_node.py
   DESTINATION lib/${PROJECT_NAME}

@@ -1,6 +1,59 @@
+# --- 대회 당일 프로파일: real_car와 동일한 인터페이스 + 당일 생성 맵 ---
+# 사용: ros2 launch planning_pkg planner_stack.launch.py env:=race_map \
+#          trajectory_csv_file:=<당일맵>_iqp_*.csv overtaking_csv_file:=<당일맵>_sp_*.csv \
+#          centerline_csv_file:=<당일맵>_centerline.csv
+# 당일 맵 raceline 생성: slam 맵(png+yaml)을 maps/에 넣고
+#   python3 scripts/global_traj_sim/step4_main.py --map <당일맵> --raceline iqp --safe-dist 0.5
+# 후 colcon build (install에 CSV 복사).
 planning:
   ros__parameters:
     planning_horizon: 6.0
     input_topic: /perception/objects
     output_topic: /planning/plan
     service_name: /planning/compute_plan
+
+frenet_frame_node:
+  ros__parameters:
+    frenet_frame/odom_mode: real
+
+perception_obstacle_bridge_node:
+  ros__parameters:
+    bridge/input_topic: /perception/obstacles
+    bridge/output_topic: /perception/obstacles_frenet
+    bridge/target_frame: map
+    bridge/min_confidence: 0.0
+    bridge/wall_margin_m: 0.10
+    bridge/vel_lpf_alpha: 0.3
+    bridge/track_forget_sec: 2.0
+    bridge/tf_timeout_sec: 0.1
+
+pose_odom_bridge_node:
+  ros__parameters:
+    pose_bridge/rate_hz: 40.0
+    pose_bridge/map_frame: map
+    pose_bridge/base_frame: base_link
+    pose_bridge/vel_odom_topic: /odom
+    pose_bridge/output_topic: /pf/pose/odom
+    pose_bridge/stale_sec: 0.5
+
+spliner_node:
+  ros__parameters:
+    spliner/obstacle_topic: /perception/obstacles_frenet
+    spliner/lookahead_m: 8.0
+    spliner/evasion_dist: 0.75
+    spliner/inside_speed_scale: 0.7
+    spliner/path_check_margin: 0.20
+    spliner/cmd_speed_scale: 1.0
+
+recovery_supervisor_node:
+  ros__parameters:
+    recovery/obstacle_topic: /perception/obstacles_frenet
+    recovery/stuck_timeout_sec: 1.5
+    recovery/boundary_stop_margin_m: 0.20
+    recovery/boundary_persist_sec: 0.2
+    recovery/rear_check_dist_m: 2.0
+    recovery/recovery_reverse_speed_mps: 0.4
+    recovery/recovery_max_reverse_distance_m: 0.4
+    recovery/recovery_max_attempts: 1
+    recovery/align_speed_mps: 0.4
+    recovery/pose_odom_topic: /pf/pose/odom

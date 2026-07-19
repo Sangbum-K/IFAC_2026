@@ -88,8 +88,12 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     s_local_wpnts_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
         "/local_waypoints", qos,
         std::bind(&RecoverySupervisorNode::CallbackLocalWaypoints, this, std::placeholders::_1));
+    // 실차는 브릿지 출력(/perception/obstacles_frenet)으로 override — spliner와 동일 소스
+    this->declare_parameter("recovery/obstacle_topic", std::string("/perception/obstacles"));
+    const std::string obstacle_topic =
+        this->get_parameter("recovery/obstacle_topic").as_string();
     s_obstacles_ = this->create_subscription<ae_hyu_msgs::msg::ObstacleArray>(
-        "/perception/obstacles", qos,
+        obstacle_topic, qos,
         std::bind(&RecoverySupervisorNode::CallbackObstacles, this, std::placeholders::_1));
     s_estop_ = this->create_subscription<std_msgs::msg::Bool>(
         "/safety/emergency_stop", qos,

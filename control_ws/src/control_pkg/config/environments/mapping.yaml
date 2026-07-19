@@ -1,6 +1,8 @@
-# 매핑 중에는 자율주행 사용 안 함 (teleop 주행)
 control:
   ros__parameters:
-    odom_topic: /pf/pose/odom
+    odom_topic: /odom
     ackermann_topic: /ackermann_cmd
     autonomous_on_start: false
+    "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
+    "vehicle/max_speed_mps": 0.75
+    "vehicle/speed_scale": 1.0

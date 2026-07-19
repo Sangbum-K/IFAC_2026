@@ -1,32 +1,193 @@
-// /local_waypoints(ae_hyu_msgs/WpntArray)를 추종하는 pure pursuit 컨트롤러.
-// planning_ws의 시뮬 전용 waypoint_tracker_node.py에서 검증한 로직의 실차 포팅.
-//
-//   /local_waypoints ──▶ control ──▶ /ackermann_cmd (실차, vesc_ackermann)
-//   odom(환경별)     ──▶    │            /drive     (시뮬, f1tenth_gym)
-//   /safety/emergency_stop ─┘  (E-stop 시 즉시 정지 명령)
-//
-// - 벽 충돌/스턱 복구: 전진 명령 중 정지가 지속되면 경로 방향으로 기수가
-//   돌아가도록 후진 후 감속 재개 (TRACK <-> REVERSE 상태머신)
-// - autonomous 모드: /control/set_mode(Trigger)로 토글. 실차는 기본 OFF로
-//   부팅해 조종기 주행을 방해하지 않고, 서비스 콜로 자율주행 시작.
-// - 비활성 상태에선 아무것도 발행하지 않는다 (teleop과 토픽 충돌 방지).
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <exception>
+#include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ackermann_msgs/msg/ackermann_drive_stamped.hpp"
-#include "example_interfaces/srv/trigger.hpp"
-#include "nav_msgs/msg/odometry.hpp"
-#include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/bool.hpp"
-
 #include "ae_hyu_msgs/msg/wpnt.hpp"
 #include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "ament_index_cpp/get_package_share_directory.hpp"
+#include "example_interfaces/srv/trigger.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "std_msgs/msg/bool.hpp"
+
+namespace
+{
+constexpr double kEpsilon = 1.0e-9;
+
+struct Point2D
+{
+  double x{0.0};
+  double y{0.0};
+};
+
+double yaw_from_quaternion(const geometry_msgs::msg::Quaternion & q)
+{
+  return std::atan2(
+    2.0 * (q.w * q.z + q.x * q.y),
+    1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+}
+}  // namespace
+
+// C++ port of steering_lookup/lookup_steer_angle.py. The first CSV row holds
+// velocities, the first column holds steering angles, and the body holds the
+// lateral acceleration available at each (steering, velocity) pair.
+class LookupSteerAngle
+{
+public:
+  bool load(const std::string & file_path, const rclcpp::Logger & logger)
+  {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+      RCLCPP_ERROR(logger, "Steering lookup table not found: %s", file_path.c_str());
+      return false;
+    }
+
+    std::vector<std::vector<double>> parsed;
+    std::string line;
+    std::size_t expected_columns = 0;
+    while (std::getline(file, line)) {
+      if (line.empty()) {
+        continue;
+      }
+
+      std::vector<double> row;
+      std::stringstream line_stream(line);
+      std::string cell;
+      while (std::getline(line_stream, cell, ',')) {
+        try {
+          row.push_back(std::stod(cell));
+        } catch (const std::exception &) {
+          RCLCPP_ERROR(logger, "Invalid value in steering lookup table: '%s'", cell.c_str());
+          return false;
+        }
+      }
+
+      if (expected_columns == 0) {
+        expected_columns = row.size();
+      }
+      if (row.size() != expected_columns) {
+        RCLCPP_ERROR(logger, "Steering lookup table has inconsistent row lengths");
+        return false;
+      }
+      parsed.push_back(std::move(row));
+    }
+
+    if (parsed.size() < 2 || expected_columns < 2) {
+      RCLCPP_ERROR(logger, "Steering lookup table must contain at least two rows and columns");
+      return false;
+    }
+
+    table_ = std::move(parsed);
+    RCLCPP_INFO(
+      logger, "Loaded steering lookup table: %s (%zu x %zu)",
+      file_path.c_str(), table_.size(), table_.front().size());
+    return true;
+  }
+
+  bool loaded() const
+  {
+    return !table_.empty();
+  }
+
+  double lookup_steer_angle(double acceleration, double velocity) const
+  {
+    if (!loaded()) {
+      return 0.0;
+    }
+
+    const double sign = acceleration > 0.0 ? 1.0 : -1.0;
+    acceleration = std::abs(acceleration);
+
+    // Match the Python implementation: use the single closest velocity column.
+    std::size_t velocity_column = 1;
+    double closest_velocity_error = std::numeric_limits<double>::max();
+    for (std::size_t column = 1; column < table_.front().size(); ++column) {
+      if (!std::isfinite(table_.front()[column])) {
+        continue;
+      }
+      const double error = std::abs(table_.front()[column] - velocity);
+      if (error < closest_velocity_error) {
+        closest_velocity_error = error;
+        velocity_column = column;
+      }
+    }
+
+    std::vector<std::size_t> finite_rows;
+    finite_rows.reserve(table_.size() - 1);
+    for (std::size_t row = 1; row < table_.size(); ++row) {
+      if (std::isfinite(table_[row][velocity_column]) && std::isfinite(table_[row][0])) {
+        finite_rows.push_back(row);
+      }
+    }
+    if (finite_rows.empty()) {
+      return 0.0;
+    }
+
+    std::size_t closest_position = 0;
+    double closest_acceleration_error = std::numeric_limits<double>::max();
+    for (std::size_t position = 0; position < finite_rows.size(); ++position) {
+      const double error =
+        std::abs(table_[finite_rows[position]][velocity_column] - acceleration);
+      if (error < closest_acceleration_error) {
+        closest_acceleration_error = error;
+        closest_position = position;
+      }
+    }
+
+    // This is the zero-steering row in the ETH lookup implementation.
+    if (closest_position == 0) {
+      return 0.0;
+    }
+
+    std::size_t second_position = closest_position;
+    if (closest_position + 1 >= finite_rows.size()) {
+      second_position = closest_position;
+    } else {
+      const std::size_t before = closest_position - 1;
+      const std::size_t after = closest_position + 1;
+      const double before_error =
+        std::abs(table_[finite_rows[before]][velocity_column] - acceleration);
+      const double after_error =
+        std::abs(table_[finite_rows[after]][velocity_column] - acceleration);
+      second_position = before_error <= after_error ? before : after;
+    }
+
+    const std::size_t first_row = finite_rows[closest_position];
+    const std::size_t second_row = finite_rows[second_position];
+    double steering_angle = table_[first_row][0];
+    if (first_row != second_row) {
+      const double first_acceleration = table_[first_row][velocity_column];
+      const double second_acceleration = table_[second_row][velocity_column];
+      if (std::abs(second_acceleration - first_acceleration) > kEpsilon) {
+        const double ratio = std::clamp(
+          (acceleration - first_acceleration) /
+          (second_acceleration - first_acceleration), 0.0, 1.0);
+        steering_angle = table_[first_row][0] +
+          ratio * (table_[second_row][0] - table_[first_row][0]);
+      }
+    }
+    return steering_angle * sign;
+  }
+
+private:
+  std::vector<std::vector<double>> table_;
+};
 
 class ControlNode : public rclcpp::Node
 {
@@ -34,309 +195,613 @@ public:
   ControlNode()
   : Node("control")
   {
-    // --- 인터페이스 ---
+    // ROS interfaces. The planning branch publishes WpntArray on /local_waypoints.
     control_rate_ = this->declare_parameter<double>("control_rate", 40.0);
-    const auto wpnt_topic =
-      this->declare_parameter<std::string>("local_waypoints_topic", "/local_waypoints");
-    const auto odom_topic =
-      this->declare_parameter<std::string>("odom_topic", "/ego_racecar/odom");
-    const auto ackermann_topic =
-      this->declare_parameter<std::string>("ackermann_topic", "/drive");
-    const auto estop_topic =
-      this->declare_parameter<std::string>("estop_topic", "/safety/emergency_stop");
-    const auto service_name =
-      this->declare_parameter<std::string>("service_name", "/control/set_mode");
+    const auto waypoint_topic = this->declare_parameter<std::string>(
+      "local_waypoints_topic", "/local_waypoints");
+    const auto odom_topic = this->declare_parameter<std::string>(
+      "odom_topic", "/pf/pose/odom");
+    const auto frenet_odom_topic = this->declare_parameter<std::string>(
+      "frenet_odom_topic", "/car_state/frenet/odom");
+    const auto imu_topic = this->declare_parameter<std::string>(
+      "imu_topic", "/sensors/imu/raw");
+    const auto output_topic = this->declare_parameter<std::string>(
+      "ackermann_topic", "/ackermann_cmd");
+    const auto estop_topic = this->declare_parameter<std::string>(
+      "estop_topic", "/safety/emergency_stop");
+    const auto service_name = this->declare_parameter<std::string>(
+      "service_name", "/control/set_mode");
     autonomous_ = this->declare_parameter<bool>("autonomous_on_start", false);
 
-    // --- pure pursuit ---
-    t_lookahead_ = this->declare_parameter<double>("pp/t_lookahead", 0.5);
-    min_lookahead_ = this->declare_parameter<double>("pp/min_lookahead_m", 1.2);
-    max_lookahead_ = this->declare_parameter<double>("pp/max_lookahead_m", 3.0);
-    wheelbase_ = this->declare_parameter<double>("pp/wheelbase_m", 0.33);
-    max_steer_ = this->declare_parameter<double>("pp/max_steer_rad", 0.4189);
-    speed_scale_ = this->declare_parameter<double>("pp/speed_scale", 0.5);
-    max_speed_ = this->declare_parameter<double>("pp/max_speed_mps", 4.0);
-    wpnt_timeout_ = this->declare_parameter<double>("pp/waypoint_timeout_sec", 0.5);
+    waypoint_timeout_ = this->declare_parameter<double>("waypoint_timeout_sec", 0.5);
+    odom_timeout_ = this->declare_parameter<double>("odom_timeout_sec", 0.5);
+    frenet_odom_timeout_ = this->declare_parameter<double>("frenet_odom_timeout_sec", 0.5);
+    imu_acceleration_sign_ = this->declare_parameter<double>("imu_acceleration_sign", -1.0);
 
-    // --- 스턱 복구 ---
-    enable_recovery_ = this->declare_parameter<bool>("recovery/enable", true);
-    stuck_detect_sec_ = this->declare_parameter<double>("recovery/stuck_detect_sec", 0.6);
-    reverse_speed_ = this->declare_parameter<double>("recovery/reverse_speed_mps", 1.2);
-    reverse_max_sec_ = this->declare_parameter<double>("recovery/reverse_max_sec", 3.0);
-    reverse_min_dist_ = this->declare_parameter<double>("recovery/reverse_min_dist_m", 0.3);
-    resume_speed_cap_ = this->declare_parameter<double>("recovery/resume_speed_cap_mps", 2.0);
-    resume_cap_sec_ = this->declare_parameter<double>("recovery/resume_cap_sec", 1.5);
+    // Parameters from the supplied ETH Forza MAP_Controller.
+    t_clip_min_ = this->declare_parameter<double>("map/t_clip_min", 0.7);
+    t_clip_max_ = this->declare_parameter<double>("map/t_clip_max", 8.0);
+    m_l1_ = this->declare_parameter<double>("map/m_l1", 0.47);
+    q_l1_ = this->declare_parameter<double>("map/q_l1", -0.2);
+    speed_lookahead_ = this->declare_parameter<double>("map/speed_lookahead", 0.25);
+    // Keep the ETH speed correction available, but disable it for initial
+    // steering validation so planner target speed passes through unchanged.
+    lat_err_coeff_ = this->declare_parameter<double>("map/lat_err_coeff", 0.0);
+    acc_scaler_for_steer_ = this->declare_parameter<double>(
+      "map/acc_scaler_for_steer", 1.0);
+    dec_scaler_for_steer_ = this->declare_parameter<double>(
+      "map/dec_scaler_for_steer", 1.0);
+    start_scale_speed_ = this->declare_parameter<double>("map/start_scale_speed", 6.5);
+    end_scale_speed_ = this->declare_parameter<double>("map/end_scale_speed", 10.0);
+    downscale_factor_ = this->declare_parameter<double>("map/downscale_factor", 0.5);
+    speed_lookahead_for_steer_ = this->declare_parameter<double>(
+      "map/speed_lookahead_for_steer", 0.0);
+    max_lateral_error_ = this->declare_parameter<double>("map/max_lateral_error_m", 0.5);
+    max_curvature_reference_ = this->declare_parameter<double>(
+      "map/max_curvature_reference", 0.8);
+    velocity_steer_gain_max_ = this->declare_parameter<double>(
+      "map/velocity_steer_gain_max", 1.0);
 
-    auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-    s_wpnts_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
-      wpnt_topic, qos,
-      std::bind(&ControlNode::CallbackWaypoints, this, std::placeholders::_1));
-    s_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      odom_topic, qos,
-      std::bind(&ControlNode::CallbackOdom, this, std::placeholders::_1));
-    s_estop_ = this->create_subscription<std_msgs::msg::Bool>(
-      estop_topic, qos,
-      std::bind(&ControlNode::CallbackEstop, this, std::placeholders::_1));
+    // Vehicle limits and the only non-ETH speed multiplier.
+    wheelbase_ = this->declare_parameter<double>("vehicle/wheelbase_m", 0.33);
+    max_speed_ = this->declare_parameter<double>("vehicle/max_speed_mps", 4.0);
+    max_steering_angle_ = this->declare_parameter<double>(
+      "vehicle/max_steering_angle_rad", 0.4189);
+    // Conservative initial value. Replace with a measured steering-system rate
+    // before increasing real-car speed.
+    max_steering_rate_ = this->declare_parameter<double>(
+      "vehicle/max_steering_rate_radps", 2.0);
+    speed_scale_ = this->declare_parameter<double>("vehicle/speed_scale", 1.0);
 
-    p_cmd_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(
-      ackermann_topic, qos);
+    validate_parameters();
+    load_steering_lookup();
 
-    srv_mode_ = this->create_service<example_interfaces::srv::Trigger>(
+    const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    waypoint_sub_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+      waypoint_topic, reliable_qos,
+      std::bind(&ControlNode::waypoint_callback, this, std::placeholders::_1));
+    odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      odom_topic, reliable_qos,
+      std::bind(&ControlNode::odom_callback, this, std::placeholders::_1));
+    frenet_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      frenet_odom_topic, reliable_qos,
+      std::bind(&ControlNode::frenet_odom_callback, this, std::placeholders::_1));
+    imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
+      imu_topic, reliable_qos,
+      std::bind(&ControlNode::imu_callback, this, std::placeholders::_1));
+    estop_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+      estop_topic, reliable_qos,
+      std::bind(&ControlNode::estop_callback, this, std::placeholders::_1));
+
+    command_pub_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(
+      output_topic, reliable_qos);
+    lookahead_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+      "/control/lookahead_point", reliable_qos);
+    mode_service_ = this->create_service<example_interfaces::srv::Trigger>(
       service_name,
-      std::bind(&ControlNode::CallbackSetMode, this,
-                std::placeholders::_1, std::placeholders::_2));
+      std::bind(
+        &ControlNode::set_mode_callback, this,
+        std::placeholders::_1, std::placeholders::_2));
 
-    t_control_ = this->create_wall_timer(
-      std::chrono::milliseconds((int64_t)(1000 / control_rate_)),
-      [this]() { this->Run(); });
+    control_timer_ = this->create_wall_timer(
+      std::chrono::duration<double>(1.0 / control_rate_),
+      std::bind(&ControlNode::main_loop, this));
 
-    RCLCPP_INFO(this->get_logger(),
-      "Control node ready: odom=%s -> %s @ %.0f Hz, autonomous=%s, "
-      "speed_scale=%.2f max_speed=%.1f m/s",
-      odom_topic.c_str(), ackermann_topic.c_str(), control_rate_,
-      autonomous_ ? "ON" : "OFF (call /control/set_mode)", speed_scale_, max_speed_);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "ETH MAP controller ready: %s + %s -> %s @ %.1f Hz, autonomous=%s",
+      waypoint_topic.c_str(), odom_topic.c_str(), output_topic.c_str(), control_rate_,
+      autonomous_ ? "ON" : "OFF");
   }
 
 private:
-  void CallbackWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg)
+  void validate_parameters()
   {
-    if (msg->wpnts.empty()) {
-      return;
-    }
-    std::lock_guard<std::mutex> lock(mutex_wpnts_);
-    wpnts_ = msg->wpnts;
-    wpnts_stamp_ = this->now();
+    control_rate_ = std::max(control_rate_, 1.0);
+    t_clip_min_ = std::max(t_clip_min_, 0.01);
+    t_clip_max_ = std::max(t_clip_max_, t_clip_min_);
+    max_lateral_error_ = std::max(max_lateral_error_, 0.001);
+    max_curvature_reference_ = std::max(max_curvature_reference_, 0.001);
+    max_speed_ = std::max(max_speed_, 0.0);
+    max_steering_angle_ = std::max(max_steering_angle_, 0.0);
+    max_steering_rate_ = std::max(max_steering_rate_, 0.01);
+    lat_err_coeff_ = std::clamp(lat_err_coeff_, 0.0, 1.0);
+    downscale_factor_ = std::clamp(downscale_factor_, 0.0, 1.0);
+    velocity_steer_gain_max_ = std::max(velocity_steer_gain_max_, 1.0);
   }
 
-  void CallbackOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
+  void load_steering_lookup()
   {
-    std::lock_guard<std::mutex> lock(mutex_odom_);
+    auto lookup_file = this->declare_parameter<std::string>("map/steering_lut_file", "");
+    if (lookup_file.empty()) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "map/steering_lut_file is empty; using the bicycle-model inverse until a "
+        "vehicle-specific ETH steering LUT is supplied");
+      return;
+    }
+
+    if (lookup_file.front() != '/') {
+      try {
+        lookup_file = ament_index_cpp::get_package_share_directory("control_pkg") +
+          "/config/steering_lookup/" + lookup_file;
+      } catch (const std::exception & exception) {
+        RCLCPP_ERROR(
+          this->get_logger(), "Could not resolve control_pkg share directory: %s",
+          exception.what());
+        return;
+      }
+    }
+    steer_lookup_.load(lookup_file, this->get_logger());
+  }
+
+  void waypoint_callback(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    waypoints_ = msg->wpnts;
+    waypoint_frame_ = msg->header.frame_id;
+    waypoint_stamp_ = this->now();
+  }
+
+  void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
     odom_ = *msg;
+    odom_stamp_ = this->now();
     has_odom_ = true;
   }
 
-  void CallbackEstop(const std_msgs::msg::Bool::SharedPtr msg)
+  void frenet_odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
-    if (msg->data && !estop_) {
-      RCLCPP_ERROR(this->get_logger(), "E-STOP activated — 즉시 정지");
-    }
-    estop_ = msg->data;
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    frenet_odom_ = *msg;
+    frenet_odom_stamp_ = this->now();
+    has_frenet_odom_ = true;
   }
 
-  void CallbackSetMode(
+  void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    for (std::size_t index = acceleration_samples_.size() - 1; index > 0; --index) {
+      acceleration_samples_[index] = acceleration_samples_[index - 1];
+    }
+    acceleration_samples_[0] = imu_acceleration_sign_ * msg->linear_acceleration.x;
+  }
+
+  void estop_callback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    estop_ = msg->data;
+    if (estop_) {
+      publish_stop();
+    }
+  }
+
+  void set_mode_callback(
     const std::shared_ptr<example_interfaces::srv::Trigger::Request> /*request*/,
     std::shared_ptr<example_interfaces::srv::Trigger::Response> response)
   {
     autonomous_ = !autonomous_;
-    mode_ = Mode::kTrack;
-    stuck_since_valid_ = false;
+    curr_steering_angle_ = 0.0;
+    last_control_time_.reset();
     if (!autonomous_) {
-      // OFF 전환: 마지막 속도 명령이 유지되지 않도록 정지를 한 번 발행 후 침묵
-      PublishStop();
+      publish_stop();
     }
     response->success = true;
     response->message = autonomous_ ? "autonomous ON" : "autonomous OFF";
-    RCLCPP_WARN(this->get_logger(), "Mode toggled: %s", response->message.c_str());
+    RCLCPP_WARN(this->get_logger(), "Control mode: %s", response->message.c_str());
   }
 
-  void PublishStop()
+  void main_loop()
   {
-    ackermann_msgs::msg::AckermannDriveStamped cmd;
-    cmd.header.stamp = this->now();
-    cmd.header.frame_id = "base_link";
-    p_cmd_->publish(cmd);
-  }
-
-  // 차량 헤딩과 로컬 경로 진행 방향의 각도차 [-pi, pi]
-  double PathHeadingError(const std::vector<ae_hyu_msgs::msg::Wpnt> & wpnts,
-                          double cx, double cy, double yaw) const
-  {
-    size_t nearest = 0;
-    double best = std::numeric_limits<double>::max();
-    for (size_t i = 0; i < wpnts.size(); ++i) {
-      double dx = wpnts[i].x_m - cx;
-      double dy = wpnts[i].y_m - cy;
-      double d2 = dx * dx + dy * dy;
-      if (d2 < best) {
-        best = d2;
-        nearest = i;
-      }
-    }
-    size_t ahead = std::min(nearest + 5, wpnts.size() - 1);  // ~0.5m 앞
-    if (ahead == nearest) {
-      return 0.0;
-    }
-    double path_yaw = std::atan2(wpnts[ahead].y_m - wpnts[nearest].y_m,
-                                 wpnts[ahead].x_m - wpnts[nearest].x_m);
-    double err = path_yaw - yaw;
-    while (err > M_PI) err -= 2.0 * M_PI;
-    while (err < -M_PI) err += 2.0 * M_PI;
-    return err;
-  }
-
-  void Run()
-  {
-    // E-stop: 모드와 무관하게 정지 명령을 계속 발행
     if (estop_) {
-      PublishStop();
+      publish_stop();
       return;
     }
-    // 수동 모드: 발행 안 함 (teleop이 /ackermann_cmd를 소유)
     if (!autonomous_) {
       return;
     }
-    if (!has_odom_) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                           "Waiting for odom...");
+
+    std::vector<ae_hyu_msgs::msg::Wpnt> waypoints;
+    nav_msgs::msg::Odometry odom;
+    nav_msgs::msg::Odometry frenet_odom;
+    std::array<double, 10> acceleration_samples;
+    std::string waypoint_frame;
+    rclcpp::Time waypoint_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time odom_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time frenet_odom_stamp(0, 0, RCL_ROS_TIME);
+    bool has_odom = false;
+    bool has_frenet_odom = false;
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      waypoints = waypoints_;
+      odom = odom_;
+      frenet_odom = frenet_odom_;
+      acceleration_samples = acceleration_samples_;
+      waypoint_frame = waypoint_frame_;
+      waypoint_stamp = waypoint_stamp_;
+      odom_stamp = odom_stamp_;
+      frenet_odom_stamp = frenet_odom_stamp_;
+      has_odom = has_odom_;
+      has_frenet_odom = has_frenet_odom_;
+    }
+
+    const auto now = this->now();
+    if (waypoints.size() < 2 || (now - waypoint_stamp).seconds() > waypoint_timeout_) {
+      warn_and_stop("Local waypoints missing or stale");
+      return;
+    }
+    if (!has_odom || (now - odom_stamp).seconds() > odom_timeout_) {
+      warn_and_stop("Map odometry missing or stale");
+      return;
+    }
+    if (!has_frenet_odom ||
+      (now - frenet_odom_stamp).seconds() > frenet_odom_timeout_)
+    {
+      warn_and_stop("Frenet odometry missing or stale");
       return;
     }
 
-    // 최신 상태 복사
-    nav_msgs::msg::Odometry odom;
-    {
-      std::lock_guard<std::mutex> lock(mutex_odom_);
-      odom = odom_;
-    }
-    std::vector<ae_hyu_msgs::msg::Wpnt> wpnts;
-    {
-      std::lock_guard<std::mutex> lock(mutex_wpnts_);
-      if (wpnts_.empty() ||
-          (this->now() - wpnts_stamp_).seconds() > wpnt_timeout_) {
-        PublishStop();  // 로컬 경로 두절 -> 안전 정지
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                             "Local waypoints stale/missing -> stop");
-        return;
-      }
-      wpnts = wpnts_;
-    }
+    const Point2D position{odom.pose.pose.position.x, odom.pose.pose.position.y};
+    const double yaw = yaw_from_quaternion(odom.pose.pose.orientation);
+    const double speed_now = odom.twist.twist.linear.x;
+    const Point2D velocity{
+      std::cos(yaw) * speed_now,
+      std::sin(yaw) * speed_now};
 
-    double cx = odom.pose.pose.position.x;
-    double cy = odom.pose.pose.position.y;
-    const auto & q = odom.pose.pose.orientation;
-    double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
-                            1.0 - 2.0 * (q.y * q.y + q.z * q.z));
-    double v = odom.twist.twist.linear.x;
-    rclcpp::Time t = this->now();
-
-    ackermann_msgs::msg::AckermannDriveStamped cmd;
-    cmd.header.stamp = t;
-    cmd.header.frame_id = "base_link";
-
-    // --- REVERSE: 스턱 복구 중 ---
-    if (mode_ == Mode::kReverse) {
-      double heading_err = PathHeadingError(wpnts, cx, cy, yaw);
-      double reversed = std::hypot(cx - reverse_start_x_, cy - reverse_start_y_);
-      double elapsed = (t - reverse_start_t_).seconds();
-      bool done = (std::abs(heading_err) < 0.8 && reversed > reverse_min_dist_) ||
-                  elapsed > reverse_max_sec_;
-      if (done) {
-        mode_ = Mode::kTrack;
-        stuck_since_valid_ = false;
-        resume_until_ = t + rclcpp::Duration::from_seconds(resume_cap_sec_);
-        RCLCPP_INFO(this->get_logger(),
-          "복구 완료: %.2fm 후진, heading_err=%.2frad — 주행 재개", reversed, heading_err);
-      } else {
-        // 후진 시 yaw_rate = v/L*tan(δ), v<0 이므로 δ는 목표 회전의 반대 부호
-        cmd.drive.steering_angle =
-          (heading_err > 0 ? -1.0 : 1.0) * std::min(max_steer_, 0.35);
-        cmd.drive.speed = -std::abs(reverse_speed_);
-        p_cmd_->publish(cmd);
-        return;
+    const double nominal_dt = 1.0 / control_rate_;
+    double control_dt = nominal_dt;
+    if (last_control_time_.has_value()) {
+      const double measured_dt = (now - *last_control_time_).seconds();
+      if (std::isfinite(measured_dt) && measured_dt > 0.0) {
+        // Bound timer anomalies while retaining normal scheduling jitter.
+        control_dt = std::clamp(measured_dt, 0.25 * nominal_dt, 4.0 * nominal_dt);
       }
     }
+    last_control_time_ = now;
 
-    // --- TRACK: pure pursuit ---
-    double la = std::clamp(t_lookahead_ * std::abs(v), min_lookahead_, max_lookahead_);
+    const auto lateral_error_result = calc_lateral_error_norm(frenet_odom);
+    const double lat_error_norm = lateral_error_result.first;
+    const double lateral_error = lateral_error_result.second;
 
-    // 로컬 경로는 차량 앞으로 정렬돼 있음 -> lookahead 이상 떨어진 첫 점
-    size_t target_idx = wpnts.size() - 1;
-    for (size_t i = 0; i < wpnts.size(); ++i) {
-      double dx = wpnts[i].x_m - cx;
-      double dy = wpnts[i].y_m - cy;
-      if (std::hypot(dx, dy) >= la) {
-        target_idx = i;
-        break;
-      }
+    // LONGITUDINAL CONTROL: same order as MAP_Controller.main_loop().
+    double speed_command = calc_speed_command(
+      position, velocity, waypoints, lat_error_norm);
+
+    // LATERAL CONTROL: L1 point -> lateral acceleration -> steering lookup.
+    const auto l1_result = calc_l1_point(
+      position, waypoints, speed_now, lateral_error);
+    const Point2D l1_point = l1_result.first;
+    const double l1_distance = l1_result.second;
+    double steering_angle = calc_steering_angle(
+      position, l1_point, l1_distance, yaw, lat_error_norm, velocity,
+      waypoints, speed_now, acceleration_samples, control_dt);
+
+    if (!std::isfinite(speed_command) || !std::isfinite(steering_angle)) {
+      RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "MAP controller produced a non-finite command -> stop");
+      publish_stop();
+      return;
     }
-    double dx = wpnts[target_idx].x_m - cx;
-    double dy = wpnts[target_idx].y_m - cy;
-    double y_b = -dx * std::sin(yaw) + dy * std::cos(yaw);
-    double L = std::max(std::hypot(dx, dy), 1e-3);
-    double curvature = 2.0 * y_b / (L * L);
-    double steer = std::atan(wheelbase_ * curvature);
 
-    double speed = wpnts[target_idx].vx_mps * speed_scale_;
-    speed = std::min(speed, max_speed_);            // 하드웨어 상한
-    if (resume_until_.has_value() && t < *resume_until_) {
-      speed = std::min(speed, resume_speed_cap_);   // 복구 직후 감속 재가속
-    }
+    speed_command = std::clamp(speed_command * speed_scale_, 0.0, max_speed_);
+    steering_angle = std::clamp(
+      steering_angle, -max_steering_angle_, max_steering_angle_);
 
-    cmd.drive.steering_angle = std::clamp(steer, -max_steer_, max_steer_);
-    cmd.drive.speed = speed;
-    p_cmd_->publish(cmd);
+    ackermann_msgs::msg::AckermannDriveStamped command;
+    command.header.stamp = now;
+    command.header.frame_id = "base_link";
+    command.drive.speed = static_cast<float>(speed_command);
+    command.drive.acceleration = 0.0F;
+    command.drive.jerk = 0.0F;
+    command.drive.steering_angle = static_cast<float>(steering_angle);
+    command_pub_->publish(command);
 
-    // --- 스턱 감지: 전진 명령 중인데 실제로 못 움직임 ---
-    if (enable_recovery_ && speed > 0.3 && std::abs(v) < 0.1) {
-      if (!stuck_since_valid_) {
-        stuck_since_ = t;
-        stuck_since_valid_ = true;
-      } else if ((t - stuck_since_).seconds() > stuck_detect_sec_) {
-        mode_ = Mode::kReverse;
-        reverse_start_t_ = t;
-        reverse_start_x_ = cx;
-        reverse_start_y_ = cy;
-        stuck_since_valid_ = false;
-        RCLCPP_WARN(this->get_logger(),
-          "벽 충돌/스턱 감지 (cmd=%.1f m/s, 실제=%.2f m/s) — 후진 복구 시작", speed, v);
-      }
-    } else {
-      stuck_since_valid_ = false;
-    }
+    geometry_msgs::msg::PointStamped lookahead;
+    lookahead.header.stamp = now;
+    lookahead.header.frame_id = waypoint_frame.empty() ? odom.header.frame_id : waypoint_frame;
+    lookahead.point.x = l1_point.x;
+    lookahead.point.y = l1_point.y;
+    lookahead_pub_->publish(lookahead);
   }
 
-  enum class Mode { kTrack, kReverse };
+  std::pair<double, double> calc_lateral_error_norm(
+    const nav_msgs::msg::Odometry & frenet_odom) const
+  {
+    // Original implementation: lateral_error = abs(position_in_map_frenet[1]).
+    const double lateral_error = std::abs(frenet_odom.pose.pose.position.y);
+    const double clipped_error = std::clamp(lateral_error, 0.0, max_lateral_error_);
+    const double lat_error_norm = 0.5 * clipped_error / max_lateral_error_;
+    return {lat_error_norm, lateral_error};
+  }
+
+  double calc_speed_command(
+    const Point2D & position,
+    const Point2D & velocity,
+    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    double lat_error_norm) const
+  {
+    const Point2D lookahead_position{
+      position.x + velocity.x * speed_lookahead_,
+      position.y + velocity.y * speed_lookahead_};
+    const std::size_t lookahead_index = nearest_waypoint(lookahead_position, waypoints);
+    double speed_command = waypoints[lookahead_index].vx_mps;
+    speed_command = speed_adjust_lat_err(speed_command, lat_error_norm);
+    return speed_command;
+  }
+
+  std::pair<Point2D, double> calc_l1_point(
+    const Point2D & position,
+    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    double speed_now,
+    double lateral_error)
+  {
+    idx_nearest_waypoint_ = nearest_waypoint(position, waypoints);
+
+    if (waypoints.size() - idx_nearest_waypoint_ > 2) {
+      double curvature_sum = 0.0;
+      for (std::size_t index = idx_nearest_waypoint_; index < waypoints.size(); ++index) {
+        curvature_sum += std::abs(waypoints[index].kappa_radpm);
+      }
+      curvature_waypoints_ = curvature_sum /
+        static_cast<double>(waypoints.size() - idx_nearest_waypoint_);
+    } else {
+      curvature_waypoints_ = 0.0;
+    }
+
+    double l1_distance = q_l1_ + speed_now * m_l1_;
+    const double lower_bound = std::min(
+      std::max(t_clip_min_, std::sqrt(2.0) * lateral_error), t_clip_max_);
+    l1_distance = std::clamp(l1_distance, lower_bound, t_clip_max_);
+
+    return {
+      waypoint_at_distance_before_car(l1_distance, waypoints, idx_nearest_waypoint_),
+      l1_distance};
+  }
+
+  double calc_steering_angle(
+    const Point2D & position,
+    const Point2D & l1_point,
+    double l1_distance,
+    double yaw,
+    double lat_error_norm,
+    const Point2D & velocity,
+    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    double speed_now,
+    const std::array<double, 10> & acceleration_samples,
+    double control_dt)
+  {
+    const Point2D steering_lookahead_position{
+      position.x + velocity.x * speed_lookahead_for_steer_,
+      position.y + velocity.y * speed_lookahead_for_steer_};
+    const std::size_t steering_lookahead_index =
+      nearest_waypoint(steering_lookahead_position, waypoints);
+    const double steering_lookahead_speed = waypoints[steering_lookahead_index].vx_mps;
+    const double speed_for_lookup =
+      speed_adjust_lat_err(steering_lookahead_speed, lat_error_norm);
+
+    const Point2D l1_vector{l1_point.x - position.x, l1_point.y - position.y};
+    const double l1_vector_norm = std::hypot(l1_vector.x, l1_vector.y);
+    double eta = 0.0;
+    if (l1_vector_norm <= kEpsilon) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Norm of L1 vector is zero; eta set to zero");
+    } else {
+      const double sin_eta = std::clamp(
+        (-std::sin(yaw) * l1_vector.x + std::cos(yaw) * l1_vector.y) /
+        l1_vector_norm, -1.0, 1.0);
+      eta = std::asin(sin_eta);
+    }
+
+    double lateral_acceleration = 0.0;
+    if (l1_distance > kEpsilon && std::abs(std::sin(eta)) > kEpsilon) {
+      lateral_acceleration =
+        2.0 * speed_for_lookup * speed_for_lookup / l1_distance * std::sin(eta);
+    }
+
+    double steering_angle = lookup_steer_angle(lateral_acceleration, speed_for_lookup);
+    steering_angle = acc_scaling(steering_angle, acceleration_samples);
+    steering_angle = speed_steer_scaling(steering_angle, speed_for_lookup);
+    steering_angle *= std::clamp(
+      1.0 + speed_now / 10.0, 1.0, velocity_steer_gain_max_);
+
+    const double max_steering_delta = max_steering_rate_ * control_dt;
+    if (std::abs(steering_angle - curr_steering_angle_) > max_steering_delta) {
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "MAP steering rate clipped");
+    }
+    steering_angle = std::clamp(
+      steering_angle,
+      curr_steering_angle_ - max_steering_delta,
+      curr_steering_angle_ + max_steering_delta);
+    steering_angle = std::clamp(
+      steering_angle, -max_steering_angle_, max_steering_angle_);
+    curr_steering_angle_ = steering_angle;
+    return steering_angle;
+  }
+
+  double lookup_steer_angle(double lateral_acceleration, double speed) const
+  {
+    if (steer_lookup_.loaded()) {
+      return steer_lookup_.lookup_steer_angle(lateral_acceleration, speed);
+    }
+
+    // a_y = v^2 * tan(delta) / wheelbase. This temporary inverse replaces only
+    // the vehicle-specific LUT, not the ETH MAP/L1 guidance calculation.
+    if (std::abs(speed) <= 0.05) {
+      return 0.0;
+    }
+    return std::atan(wheelbase_ * lateral_acceleration / (speed * speed));
+  }
+
+  double acc_scaling(
+    double steering_angle,
+    const std::array<double, 10> & acceleration_samples) const
+  {
+    double mean_acceleration = 0.0;
+    for (const double acceleration : acceleration_samples) {
+      mean_acceleration += acceleration;
+    }
+    mean_acceleration /= static_cast<double>(acceleration_samples.size());
+
+    if (mean_acceleration >= 1.0) {
+      steering_angle *= acc_scaler_for_steer_;
+    } else if (mean_acceleration <= -1.0) {
+      steering_angle *= dec_scaler_for_steer_;
+    }
+    return steering_angle;
+  }
+
+  double speed_steer_scaling(double steering_angle, double speed) const
+  {
+    const double speed_difference = std::max(0.1, end_scale_speed_ - start_scale_speed_);
+    const double factor = 1.0 - std::clamp(
+      (speed - start_scale_speed_) / speed_difference, 0.0, 1.0) *
+      downscale_factor_;
+    return steering_angle * factor;
+  }
+
+  double speed_adjust_lat_err(double global_speed, double lat_error_norm) const
+  {
+    lat_error_norm *= 2.0;
+    const double curvature = std::clamp(
+      2.0 * (curvature_waypoints_ / max_curvature_reference_) - 2.0,
+      0.0, 1.0);
+    global_speed *=
+      1.0 - lat_err_coeff_ + lat_err_coeff_ * std::exp(-lat_error_norm * curvature);
+    return global_speed;
+  }
+
+  std::size_t nearest_waypoint(
+    const Point2D & position,
+    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints) const
+  {
+    std::size_t nearest_index = 0;
+    double nearest_squared_distance = std::numeric_limits<double>::max();
+    for (std::size_t index = 0; index < waypoints.size(); ++index) {
+      const double dx = position.x - waypoints[index].x_m;
+      const double dy = position.y - waypoints[index].y_m;
+      const double squared_distance = dx * dx + dy * dy;
+      if (squared_distance < nearest_squared_distance) {
+        nearest_squared_distance = squared_distance;
+        nearest_index = index;
+      }
+    }
+    return nearest_index;
+  }
+
+  Point2D waypoint_at_distance_before_car(
+    double requested_distance,
+    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    std::size_t waypoint_behind_car) const
+  {
+    // /local_waypoints is an ordered, forward-only window. Accumulate its
+    // actual Cartesian segment lengths and deliberately do not wrap the local
+    // vector: the planner already handles global-track wrap-around when it
+    // constructs this window.
+    const double target_distance = std::max(0.0, requested_distance);
+    if (target_distance <= kEpsilon) {
+      return {
+        waypoints[waypoint_behind_car].x_m,
+        waypoints[waypoint_behind_car].y_m};
+    }
+    double accumulated_distance = 0.0;
+    for (std::size_t index = waypoint_behind_car;
+      index + 1 < waypoints.size(); ++index)
+    {
+      accumulated_distance += std::hypot(
+        waypoints[index + 1].x_m - waypoints[index].x_m,
+        waypoints[index + 1].y_m - waypoints[index].y_m);
+      if (accumulated_distance >= target_distance) {
+        return {waypoints[index + 1].x_m, waypoints[index + 1].y_m};
+      }
+    }
+
+    // The local planner did not provide enough horizon for the requested L1.
+    // Use its final forward point rather than wrapping to a point behind the car.
+    return {waypoints.back().x_m, waypoints.back().y_m};
+  }
+
+  void warn_and_stop(const char * reason)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 2000, "%s -> stop", reason);
+    publish_stop();
+  }
+
+  void publish_stop()
+  {
+    if (!command_pub_) {
+      return;
+    }
+    curr_steering_angle_ = 0.0;
+    last_control_time_.reset();
+    ackermann_msgs::msg::AckermannDriveStamped command;
+    command.header.stamp = this->now();
+    command.header.frame_id = "base_link";
+    command_pub_->publish(command);
+  }
 
   // Parameters
   double control_rate_{40.0};
-  double t_lookahead_{0.5};
-  double min_lookahead_{1.2};
-  double max_lookahead_{3.0};
+  double waypoint_timeout_{0.5};
+  double odom_timeout_{0.5};
+  double frenet_odom_timeout_{0.5};
+  double imu_acceleration_sign_{-1.0};
+  double t_clip_min_{0.7};
+  double t_clip_max_{8.0};
+  double m_l1_{0.47};
+  double q_l1_{-0.2};
+  double speed_lookahead_{0.25};
+  double lat_err_coeff_{0.0};
+  double acc_scaler_for_steer_{1.0};
+  double dec_scaler_for_steer_{1.0};
+  double start_scale_speed_{6.5};
+  double end_scale_speed_{10.0};
+  double downscale_factor_{0.5};
+  double speed_lookahead_for_steer_{0.0};
+  double max_lateral_error_{0.5};
+  double max_curvature_reference_{0.8};
+  double velocity_steer_gain_max_{1.0};
   double wheelbase_{0.33};
-  double max_steer_{0.4189};
-  double speed_scale_{0.5};
   double max_speed_{4.0};
-  double wpnt_timeout_{0.5};
-  bool enable_recovery_{true};
-  double stuck_detect_sec_{0.6};
-  double reverse_speed_{1.2};
-  double reverse_max_sec_{3.0};
-  double reverse_min_dist_{0.3};
-  double resume_speed_cap_{2.0};
-  double resume_cap_sec_{1.5};
+  double max_steering_angle_{0.4189};
+  double max_steering_rate_{2.0};
+  double speed_scale_{1.0};
 
-  // State
+  // Controller state
   bool autonomous_{false};
   bool estop_{false};
-  Mode mode_{Mode::kTrack};
-  std::vector<ae_hyu_msgs::msg::Wpnt> wpnts_;
-  rclcpp::Time wpnts_stamp_{0, 0, RCL_ROS_TIME};
-  nav_msgs::msg::Odometry odom_;
   bool has_odom_{false};
-  bool stuck_since_valid_{false};
-  rclcpp::Time stuck_since_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time reverse_start_t_{0, 0, RCL_ROS_TIME};
-  double reverse_start_x_{0.0};
-  double reverse_start_y_{0.0};
-  std::optional<rclcpp::Time> resume_until_;
-  std::mutex mutex_wpnts_;
-  std::mutex mutex_odom_;
+  bool has_frenet_odom_{false};
+  double curr_steering_angle_{0.0};
+  double curvature_waypoints_{0.0};
+  std::size_t idx_nearest_waypoint_{0};
+  std::optional<rclcpp::Time> last_control_time_;
+  LookupSteerAngle steer_lookup_;
 
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_wpnts_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_odom_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr s_estop_;
-  rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr p_cmd_;
-  rclcpp::Service<example_interfaces::srv::Trigger>::SharedPtr srv_mode_;
-  rclcpp::TimerBase::SharedPtr t_control_;
+  // Shared input data
+  std::mutex data_mutex_;
+  std::vector<ae_hyu_msgs::msg::Wpnt> waypoints_;
+  nav_msgs::msg::Odometry odom_;
+  nav_msgs::msg::Odometry frenet_odom_;
+  std::array<double, 10> acceleration_samples_{};
+  std::string waypoint_frame_;
+  rclcpp::Time waypoint_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time odom_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time frenet_odom_stamp_{0, 0, RCL_ROS_TIME};
+
+  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr waypoint_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr frenet_odom_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
+  rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr command_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr lookahead_pub_;
+  rclcpp::Service<example_interfaces::srv::Trigger>::SharedPtr mode_service_;
+  rclcpp::TimerBase::SharedPtr control_timer_;
 };
 
 int main(int argc, char ** argv)

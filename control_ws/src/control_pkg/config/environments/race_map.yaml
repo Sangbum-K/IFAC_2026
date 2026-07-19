@@ -1,9 +1,8 @@
-# 대회 트랙: real_car 기반, 검증 후 속도 상향용 프로파일
 control:
   ros__parameters:
     odom_topic: /pf/pose/odom
     ackermann_topic: /ackermann_cmd
     autonomous_on_start: false
-    pp/speed_scale: 0.5
-    pp/max_speed_mps: 4.0
-    recovery/enable: false
+    "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
+    "vehicle/max_speed_mps": 1.0
+    "vehicle/speed_scale": 1.0
