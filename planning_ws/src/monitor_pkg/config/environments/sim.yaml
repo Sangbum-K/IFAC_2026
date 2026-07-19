@@ -1,0 +1,6 @@
+# sim: f1tenth_gym GT odom + virtual_obstacle_node
+monitor_node:
+  ros__parameters:
+    monitor/odom_topic: /ego_racecar/odom
+    monitor/ackermann_topic: /drive
+    monitor/obstacle_topic: /perception/obstacles

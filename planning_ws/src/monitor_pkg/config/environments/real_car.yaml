@@ -1,0 +1,9 @@
+# 실차 (팀 인터페이스, 2026-07-20 기준 — planning_pkg environments/real_car.yaml 참조)
+#   odom: pose_odom_bridge가 TF(map->base_link) + /odom(vesc)으로 합성한 /pf/pose/odom
+#   drive: control_node 출력 /ackermann_cmd
+#   obstacles: perception_obstacle_bridge 출력 /perception/obstacles_frenet (spliner와 동일 소스)
+monitor_node:
+  ros__parameters:
+    monitor/odom_topic: /pf/pose/odom
+    monitor/ackermann_topic: /ackermann_cmd
+    monitor/obstacle_topic: /perception/obstacles_frenet

@@ -1,0 +1,15 @@
+# 공통 기본값 — 토픽은 sim 기준. 환경별 override는 environments/<env>.yaml
+monitor_node:
+  ros__parameters:
+    monitor/loop_rate_hz: 20.0
+
+    # Lap tracking: s < threshold 또는 s > max_s - threshold 구간을 스타트존으로 판정
+    monitor/start_zone_threshold: 1.0
+
+    # Overlay text size
+    monitor/text_size: 18
+
+    # 토픽 (sim 기본값)
+    monitor/odom_topic: /ego_racecar/odom
+    monitor/ackermann_topic: /drive
+    monitor/obstacle_topic: /perception/obstacles

@@ -1,0 +1,6 @@
+# race_map: 실차와 동일 인터페이스 (control_pkg environments/race_map.yaml과 정합)
+monitor_node:
+  ros__parameters:
+    monitor/odom_topic: /pf/pose/odom
+    monitor/ackermann_topic: /ackermann_cmd
+    monitor/obstacle_topic: /perception/obstacles_frenet

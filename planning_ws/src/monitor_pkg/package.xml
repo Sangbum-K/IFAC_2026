@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>monitor_pkg</name>
+  <version>0.0.0</version>
+  <description>주행 상태 모니터 (랩타임/CTE/속도/조향/장애물 RViz 오버레이)</description>
+  <maintainer email="sangbumm0123@gmail.com">sangbum</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>ae_hyu_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>ackermann_msgs</depend>
+  <depend>rviz_2d_overlay_msgs</depend>
+  <!-- rviz/monitor.rviz 오버레이 표시용 (노드 빌드에는 불필요) -->
+  <exec_depend>rviz_2d_overlay_plugins</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
