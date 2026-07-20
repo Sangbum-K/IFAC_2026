@@ -8,7 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(ae_hyu_msgs REQUIRED)
+find_package(f1tenth_planning_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(ackermann_msgs REQUIRED)
 find_package(rviz_2d_overlay_msgs REQUIRED)
@@ -18,7 +18,7 @@ include_directories(include)
 # 랩타임/CTE/속도/조향/장애물 요약 -> /monitor/* (10 Hz)
 add_executable(monitor_node src/monitor_node.cpp)
 ament_target_dependencies(monitor_node
-  rclcpp std_msgs ae_hyu_msgs nav_msgs ackermann_msgs rviz_2d_overlay_msgs
+  rclcpp std_msgs f1tenth_planning_msgs nav_msgs ackermann_msgs rviz_2d_overlay_msgs
 )
 
 install(TARGETS

@@ -118,17 +118,17 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     // 실차: perception 팀 원시 토픽(/perception/obstacles, f1tenth_perception_msgs,
     // laser frame)을 perception_obstacle_bridge_node가 frenet으로 변환해
     // /perception/obstacles_frenet으로 재발행 -> real_car.yaml이 이 토픽으로 override.
-    // sim은 virtual_obstacle_node가 ae_hyu 타입을 기본 토픽에 직접 발행.
+    // sim은 virtual_obstacle_node가 f1tenth_planning_msgs 타입을 기본 토픽에 직접 발행.
     this->declare_parameter("spliner/obstacle_topic", "/perception/obstacles");
     const auto obstacle_topic =
         this->get_parameter("spliner/obstacle_topic").as_string();
-    s_obstacles_ = this->create_subscription<ae_hyu_msgs::msg::ObstacleArray>(
+    s_obstacles_ = this->create_subscription<f1tenth_planning_msgs::msg::ObstacleArray>(
         obstacle_topic, qos_profile,
         std::bind(&SplinerNode::CallbackObstacles, this, std::placeholders::_1));
 
     // Predictive Spliner: opponent_predictor가 계산한 "따라잡는 시점의
     // 충돌 구간" 장애물. 같은 id의 원시 관측을 대체한다.
-    s_predicted_obstacles_ = this->create_subscription<ae_hyu_msgs::msg::ObstacleArray>(
+    s_predicted_obstacles_ = this->create_subscription<f1tenth_planning_msgs::msg::ObstacleArray>(
         "/opponent_prediction/obstacles", qos_profile,
         std::bind(&SplinerNode::CallbackPredictedObstacles, this, std::placeholders::_1));
 
@@ -136,17 +136,17 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         "/car_state/frenet/odom", qos_profile,
         std::bind(&SplinerNode::CallbackFrenetOdom, this, std::placeholders::_1));
 
-    s_global_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_global_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints", qos_profile,
         std::bind(&SplinerNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
 
     // SP(최단거리) 추월 라인 — 동적 상대 레인체인지 추월용 (없으면 기존 방식)
-    s_sp_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_sp_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints/overtaking", qos_profile,
         std::bind(&SplinerNode::CallbackSpWaypoints, this, std::placeholders::_1));
 
     // Publisher init
-    p_evasion_wpnts_ = this->create_publisher<ae_hyu_msgs::msg::WpntArray>(
+    p_evasion_wpnts_ = this->create_publisher<f1tenth_planning_msgs::msg::WpntArray>(
         "/planner/avoidance/otwpnts", qos_profile);
     p_markers_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
         "/planner/avoidance/markers", qos_profile);
@@ -162,14 +162,14 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     RCLCPP_INFO(this->get_logger(), "SplinerNode initialized successfully");
 }
 
-void SplinerNode::CallbackObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg) {
+void SplinerNode::CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_obstacles_);
     obstacles_ = *msg;
     obstacles_stamp_ = this->now();
     has_obstacles_ = true;
 }
 
-void SplinerNode::CallbackPredictedObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg) {
+void SplinerNode::CallbackPredictedObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_obstacles_);
     predicted_obstacles_ = *msg;
     predicted_stamp_ = this->now();
@@ -183,7 +183,7 @@ void SplinerNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr ms
     has_frenet_odom_ = true;
 }
 
-void SplinerNode::CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+void SplinerNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_gb_wpnts_);
     gb_wpnts_ = msg->wpnts;
     if (gb_wpnts_.size() >= 2) {
@@ -205,7 +205,7 @@ void SplinerNode::CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::Sha
     }
 }
 
-void SplinerNode::CallbackSpWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+void SplinerNode::CallbackSpWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_gb_wpnts_);
     if (msg->wpnts.empty() || has_sp_) {
         return;  // 첫 수신만 매핑 (라인은 정적)
@@ -378,7 +378,7 @@ void SplinerNode::Run() {
         return;
     }
 
-    ae_hyu_msgs::msg::ObstacleArray obs_copy;
+    f1tenth_planning_msgs::msg::ObstacleArray obs_copy;
     {
         std::lock_guard<std::mutex> lock(mutex_obstacles_);
         // perception이 멈추면 유령 장애물을 계속 피하지 않도록 stale 메시지 폐기
@@ -418,7 +418,7 @@ void SplinerNode::Run() {
         }
     }
 
-    ae_hyu_msgs::msg::WpntArray evasion_wpnts;
+    f1tenth_planning_msgs::msg::WpntArray evasion_wpnts;
     evasion_wpnts.header.stamp = this->now();
     evasion_wpnts.header.frame_id = "map";
     visualization_msgs::msg::MarkerArray mrks;
@@ -459,7 +459,7 @@ void SplinerNode::Run() {
         }
 
         auto close_obs = evasion_valid
-            ? std::vector<ae_hyu_msgs::msg::Obstacle>{}
+            ? std::vector<f1tenth_planning_msgs::msg::Obstacle>{}
             : FilterObstacles(obs_copy.obstacles);
         if (!close_obs.empty()) {
             // wrap-around을 고려한 전방 최근접 장애물 선택
@@ -578,9 +578,9 @@ void SplinerNode::Run() {
     p_markers_->publish(mrks);
 }
 
-std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::FilterObstacles(
-    const std::vector<ae_hyu_msgs::msg::Obstacle> &obstacles) const {
-    std::vector<ae_hyu_msgs::msg::Obstacle> close_obs;
+std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::FilterObstacles(
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles) const {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> close_obs;
     for (const auto &raw_obs : obstacles) {
         // 장애물의 (d) 구간이 raceline corridor(±obs_traj_tresh)와 겹칠 때만
         // 회피 대상 (d_center 기준은 폭이 넓은 클러스터의 가장자리 침범을 놓침)
@@ -600,8 +600,8 @@ std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::FilterObstacles(
     return close_obs;
 }
 
-ae_hyu_msgs::msg::Obstacle SplinerNode::PredictObstacleMovement(
-    ae_hyu_msgs::msg::Obstacle obs) const {
+f1tenth_planning_msgs::msg::Obstacle SplinerNode::PredictObstacleMovement(
+    f1tenth_planning_msgs::msg::Obstacle obs) const {
     // 동적 장애물을 고정 시간만큼 등속 전파 (ForzaETH "constant" 모드)
     if (obs.is_static || Mod(obs.s_center - cur_s_, gb_max_s_) >= lookahead_m_) {
         return obs;
@@ -619,7 +619,7 @@ ae_hyu_msgs::msg::Obstacle SplinerNode::PredictObstacleMovement(
 }
 
 std::pair<std::string, double> SplinerNode::MoreSpace(
-    const ae_hyu_msgs::msg::Obstacle &obs, int gb_idx) const {
+    const f1tenth_planning_msgs::msg::Obstacle &obs, int gb_idx) const {
     // 트랙 좌/우 빈 공간과 회피에 필요한 최소 공간 비교.
     // 목표 간격은 evasion_dist지만, 벽이 허용하는 만큼 apex를 줄여서라도
     // evasion_dist_min 이상 확보되면 회피를 시도한다 — 고정 간격을 못
@@ -646,7 +646,7 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
 
 double SplinerNode::ApexFor(
     const std::string &side,
-    const ae_hyu_msgs::msg::Obstacle &obs, int gb_idx) const {
+    const f1tenth_planning_msgs::msg::Obstacle &obs, int gb_idx) const {
     if (side == "left") {
         double wall = std::abs(gb_wpnts_[gb_idx].d_left);
         double corridor = std::abs(gb_wpnts_[gb_idx].d_left - obs.d_left);
@@ -669,8 +669,8 @@ double SplinerNode::ApexFor(
 }
 
 bool SplinerNode::DoSpline(
-    const ae_hyu_msgs::msg::Obstacle &closest_obs,
-    ae_hyu_msgs::msg::WpntArray &out_wpnts,
+    const f1tenth_planning_msgs::msg::Obstacle &closest_obs,
+    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
@@ -853,7 +853,7 @@ bool SplinerNode::DoSpline(
 
         xy[i] = FrenetToCartesian(s_wrapped, evasion_d[i]);
 
-        ae_hyu_msgs::msg::Wpnt wpnt;
+        f1tenth_planning_msgs::msg::Wpnt wpnt;
         wpnt.id = static_cast<int32_t>(i);
         wpnt.s_m = s_wrapped;
         wpnt.d_m = evasion_d[i];
@@ -909,8 +909,8 @@ bool SplinerNode::DoSpline(
 }
 
 bool SplinerNode::BuildTrailing(
-    const ae_hyu_msgs::msg::Obstacle &obs,
-    ae_hyu_msgs::msg::WpntArray &out_wpnts,
+    const f1tenth_planning_msgs::msg::Obstacle &obs,
+    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
@@ -960,7 +960,7 @@ bool SplinerNode::BuildTrailing(
         double dist = i * wpnt_dist_;
         double s = Mod(cur_s_ + dist, gb_max_s_);
         int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
-        ae_hyu_msgs::msg::Wpnt w = gb_wpnts_[gi];
+        f1tenth_planning_msgs::msg::Wpnt w = gb_wpnts_[gi];
         w.id = i;
         double d = (std::abs(cur_d_) > 0.05 && dist < d_ramp_len)
             ? cur_d_ * (1.0 - dist / d_ramp_len) : 0.0;
@@ -995,9 +995,9 @@ bool SplinerNode::BuildTrailing(
 }
 
 bool SplinerNode::BuildSpLaneChange(
-    const ae_hyu_msgs::msg::Obstacle &closest_obs,
-    const std::vector<ae_hyu_msgs::msg::Obstacle> &all_ahead,
-    ae_hyu_msgs::msg::WpntArray &out_wpnts,
+    const f1tenth_planning_msgs::msg::Obstacle &closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
@@ -1081,7 +1081,7 @@ bool SplinerNode::BuildSpLaneChange(
         }
         xy[i] = FrenetToCartesian(s, d);
 
-        ae_hyu_msgs::msg::Wpnt wpnt;
+        f1tenth_planning_msgs::msg::Wpnt wpnt;
         wpnt.id = static_cast<int32_t>(i);
         wpnt.s_m = s;
         wpnt.d_m = d;
@@ -1148,7 +1148,7 @@ double SplinerNode::SpHoldExtension(double s_from, double blend_len) const {
 
 bool SplinerNode::BuildSpExit(
     bool opp_beside, double v_floor,
-    ae_hyu_msgs::msg::WpntArray &out_wpnts,
+    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
     // 추월 마무리 경로: 상대가 회피 대상에서 사라져도 (1) 아직 옆에
     // 나란하면(opp_beside) 간격이 벌어질 때까지, (2) 코너 안이면 코너
@@ -1206,7 +1206,7 @@ bool SplinerNode::BuildSpExit(
         }
         xy[i] = FrenetToCartesian(s, d);
 
-        ae_hyu_msgs::msg::Wpnt wpnt;
+        f1tenth_planning_msgs::msg::Wpnt wpnt;
         wpnt.id = static_cast<int32_t>(i);
         wpnt.s_m = s;
         wpnt.d_m = d;
@@ -1245,7 +1245,7 @@ bool SplinerNode::BuildSpExit(
 }
 
 void SplinerNode::ClassifyObstacles(
-    std::vector<ae_hyu_msgs::msg::Obstacle> &obstacles) {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles) {
     // unicorn perception/multi_tracking.py의 정적/동적 분류 이식:
     //  1) 위치 std 투표 — 최근 관측의 std_s/std_d가 둘 다 min_std 미만이면
     //     정적 표, 하나라도 max_std 초과면 표 리셋. 정적 표 비율 >= 0.5 → 정적.
@@ -1325,8 +1325,8 @@ void SplinerNode::ClassifyObstacles(
     }
 }
 
-std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
-    std::vector<ae_hyu_msgs::msg::Obstacle> obs) const {
+std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> obs) const {
     // 사이 corridor가 cluster_gap_d보다 좁고 s 간격이 cluster_gap_s 이내인
     // 쌍을 하나의 (s,d) 박스로 반복 병합 (합쳐진 박스가 또 다른 장애물과
     // 붙으면 다시 병합 — 수렴할 때까지)
@@ -1371,9 +1371,9 @@ std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
     return obs;
 }
 
-std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::ObstaclesInLookahead(
-    const std::vector<ae_hyu_msgs::msg::Obstacle> &obstacles) const {
-    std::vector<ae_hyu_msgs::msg::Obstacle> out;
+std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ObstaclesInLookahead(
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles) const {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> out;
     for (const auto &raw : obstacles) {
         auto obs = PredictObstacleMovement(raw);
         // 장애물 몸통 일부라도 lookahead 안이면 검증 대상
@@ -1386,8 +1386,8 @@ std::vector<ae_hyu_msgs::msg::Obstacle> SplinerNode::ObstaclesInLookahead(
 }
 
 bool SplinerNode::CheckPathCollision(
-    const std::vector<ae_hyu_msgs::msg::Wpnt> &path,
-    const std::vector<ae_hyu_msgs::msg::Obstacle> &obstacles,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> &path,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles,
     int32_t exclude_id, double *blocking_s) const {
     // 경로 각 점의 (s, d)가 어떤 장애물의 확장 (s,d) 박스 안이면 충돌.
     // 횡방향은 path_check_margin만큼 확장 (차폭/오차 여유).

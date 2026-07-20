@@ -33,7 +33,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Joy
 from std_msgs.msg import String
 
-from ae_hyu_msgs.msg import WpntArray
+from f1tenth_planning_msgs.msg import WpntArray
 
 import pitwall
 

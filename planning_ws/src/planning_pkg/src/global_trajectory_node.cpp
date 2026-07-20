@@ -44,10 +44,10 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     }
 
     // Publisher init
-    p_global_waypoints_ = this->create_publisher<ae_hyu_msgs::msg::WpntArray>(
+    p_global_waypoints_ = this->create_publisher<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints", qos_profile);
     if (!overtaking_trajectory_.empty()) {
-        p_overtaking_waypoints_ = this->create_publisher<ae_hyu_msgs::msg::WpntArray>(
+        p_overtaking_waypoints_ = this->create_publisher<f1tenth_planning_msgs::msg::WpntArray>(
             "/global_waypoints/overtaking", qos_profile);
     }
 
@@ -149,15 +149,15 @@ bool GlobalTrajectoryNode::LoadTrajectoryFromCSV(const std::string& csv_filename
     }
 }
 
-ae_hyu_msgs::msg::WpntArray GlobalTrajectoryNode::BuildWpntArray(
+f1tenth_planning_msgs::msg::WpntArray GlobalTrajectoryNode::BuildWpntArray(
     const std::vector<std::vector<double>>& trajectory) const {
-    ae_hyu_msgs::msg::WpntArray waypoint_array;
+    f1tenth_planning_msgs::msg::WpntArray waypoint_array;
     waypoint_array.header.frame_id = "map";
 
     for (size_t i = 0; i < trajectory.size(); ++i) {
         const auto& row = trajectory[i];
 
-        ae_hyu_msgs::msg::Wpnt waypoint;
+        f1tenth_planning_msgs::msg::Wpnt waypoint;
         waypoint.id = static_cast<int32_t>(i);  // Sequential ID starting from 0
         waypoint.s_m = row[0];     // s_m
         waypoint.d_m = 0.0;        // d_m (set to 0 as requested)

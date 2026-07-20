@@ -85,14 +85,14 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     s_pose_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
         pose_topic, qos,
         std::bind(&RecoverySupervisorNode::CallbackPoseOdom, this, std::placeholders::_1));
-    s_local_wpnts_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_local_wpnts_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/local_waypoints", qos,
         std::bind(&RecoverySupervisorNode::CallbackLocalWaypoints, this, std::placeholders::_1));
     // 실차는 브릿지 출력(/perception/obstacles_frenet)으로 override — spliner와 동일 소스
     this->declare_parameter("recovery/obstacle_topic", std::string("/perception/obstacles"));
     const std::string obstacle_topic =
         this->get_parameter("recovery/obstacle_topic").as_string();
-    s_obstacles_ = this->create_subscription<ae_hyu_msgs::msg::ObstacleArray>(
+    s_obstacles_ = this->create_subscription<f1tenth_planning_msgs::msg::ObstacleArray>(
         obstacle_topic, qos,
         std::bind(&RecoverySupervisorNode::CallbackObstacles, this, std::placeholders::_1));
     s_estop_ = this->create_subscription<std_msgs::msg::Bool>(
@@ -133,7 +133,7 @@ void RecoverySupervisorNode::CallbackPoseOdom(const nav_msgs::msg::Odometry::Sha
     pose_stamp_ = this->now();
 }
 
-void RecoverySupervisorNode::CallbackLocalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+void RecoverySupervisorNode::CallbackLocalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     local_wpnts_ = *msg;
     has_local_ = !msg->wpnts.empty();
@@ -143,7 +143,7 @@ void RecoverySupervisorNode::CallbackLocalWaypoints(const ae_hyu_msgs::msg::Wpnt
     }
 }
 
-void RecoverySupervisorNode::CallbackObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg) {
+void RecoverySupervisorNode::CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     obstacles_ = *msg;
     obstacles_stamp_ = this->now();

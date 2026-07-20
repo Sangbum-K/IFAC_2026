@@ -26,8 +26,8 @@
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
-#include "ae_hyu_msgs/msg/obstacle_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/obstacle_array.hpp"
 
 namespace pitwall_panel
 {
@@ -73,8 +73,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_events_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_ego_status_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_opp_status_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr sub_otwpnts_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::ObstacleArray>::SharedPtr sub_pred_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr sub_otwpnts_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr sub_pred_;
 
   // --- ROS 콜백 <-> UI 공유 상태 ---
   std::mutex mutex_;

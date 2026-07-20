@@ -29,7 +29,7 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 | `scripts/sim/` | 시뮬 전용 노드 3개 (tracker/obstacle/opponent) | 완성·검증됨 |
 | `scripts/tuner/`, `scripts/lib/` | 레이스라인 튜너, pitwall 텔레메트리 | 완성 |
 | `../pitwall_panel/` | RViz Pitwall 패널 (Qt 플러그인) | 완성 |
-| `../ae_hyu_msgs/` | 공용 메시지 (Wpnt/Obstacle/BehaviorState) | 이식됨 — perception/control도 이 타입 사용 권장 |
+| `../f1tenth_planning_msgs/` | 공용 메시지 (Wpnt/Obstacle/BehaviorState) | 이식됨 — perception/control도 이 타입 사용 권장 |
 
 > **이식 노트**: 원본 `planning_ws/planner_pkg`(리포 최상위)는 헤더 4개,
 > CMakeLists.txt, planner_config.yaml, visualizer 콜백 구현 2개가 누락된
@@ -42,7 +42,7 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 
 ```bash
 cd main/planning_ws
-colcon build            # ae_hyu_msgs -> planning_pkg 순서로 자동 빌드
+colcon build            # f1tenth_planning_msgs -> planning_pkg 순서로 자동 빌드
 source install/setup.bash
 ros2 launch planning_pkg planner_stack.launch.py                 # sim (기본)
 ros2 launch planning_pkg planner_stack.launch.py odom_mode:=real # 실차
@@ -375,7 +375,7 @@ ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
 ## 포팅 TODO (통합 시 남은 작업)
 
 1. **인터페이스 확정** — spliner_node는 `/perception/obstacles`
-   (ae_hyu_msgs/ObstacleArray, Frenet s/d 필드 사용)를 구독한다. perception
+   (f1tenth_planning_msgs/ObstacleArray, Frenet s/d 필드 사용)를 구독한다. perception
    팀이 이 타입·토픽으로 발행하는지 합의 필요 (d>0 = 진행방향 왼쪽,
    장애물이 없어도 빈 배열을 주기 발행할 것 — 타임아웃 기반 안전장치와 연동).
 2. ~~planning_node 정리~~ — **해결**: control_ws의 `control_node`(C++ pure

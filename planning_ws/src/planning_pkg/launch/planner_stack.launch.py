@@ -93,10 +93,10 @@ def launch_setup(context, *args, **kwargs):
 
     # 실차 인터페이스 브릿지 (sim은 virtual_obstacle/gym GT가 대체):
     #  - perception 팀 laser-frame 장애물 -> frenet (/perception/obstacles_frenet)
-    #  - TF map->base_link + /odom -> /pf/pose/odom (localization엔 pf가 없음)
+    # /pf/pose/odom은 localization_ws particle_filter가 직접 발행 (publish_odom: 1)
+    # — 플래닝 쪽에서 별도 pose 브릿지를 띄우지 않는다 (이중 발행 금지).
     if env in ('real_car', 'race_map'):
         nodes.append(make_node('perception_obstacle_bridge_node.py'))
-        nodes.append(make_node('pose_odom_bridge_node.py'))
 
     return nodes
 

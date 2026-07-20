@@ -26,9 +26,9 @@ PlannerVisualizerNode::PlannerVisualizerNode(const std::string &node_name, const
     }
     
     // Subscribers init
-    s_global_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_global_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints", qos_profile, std::bind(&PlannerVisualizerNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
-    s_local_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_local_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/local_waypoints", qos_profile, std::bind(&PlannerVisualizerNode::CallbackLocalWaypoints, this, std::placeholders::_1));
     
     // Publisher init
@@ -52,14 +52,14 @@ PlannerVisualizerNode::~PlannerVisualizerNode() {}
 // 원본 소스에 누락되어 있던 콜백 구현 (생성자에서 bind만 되어 있었음).
 // 수신 waypoints를 저장하고 플래그를 세워 Run()의 발행 조건을 만족시킨다.
 void PlannerVisualizerNode::CallbackGlobalWaypoints(
-    const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+    const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_global_waypoints_);
     global_waypoints_ = *msg;
     b_is_global_waypoints_ = true;
 }
 
 void PlannerVisualizerNode::CallbackLocalWaypoints(
-    const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+    const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_local_waypoints_);
     local_waypoints_ = *msg;
     b_is_local_waypoints_ = true;

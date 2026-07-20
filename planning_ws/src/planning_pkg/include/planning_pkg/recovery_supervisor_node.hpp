@@ -34,8 +34,8 @@
 #include "std_msgs/msg/string.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 
-#include "ae_hyu_msgs/msg/obstacle_array.hpp"
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/obstacle_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 class RecoverySupervisorNode : public rclcpp::Node
 {
@@ -53,8 +53,8 @@ private:
 
   void CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void CallbackPoseOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
-  void CallbackLocalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
-  void CallbackObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg);
+  void CallbackLocalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
+  void CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg);
   void CallbackEStop(const std_msgs::msg::Bool::SharedPtr msg);
   void CallbackReset(const std_msgs::msg::Bool::SharedPtr msg);
   void Run();
@@ -104,8 +104,8 @@ private:
   double cur_d_{0.0};
   double cur_vs_{0.0};
   double cur_yaw_{0.0};
-  ae_hyu_msgs::msg::WpntArray local_wpnts_;
-  ae_hyu_msgs::msg::ObstacleArray obstacles_;
+  f1tenth_planning_msgs::msg::WpntArray local_wpnts_;
+  f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
   rclcpp::Time frenet_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time pose_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time obstacles_stamp_{0, 0, RCL_ROS_TIME};
@@ -116,8 +116,8 @@ private:
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_pose_odom_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_local_wpnts_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_local_wpnts_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr s_estop_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr s_reset_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr p_state_;

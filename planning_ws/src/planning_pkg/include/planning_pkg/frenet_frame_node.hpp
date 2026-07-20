@@ -16,7 +16,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 class FrenetFrameNode : public rclcpp::Node
 {
@@ -34,7 +34,7 @@ private:
   };
 
   void CallbackOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
-  void CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
+  void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void Run();
 
   void ProcessFrenetConversion(
@@ -68,7 +68,7 @@ private:
   std::mutex mutex_trajectory_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_odom_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr p_frenet_odom_;
   rclcpp::TimerBase::SharedPtr t_process_;
 };

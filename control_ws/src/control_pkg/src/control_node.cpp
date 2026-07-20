@@ -16,8 +16,8 @@
 #include <vector>
 
 #include "ackermann_msgs/msg/ackermann_drive_stamped.hpp"
-#include "ae_hyu_msgs/msg/wpnt.hpp"
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "example_interfaces/srv/trigger.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
@@ -257,7 +257,7 @@ public:
     load_steering_lookup();
 
     const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-    waypoint_sub_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    waypoint_sub_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
       waypoint_topic, reliable_qos,
       std::bind(&ControlNode::waypoint_callback, this, std::placeholders::_1));
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
@@ -335,7 +335,7 @@ private:
     steer_lookup_.load(lookup_file, this->get_logger());
   }
 
-  void waypoint_callback(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg)
+  void waypoint_callback(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg)
   {
     std::lock_guard<std::mutex> lock(data_mutex_);
     waypoints_ = msg->wpnts;
@@ -401,7 +401,7 @@ private:
       return;
     }
 
-    std::vector<ae_hyu_msgs::msg::Wpnt> waypoints;
+    std::vector<f1tenth_planning_msgs::msg::Wpnt> waypoints;
     nav_msgs::msg::Odometry odom;
     nav_msgs::msg::Odometry frenet_odom;
     std::array<double, 10> acceleration_samples;
@@ -518,7 +518,7 @@ private:
   double calc_speed_command(
     const Point2D & position,
     const Point2D & velocity,
-    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
     double lat_error_norm) const
   {
     const Point2D lookahead_position{
@@ -532,7 +532,7 @@ private:
 
   std::pair<Point2D, double> calc_l1_point(
     const Point2D & position,
-    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
     double speed_now,
     double lateral_error)
   {
@@ -566,7 +566,7 @@ private:
     double yaw,
     double lat_error_norm,
     const Point2D & velocity,
-    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
     double speed_now,
     const std::array<double, 10> & acceleration_samples,
     double control_dt)
@@ -676,7 +676,7 @@ private:
 
   std::size_t nearest_waypoint(
     const Point2D & position,
-    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints) const
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints) const
   {
     std::size_t nearest_index = 0;
     double nearest_squared_distance = std::numeric_limits<double>::max();
@@ -694,7 +694,7 @@ private:
 
   Point2D waypoint_at_distance_before_car(
     double requested_distance,
-    const std::vector<ae_hyu_msgs::msg::Wpnt> & waypoints,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
     std::size_t waypoint_behind_car) const
   {
     // /local_waypoints is an ordered, forward-only window. Accumulate its
@@ -784,7 +784,7 @@ private:
 
   // Shared input data
   std::mutex data_mutex_;
-  std::vector<ae_hyu_msgs::msg::Wpnt> waypoints_;
+  std::vector<f1tenth_planning_msgs::msg::Wpnt> waypoints_;
   nav_msgs::msg::Odometry odom_;
   nav_msgs::msg::Odometry frenet_odom_;
   std::array<double, 10> acceleration_samples_{};
@@ -793,7 +793,7 @@ private:
   rclcpp::Time odom_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time frenet_odom_stamp_{0, 0, RCL_ROS_TIME};
 
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr waypoint_sub_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr waypoint_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr frenet_odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;

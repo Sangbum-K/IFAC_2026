@@ -27,14 +27,8 @@ perception_obstacle_bridge_node:
     bridge/track_forget_sec: 2.0
     bridge/tf_timeout_sec: 0.1
 
-pose_odom_bridge_node:
-  ros__parameters:
-    pose_bridge/rate_hz: 40.0
-    pose_bridge/map_frame: map
-    pose_bridge/base_frame: base_link
-    pose_bridge/vel_odom_topic: /odom
-    pose_bridge/output_topic: /pf/pose/odom
-    pose_bridge/stale_sec: 0.5
+# (제거) pose_odom_bridge_node: /pf/pose/odom은 localization particle_filter가 직접 발행.
+# 당일 맵 사용 시 particle_filter/config/localize.yaml의 map_server.map도 당일 맵으로 교체할 것.
 
 spliner_node:
   ros__parameters:

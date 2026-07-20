@@ -196,17 +196,17 @@ void PitwallPanel::onInitialize()
       std::lock_guard<std::mutex> lock(mutex_);
       opp_status_ = msg->data;
     });
-  sub_otwpnts_ = node_->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+  sub_otwpnts_ = node_->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
     "/planner/avoidance/otwpnts", 10,
-    [this](const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+    [this](const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
       if (!msg->wpnts.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
         last_otwpnts_ = node_->now();
       }
     });
-  sub_pred_ = node_->create_subscription<ae_hyu_msgs::msg::ObstacleArray>(
+  sub_pred_ = node_->create_subscription<f1tenth_planning_msgs::msg::ObstacleArray>(
     "/opponent_prediction/obstacles", 10,
-    [this](const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg) {
+    [this](const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg) {
       if (!msg->obstacles.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
         last_pred_ = node_->now();

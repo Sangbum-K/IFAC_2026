@@ -1,7 +1,7 @@
 """상대 차량 모델 + 관측(perception) 모사.
 
 상대는 raceline(d=0)을 speed_factor 배율 속도로 정확히 따라간다고 가정.
-관측은 ae_hyu_msgs/Obstacle.msg 필드명 그대로의 dict로 나가므로,
+관측은 f1tenth_planning_msgs/Obstacle.msg 필드명 그대로의 dict로 나가므로,
 실차에서는 이 부분만 perception/tracking 노드 출력으로 갈아끼우면 된다.
 노이즈/지연 파라미터는 params.yaml의 opponent.noise.* 에서 튜닝.
 """

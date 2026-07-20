@@ -6,7 +6,7 @@ Custom message definitions for the AE-HYU autonomous vehicle system.
 
 ```bash
 # Build
-colcon build --packages-select ae_hyu_msgs
+colcon build --packages-select f1tenth_planning_msgs
 source install/setup.bash
 ```
 
@@ -50,23 +50,23 @@ Wpnt[] wpnts               # Array of waypoint messages
 Include as dependency in your `package.xml`:
 
 ```xml
-<depend>ae_hyu_msgs</depend>
+<depend>f1tenth_planning_msgs</depend>
 ```
 
 Include in your `CMakeLists.txt`:
 
 ```cmake
-find_package(ae_hyu_msgs REQUIRED)
-ament_target_dependencies(your_target ae_hyu_msgs)
+find_package(f1tenth_planning_msgs REQUIRED)
+ament_target_dependencies(your_target f1tenth_planning_msgs)
 ```
 
 Use in your code:
 
 ```cpp
-#include <ae_hyu_msgs/msg/wpnt_array.hpp>
+#include <f1tenth_planning_msgs/msg/wpnt_array.hpp>
 
 // Subscribe to waypoints
-auto waypoint_sub = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+auto waypoint_sub = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
     "/planned_waypoints", 10, callback_function);
 
 // Access waypoint data

@@ -38,9 +38,9 @@ MonitorNode::MonitorNode(const std::string &node_name, const rclcpp::NodeOptions
         odom_topic, qos_profile, std::bind(&MonitorNode::CallbackOdom, this, std::placeholders::_1));
     s_frenet_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "/car_state/frenet/odom", qos_profile, std::bind(&MonitorNode::CallbackFrenetOdom, this, std::placeholders::_1));
-    s_global_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_global_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints", qos_profile, std::bind(&MonitorNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
-    s_obstacles_ = this->create_subscription<ae_hyu_msgs::msg::ObstacleArray>(
+    s_obstacles_ = this->create_subscription<f1tenth_planning_msgs::msg::ObstacleArray>(
         obstacle_topic, qos_profile, std::bind(&MonitorNode::CallbackObstacles, this, std::placeholders::_1));
     s_steering_input_ = this->create_subscription<ackermann_msgs::msg::AckermannDriveStamped>(
         ackermann_topic, qos_profile, std::bind(&MonitorNode::CallbackSteeringInput, this, std::placeholders::_1));

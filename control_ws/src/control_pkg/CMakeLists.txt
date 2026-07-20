@@ -7,7 +7,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(ackermann_msgs REQUIRED)
-find_package(ae_hyu_msgs REQUIRED)
+find_package(f1tenth_planning_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -20,7 +20,7 @@ add_executable(control_node src/control_node.cpp)
 target_compile_features(control_node PUBLIC cxx_std_17)
 ament_target_dependencies(control_node
   ackermann_msgs
-  ae_hyu_msgs
+  f1tenth_planning_msgs
   ament_index_cpp
   example_interfaces
   geometry_msgs

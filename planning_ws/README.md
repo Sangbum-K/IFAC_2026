@@ -6,7 +6,7 @@ Pitwall 패널을 한 번에 올려 RViz로 추월/회피를 검증한다.
 
 핵심 패키지:
 - `planning_pkg` — 플래닝 스택 전체 (C++ 노드 + 시뮬/튜닝용 Python 노드)
-- `ae_hyu_msgs` — Obstacle/Wpnt 등 메시지 정의
+- `f1tenth_planning_msgs` — Obstacle/Wpnt 등 메시지 정의
 - `f1tenth_perception_msgs` — perception 팀 메시지 (팀 zip에서 벤더링, 브릿지 빌드용)
 - `pitwall_panel` — RViz 제어 패널 (RViz 플러그인)
 
@@ -23,7 +23,7 @@ ros2 launch planning_pkg planner_stack.launch.py env:=real_car
 
 | 간극 | 해결 |
 |---|---|
-| perception 팀은 `/perception/obstacles`를 **f1tenth_perception_msgs** 타입, **laser frame 카르테시안**으로 발행 — spliner는 ae_hyu frenet 타입 기대 | `perception_obstacle_bridge_node`가 TF(laser→map)+frenet 변환해 `/perception/obstacles_frenet` 발행. spliner/recovery는 `spliner/obstacle_topic`·`recovery/obstacle_topic`으로 그 토픽 구독 |
+| perception 팀은 `/perception/obstacles`를 **f1tenth_perception_msgs** 타입, **laser frame 카르테시안**으로 발행 — spliner는 f1tenth_planning_msgs frenet 타입 기대 | `perception_obstacle_bridge_node`가 TF(laser→map)+frenet 변환해 `/perception/obstacles_frenet` 발행. spliner/recovery는 `spliner/obstacle_topic`·`recovery/obstacle_topic`으로 그 토픽 구독 |
 | control·frenet(real)·recovery가 기대하는 `/pf/pose/odom`을 아무도 발행 안 함 (localization은 slam_toolbox/amcl → TF만) | `pose_odom_bridge_node`가 TF map→base_link + `/odom`(vesc) twist를 합성해 발행. TF 0.5s 두절 시 발행 중단 → control odom_timeout 정지 |
 | `environments/real_car.yaml`이 launch에서 로드되지 않았음 | `planner_stack.launch.py env:=<이름>` 인자 추가 (params.yaml 위에 override) |
 | real_car.yaml의 `spliner/stop_margin_m` 등 존재하지 않는 파라미터 | 제거 (정지 거동은 trailing_* 파라미터가 담당) |

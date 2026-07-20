@@ -10,8 +10,8 @@
 #include <ackermann_msgs/msg/ackermann_drive_stamped.hpp>
 #include <rviz_2d_overlay_msgs/msg/overlay_text.hpp>
 #include <std_msgs/msg/float32.hpp>
-#include <ae_hyu_msgs/msg/wpnt_array.hpp>
-#include <ae_hyu_msgs/msg/obstacle_array.hpp>
+#include <f1tenth_planning_msgs/msg/wpnt_array.hpp>
+#include <f1tenth_planning_msgs/msg/obstacle_array.hpp>
 #include <mutex>
 #include <vector>
 #include <limits>
@@ -38,13 +38,13 @@ class MonitorNode : public rclcpp::Node {
             i_current_frenet_odom_ = *msg;
             b_is_frenet_odom_ = true;
         }
-        inline void CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+        inline void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
             if (!msg->wpnts.empty() && !b_is_max_s_) {
                 max_s_ = msg->wpnts.back().s_m;  // Get the last s value as max_s
                 b_is_max_s_ = true;
             }
         }
-        inline void CallbackObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg) {
+        inline void CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg) {
             std::lock_guard<std::mutex> lock(mutex_obstacles_);
             i_current_obstacles_ = *msg;
             b_is_obstacles_ = true;
@@ -77,14 +77,14 @@ class MonitorNode : public rclcpp::Node {
         // Subscribers
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                    s_odom_;
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                    s_frenet_odom_;
-        rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr                s_global_waypoints_;
-        rclcpp::Subscription<ae_hyu_msgs::msg::ObstacleArray>::SharedPtr            s_obstacles_;
+        rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr                s_global_waypoints_;
+        rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr            s_obstacles_;
         rclcpp::Subscription<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr s_steering_input_;
 
         // Input
         nav_msgs::msg::Odometry                       i_current_odom_;
         nav_msgs::msg::Odometry                       i_current_frenet_odom_;
-        ae_hyu_msgs::msg::ObstacleArray               i_current_obstacles_;
+        f1tenth_planning_msgs::msg::ObstacleArray               i_current_obstacles_;
         ackermann_msgs::msg::AckermannDriveStamped    i_current_steering_input_;
 
         // Mutex

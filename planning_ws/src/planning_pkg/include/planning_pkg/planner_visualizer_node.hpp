@@ -17,7 +17,7 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 class PlannerVisualizerNode : public rclcpp::Node
 {
@@ -28,8 +28,8 @@ public:
   ~PlannerVisualizerNode() override;
 
 private:
-  void CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
-  void CallbackLocalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
+  void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
+  void CallbackLocalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void Run();
   bool LoadCenterlineFromCSV(const std::string & csv_filename);
   void PublishCenterlineMarkers();
@@ -42,15 +42,15 @@ private:
 
   // State
   std::vector<std::vector<double>> centerline_data_;  // rows: [x_m, y_m, ...]
-  ae_hyu_msgs::msg::WpntArray global_waypoints_;
+  f1tenth_planning_msgs::msg::WpntArray global_waypoints_;
   bool b_is_global_waypoints_{false};
-  ae_hyu_msgs::msg::WpntArray local_waypoints_;
+  f1tenth_planning_msgs::msg::WpntArray local_waypoints_;
   bool b_is_local_waypoints_{false};
   std::mutex mutex_global_waypoints_;
   std::mutex mutex_local_waypoints_;
 
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_local_waypoints_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_local_waypoints_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_centerline_markers_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_global_waypoints_markers_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_local_waypoints_markers_;

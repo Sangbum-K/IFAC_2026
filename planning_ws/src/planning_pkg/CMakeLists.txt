@@ -14,7 +14,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
-find_package(ae_hyu_msgs REQUIRED)
+find_package(f1tenth_planning_msgs REQUIRED)
 
 include_directories(include)
 
@@ -30,40 +30,40 @@ ament_target_dependencies(planning_node
 # raceline CSV -> /global_waypoints (2 Hz)
 add_executable(global_trajectory_node src/global_trajectory_node.cpp)
 ament_target_dependencies(global_trajectory_node
-  rclcpp ae_hyu_msgs ament_index_cpp
+  rclcpp f1tenth_planning_msgs ament_index_cpp
 )
 
 # odom -> Frenet (s, d) 변환, /car_state/frenet/odom (40 Hz)
 add_executable(frenet_frame_node src/frenet_frame_node.cpp)
 ament_target_dependencies(frenet_frame_node
-  rclcpp nav_msgs builtin_interfaces ae_hyu_msgs
+  rclcpp nav_msgs builtin_interfaces f1tenth_planning_msgs
 )
 
 # global waypoints 80개 로컬 윈도우 -> /local_waypoints (40 Hz).
 # spliner_node의 회피 궤적(/planner/avoidance/otwpnts)이 유효하면 splice
 add_executable(local_trajectory_node src/local_trajectory_node.cpp)
 ament_target_dependencies(local_trajectory_node
-  rclcpp nav_msgs ae_hyu_msgs
+  rclcpp nav_msgs f1tenth_planning_msgs
 )
 
 # 장애물 회피 스플라인 플래너 (ForzaETH/unicorn spliner C++ 포팅)
 # /perception/obstacles -> /planner/avoidance/otwpnts (20 Hz)
 add_executable(spliner_node src/spliner_node.cpp)
 ament_target_dependencies(spliner_node
-  rclcpp nav_msgs visualization_msgs ae_hyu_msgs
+  rclcpp nav_msgs visualization_msgs f1tenth_planning_msgs
 )
 
 # 벽 충돌/진행불능(stuck) 판정·복구 감독 (mina Task 4).
 # /planner/recovery/{state,target_speed} — 실차 control_node가 소비
 add_executable(recovery_supervisor_node src/recovery_supervisor_node.cpp)
 ament_target_dependencies(recovery_supervisor_node
-  rclcpp nav_msgs std_msgs visualization_msgs ae_hyu_msgs
+  rclcpp nav_msgs std_msgs visualization_msgs f1tenth_planning_msgs
 )
 
 # waypoints/centerline RViz 마커
 add_executable(planner_visualizer_node src/planner_visualizer_node.cpp)
 ament_target_dependencies(planner_visualizer_node
-  rclcpp visualization_msgs geometry_msgs ament_index_cpp ae_hyu_msgs
+  rclcpp visualization_msgs geometry_msgs ament_index_cpp f1tenth_planning_msgs
 )
 
 install(TARGETS
@@ -116,10 +116,10 @@ install(PROGRAMS scripts/planner/opponent_predictor_node.py
 )
 
 # 실차 인터페이스 브릿지 (planner_stack env:=real_car에서만 실행):
-# perception 팀 laser-frame 장애물 -> frenet, TF+/odom -> /pf/pose/odom
+# perception 팀 laser-frame 장애물 -> frenet
+# (/pf/pose/odom은 localization particle_filter가 직접 발행 — pose 브릿지 제거됨)
 install(PROGRAMS
   scripts/planner/perception_obstacle_bridge_node.py
-  scripts/planner/pose_odom_bridge_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

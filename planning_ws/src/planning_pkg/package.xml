@@ -10,7 +10,7 @@
   <depend>std_msgs</depend>
   <depend>example_interfaces</depend>
   <!-- raceline 추종 파이프라인 노드들 (planner_pkg에서 이식) -->
-  <depend>ae_hyu_msgs</depend>
+  <depend>f1tenth_planning_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>

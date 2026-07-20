@@ -7,7 +7,7 @@ f1tenth_perception_msgs/ObstacleArray를 발행한다:
   - velocity: laser 프레임 [m/s] (ego 이동 미보상 — 참고용으로만 취급)
   - is_dynamic / confidence / radius
 
-spliner·recovery는 ae_hyu_msgs/ObstacleArray(map 프레임 + frenet s/d)를
+spliner·recovery는 f1tenth_planning_msgs/ObstacleArray(map 프레임 + frenet s/d)를
 기대하므로 이 노드가 변환한다:
   laser -> map TF 변환 -> /global_waypoints 최근접 투영으로 (s, d) 계산
   -> 트랙 밖(벽) 클러스터 제거 -> id별 (s, d) 유한차분으로 vs/vd 추정
@@ -19,7 +19,7 @@ spliner의 재분류(cls_* 파라미터, std 투표)가 담당한다.
 velocity는 ego 이동이 섞인 laser 프레임 값이라 그대로 쓰지 않고
 map 프레임 위치의 시간차분으로 다시 추정한다.
 
-sim에서는 virtual_obstacle_node가 ae_hyu 타입을 직접 발행하므로
+sim에서는 virtual_obstacle_node가 f1tenth_planning_msgs 타입을 직접 발행하므로
 이 노드는 실차 launch(planner_stack env:=real_car)에서만 뜬다.
 """
 import math
@@ -32,7 +32,7 @@ from rclpy.duration import Duration
 
 import tf2_ros
 
-from ae_hyu_msgs.msg import Obstacle, ObstacleArray, WpntArray
+from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 from f1tenth_perception_msgs.msg import ObstacleArray as PerceptionObstacleArray
 
 
@@ -72,7 +72,7 @@ class PerceptionObstacleBridgeNode(Node):
 
         self.get_logger().info(
             f"perception 브릿지 시작: {p('bridge/input_topic').value} "
-            f"(f1tenth_perception_msgs) -> {p('bridge/output_topic').value} (ae_hyu_msgs)")
+            f"(f1tenth_perception_msgs) -> {p('bridge/output_topic').value} (f1tenth_planning_msgs)")
 
     def cb_gb(self, msg: WpntArray):
         self.wpnts = np.array([

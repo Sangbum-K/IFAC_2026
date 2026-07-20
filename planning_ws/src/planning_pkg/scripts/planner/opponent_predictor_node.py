@@ -23,7 +23,7 @@ from std_msgs.msg import ColorRGBA
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 
-from ae_hyu_msgs.msg import Obstacle, ObstacleArray, WpntArray
+from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 
 import pitwall
 

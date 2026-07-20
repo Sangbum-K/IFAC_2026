@@ -18,10 +18,10 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
-#include "ae_hyu_msgs/msg/obstacle.hpp"
-#include "ae_hyu_msgs/msg/obstacle_array.hpp"
-#include "ae_hyu_msgs/msg/wpnt.hpp"
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/obstacle.hpp"
+#include "f1tenth_planning_msgs/msg/obstacle_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 class SplinerNode : public rclcpp::Node
 {
@@ -31,29 +31,29 @@ public:
     const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-  void CallbackObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg);
-  void CallbackPredictedObstacles(const ae_hyu_msgs::msg::ObstacleArray::SharedPtr msg);
+  void CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg);
+  void CallbackPredictedObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg);
   void CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
-  void CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
+  void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void Run();
 
   // ForzaETH spliner 핵심 로직
-  std::vector<ae_hyu_msgs::msg::Obstacle> FilterObstacles(
-    const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles) const;
-  ae_hyu_msgs::msg::Obstacle PredictObstacleMovement(
-    ae_hyu_msgs::msg::Obstacle obs) const;
+  std::vector<f1tenth_planning_msgs::msg::Obstacle> FilterObstacles(
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
+  f1tenth_planning_msgs::msg::Obstacle PredictObstacleMovement(
+    f1tenth_planning_msgs::msg::Obstacle obs) const;
   // 반환: {side("left"/"right"), d_apex}
   std::pair<std::string, double> MoreSpace(
-    const ae_hyu_msgs::msg::Obstacle & obs, int gb_idx) const;
+    const f1tenth_planning_msgs::msg::Obstacle & obs, int gb_idx) const;
   // 해당 사이드의 apex d 계산: 목표는 장애물 가장자리 + evasion_dist지만,
   // corridor(장애물-벽)가 좁으면 여유를 장애물/벽 양쪽에 균등 배분한
   // 지점으로 축소 (벽에 최대한 붙이는 방식은 추적오차로 벽 접촉)
   double ApexFor(
     const std::string & side,
-    const ae_hyu_msgs::msg::Obstacle & obs, int gb_idx) const;
+    const f1tenth_planning_msgs::msg::Obstacle & obs, int gb_idx) const;
   bool DoSpline(
-    const ae_hyu_msgs::msg::Obstacle & closest_obs,
-    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
   // 경로를 lookahead 내 장애물들과 (s,d) 충돌 검사 (정적 커밋 유효성 검증,
@@ -61,30 +61,30 @@ private:
   // 제외 (경로가 의도적으로 그 주변/뒤를 지나므로).
   // 반환 true=충돌 없음, false=충돌(blocking_s에 막은 장애물의 s_start).
   bool CheckPathCollision(
-    const std::vector<ae_hyu_msgs::msg::Wpnt> & path,
-    const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & path,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles,
     int32_t exclude_id, double * blocking_s) const;
   // lookahead 내 전체 장애물 (raceline 근접 여부 무관 — 경로 검증용)
-  std::vector<ae_hyu_msgs::msg::Obstacle> ObstaclesInLookahead(
-    const std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles) const;
+  std::vector<f1tenth_planning_msgs::msg::Obstacle> ObstaclesInLookahead(
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
   // 사이를 통과할 수 없을 만큼 가까운 장애물들(s 간격 < cluster_gap_s,
   // d corridor < cluster_gap_d)을 하나의 (s,d) 박스로 병합.
   // 대각선 이중장애물을 개별로 보면 최근접 기준 고정 폭 회피만 시도하다
   // 트랙경계 abort로 포기한다 — 병합해야 "바깥으로 크게 도는" 해가 나온다.
-  std::vector<ae_hyu_msgs::msg::Obstacle> ClusterObstacles(
-    std::vector<ae_hyu_msgs::msg::Obstacle> obstacles) const;
+  std::vector<f1tenth_planning_msgs::msg::Obstacle> ClusterObstacles(
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> obstacles) const;
 
   // 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식):
   // 관측 이력의 위치 std 투표(min_std/max_std) + 정지 재분류(vs_reset)로
   // perception의 is_static 플래그를 덮어쓴다. 파킹한 상대를 동적으로 두면
   // 예측 유령/섹터 게이팅/커밋 비활성이 겹쳐 회피가 무너진다.
-  void ClassifyObstacles(std::vector<ae_hyu_msgs::msg::Obstacle> & obstacles);
+  void ClassifyObstacles(std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles);
 
   // 회피 불가 시 폴백: raceline 유지 + 장애물 뒤 trailing_gap에서
   // 장애물 속도까지 감속하는 궤적 (ForzaETH 상태머신 TRAILING 대응)
   bool BuildTrailing(
-    const ae_hyu_msgs::msg::Obstacle & closest_obs,
-    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
   // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
@@ -100,12 +100,12 @@ private:
   // SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋
   // 스플라인 대신 SP 라인으로 갈아타 통과 구간을 지나고 복귀한다 —
   // 코너 진입 인사이드 찌르기 등 레이싱다운 추월 기하가 나온다.
-  void CallbackSpWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg);
+  void CallbackSpWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void BuildSpMapping();   // SP 라인을 IQP frenet (d_sp(s), vx_sp(s))로 변환
   bool BuildSpLaneChange(
-    const ae_hyu_msgs::msg::Obstacle & closest_obs,
-    const std::vector<ae_hyu_msgs::msg::Obstacle> & all_ahead,
-    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
   // 추월 마무리: 상대가 아직 옆이면(opp_beside) 간격이 벌어질 때까지,
   // 코너 안이면 코너 출구까지 SP 인코스를 유지한 뒤 raceline(아웃코스)으로
@@ -113,7 +113,7 @@ private:
   // 복귀 완료 시 false 반환
   bool BuildSpExit(
     bool opp_beside, double v_floor,
-    ae_hyu_msgs::msg::WpntArray & out_wpnts,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
   // s_from부터 raceline 복귀 블렌드 창(blend_len)이 코너(|kappa| >
   // ot_max_kappa)와 겹치지 않게 되는 최소 추가 SP 유지 거리 (최대 25m).
@@ -196,7 +196,7 @@ private:
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
   bool in_ot_sector_{false};
   // 진행 중인 정적 회피 커밋 (경로 끝까지 유지 — 도중 소멸 시 벽 충돌)
-  ae_hyu_msgs::msg::WpntArray committed_wpnts_;
+  f1tenth_planning_msgs::msg::WpntArray committed_wpnts_;
   visualization_msgs::msg::MarkerArray committed_mrks_;
   int32_t committed_id_{-1};
   double committed_start_s_{-1.0};
@@ -209,18 +209,18 @@ private:
   bool sp_lane_change_{true};
   // 추월 완료 판정: 상대 앞머리가 ego 뒤로 이 간격만큼 벌어져야 복귀 [m]
   double lc_pass_clear_m_{4.0};
-  std::vector<ae_hyu_msgs::msg::Wpnt> sp_raw_;   // SP 라인 원본 (자체 s 좌표)
+  std::vector<f1tenth_planning_msgs::msg::Wpnt> sp_raw_;   // SP 라인 원본 (자체 s 좌표)
   std::vector<double> sp_d_;    // gb 인덱스별 SP 라인의 IQP frenet 횡 오프셋
   std::vector<double> sp_vx_;   // gb 인덱스별 SP 라인 속도
   bool has_sp_{false};          // 매핑 완료 여부
   bool lc_active_{false};
 
   // State
-  ae_hyu_msgs::msg::ObstacleArray obstacles_;
+  f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
   rclcpp::Time obstacles_stamp_{0, 0, RCL_ROS_TIME};
-  ae_hyu_msgs::msg::ObstacleArray predicted_obstacles_;
+  f1tenth_planning_msgs::msg::ObstacleArray predicted_obstacles_;
   rclcpp::Time predicted_stamp_{0, 0, RCL_ROS_TIME};
-  std::vector<ae_hyu_msgs::msg::Wpnt> gb_wpnts_;
+  std::vector<f1tenth_planning_msgs::msg::Wpnt> gb_wpnts_;
   double gb_vmax_{0.0};
   double gb_max_s_{0.0};
   double wpnt_dist_{0.1};
@@ -235,12 +235,12 @@ private:
   std::mutex mutex_gb_wpnts_;
   std::mutex mutex_frenet_odom_;
 
-  rclcpp::Subscription<ae_hyu_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::ObstacleArray>::SharedPtr s_predicted_obstacles_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_predicted_obstacles_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
-  rclcpp::Subscription<ae_hyu_msgs::msg::WpntArray>::SharedPtr s_sp_waypoints_;
-  rclcpp::Publisher<ae_hyu_msgs::msg::WpntArray>::SharedPtr p_evasion_wpnts_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_sp_waypoints_;
+  rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_evasion_wpnts_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_markers_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_sector_markers_;
   rclcpp::TimerBase::SharedPtr t_run_;

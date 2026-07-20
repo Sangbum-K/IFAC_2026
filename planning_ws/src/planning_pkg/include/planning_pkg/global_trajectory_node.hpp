@@ -1,6 +1,6 @@
 // 원본 planner_pkg에 헤더가 누락되어 있어 cpp 구현부로부터 복원 작성함.
 // raceline CSV(9열 세미콜론, step4_main.py 산출물)를 로드해
-// /global_waypoints (ae_hyu_msgs/WpntArray)로 주기 발행하는 노드.
+// /global_waypoints (f1tenth_planning_msgs/WpntArray)로 주기 발행하는 노드.
 #ifndef PLANNING_PKG__GLOBAL_TRAJECTORY_NODE_HPP_
 #define PLANNING_PKG__GLOBAL_TRAJECTORY_NODE_HPP_
 
@@ -14,8 +14,8 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
 
-#include "ae_hyu_msgs/msg/wpnt.hpp"
-#include "ae_hyu_msgs/msg/wpnt_array.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt.hpp"
+#include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 class GlobalTrajectoryNode : public rclcpp::Node
 {
@@ -32,7 +32,7 @@ private:
     const std::string & csv_filename,
     std::vector<std::vector<double>> & out_trajectory);
   void PublishGlobalWaypoints();
-  ae_hyu_msgs::msg::WpntArray BuildWpntArray(
+  f1tenth_planning_msgs::msg::WpntArray BuildWpntArray(
     const std::vector<std::vector<double>> & trajectory) const;
 
   // Parameters
@@ -45,8 +45,8 @@ private:
   std::vector<std::vector<double>> global_trajectory_;
   std::vector<std::vector<double>> overtaking_trajectory_;
 
-  rclcpp::Publisher<ae_hyu_msgs::msg::WpntArray>::SharedPtr p_global_waypoints_;
-  rclcpp::Publisher<ae_hyu_msgs::msg::WpntArray>::SharedPtr p_overtaking_waypoints_;
+  rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_global_waypoints_;
+  rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_overtaking_waypoints_;
   rclcpp::TimerBase::SharedPtr t_publish_waypoints_;
 };
 

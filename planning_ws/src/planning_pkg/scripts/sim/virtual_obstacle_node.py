@@ -33,7 +33,7 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Empty, String
 from visualization_msgs.msg import Marker, MarkerArray
 
-from ae_hyu_msgs.msg import Obstacle, ObstacleArray, WpntArray
+from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 
 import pitwall
 

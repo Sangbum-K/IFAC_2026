@@ -44,7 +44,7 @@ FrenetFrameNode::FrenetFrameNode(const std::string &node_name, const rclcpp::Nod
     }
     
     // Subscribe to global waypoints
-    s_global_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_global_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints", qos_profile,
         std::bind(&FrenetFrameNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
     
@@ -71,7 +71,7 @@ void FrenetFrameNode::CallbackOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
                 msg->pose.pose.position.x, msg->pose.pose.position.y);
 }
 
-void FrenetFrameNode::CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+void FrenetFrameNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_trajectory_);
     
     // Convert WpntArray to internal trajectory format

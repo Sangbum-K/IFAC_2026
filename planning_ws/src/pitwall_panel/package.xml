@@ -16,7 +16,7 @@
   <depend>rviz_common</depend>
   <depend>pluginlib</depend>
   <depend>std_msgs</depend>
-  <depend>ae_hyu_msgs</depend>
+  <depend>f1tenth_planning_msgs</depend>
   <depend>qtbase5-dev</depend>
 
   <export>

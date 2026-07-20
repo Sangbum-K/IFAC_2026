@@ -36,7 +36,7 @@ sudo apt install ros-humble-rviz-2d-overlay-plugins
 
 | 용도 | sim | real_car / race_map |
 |---|---|---|
-| odom (속도) | `/ego_racecar/odom` | `/pf/pose/odom` (pose_odom_bridge) |
+| odom (속도) | `/ego_racecar/odom` | `/pf/pose/odom` (localization particle_filter) |
 | 조향 입력 | `/drive` | `/ackermann_cmd` |
 | 장애물 | `/perception/obstacles` | `/perception/obstacles_frenet` (bridge) |
 

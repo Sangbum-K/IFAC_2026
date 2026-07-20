@@ -2,8 +2,11 @@
 # 사용: ros2 launch planning_pkg planner_stack.launch.py env:=real_car
 # 전제(팀 인터페이스, 2026-07-20 확인):
 #   perception: /perception/obstacles (f1tenth_perception_msgs/ObstacleArray, laser frame)
-#   localization: slam_toolbox/amcl -> TF map->odom (pf 없음 — pose 브릿지가 /pf/pose/odom 생성)
-#   control: /local_waypoints + /pf/pose/odom + /car_state/frenet/odom 구독, /ackermann_cmd 발행
+#   localization: particle_filter (backend:=particle_filter) — /pf/pose/odom을 직접 발행
+#     (map frame pose + body frame twist.linear.x, publish_odom: 1) + TF map->odom.
+#     플래닝 쪽 pose 브릿지는 제거됨 — 이중 발행 금지.
+#   control: /local_waypoints + /pf/pose/odom + /car_state/frenet/odom 구독,
+#     /autonomy/ackermann_cmd 발행 (hardware ackermann_cmd_mux가 /ackermann_cmd로 중계)
 #   hardware: /odom (vesc), /scan, /safety/emergency_stop (latched)
 planning:
   ros__parameters:
@@ -14,7 +17,7 @@ planning:
 
 frenet_frame_node:
   ros__parameters:
-    frenet_frame/odom_mode: real            # /pf/pose/odom (pose_odom_bridge가 발행)
+    frenet_frame/odom_mode: real            # /pf/pose/odom (localization particle_filter가 발행)
 
 # perception 팀 장애물(laser frame 카르테시안) -> frenet 변환 브릿지
 perception_obstacle_bridge_node:
@@ -28,15 +31,9 @@ perception_obstacle_bridge_node:
     bridge/track_forget_sec: 2.0
     bridge/tf_timeout_sec: 0.1
 
-# TF(map->base_link) + /odom(vesc) -> /pf/pose/odom (control/frenet/recovery 공용)
-pose_odom_bridge_node:
-  ros__parameters:
-    pose_bridge/rate_hz: 40.0
-    pose_bridge/map_frame: map
-    pose_bridge/base_frame: base_link       # hardware_ws f1tenth_stack base_frame과 일치
-    pose_bridge/vel_odom_topic: /odom       # f1tenth_stack vesc_odom_topic과 일치
-    pose_bridge/output_topic: /pf/pose/odom
-    pose_bridge/stale_sec: 0.5              # localization 두절 시 발행 중단 -> control 정지
+# (제거) pose_odom_bridge_node: localization particle_filter가 /pf/pose/odom을
+# 직접 발행하므로 브릿지 불필요. PF가 죽으면 /pf/pose/odom이 끊겨
+# control odom_timeout(0.5s)이 정지시키는 안전 체인은 그대로 유지된다.
 
 spliner_node:
   ros__parameters:

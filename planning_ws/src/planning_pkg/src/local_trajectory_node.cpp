@@ -30,7 +30,7 @@ LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rcl
     RCLCPP_INFO(this->get_logger(), "num_local_waypoints: %d", num_local_waypoints_);
     
     // Subscriber init
-    s_global_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_global_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/global_waypoints", qos_profile,
         std::bind(&LocalTrajectoryNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
     
@@ -39,13 +39,13 @@ LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rcl
         std::bind(&LocalTrajectoryNode::CallbackFrenetOdom, this, std::placeholders::_1));
 
     // spliner_node 회피 궤적 (없거나 비어 있으면 raceline 추종)
-    s_avoidance_waypoints_ = this->create_subscription<ae_hyu_msgs::msg::WpntArray>(
+    s_avoidance_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/planner/avoidance/otwpnts", qos_profile,
         std::bind(&LocalTrajectoryNode::CallbackAvoidanceWaypoints, this, std::placeholders::_1));
 
 
     // Publisher init
-    p_local_waypoints_ = this->create_publisher<ae_hyu_msgs::msg::WpntArray>(
+    p_local_waypoints_ = this->create_publisher<f1tenth_planning_msgs::msg::WpntArray>(
         "/local_waypoints", qos_profile);
     
     // Timer init
@@ -58,7 +58,7 @@ LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rcl
 
 LocalTrajectoryNode::~LocalTrajectoryNode() {}
 
-void LocalTrajectoryNode::CallbackGlobalWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+void LocalTrajectoryNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_global_waypoints_);
     global_waypoints_ = msg->wpnts;
     has_global_waypoints_ = true;
@@ -75,14 +75,14 @@ void LocalTrajectoryNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::Shar
                 msg->pose.pose.position.x, msg->pose.pose.position.y);
 }
 
-void LocalTrajectoryNode::CallbackAvoidanceWaypoints(const ae_hyu_msgs::msg::WpntArray::SharedPtr msg) {
+void LocalTrajectoryNode::CallbackAvoidanceWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_avoidance_);
     avoidance_waypoints_ = msg->wpnts;
     avoidance_stamp_ = msg->header.stamp;
 }
 
 int LocalTrajectoryNode::FindClosestWaypointIndex(double s_coordinate, 
-                                                const std::vector<ae_hyu_msgs::msg::Wpnt>& global_waypoints) {
+                                                const std::vector<f1tenth_planning_msgs::msg::Wpnt>& global_waypoints) {
     if (global_waypoints.empty()) {
         return -1;
     }
@@ -168,7 +168,7 @@ void LocalTrajectoryNode::Run() {
                          "Publishing local waypoints...");
     
     // Get current data with thread safety
-    std::vector<ae_hyu_msgs::msg::Wpnt> global_waypoints_copy;
+    std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_copy;
     nav_msgs::msg::Odometry frenet_odom_copy;
     
     {
@@ -185,7 +185,7 @@ void LocalTrajectoryNode::Run() {
     PublishLocalWaypoints(global_waypoints_copy, frenet_odom_copy);
 }
 
-void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<ae_hyu_msgs::msg::Wpnt>& global_waypoints_copy,
+void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<f1tenth_planning_msgs::msg::Wpnt>& global_waypoints_copy,
                                               const nav_msgs::msg::Odometry& frenet_odom_copy) {
     if (global_waypoints_copy.empty()) {
         return;
@@ -202,7 +202,7 @@ void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<ae_hyu_msgs::m
     }
     
     // Create local waypoints message
-    ae_hyu_msgs::msg::WpntArray local_waypoints;
+    f1tenth_planning_msgs::msg::WpntArray local_waypoints;
     local_waypoints.header.stamp = this->now();
     local_waypoints.header.frame_id = "map";
     
@@ -217,14 +217,14 @@ void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<ae_hyu_msgs::m
         const auto& source_waypoint = global_waypoints_copy[wp_idx];
 
         // Create new waypoint with sequential ID
-        ae_hyu_msgs::msg::Wpnt waypoint = source_waypoint;
+        f1tenth_planning_msgs::msg::Wpnt waypoint = source_waypoint;
         waypoint.id = static_cast<int32_t>(i);  // Sequential ID starting from 0
 
         local_waypoints.wpnts.push_back(waypoint);
     }
 
     // 회피 궤적이 신선하면 겹치는 s 구간을 회피 궤적으로 치환 (splice)
-    std::vector<ae_hyu_msgs::msg::Wpnt> avoidance_copy;
+    std::vector<f1tenth_planning_msgs::msg::Wpnt> avoidance_copy;
     {
         std::lock_guard<std::mutex> lock(mutex_avoidance_);
         if (!avoidance_waypoints_.empty() &&
@@ -248,8 +248,8 @@ void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<ae_hyu_msgs::m
 }
 
 void LocalTrajectoryNode::SpliceAvoidanceWaypoints(
-    std::vector<ae_hyu_msgs::msg::Wpnt>& local_wpnts,
-    const std::vector<ae_hyu_msgs::msg::Wpnt>& avoidance_wpnts,
+    std::vector<f1tenth_planning_msgs::msg::Wpnt>& local_wpnts,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt>& avoidance_wpnts,
     double track_length) {
     if (avoidance_wpnts.size() < 2) {
         return;
