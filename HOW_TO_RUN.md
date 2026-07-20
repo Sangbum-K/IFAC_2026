@@ -205,16 +205,40 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 ros2 launch integration_pkg stack.launch.py env:=real_car
 ```
 
+### 4-1. 조이스틱으로 조종하기
+
+하드웨어 bringup(터미널 A)이 뜨면 조이스틱이 바로 물립니다. 아래 매핑은
+`hardware_ws/src/f1tenth_stack/config/params.yaml` 기준이며, **버튼/축 번호는
+Xbox 계열 기준**입니다(패드가 다르면 번호가 다를 수 있음 —
+`ros2 topic echo /joy`로 확인).
+
+| 조작 | 입력 | 동작 |
+|---|---|---|
+| **전진/후진 속도** | 축 `1` (왼쪽 스틱 상하) | 앞으로 밀면 전진, 최고 1.5 m/s (후진 버튼과 함께면 후진 0.8 m/s) |
+| **조향** | 축 `3` (오른쪽 스틱 좌우) | 좌/우 조향 (±0.4189 rad) |
+| **후진** | 버튼 `0` (A) | 누른 채로 있으면 속도축이 후진으로 |
+| **자율 ↔ 수동 토글** | 버튼 `5` (RB) | 누를 때마다 전환. 시작은 수동 |
+| **비상 정지 토글** | 버튼 `4` (LB) | 누르면 정지 래치, 다시 누르면 해제 |
+
+- **수동 명령은 `/manual_ackermann_cmd`** 로 나가고, `ackermann_cmd_mux`가
+  자율 명령(`/autonomy/ackermann_cmd`)과 섞어 최종 `/ackermann_cmd`를 냅니다.
+- **부드러운 가속**: teleop이 `max_accel`(기본 3.0 m/s²)로 속도를 램핑해서 VESC
+  오픈루프에서 급출발을 막습니다. 스틱을 확 밀어도 서서히 붙습니다.
+- **현재 모드 확인**: `ros2 topic echo /ackermann_cmd_mux/mode`
+  → `manual` / `autonomous` / `estop` / `idle` 중 하나가 나옵니다.
+- 스틱을 놓거나 조이스틱이 0.5초(`joy_timeout`) 끊기면 자동으로 속도 0.
+
 ### 실차 안전장치
 
-- **자율/수동 전환은 조이스틱 버튼 5** 입니다. 하드웨어 bringup의
-  `ackermann_cmd_mux` 노드가 명령을 섞어 최종 `/ackermann_cmd`를 냅니다.
+- **자율/수동 전환은 조이스틱 버튼 5(RB)** 입니다.
   - control_pkg는 `autonomous_on_start: true`로 자율 명령(`/autonomy/ackermann_cmd`)을
     계속 내보내지만, **mux는 수동 모드로 시작**하므로 처음엔 바퀴로 안 나갑니다.
   - **버튼 5를 누르는 순간마다 수동 ↔ 자율 토글**(엣지 트리거)됩니다.
   - 각 명령이 0.5초 넘게 끊기면(`command_timeout`) 그 소스는 무시하고 정지합니다.
-- **비상 정지**: `/safety/emergency_stop` (latched Bool) 이 true면 mux가 어느 모드든
-  **무조건 정지 명령으로 덮어씀** (최우선).
+- **비상 정지는 버튼 4(LB) 토글**입니다 (`latch_estop: false`). 누르면
+  `estop_node`가 `/safety/emergency_stop`을 true로 래치 → mux가 어느 모드든
+  **무조건 정지 명령으로 덮어씀**(최우선). **다시 누르면 해제**됩니다.
+  (이전의 "누르고 있는 동안만 정지" 방식에서 토글로 바뀌었습니다.)
 - 실차 속도 상한은 안전상 제한돼 있습니다
   (`control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`)
 
