@@ -23,9 +23,13 @@ class AckermannJoyTeleop(Node):
         self.publish_rate = float(self.declare_parameter('publish_rate', 30.0).value)
         self.speed_deadzone = float(self.declare_parameter('speed_deadzone', 0.05).value)
         self.steering_deadzone = float(self.declare_parameter('steering_deadzone', 0.05).value)
+        # 0이면 램프 미적용 (즉시 목표 속도로 점프). 급가속 시 VESC openloop 구간에서
+        # 못 따라가 덜컥거리는 것을 막기 위해 가속 방향으로만 속도를 서서히 올림.
+        self.max_accel = float(self.declare_parameter('max_accel', 3.0).value)
 
         self.last_joy_msg = Joy()
         self.last_joy_stamp = None
+        self.last_commanded_speed = 0.0
 
         self.publisher = self.create_publisher(AckermannDriveStamped, self.ackermann_topic, 10)
         self.subscription = self.create_subscription(Joy, self.joy_topic, self._joy_callback, 10)
@@ -66,6 +70,7 @@ class AckermannJoyTeleop(Node):
         drive.header.stamp = self.get_clock().now().to_msg()
 
         if self._joy_is_stale():
+            self.last_commanded_speed = 0.0
             self.publisher.publish(drive)
             return
 
@@ -73,12 +78,28 @@ class AckermannJoyTeleop(Node):
         steering_input = self._apply_deadzone(self._axis_value(self.steering_axis), self.steering_deadzone)
 
         if self._button_pressed(self.reverse_button):
-            drive.drive.speed = speed_input * -abs(self.max_speed_reverse)
+            target_speed = speed_input * -abs(self.max_speed_reverse)
         else:
-            drive.drive.speed = speed_input * self.max_speed
+            target_speed = speed_input * self.max_speed
 
+        drive.drive.speed = self._ramp_speed(target_speed)
         drive.drive.steering_angle = steering_input * self.max_steering_angle
         self.publisher.publish(drive)
+
+    def _ramp_speed(self, target_speed: float) -> float:
+        if self.max_accel <= 0.0:
+            self.last_commanded_speed = target_speed
+            return target_speed
+
+        max_delta = self.max_accel / self.publish_rate
+        accelerating = abs(target_speed) > abs(self.last_commanded_speed)
+        speed_diff = target_speed - self.last_commanded_speed
+
+        if accelerating and abs(speed_diff) > max_delta:
+            target_speed = self.last_commanded_speed + copysign(max_delta, speed_diff)
+
+        self.last_commanded_speed = target_speed
+        return target_speed
 
 
 def main() -> None:

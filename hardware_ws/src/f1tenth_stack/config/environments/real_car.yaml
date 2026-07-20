@@ -6,7 +6,7 @@ joy_node:
 estop_node:
   ros__parameters:
     button_index: 4
-    latch_estop: true
+    latch_estop: false
 
 vehicle:
   ros__parameters:

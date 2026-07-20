@@ -13,7 +13,7 @@ estop_node:
     joy_topic: /joy
     estop_topic: /safety/emergency_stop
     button_index: 4
-    latch_estop: true
+    latch_estop: false  # false = toggle (press to stop, press again to release)
 
 robot_state_publisher:
   ros__parameters:
@@ -35,7 +35,7 @@ ackermann_joy_teleop:
   ros__parameters:
     joy_topic: /joy
     ackermann_topic: /manual_ackermann_cmd
-    speed_axis: 7
+    speed_axis: 1
     steering_axis: 3
     reverse_button: 0
     max_speed: 1.5

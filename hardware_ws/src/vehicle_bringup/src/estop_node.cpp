@@ -35,7 +35,9 @@ private:
     }
 
     const bool button_pressed = msg->buttons[button_index_] == 1;
-    if (!button_pressed) {
+    const bool rising_edge = button_pressed && !prev_button_pressed_;
+    prev_button_pressed_ = button_pressed;
+    if (!rising_edge) {
       return;
     }
 
@@ -54,6 +56,7 @@ private:
   int button_index_{4};
   bool latch_estop_{true};
   bool estop_active_{false};
+  bool prev_button_pressed_{false};
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr subscription_;
 };

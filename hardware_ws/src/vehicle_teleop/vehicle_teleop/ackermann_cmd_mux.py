@@ -3,7 +3,7 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 class AckermannCmdMux(Node):
@@ -19,6 +19,9 @@ class AckermannCmdMux(Node):
         ).value
         self.output_topic = self.declare_parameter(
             'output_ackermann_topic', '/ackermann_cmd'
+        ).value
+        self.mode_topic = self.declare_parameter(
+            'mode_topic', '/ackermann_cmd_mux/mode'
         ).value
         # 자율/수동 토글 버튼 (엣지 감지 - 누르는 순간 한 번만 상태 반전).
         self.toggle_button = int(self.declare_parameter('autonomous_button', 5).value)
@@ -39,6 +42,7 @@ class AckermannCmdMux(Node):
         self.prev_toggle_pressed = False
 
         self.publisher = self.create_publisher(AckermannDriveStamped, self.output_topic, 10)
+        self.mode_publisher = self.create_publisher(String, self.mode_topic, 10)
         self.create_subscription(Joy, self.joy_topic, self._joy_callback, 10)
         self.create_subscription(
             AckermannDriveStamped, self.manual_topic, self._manual_callback, 10
@@ -103,6 +107,7 @@ class AckermannCmdMux(Node):
 
         msg.header.stamp = self.get_clock().now().to_msg()
         self.publisher.publish(msg)
+        self.mode_publisher.publish(String(data=mode))
 
         if mode != self.last_mode:
             self.get_logger().info(f'Command source switched to {mode}')
