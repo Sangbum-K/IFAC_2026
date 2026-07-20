@@ -34,12 +34,10 @@ vehicle:
 ackermann_joy_teleop:
   ros__parameters:
     joy_topic: /joy
-    ackermann_topic: /ackermann_cmd
-    speed_axis: 1
+    ackermann_topic: /manual_ackermann_cmd
+    speed_axis: 7
     steering_axis: 3
-    enable_button: 5
     reverse_button: 0
-    require_enable_button: true
     max_speed: 1.5
     max_speed_reverse: 0.8
     max_steering_angle: 0.4189
@@ -47,3 +45,14 @@ ackermann_joy_teleop:
     publish_rate: 30.0
     speed_deadzone: 0.05
     steering_deadzone: 0.05
+
+ackermann_cmd_mux:
+  ros__parameters:
+    joy_topic: /joy
+    manual_ackermann_topic: /manual_ackermann_cmd
+    autonomous_ackermann_topic: /autonomy/ackermann_cmd
+    output_ackermann_topic: /ackermann_cmd
+    estop_topic: /safety/emergency_stop
+    autonomous_button: 5  # 토글 버튼 (누르는 순간 자율/수동 전환)
+    command_timeout: 0.5
+    publish_rate: 30.0

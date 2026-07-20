@@ -19,3 +19,7 @@ ackermann_joy_teleop:
     max_speed: 3.0
     max_speed_reverse: 1.0
     max_steering_angle: 0.4189
+
+ackermann_cmd_mux:
+  ros__parameters:
+    autonomous_button: 5

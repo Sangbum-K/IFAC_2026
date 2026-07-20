@@ -22,8 +22,11 @@ rviz2 -d <planning_ws>/src/monitor_pkg/rviz/monitor.rviz
 ## 필요 패키지
 
 ```bash
-sudo apt install ros-humble-rviz-2d-overlay-plugins
+sudo apt install ros-humble-rviz-2d-overlay-msgs ros-humble-rviz-2d-overlay-plugins
 ```
+
+패키지가 없어도 `planning_ws` 빌드는 진행되지만, 이 모니터 노드는 스킵됩니다.
+오버레이를 쓰려면 위 패키지를 설치한 뒤 `planning_ws`를 다시 빌드하세요.
 
 ## 표시 항목
 

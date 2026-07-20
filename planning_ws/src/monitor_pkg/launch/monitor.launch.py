@@ -10,44 +10,58 @@
 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 
 
-def generate_launch_description():
+def launch_setup(context, *args, **kwargs):
     env = LaunchConfiguration('env')
 
     monitor_share = get_package_share_directory('monitor_pkg')
+    monitor_prefix = get_package_prefix('monitor_pkg')
     base_config = os.path.join(monitor_share, 'config', 'params.yaml')
     env_config = os.path.join(monitor_share, 'config', 'environments')
+    monitor_executable = os.path.join(monitor_prefix, 'lib', 'monitor_pkg', 'monitor_node')
 
-    monitor_node = Node(
-        package='monitor_pkg',
-        executable='monitor_node',
-        name='monitor_node',
-        output='screen',
-        parameters=[
-            base_config,
-            [env_config, '/', env, '.yaml'],
-        ],
-    )
+    actions = []
+    if os.path.exists(monitor_executable):
+        actions.append(Node(
+            package='monitor_pkg',
+            executable='monitor_node',
+            name='monitor_node',
+            output='screen',
+            parameters=[
+                base_config,
+                [env_config, '/', env, '.yaml'],
+            ],
+        ))
+    else:
+        actions.append(LogInfo(
+            msg='[monitor_pkg] monitor_node was not built. Install '
+                'ros-humble-rviz-2d-overlay-msgs and '
+                'ros-humble-rviz-2d-overlay-plugins, then rebuild planning_ws '
+                'to enable the RViz overlay monitor.'
+        ))
 
-    rviz_node = Node(
+    actions.append(Node(
         package='rviz2',
         executable='rviz2',
         name='rviz_monitor',
         arguments=['-d', os.path.join(monitor_share, 'rviz', 'monitor.rviz')],
         condition=IfCondition(LaunchConfiguration('rviz')),
-    )
+    ))
 
+    return actions
+
+
+def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('env', default_value='sim',
                               description='Configuration profile: sim, real_car, race_map'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='Launch RViz with monitor overlay config'),
-        monitor_node,
-        rviz_node,
+        OpaqueFunction(function=launch_setup),
     ])

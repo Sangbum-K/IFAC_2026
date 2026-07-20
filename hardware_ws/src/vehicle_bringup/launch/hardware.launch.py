@@ -40,14 +40,15 @@ def generate_launch_description():
     vesc_launch = LaunchConfiguration('vesc_launch')
     lidar_package = LaunchConfiguration('lidar_package')
     lidar_launch = LaunchConfiguration('lidar_launch')
+    vehicle_share = FindPackageShare('vehicle_bringup')
 
     base_config = PathJoinSubstitution([
-        FindPackageShare('f1tenth_stack'),
+        vehicle_share,
         'config',
         'params.yaml',
     ])
     env_config = PathJoinSubstitution([
-        FindPackageShare('f1tenth_stack'),
+        vehicle_share,
         'config',
         'environments',
         env,

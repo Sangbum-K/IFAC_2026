@@ -21,3 +21,7 @@ ackermann_joy_teleop:
     max_speed: 2.0
     max_speed_reverse: 1.0
     max_steering_angle: 0.4189
+
+ackermann_cmd_mux:
+  ros__parameters:
+    autonomous_button: 5  # 토글 버튼 (누르는 순간 자율/수동 전환)

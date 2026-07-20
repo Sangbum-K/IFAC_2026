@@ -22,12 +22,11 @@ def generate_launch_description():
     publish_tf = LaunchConfiguration('publish_tf')
 
     vehicle_bringup_share = FindPackageShare('vehicle_bringup')
-    stack_share = FindPackageShare('f1tenth_stack')
     localization_share = FindPackageShare('localization_bringup')
     urg_share = FindPackageShare('urg_node')
 
-    base_config = PathJoinSubstitution([stack_share, 'config', 'params.yaml'])
-    env_config = PathJoinSubstitution([stack_share, 'config', 'environments', env])
+    base_config = PathJoinSubstitution([vehicle_bringup_share, 'config', 'params.yaml'])
+    env_config = PathJoinSubstitution([vehicle_bringup_share, 'config', 'environments', env])
 
     return LaunchDescription([
         DeclareLaunchArgument('env', default_value='mapping'),

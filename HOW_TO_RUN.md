@@ -35,36 +35,51 @@ LiDAR /scan
 빌드는 **딱 이 순서**로 해야 합니다. 뒤 패키지가 앞 패키지의 메시지
 (`f1tenth_planning_msgs`, `f1tenth_perception_msgs`)를 참조하기 때문입니다.
 
+시뮬만 돌릴지, 실차까지 돌릴지에 따라 빌드할 워크스페이스가 다릅니다.
+
+| | 시뮬 | 실차 |
+|---|---|---|
+| `planning_ws` (메시지 포함, 항상 먼저) | ✅ | ✅ |
+| `perception_ws` | ✅ | ✅ |
+| `control_ws` | ✅ | ✅ |
+| `integration_ws` | ✅ | ✅ |
+| `hardware_ws` (LiDAR·VESC·odom·TF·estop·mux) | — | ✅ |
+| `localization_ws` (particle_filter) | — | ✅ |
+| `~/sim_ws` (f1tenth_gym_ros) | ✅ 별도 | — |
+
+### 1-A. 공통 (시뮬·실차 모두)
+
 ```bash
 # ROS 2 Humble 환경 켜기 (모든 터미널에서 맨 먼저)
-source /opt/ros/humble/setup.bash
+# 현재 터미널이 zsh면 .zsh, bash면 .bash 를 쓰세요.
+source /opt/ros/humble/setup.zsh
 
-# 1) planning 먼저 — 여기에 메시지 패키지가 있음
-cd ~/IFAC_ws/planning_ws
-colcon build
-source install/setup.bash
+# planning 먼저 — 여기에 메시지 패키지가 있음. 나머지는 이 순서대로.
+for ws in planning perception control integration; do
+  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
+done
+```
 
-# 2) perception
-cd ~/IFAC_ws/perception_ws
-colcon build
-source install/setup.bash
+### 1-B. 실차에서만 추가로
 
-# 3) control
-cd ~/IFAC_ws/control_ws
-colcon build
-source install/setup.bash
-
-# 4) integration
-cd ~/IFAC_ws/integration_ws
-colcon build
-source install/setup.bash
+```bash
+# 하드웨어 + 위치추정 (시뮬에선 gym이 대신하므로 불필요)
+for ws in hardware localization; do
+  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
+done
 ```
 
 > ⚠️ **주의 3가지**
 > - `--symlink-install` 쓰지 마세요. 기존 빌드 캐시와 충돌해서 이상한
 >   에러(`ae_hyu_msgs` / `ament_cmake_python` 심링크 에러)가 납니다.
+> - `zsh` 터미널에서 `setup.bash`를 source 하면
+>   `.../local_setup.bash not found` 같은 오류가 날 수 있습니다.
+>   `zsh`에서는 반드시 `setup.zsh`를 쓰세요.
 > - 빌드가 꼬이면 그 워크스페이스의 `build/ install/ log/`를 **통째로 지우고**
 >   다시 빌드하세요: `rm -rf build install log && colcon build`
+> - 다른 PC에서 복사해 온 워크스페이스라서
+>   `CMakeCache.txt directory is different` 에러가 나면 먼저
+>   `colcon build --cmake-clean-cache`를 한 번 실행하세요.
 > - 시뮬을 돌리려면 별도로 `~/sim_ws`(f1tenth_gym_ros)가 빌드돼 있어야 합니다.
 
 ---
@@ -74,17 +89,33 @@ source install/setup.bash
 새 터미널을 열 때마다 아래를 **순서대로** 복사해서 붙여넣으세요.
 (source = "이 워크스페이스를 쓸 수 있게 등록"하는 명령. 빌드가 아니라 매번 필요.)
 
+**시뮬용** (gym 포함):
+
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/sim_ws/install/setup.bash          # 시뮬만 필요 (실차는 생략)
-source ~/IFAC_ws/planning_ws/install/setup.bash
-source ~/IFAC_ws/perception_ws/install/setup.bash
-source ~/IFAC_ws/control_ws/install/setup.bash
-source ~/IFAC_ws/integration_ws/install/setup.bash
+source /opt/ros/humble/setup.zsh
+source ~/sim_ws/install/setup.zsh          # 시뮬 전용
+source ~/IFAC_ws/planning_ws/install/setup.zsh
+source ~/IFAC_ws/perception_ws/install/setup.zsh
+source ~/IFAC_ws/control_ws/install/setup.zsh
+source ~/IFAC_ws/integration_ws/install/setup.zsh
 ```
 
-> 💡 매번 치기 귀찮으면 위 6줄을 `~/.bashrc` 맨 아래에 넣어두면 터미널 열 때
-> 자동으로 됩니다. (단 실차에서는 `sim_ws` 줄은 빼세요.)
+**실차용** (`sim_ws` 대신 `hardware_ws` + `localization_ws`):
+
+```bash
+source /opt/ros/humble/setup.zsh
+source ~/IFAC_ws/planning_ws/install/setup.zsh
+source ~/IFAC_ws/perception_ws/install/setup.zsh
+source ~/IFAC_ws/control_ws/install/setup.zsh
+source ~/IFAC_ws/integration_ws/install/setup.zsh
+source ~/IFAC_ws/hardware_ws/install/setup.zsh
+source ~/IFAC_ws/localization_ws/install/setup.zsh
+```
+
+> 💡 매번 치기 귀찮으면 해당 블록을 `~/.bashrc` 맨 아래에 넣어두면 터미널 열 때
+> 자동으로 됩니다. (실차 PC엔 실차용, 시뮬 PC엔 시뮬용 블록.)
+> 💡 실차는 터미널 A/B/C가 각각 다른 launch를 쓰지만, 위 블록 하나를 모든
+> 터미널에서 source 해두면 안전합니다 (필요한 것만 골라 쓰게 됨).
 
 ---
 
@@ -176,14 +207,15 @@ ros2 launch integration_pkg stack.launch.py env:=real_car
 
 ### 실차 안전장치
 
-- **자율주행은 꺼진 채로 시작**합니다 (`autonomous_on_start: false`).
-  켜려면 새 터미널(source 후):
-  ```bash
-  ros2 service call /control/set_mode example_interfaces/srv/Trigger {}
-  ```
-  (같은 명령을 다시 부르면 다시 꺼짐 = 토글)
-- **비상 정지**: `/safety/emergency_stop` (latched Bool) 이 true면 즉시 정지
-- 실차 최고 속도는 안전상 **1.0 m/s로 제한**돼 있습니다
+- **자율/수동 전환은 조이스틱 버튼 5** 입니다. 하드웨어 bringup의
+  `ackermann_cmd_mux` 노드가 명령을 섞어 최종 `/ackermann_cmd`를 냅니다.
+  - control_pkg는 `autonomous_on_start: true`로 자율 명령(`/autonomy/ackermann_cmd`)을
+    계속 내보내지만, **mux는 수동 모드로 시작**하므로 처음엔 바퀴로 안 나갑니다.
+  - **버튼 5를 누르는 순간마다 수동 ↔ 자율 토글**(엣지 트리거)됩니다.
+  - 각 명령이 0.5초 넘게 끊기면(`command_timeout`) 그 소스는 무시하고 정지합니다.
+- **비상 정지**: `/safety/emergency_stop` (latched Bool) 이 true면 mux가 어느 모드든
+  **무조건 정지 명령으로 덮어씀** (최우선).
+- 실차 속도 상한은 안전상 제한돼 있습니다
   (`control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`)
 
 ---
@@ -237,14 +269,21 @@ pkill -f "gym_bridge|sim_race|stack.launch"
 ## 7. 요약 (치트시트)
 
 ```bash
-# ── 최초 1회 빌드 (순서 중요) ──
-for ws in planning perception control integration; do
-  cd ~/IFAC_ws/${ws}_ws && source /opt/ros/humble/setup.bash
-  [ "$ws" != "planning" ] && source ~/IFAC_ws/planning_ws/install/setup.bash
-  colcon build && source install/setup.bash
+# ── 최초 1회 빌드 (순서 중요, planning 먼저) ──
+source /opt/ros/humble/setup.zsh
+# 공통(시뮬·실차): planning perception control integration
+# 실차면 뒤에 hardware localization 도 추가
+for ws in planning perception control integration; do   # 실차: ... integration hardware localization
+  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
 done
 
-# ── 매번 실행 (source 6줄 후) ──
-ros2 launch integration_pkg stack.launch.py              # 시뮬
-ros2 launch integration_pkg stack.launch.py env:=real_car  # 실차
+# ── 매번 실행 ──
+# 시뮬 (source 시뮬용 블록 후, 터미널 1개):
+ros2 launch integration_pkg stack.launch.py
+
+# 실차 (source 실차용 블록 후, 터미널 3개):
+ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet   # A 하드웨어
+ros2 launch localization_bringup localization.launch.py backend:=particle_filter        # B 위치추정
+ros2 launch integration_pkg stack.launch.py env:=real_car                               # C 자율스택
+# 주행: 조이스틱 버튼 5 = 자율 ON/OFF 토글, estop 버튼 = 즉시 정지
 ```

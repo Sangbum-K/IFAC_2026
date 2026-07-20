@@ -22,14 +22,14 @@ def generate_launch_description():
     wheelbase = LaunchConfiguration('wheelbase')
     publish_tf = LaunchConfiguration('publish_tf')
 
-    stack_share = FindPackageShare('f1tenth_stack')
+    vehicle_bringup_share = FindPackageShare('vehicle_bringup')
     urg_share = FindPackageShare('urg_node')
     vesc_share = FindPackageShare('vesc_driver')
     urdf_package_share = get_package_share_directory('vehicle_bringup')
     urdf_path = os.path.join(urdf_package_share, 'urdf', 'f1tenth_vehicle.urdf')
 
-    base_config = PathJoinSubstitution([stack_share, 'config', 'params.yaml'])
-    env_config = PathJoinSubstitution([stack_share, 'config', 'environments', env])
+    base_config = PathJoinSubstitution([vehicle_bringup_share, 'config', 'params.yaml'])
+    env_config = PathJoinSubstitution([vehicle_bringup_share, 'config', 'environments', env])
 
     with open(urdf_path, 'r', encoding='utf-8') as urdf_file:
         robot_description = urdf_file.read()
