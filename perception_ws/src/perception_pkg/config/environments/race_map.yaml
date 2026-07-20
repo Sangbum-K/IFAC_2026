@@ -1,9 +1,11 @@
+# 레이스 맵 (real_car와 동일 인터페이스: TF map 변환 발행)
 obstacle_detector_node:
   ros__parameters:
     scan_topic: /scan
-    frame_id_override: laser
+    obstacle_topic: /perception/obstacles
+    target_frame: map
+    tf_timeout_sec: 0.05
     range_max: 12.0
     cluster_eps: 0.16
     gating_distance: 0.45
     track_timeout: 8
-    boundary_polygon_xy: []

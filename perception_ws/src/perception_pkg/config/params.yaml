@@ -2,11 +2,14 @@ obstacle_detector_node:
   ros__parameters:
     scan_topic: /scan
     obstacle_topic: /perception/obstacles
-    frame_id_override: ''
+    # 노드가 TF로 laser -> target_frame 실좌표 변환 후 발행한다
+    # (구 frame_id_override는 라벨만 바꿔 좌표가 어긋나던 버그로 제거됨).
+    target_frame: map
+    tf_timeout_sec: 0.05
     range_min: 0.05
     range_max: 10.0
-    fov_min_deg: -180.0
-    fov_max_deg: 180.0
+    fov_min_deg: -135.0
+    fov_max_deg: 135.0
     median_kernel: 3
     cluster_eps: 0.18
     min_cluster_size: 3
@@ -15,5 +18,4 @@ obstacle_detector_node:
     v_thresh: 0.25
     n_confirm: 5
     n_release: 8
-    min_publish_hits: 2
-    boundary_polygon_xy: []
+    # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)

@@ -2,13 +2,17 @@
 <package format="3">
   <name>integration_pkg</name>
   <version>0.0.0</version>
-  <description>Integration package</description>
+  <description>Full-stack bringup launch and passive health monitor.</description>
   <maintainer email="you@example.com">you</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
-  <depend>example_interfaces</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>ackermann_msgs</depend>
+  <depend>f1tenth_planning_msgs</depend>
+  <depend>f1tenth_perception_msgs</depend>
   <exec_depend>ament_index_python</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>

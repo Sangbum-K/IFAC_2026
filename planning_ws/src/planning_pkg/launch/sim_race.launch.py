@@ -136,17 +136,33 @@ def launch_setup(context, *args, **kwargs):
         remappings=[('/robot_description', 'opp_robot_description')],
     )
 
+    # perception:=lidar — 실제 perception 파이프라인 통합 모드:
+    #   가상 장애물은 /scan_overlay 합성점으로만 노출(GT 주입 중단)되고,
+    #   perception_pkg obstacle_detector(/scan_overlay -> /perception/obstacles_detected)
+    #   -> perception_obstacle_bridge(-> /perception/obstacles_frenet) -> spliner.
+    #   detector/control은 integration_pkg stack.launch.py가 별도로 띄운다.
+    perception_mode = LaunchConfiguration('perception').perform(context)
+    lidar_perception = (perception_mode == 'lidar')
+
+    stack_args = {
+        'odom_mode': 'sim_gt',
+        'trajectory_csv_file': traj_csv,
+        'overtaking_csv_file': ot_csv,
+        'centerline_csv_file': center_csv,
+        # recovery yaw 소스: sim은 pf가 없으므로 gym GT odom 사용
+        'pose_odom_topic': '/ego_racecar/odom',
+    }
+    if lidar_perception:
+        stack_args.update({
+            'obstacle_topic': '/perception/obstacles_frenet',
+            'bridge': 'true',
+            'bridge_input_topic': '/perception/obstacles_detected',
+        })
+
     planner_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(planning_share, 'launch', 'planner_stack.launch.py')),
-        launch_arguments={
-            'odom_mode': 'sim_gt',
-            'trajectory_csv_file': traj_csv,
-            'overtaking_csv_file': ot_csv,
-            'centerline_csv_file': center_csv,
-            # recovery yaw 소스: sim은 pf가 없으므로 gym GT odom 사용
-            'pose_odom_topic': '/ego_racecar/odom',
-        }.items(),
+        launch_arguments=stack_args.items(),
     )
 
     # tracker:=false 로 끄면 control_ws의 C++ control_node로 대체 가능:
@@ -165,7 +181,9 @@ def launch_setup(context, *args, **kwargs):
         package='planning_pkg',
         executable='virtual_obstacle_node.py',
         name='virtual_obstacle_node',
-        parameters=[params_file],
+        parameters=[params_file,
+                    {'virtual_obstacle/perception_mode':
+                        'lidar_overlay' if lidar_perception else 'tracking_merge'}],
         output='screen',
     )
     # 상대 차량 드라이버 (gym agent 2: Path/FTG/Manual) + Predictive Spliner 예측기
@@ -189,11 +207,14 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
         condition=IfCondition(LaunchConfiguration('tuner')),
     )
+    # lidar 모드에선 raw frenet 관측이 /perception/obstacles_frenet으로 오므로 remap
     opponent_predictor_node = Node(
         package='planning_pkg',
         executable='opponent_predictor_node.py',
         name='opponent_predictor_node',
         parameters=[params_file],
+        remappings=([('/perception/obstacles', '/perception/obstacles_frenet')]
+                    if lidar_perception else []),
         output='screen',
     )
 
@@ -232,5 +253,9 @@ def generate_launch_description():
                               description='Python 트래커 실행 여부 (false면 C++ control_node 사용)'),
         DeclareLaunchArgument('tuner', default_value='false',
                               description='레이스라인 튜너 함께 실행 (같은 RViz에서 편집)'),
+        DeclareLaunchArgument('perception', default_value='ground_truth',
+                              description='ground_truth: 가상 장애물 GT 직접 주입(기존), '
+                                          'lidar: 실제 perception 체인 '
+                                          '(/scan_overlay -> detector -> bridge -> spliner)'),
         OpaqueFunction(function=launch_setup),
     ])

@@ -1,9 +1,11 @@
+# 매핑 중에는 map frame이 아직 없다 — laser frame 그대로 발행 (소비자 없음, 모니터용)
 obstacle_detector_node:
   ros__parameters:
     scan_topic: /scan
-    frame_id_override: laser
+    obstacle_topic: /perception/obstacles
+    target_frame: laser
+    tf_timeout_sec: 0.05
     range_max: 12.0
     cluster_eps: 0.18
     gating_distance: 0.5
     track_timeout: 10
-    boundary_polygon_xy: []

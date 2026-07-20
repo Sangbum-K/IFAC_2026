@@ -1,15 +1,8 @@
+# gym 통합 sim: odom은 gym GT, perception은 실제 detector 체인, control은 /drive.
 integration:
   ros__parameters:
-    planning_service: /planning/compute_plan
-    control_service: /control/set_mode
-    perception_topic: /perception/objects
-    service_check_timeout: 1.0
-    timer_period: 3.0
-    use_sim_time: true
-    system_mode: sim
-    slam_enabled: false
-    map_mode: false
-    localization_mode: none
-    localization_map_file: ''
-    localization_scan_topic: /scan
-    localization_odom_topic: /odom
+    scan_topic: /scan
+    odom_topic: /ego_racecar/odom
+    perception_topic: /perception/obstacles_detected
+    waypoints_topic: /local_waypoints
+    drive_topic: /drive

@@ -1,7 +1,12 @@
+# integration_node (스택 헬스 모니터) 공통 기본값.
+# 토픽 이름은 environments/<env>.yaml이 환경에 맞게 덮어쓴다.
 integration:
   ros__parameters:
-    planning_service: /planning/compute_plan
-    control_service: /control/set_mode
-    perception_topic: /perception/objects
-    service_check_timeout: 1.0
-    timer_period: 5.0
+    scan_topic: /scan
+    odom_topic: /pf/pose/odom
+    perception_topic: /perception/obstacles
+    waypoints_topic: /local_waypoints
+    drive_topic: /ackermann_cmd
+    stale_sec: 1.0
+    perception_stale_sec: 3.0
+    status_period_sec: 1.0

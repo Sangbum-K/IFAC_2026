@@ -1,100 +1,99 @@
+"""전체 스택 통합 launch (perception + planning + control + integration 모니터).
+
+  # gym 통합 시뮬 (f1tenth_gym_ros + 실제 perception 체인 + C++ control_node):
+  ros2 launch integration_pkg stack.launch.py                 # env:=sim 기본
+  ros2 launch integration_pkg stack.launch.py map:=Budapest_map rviz:=false
+
+  # 실차 (hardware/localization은 각 팀 launch로 별도 기동):
+  ros2 launch integration_pkg stack.launch.py env:=real_car
+
+env:=sim 데이터 흐름 (실차와 동일 토폴로지를 gym 위에 재현):
+  gym /scan -> virtual_obstacle(lidar_overlay, 클릭 장애물 합성) -> /scan_overlay
+    -> perception_pkg obstacle_detector -> /perception/obstacles_detected (laser frame)
+    -> planning perception_obstacle_bridge -> /perception/obstacles_frenet
+    -> spliner/recovery.  control_ws control_node가 /local_waypoints -> /drive.
+
+env:=real_car 전제:
+  perception 팀 노드가 /perception/obstacles(f1tenth_perception_msgs) 발행,
+  localization_ws particle_filter가 /pf/pose/odom + map->odom TF 발행,
+  hardware_ws가 /scan·/odom·estop 제공. 여기서는 perception/planning/control/
+  integration만 기동한다.
+
+전제 source 순서: ros humble -> (sim이면 ~/sim_ws) -> planning_ws -> perception_ws
+  -> control_ws -> integration_ws.
+"""
+
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-import os
+
+
+def launch_setup(context, *args, **kwargs):
+    env = LaunchConfiguration('env').perform(context)
+    planning_share = get_package_share_directory('planning_pkg')
+    perception_share = get_package_share_directory('perception_pkg')
+    control_share = get_package_share_directory('control_pkg')
+    integration_share = get_package_share_directory('integration_pkg')
+
+    actions = []
+
+    if env == 'sim':
+        # gym + planner 스택 + sim 보조 노드 + RViz.
+        # tracker:=false — python tracker 대신 control_ws C++ control_node 사용.
+        # perception:=lidar — GT 주입 대신 실제 perception 체인.
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(planning_share, 'launch', 'sim_race.launch.py')),
+            launch_arguments={
+                'map': LaunchConfiguration('map').perform(context),
+                'rviz': LaunchConfiguration('rviz').perform(context),
+                'tracker': 'false',
+                'perception': 'lidar',
+            }.items(),
+        ))
+    else:
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(planning_share, 'launch', 'planner_stack.launch.py')),
+            launch_arguments={'env': env}.items(),
+        ))
+
+    actions.append(IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(perception_share, 'launch', 'perception.launch.py')),
+        launch_arguments={'env': env}.items(),
+    ))
+    actions.append(IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(control_share, 'launch', 'control.launch.py')),
+        launch_arguments={'env': env}.items(),
+    ))
+    actions.append(Node(
+        package='integration_pkg',
+        executable='integration_node',
+        name='integration',
+        output='screen',
+        parameters=[
+            os.path.join(integration_share, 'config', 'params.yaml'),
+            os.path.join(integration_share, 'config', 'environments', env + '.yaml'),
+        ],
+    ))
+    return actions
+
 
 
 def generate_launch_description():
-    env_arg = DeclareLaunchArgument(
-        'env',
-        default_value='sim',
-        description='Configuration profile: sim, mapping, race_map, real_car',
-    )
-
-    env = LaunchConfiguration('env')
-
-    perception_base_config = os.path.join(
-        get_package_share_directory('perception_pkg'),
-        'config',
-        'params.yaml',
-    )
-    perception_env_config = os.path.join(
-        get_package_share_directory('perception_pkg'),
-        'config',
-        'environments',
-    )
-    planning_base_config = os.path.join(
-        get_package_share_directory('planning_pkg'),
-        'config',
-        'params.yaml',
-    )
-    planning_env_config = os.path.join(
-        get_package_share_directory('planning_pkg'),
-        'config',
-        'environments',
-    )
-    control_base_config = os.path.join(
-        get_package_share_directory('control_pkg'),
-        'config',
-        'params.yaml',
-    )
-    control_env_config = os.path.join(
-        get_package_share_directory('control_pkg'),
-        'config',
-        'environments',
-    )
-    integration_base_config = os.path.join(
-        get_package_share_directory('integration_pkg'),
-        'config',
-        'params.yaml',
-    )
-    integration_env_config = os.path.join(
-        get_package_share_directory('integration_pkg'),
-        'config',
-        'environments',
-    )
     return LaunchDescription([
-        env_arg,
-        Node(
-            package='perception_pkg',
-            executable='perception_node',
-            name='perception',
-            output='screen',
-            parameters=[
-                perception_base_config,
-                [perception_env_config, '/', env, '.yaml'],
-            ],
-        ),
-        Node(
-            package='planning_pkg',
-            executable='planning_node',
-            name='planning',
-            output='screen',
-            parameters=[
-                planning_base_config,
-                [planning_env_config, '/', env, '.yaml'],
-            ],
-        ),
-        Node(
-            package='control_pkg',
-            executable='control_node',
-            name='control',
-            output='screen',
-            parameters=[
-                control_base_config,
-                [control_env_config, '/', env, '.yaml'],
-            ],
-        ),
-        Node(
-            package='integration_pkg',
-            executable='integration_node',
-            name='integration',
-            output='screen',
-            parameters=[
-                integration_base_config,
-                [integration_env_config, '/', env, '.yaml'],
-            ],
-        ),
+        DeclareLaunchArgument('env', default_value='sim',
+                              description='sim | real_car | race_map | mapping'),
+        DeclareLaunchArgument('map', default_value='Spielberg_map',
+                              description='(env:=sim) gym 맵 이름'),
+        DeclareLaunchArgument('rviz', default_value='true',
+                              description='(env:=sim) RViz 실행 여부'),
+        OpaqueFunction(function=launch_setup),
     ])

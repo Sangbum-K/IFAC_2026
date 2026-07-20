@@ -8,13 +8,21 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(example_interfaces REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(ackermann_msgs REQUIRED)
+find_package(f1tenth_planning_msgs REQUIRED)
+find_package(f1tenth_perception_msgs REQUIRED)
 
 add_executable(integration_node src/integration_node.cpp)
 ament_target_dependencies(integration_node
   rclcpp
   std_msgs
-  example_interfaces
+  sensor_msgs
+  nav_msgs
+  ackermann_msgs
+  f1tenth_planning_msgs
+  f1tenth_perception_msgs
 )
 
 install(TARGETS integration_node

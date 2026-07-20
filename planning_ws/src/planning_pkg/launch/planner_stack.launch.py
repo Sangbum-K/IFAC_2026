@@ -67,6 +67,13 @@ def launch_setup(context, *args, **kwargs):
     if center_csv:
         overrides['planner_visualizer_node'][
             'planning_viz/centerline_csv_file'] = center_csv
+    # 장애물 입력 토픽 override (spliner/recovery 공통).
+    # 통합 sim에서 실제 perception 체인(/perception/obstacles_frenet)으로 전환할 때 사용.
+    obstacle_topic = LaunchConfiguration('obstacle_topic').perform(context)
+    if obstacle_topic:
+        overrides['spliner_node']['spliner/obstacle_topic'] = obstacle_topic
+        overrides['recovery_supervisor_node'][
+            'recovery/obstacle_topic'] = obstacle_topic
 
     def make_node(executable):
         params = [params_file]
@@ -95,7 +102,12 @@ def launch_setup(context, *args, **kwargs):
     #  - perception 팀 laser-frame 장애물 -> frenet (/perception/obstacles_frenet)
     # /pf/pose/odom은 localization_ws particle_filter가 직접 발행 (publish_odom: 1)
     # — 플래닝 쪽에서 별도 pose 브릿지를 띄우지 않는다 (이중 발행 금지).
-    if env in ('real_car', 'race_map'):
+    bridge = LaunchConfiguration('bridge').perform(context).lower() == 'true'
+    if env in ('real_car', 'race_map') or bridge:
+        bridge_input = LaunchConfiguration('bridge_input_topic').perform(context)
+        if bridge_input:
+            overrides['perception_obstacle_bridge_node.py'] = {
+                'bridge/input_topic': bridge_input}
         nodes.append(make_node('perception_obstacle_bridge_node.py'))
 
     return nodes
@@ -117,5 +129,14 @@ def generate_launch_description():
         DeclareLaunchArgument('pose_odom_topic', default_value='',
                               description='recovery yaw 소스 odom 토픽 '
                                           '(실차 /pf/pose/odom, sim /ego_racecar/odom)'),
+        DeclareLaunchArgument('obstacle_topic', default_value='',
+                              description='spliner/recovery 장애물 토픽 override '
+                                          '(통합 sim: /perception/obstacles_frenet)'),
+        DeclareLaunchArgument('bridge', default_value='false',
+                              description='perception_obstacle_bridge 강제 실행 '
+                                          '(real_car/race_map env는 항상 실행)'),
+        DeclareLaunchArgument('bridge_input_topic', default_value='',
+                              description='브릿지 입력 토픽 override '
+                                          '(통합 sim: /perception/obstacles_detected)'),
         OpaqueFunction(function=launch_setup),
     ])

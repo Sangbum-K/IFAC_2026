@@ -45,6 +45,10 @@ class PerceptionObstacleBridgeNode(Node):
         self.declare_parameter('bridge/target_frame', 'map')
         self.declare_parameter('bridge/min_confidence', 0.0)
         self.declare_parameter('bridge/wall_margin_m', 0.10)
+        # 벽/펜스 아크 클러스터 제거: 오목한 벽 아크는 반경이 수 m로 커지고
+        # centroid가 트랙 안쪽에 떨어져 d-경계 필터를 통과한다 (gym 실측 5.2m).
+        # 실제 장애물(박스/상대차)은 반경 0.5m 미만.
+        self.declare_parameter('bridge/max_radius_m', 0.60)
         self.declare_parameter('bridge/vel_lpf_alpha', 0.3)
         self.declare_parameter('bridge/track_forget_sec', 2.0)
         self.declare_parameter('bridge/tf_timeout_sec', 0.1)
@@ -53,6 +57,7 @@ class PerceptionObstacleBridgeNode(Node):
         self.target_frame = p('bridge/target_frame').value
         self.min_confidence = p('bridge/min_confidence').value
         self.wall_margin = p('bridge/wall_margin_m').value
+        self.max_radius = p('bridge/max_radius_m').value
         self.lpf_alpha = p('bridge/vel_lpf_alpha').value
         self.forget_sec = p('bridge/track_forget_sec').value
         self.tf_timeout = p('bridge/tf_timeout_sec').value
@@ -129,6 +134,8 @@ class PerceptionObstacleBridgeNode(Node):
 
         for src in msg.obstacles:
             if src.confidence < self.min_confidence:
+                continue
+            if float(src.radius) > self.max_radius:  # 벽 아크 클러스터
                 continue
             x, y = src.position.x, src.position.y
             if tf is not None:

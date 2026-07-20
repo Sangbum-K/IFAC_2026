@@ -1,10 +1,14 @@
 obstacle_detector_node:
   ros__parameters:
-    # real-car LiDAR topic/frame from the IFAC hardware stack
+    # real-car LiDAR topic from the IFAC hardware stack
     scan_topic: /scan
-    frame_id_override: laser
+    obstacle_topic: /perception/obstacles
+    # localization particle_filter의 map->odom TF + hardware TF(base_link->laser)
+    # 체인이 있어야 한다. TF가 없으면 스캔을 스킵한다 (잘못된 좌표 발행 방지).
+    target_frame: map
+    tf_timeout_sec: 0.05
     range_max: 12.0
     cluster_eps: 0.16
     gating_distance: 0.45
     track_timeout: 8
-    boundary_polygon_xy: []
+    # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)

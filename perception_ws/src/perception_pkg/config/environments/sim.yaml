@@ -1,9 +1,18 @@
+# --- gym 통합 sim 프로파일 (integration_pkg stack.launch.py env:=sim) ---
+# f1tenth_gym_ros + planning_ws sim_race(perception:=lidar)와 함께 사용:
+#   /scan_overlay (가상 장애물 합성점 포함, frame ego_racecar/laser)
+#     -> obstacle_detector (TF map 변환) -> /perception/obstacles_detected (map frame)
+#     -> planning perception_obstacle_bridge -> /perception/obstacles_frenet -> spliner
+# /perception/obstacles는 쓰지 않는다 — sim에선 virtual_obstacle_node가 같은
+# 이름으로 f1tenth_planning_msgs를 발행하므로 타입 충돌을 피해야 한다.
 obstacle_detector_node:
   ros__parameters:
-    scan_topic: /scan
-    frame_id_override: car_state/laser
+    scan_topic: /scan_overlay
+    obstacle_topic: /perception/obstacles_detected
+    target_frame: map          # TF: gym bridge(map->base_link) + RSP(base_link->laser)
+    tf_timeout_sec: 0.1
     range_max: 10.0
-    cluster_eps: 0.18
-    gating_distance: 0.5
     track_timeout: 12
-    boundary_polygon_xy: [0.0, -2.5, 8.0, -2.5, 8.0, 2.5, 0.0, 2.5]
+    # 트랙 경계(벽) 필터는 planning 브릿지(bridge/wall_margin_m)가 raceline 기준으로
+    # 수행하므로 여기서는 폴리곤을 쓰지 않는다.
+    # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)

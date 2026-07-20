@@ -47,6 +47,9 @@ class VirtualObstacleNode(Node):
         self.declare_parameter('virtual_obstacle/obstacle_size_m', 0.3)
         self.declare_parameter('virtual_obstacle/remove_radius_m', 0.5)
         self.declare_parameter('virtual_obstacle/laser_offset_m', 0.275)  # base_link -> laser
+        # 시작 시 perception 주입 모드 (tracking_merge | lidar_overlay).
+        # 통합 스택(env:=sim, 실제 perception 파이프라인)은 lidar_overlay로 기동한다.
+        self.declare_parameter('virtual_obstacle/perception_mode', 'tracking_merge')
         rate = self.get_parameter('virtual_obstacle/publish_rate_hz').value
         self.size = self.get_parameter('virtual_obstacle/obstacle_size_m').value
         self.remove_radius = self.get_parameter('virtual_obstacle/remove_radius_m').value
@@ -58,7 +61,9 @@ class VirtualObstacleNode(Node):
         self.next_id = 1
         self.opponent = None    # 상대 관측 (opponent_driver_node)
         self.opponent_stamp = None
-        self.tracking_merge = True   # /sim/perception_mode
+        init_mode = self.get_parameter(
+            'virtual_obstacle/perception_mode').value.strip().lower()
+        self.tracking_merge = (init_mode != 'lidar_overlay')  # /sim/perception_mode
         self.lidar_enable = True     # /sim/ego_lidar_enable
         self.odom = None
 
