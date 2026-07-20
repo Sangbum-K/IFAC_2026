@@ -25,7 +25,8 @@ def launch_setup(context, *args, **kwargs):
     planning_share = get_package_share_directory('planning_pkg')
     csv_name = LaunchConfiguration('csv').perform(context)
     csv_path = os.path.join(SRC_CONFIG, csv_name)
-    map_stem = os.path.join(planning_share, 'maps', 'Spielberg_map')
+    map_name = LaunchConfiguration('map').perform(context)
+    map_stem = os.path.join(planning_share, 'maps', map_name)
 
     map_server_node = Node(
         package='nav2_map_server',
@@ -41,11 +42,15 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{'autostart': True},
                     {'node_names': ['map_server']}],
     )
+    stride = int(LaunchConfiguration('stride').perform(context))
+    falloff = float(LaunchConfiguration('falloff').perform(context))
     tuner_node = Node(
         package='planning_pkg',
         executable='raceline_tuner_node.py',
         name='raceline_tuner_node',
-        parameters=[{'tuner/raceline_csv': csv_path}],
+        parameters=[{'tuner/raceline_csv': csv_path},
+                    {'tuner/handle_stride': stride},
+                    {'tuner/falloff_window_m': falloff}],
         output='screen',
     )
     # rviz 설정은 sim_race와 통합 (튜너 단독 실행 시 gym 토픽 디스플레이는
@@ -65,5 +70,17 @@ def generate_launch_description():
             'csv',
             default_value='Spielberg_map_iqp_max7.00ms_margin0.15m_mu0.85.csv',
             description='편집할 raceline CSV 파일명 (config/global_trajectory/)'),
+        DeclareLaunchArgument(
+            'map',
+            default_value='Spielberg_map',
+            description='배경 맵 이름 (maps/<이름>.yaml, 확장자 제외)'),
+        DeclareLaunchArgument(
+            'stride',
+            default_value='25',
+            description='핸들 간격 (wpt 수, 0.1m/wpt). 작을수록 핸들 많아짐. 예: 10=1.0m'),
+        DeclareLaunchArgument(
+            'falloff',
+            default_value='8.0',
+            description='드래그 영향 반경 [m]. 핸들 촘촘하면 같이 줄여라. 예: 3.0'),
         OpaqueFunction(function=launch_setup),
     ])

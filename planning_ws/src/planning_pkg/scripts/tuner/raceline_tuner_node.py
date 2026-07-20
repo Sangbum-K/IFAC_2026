@@ -165,6 +165,29 @@ class RacelineTunerNode(Node):
             w = 0.5 * (1.0 + math.cos(math.pi * off / win)) if win > 0 else 1.0
             col_apply(i, delta * w)
 
+    def _smooth_xy_window(self, center_idx, k=6):
+        """드래그 후 편집 구간의 고주파 요철 제거.
+
+        윈도우 경계는 고정(연속성 유지)하고 중심부만 이동평균(±k*ds)으로
+        블렌딩한다. 의도한 범프(저주파)는 살리고 점별 독립 이동으로 생긴
+        요철(고주파)만 없애 '찌그러짐'을 막는다.
+        """
+        n = len(self.wpts)
+        span = int(self.window_m / self.ds)
+        if span < 1 or n < 2 * (span + k) + 1:
+            return
+        rng = range(-span - k, span + k + 1)
+        idxs = np.array([(center_idx + o) % n for o in rng])
+        kernel = np.ones(2 * k + 1) / (2 * k + 1)
+        xs = np.convolve(self.wpts[idxs, 1], kernel, mode='valid')  # len 2*span+1
+        ys = np.convolve(self.wpts[idxs, 2], kernel, mode='valid')
+        for m in range(2 * span + 1):
+            off = m - span
+            w = 0.5 * (1.0 + math.cos(math.pi * off / span))  # 중심 1 -> 경계 0
+            i = (center_idx + off) % n
+            self.wpts[i, 1] = (1.0 - w) * self.wpts[i, 1] + w * xs[m]
+            self.wpts[i, 2] = (1.0 - w) * self.wpts[i, 2] + w * ys[m]
+
     def _snapshot(self):
         self.undo_stack.append(self.wpts.copy())
         if len(self.undo_stack) > 5:
@@ -293,6 +316,7 @@ class RacelineTunerNode(Node):
             self.wpts[i, 3] += dd   # d_right
 
         self._falloff_apply(idx, delta_d, apply)
+        self._smooth_xy_window(idx)      # 점별 이동으로 생긴 요철 제거 (찌그러짐 방지)
         self._recompute_geometry()
         self._refresh_markers_near(idx)
         self._publish_preview()

@@ -40,13 +40,14 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 
-# raceline 생성 파라미터와 일치해야 하는 CSV 파일명 접미사
+# raceline 생성 파라미터와 일치해야 하는 CSV 파일명 접미사 (suffix:= 인자로 덮어쓰기)
 RACELINE_SUFFIX = 'max15.00ms_margin0.15m_mu0.85'
 
 # 상대 차량 '주차장' (제거 시 이동 위치): 레이스라인에서 30m+ 떨어진 맵 구석
 PARK_POSES = {
     'Spielberg_map': (-79.81, -31.26),
     'Budapest_map': (-56.0, 103.0),
+    'my_map': (-20.0, -20.0),   # 트랙(x:18~25, y:-3~8)에서 ~47m 떨어진 구석
 }
 
 
@@ -74,8 +75,9 @@ def launch_setup(context, *args, **kwargs):
     if not os.path.exists(map_stem + '.yaml'):
         raise RuntimeError(f'맵 없음: {map_stem}.yaml (maps/ 에 추가 필요)')
 
-    traj_csv = f'{map_name}_iqp_{RACELINE_SUFFIX}.csv'
-    ot_csv = f'{map_name}_sp_{RACELINE_SUFFIX}.csv'
+    suffix = LaunchConfiguration('suffix').perform(context)
+    traj_csv = f'{map_name}_iqp_{suffix}.csv'
+    ot_csv = f'{map_name}_sp_{suffix}.csv'
     center_csv = f'{map_name}_centerline.csv'
     traj_csv_path = os.path.join(planning_share, 'config', 'global_trajectory', traj_csv)
     sx, sy, stheta = _read_start_pose(traj_csv_path)
@@ -247,6 +249,9 @@ def generate_launch_description():
         DeclareLaunchArgument('map', default_value='Spielberg_map',
                               description='맵 이름 (maps/<이름>.yaml, ' +
                                           ', '.join(PARK_POSES)),
+        DeclareLaunchArgument('suffix', default_value=RACELINE_SUFFIX,
+                              description='raceline CSV 접미사 (iqp/sp 공통). '
+                                          '예: my_map은 max7.00ms_margin0.15m_mu0.85'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='RViz 실행 여부'),
         DeclareLaunchArgument('tracker', default_value='true',
