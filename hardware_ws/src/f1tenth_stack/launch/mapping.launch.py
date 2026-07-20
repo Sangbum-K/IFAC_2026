@@ -25,7 +25,7 @@ def generate_launch_description():
         DeclareLaunchArgument('speed_to_erpm_gain', default_value='4614.0'),
         DeclareLaunchArgument('speed_to_erpm_offset', default_value='0.0'),
         DeclareLaunchArgument('steering_angle_to_servo_gain', default_value='-1.2135'),
-        DeclareLaunchArgument('steering_angle_to_servo_offset', default_value='0.5304'),
+        DeclareLaunchArgument('steering_angle_to_servo_offset', default_value='0.4768'),
         DeclareLaunchArgument('wheelbase', default_value='0.33'),
         DeclareLaunchArgument('publish_tf', default_value='true'),
         DeclareLaunchArgument('backend', default_value='slam_toolbox'),

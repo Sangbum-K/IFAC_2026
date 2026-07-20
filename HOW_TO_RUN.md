@@ -93,7 +93,7 @@ done
 
 ```bash
 source /opt/ros/humble/setup.zsh
-source ~/sim_ws/install/setup.zsh          # 시뮬 전용
+source ~/sim_ws/install/setup.zsh
 source ~/IFAC_ws/planning_ws/install/setup.zsh
 source ~/IFAC_ws/perception_ws/install/setup.zsh
 source ~/IFAC_ws/control_ws/install/setup.zsh
@@ -149,7 +149,7 @@ ros2 launch integration_pkg stack.launch.py map:=Budapest_map
 ros2 launch integration_pkg stack.launch.py rviz:=false
 ```
 
-사용 가능한 맵: `Spielberg_map`(기본), `Budapest_map`
+사용 가능한 맵: `Spielberg_map`(기본), `Budapest_map`, `my_map`(실차 트랙)
 
 ### 3-3. RViz에서 조작하기
 
@@ -188,22 +188,111 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 
 ## 4. 실차로 실행하기
 
-실차는 **hardware / localization을 각 팀 launch로 먼저 띄운 뒤**, 이 스택을
-`env:=real_car`로 실행합니다.
+실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
+**순서가 매우 중요합니다.** C(자율스택)는 B의 파티클 필터가 실제로
+`/pf/pose/odom`과 `map` TF를 내보내기 시작한 **뒤에** 띄워야 합니다.
+안 그러면 C의 노드들이 아래처럼 무한 대기에 빠집니다(이게 가장 흔한 실수):
+
+```
+[frenet_frame_node]   Waiting for odom (real)...          ← /pf/pose/odom 이 없음
+[local_trajectory_node] RUN: has_global=true, has_frenet=false
+[obstacle_detector_node] TF lookup laser -> map failed: "map" ... does not exist
+```
+
+> 위 로그가 계속 반복되면 **B가 안 떴거나, 초기 포즈를 안 줘서 파티클 필터가
+> 아직 map TF/odom을 안 내보내는 상태**입니다. C를 껐다 B부터 다시 확인하세요.
+
+### 4-0. 터미널 A — 하드웨어 bringup
 
 ```bash
-# (터미널 A) 하드웨어 bringup — LiDAR, VESC, odom, TF, estop
+# LiDAR, VESC, odom, TF, estop, 조이스틱
 ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet
+```
 
-# (터미널 B) localization — 파티클 필터 (map→odom TF + /pf/pose/odom 발행)
+`/scan`, `/odom`이 나오는지 확인:
+
+```bash
+ros2 topic hz /scan     # LiDAR 스캔이 나와야 함
+ros2 topic hz /odom     # VESC odom 이 나와야 함
+```
+
+### 4-1. 터미널 B — localization (파티클 필터)
+
+```bash
+# 파티클 필터 (map→odom TF + /pf/pose/odom 발행)
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 #   ⚠️ backend:=particle_filter 를 반드시 명시! (기본값은 slam_toolbox)
-#   ⚠️ 당일 맵으로 particle_filter/config/localize.yaml 의 map 경로도 교체
+#   ⚠️ 현재 my_map 기준으로 설정됨 (localize.yaml map: my_map,
+#      particle_filter/maps/my_map.{yaml,png}). 다른 맵이면 함께 교체.
+```
 
-# (터미널 C) 우리 스택 — perception + planning + control + 모니터
+#### 초기 위치 잡기 (필수) — 파티클 필터 초기화
+
+파티클 필터는 켜지는 순간 파티클(차 위치 후보 3000개)을 **맵 전체에 흩뿌린
+상태**로 시작합니다(로그 `GLOBAL INITIALIZATION`). 즉 차가 어디 있는지 아직
+모릅니다. 이 상태에서 C를 띄우면 엉터리 위치로 차가 튑니다. **내가 실제
+위치를 찍어줘야** 파티클이 모이고 LiDAR 스캔 매칭으로 수렴합니다.
+
+> ⚠️ 초기 위치를 찍으려면 **터미널 A(하드웨어)가 먼저 떠 있어야** 합니다.
+> laser→base_link TF가 없으면 클릭이 무시되고
+> `Cannot set pose yet, waiting for laser transform` 로그만 뜹니다.
+
+**RViz 열기** (localization launch는 RViz를 자동으로 안 띄움):
+
+```bash
+rviz2 -d ~/IFAC_ws/localization_ws/src/particle_filter/rviz/pf.rviz
+```
+
+**초기 위치 찍는 순서:**
+
+1. RViz에 맵 + 흩어진 파티클 구름(빨간 화살표들)이 보임
+2. **실제 차를 맵상 알기 쉬운 지점**(보통 출발선 = 레이스라인 시작점)에
+   물리적으로 갖다 놓기
+3. 상단 툴바 **`2D Pose Estimate`** 클릭
+4. 맵에서 **차가 서 있는 그 위치**를 클릭 → **차 앞 방향으로 드래그** 후 놓기
+   (화살표 = 위치 + 헤딩)
+5. 파티클이 그 지점으로 확 모임 → 차를 손으로 살짝 밀거나 천천히 전진시키면
+   한 점으로 수렴 (`/pf/viz/particles` 구름이 작게 뭉치고
+   `/pf/viz/inferred_pose`가 차 위에 얹힘)
+
+| RViz 도구 | 용도 |
+|---|---|
+| **2D Pose Estimate** (`/initialpose`) | 초기 위치 지정 (정상 방법) |
+| **Publish Point** (`/clicked_point`) | 위치를 완전히 잃었을 때 전체 재분산(리셋) |
+
+> RViz 없이 명령줄로도 가능:
+> ```bash
+> ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
+>   '{header: {frame_id: "map"}, pose: {pose: {position: {x: 0.0, y: 0.0},
+>   orientation: {z: 0.0, w: 1.0}}}}'
+> ```
+> (x·y = 맵 좌표, orientation = 헤딩 쿼터니언)
+
+**C를 띄우기 전에 반드시** `/pf/pose/odom`과 `map` TF가 수렴된 값으로 나오는지 확인:
+
+```bash
+ros2 topic hz /pf/pose/odom               # 값이 나와야 함
+ros2 run tf2_ros tf2_echo map base_link   # map→base_link TF가 실제 차 위치와 맞아야 함
+```
+
+이 둘이 나오지 않으면(또는 값이 엉뚱하면) C를 띄워봐야 위의 무한 대기 로그만
+반복됩니다. 위치를 잃으면 `2D Pose Estimate`로 다시 찍으면 됩니다.
+
+### 4-2. 터미널 C — 우리 스택 (perception + planning + control + 모니터)
+
+`/pf/pose/odom`·map TF 확인이 끝난 뒤에만 실행:
+
+```bash
 #   ※ 실차는 sim_ws source 하지 말 것
+#   ※ 실차 planner는 map:= 인자를 무시하고 planning_pkg/config/params.yaml의
+#     trajectory/overtaking/centerline CSV 기본값을 읽는다 (현재 my_map 기준).
+#     다른 맵이면 params.yaml의 세 CSV 파일명을 교체 후 colcon build.
 ros2 launch integration_pkg stack.launch.py env:=real_car
 ```
+
+정상이면 `frenet_frame_node`가 더는 "Waiting for odom"을 찍지 않고
+`[Frenet] XY(...) => s:.. d:..` 로그로 바뀝니다. 최종 확인은
+`ros2 topic echo /integration/status` (3-4 참고).
 
 ### 4-1. 조이스틱으로 조종하기
 
@@ -305,9 +394,13 @@ done
 # 시뮬 (source 시뮬용 블록 후, 터미널 1개):
 ros2 launch integration_pkg stack.launch.py
 
-# 실차 (source 실차용 블록 후, 터미널 3개):
+# 실차 (source 실차용 블록 후, 터미널 3개 — A→B→C 순서 엄수):
 ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet   # A 하드웨어
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter        # B 위치추정
+#   → RViz 열고(rviz2 -d .../particle_filter/rviz/pf.rviz) "2D Pose Estimate"로
+#     실제 차 위치 클릭+드래그 → 파티클 수렴시키기. 아래 둘이 나와야 C로 넘어감:
+#     ros2 topic hz /pf/pose/odom   /   ros2 run tf2_ros tf2_echo map base_link
 ros2 launch integration_pkg stack.launch.py env:=real_car                               # C 자율스택
 # 주행: 조이스틱 버튼 5 = 자율 ON/OFF 토글, estop 버튼 = 즉시 정지
+# ⚠️ C에서 "Waiting for odom (real)" / "map ... does not exist" 반복 = B 미수렴 (4번 참고)
 ```

@@ -12,10 +12,10 @@ planning:
 # ---------------------------------------------------------------------------
 global_trajectory_node:
   ros__parameters:
-    # v-max 15: 마찰/가속 한계가 프로파일을 결정 (v7은 트랙 91%가 캡에 붙어 비현실적)
-    global_trajectory/trajectory_csv_file: Spielberg_map_iqp_max15.00ms_margin0.15m_mu0.85.csv
+    # my_map 실차: v-max 6, mu 0.75 (raceline 재생성 시 접미사 함께 교체)
+    global_trajectory/trajectory_csv_file: my_map_iqp_max6.00ms_margin0.15m_mu0.75.csv
     # SP 추월 라인 -> /global_waypoints/overtaking (H2H lane-change용, 없으면 미발행)
-    global_trajectory/overtaking_csv_file: Spielberg_map_sp_max15.00ms_margin0.15m_mu0.85.csv
+    global_trajectory/overtaking_csv_file: my_map_sp_max6.00ms_margin0.15m_mu0.75.csv
     global_trajectory/publish_rate_hz: 2.0
     global_trajectory/velocity_scale: 1.0   # 주행 중 ros2 param set으로 0.5~1.4 조정 가능
 
@@ -204,4 +204,4 @@ opponent_predictor_node:
 planner_visualizer_node:
   ros__parameters:
     planning_viz/loop_rate_hz: 10.0
-    planning_viz/centerline_csv_file: Spielberg_map_centerline.csv
+    planning_viz/centerline_csv_file: my_map_centerline.csv
