@@ -24,4 +24,4 @@ ackermann_joy_teleop:
 
 ackermann_cmd_mux:
   ros__parameters:
-    autonomous_button: 5
+    autonomous_button: 5  # 토글 버튼 (누르는 순간 자율/수동 전환)

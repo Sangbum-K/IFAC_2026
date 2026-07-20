@@ -37,9 +37,7 @@ ackermann_joy_teleop:
     ackermann_topic: /manual_ackermann_cmd
     speed_axis: 7
     steering_axis: 3
-    enable_button: 5
     reverse_button: 0
-    require_enable_button: false
     max_speed: 1.5
     max_speed_reverse: 0.8
     max_steering_angle: 0.4189
@@ -54,6 +52,7 @@ ackermann_cmd_mux:
     manual_ackermann_topic: /manual_ackermann_cmd
     autonomous_ackermann_topic: /autonomy/ackermann_cmd
     output_ackermann_topic: /ackermann_cmd
-    autonomous_button: 5
+    estop_topic: /safety/emergency_stop
+    autonomous_button: 5  # 토글 버튼 (누르는 순간 자율/수동 전환)
     command_timeout: 0.5
     publish_rate: 30.0

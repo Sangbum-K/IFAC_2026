@@ -15,9 +15,7 @@ class AckermannJoyTeleop(Node):
         self.ackermann_topic = self.declare_parameter('ackermann_topic', '/ackermann_cmd').value
         self.speed_axis = int(self.declare_parameter('speed_axis', 1).value)
         self.steering_axis = int(self.declare_parameter('steering_axis', 3).value)
-        self.enable_button = int(self.declare_parameter('enable_button', 5).value)
         self.reverse_button = int(self.declare_parameter('reverse_button', 0).value)
-        self.require_enable_button = bool(self.declare_parameter('require_enable_button', True).value)
         self.max_speed = float(self.declare_parameter('max_speed', 1.5).value)
         self.max_speed_reverse = float(self.declare_parameter('max_speed_reverse', 1.0).value)
         self.max_steering_angle = float(self.declare_parameter('max_steering_angle', 0.4189).value)
@@ -68,10 +66,6 @@ class AckermannJoyTeleop(Node):
         drive.header.stamp = self.get_clock().now().to_msg()
 
         if self._joy_is_stale():
-            self.publisher.publish(drive)
-            return
-
-        if self.require_enable_button and not self._button_pressed(self.enable_button):
             self.publisher.publish(drive)
             return
 

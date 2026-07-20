@@ -3,6 +3,7 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
+from std_msgs.msg import Bool
 
 
 class AckermannCmdMux(Node):
@@ -19,7 +20,11 @@ class AckermannCmdMux(Node):
         self.output_topic = self.declare_parameter(
             'output_ackermann_topic', '/ackermann_cmd'
         ).value
-        self.autonomous_button = int(self.declare_parameter('autonomous_button', 5).value)
+        # 자율/수동 토글 버튼 (엣지 감지 - 누르는 순간 한 번만 상태 반전).
+        self.toggle_button = int(self.declare_parameter('autonomous_button', 5).value)
+        self.estop_topic = self.declare_parameter(
+            'estop_topic', '/safety/emergency_stop'
+        ).value
         self.command_timeout = float(self.declare_parameter('command_timeout', 0.5).value)
         self.publish_rate = float(self.declare_parameter('publish_rate', 30.0).value)
 
@@ -29,6 +34,9 @@ class AckermannCmdMux(Node):
         self.last_manual_stamp = None
         self.last_autonomous_stamp = None
         self.last_mode = 'manual'
+        self.estop_active = False
+        self.toggle_autonomous = False
+        self.prev_toggle_pressed = False
 
         self.publisher = self.create_publisher(AckermannDriveStamped, self.output_topic, 10)
         self.create_subscription(Joy, self.joy_topic, self._joy_callback, 10)
@@ -38,15 +46,19 @@ class AckermannCmdMux(Node):
         self.create_subscription(
             AckermannDriveStamped, self.autonomous_topic, self._autonomous_callback, 10
         )
+        self.create_subscription(Bool, self.estop_topic, self._estop_callback, 10)
         self.timer = self.create_timer(1.0 / self.publish_rate, self._publish_selected_command)
 
         self.get_logger().info(
             f'Muxing manual={self.manual_topic}, auto={self.autonomous_topic} -> {self.output_topic} '
-            f'with hold button {self.autonomous_button}'
+            f'with toggle button {self.toggle_button}, estop {self.estop_topic}'
         )
 
     def _joy_callback(self, msg: Joy) -> None:
         self.last_joy_msg = msg
+
+    def _estop_callback(self, msg: Bool) -> None:
+        self.estop_active = msg.data
 
     def _manual_callback(self, msg: AckermannDriveStamped) -> None:
         self.last_manual_msg = msg
@@ -66,12 +78,20 @@ class AckermannCmdMux(Node):
             return False
         return (self.get_clock().now() - stamp) <= Duration(seconds=self.command_timeout)
 
-    def _publish_selected_command(self) -> None:
-        use_autonomous = self._button_pressed(self.autonomous_button) and self._is_fresh(
-            self.last_autonomous_stamp
-        )
+    def _update_toggle_state(self) -> None:
+        current = self._button_pressed(self.toggle_button)
+        if current and not self.prev_toggle_pressed:
+            self.toggle_autonomous = not self.toggle_autonomous
+        self.prev_toggle_pressed = current
 
-        if use_autonomous:
+    def _publish_selected_command(self) -> None:
+        self._update_toggle_state()
+
+        if self.estop_active:
+            # e-stop은 manual/autonomous 어느 쪽이든 무조건 우선 - 정지 명령으로 덮어씀.
+            msg = AckermannDriveStamped()
+            mode = 'estop'
+        elif self.toggle_autonomous and self._is_fresh(self.last_autonomous_stamp):
             msg = self.last_autonomous_msg
             mode = 'autonomous'
         elif self._is_fresh(self.last_manual_stamp):
