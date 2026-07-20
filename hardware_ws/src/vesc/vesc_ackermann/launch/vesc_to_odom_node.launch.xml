@@ -2,11 +2,6 @@
 <launch>
   <!-- Optionally launch in GDB, for debugging -->
   <arg name="debug" default="false" />
-  <arg name="use_imu_angular_velocity" default="false" />
-  <arg name="imu_topic" default="sensors/imu/raw" />
-  <arg name="imu_angular_velocity_offset" default="0.0" />
-  <arg name="imu_angular_velocity_scale" default="1.0" />
-  <arg name="imu_angular_velocity_deadband" default="0.0" />
   <let name="launch_prefix" value="xterm -e gdb --args" if="$(var debug)" />
 
   <!-- VESC to Odom node -->
@@ -16,14 +11,9 @@
     <param name="speed_to_erpm_gain" value="1.0" />
     <param name="speed_to_erpm_offset" value="0.0" />
     <param name="use_servo_cmd_to_calc_angular_velocity" value="true" />
-    <param name="use_imu_to_calc_angular_velocity" value="$(var use_imu_angular_velocity)" />
     <param name="steering_angle_to_servo_gain" value="1.0" />
     <param name="steering_angle_to_servo_offset" value="0.0" />
     <param name="wheelbase" value="0.2" />
-    <param name="imu_topic" value="$(var imu_topic)" />
-    <param name="imu_angular_velocity_offset" value="$(var imu_angular_velocity_offset)" />
-    <param name="imu_angular_velocity_scale" value="$(var imu_angular_velocity_scale)" />
-    <param name="imu_angular_velocity_deadband" value="$(var imu_angular_velocity_deadband)" />
     <param name="publish_tf" value="true" />
   </node>
 </launch>

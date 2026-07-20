@@ -44,6 +44,7 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('obstacle_topic', '/perception/obstacles')
         self.declare_parameter('frame_id_override', '')  # 비워두면 scan frame 그대로 사용
+        self.declare_parameter('boundary_polygon_xy', [])
 
         p = self.get_parameter
         self.range_min = p('range_min').value
@@ -60,6 +61,9 @@ class ObstacleDetectorNode(Node):
         self.n_release = p('n_release').value
 
         self.frame_id_override = p('frame_id_override').value
+        self.boundary_polygon = self._parse_boundary_polygon(
+            p('boundary_polygon_xy').value
+        )
 
         self.tracker = Tracker(
             gating_distance=p('gating_distance').value,
@@ -77,6 +81,25 @@ class ObstacleDetectorNode(Node):
         self.get_logger().info(
             f'obstacle_detector_node started: {scan_topic} -> {obstacle_topic}'
         )
+        if self.boundary_polygon is not None:
+            self.get_logger().info(
+                f'boundary polygon enabled with {len(self.boundary_polygon)} vertices'
+            )
+
+    def _parse_boundary_polygon(self, flat_xy):
+        """[x1, y1, x2, y2, ...] 형식 파라미터를 (N, 2)로 변환."""
+        if flat_xy is None or len(flat_xy) == 0:
+            return None
+        if len(flat_xy) < 6 or len(flat_xy) % 2 != 0:
+            self.get_logger().warn(
+                'boundary_polygon_xy must contain an even number of values '
+                'with at least 3 vertices. Boundary filter disabled.'
+            )
+            return None
+        polygon = []
+        for i in range(0, len(flat_xy), 2):
+            polygon.append([float(flat_xy[i]), float(flat_xy[i + 1])])
+        return polygon
 
     def on_scan(self, msg: LaserScan):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -87,6 +110,7 @@ class ObstacleDetectorNode(Node):
             range_min=self.range_min, range_max=self.range_max,
             fov_min=self.fov_min, fov_max=self.fov_max,
             median_kernel=self.median_kernel,
+            boundary_polygon=self.boundary_polygon,
         )
 
         # ② 클러스터링

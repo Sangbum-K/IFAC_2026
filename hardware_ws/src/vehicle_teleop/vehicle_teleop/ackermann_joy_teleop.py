@@ -75,7 +75,7 @@ class AckermannJoyTeleop(Node):
             self.publisher.publish(drive)
             return
 
-        speed_input = -self._apply_deadzone(self._axis_value(self.speed_axis), self.speed_deadzone)
+        speed_input = self._apply_deadzone(self._axis_value(self.speed_axis), self.speed_deadzone)
         steering_input = self._apply_deadzone(self._axis_value(self.steering_axis), self.steering_deadzone)
 
         if self._button_pressed(self.reverse_button):

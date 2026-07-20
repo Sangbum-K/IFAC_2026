@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'ackermann_joy_teleop = vehicle_teleop.ackermann_joy_teleop:main',
+            'ackermann_cmd_mux = vehicle_teleop.ackermann_cmd_mux:main',
         ],
     },
 )

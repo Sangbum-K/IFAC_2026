@@ -17,17 +17,13 @@ def generate_launch_description():
     steering_angle_to_servo_offset = LaunchConfiguration('steering_angle_to_servo_offset')
     wheelbase = LaunchConfiguration('wheelbase')
     publish_tf = LaunchConfiguration('publish_tf')
-    use_imu_angular_velocity = LaunchConfiguration('use_imu_angular_velocity')
-    imu_topic = LaunchConfiguration('imu_topic')
-    imu_angular_velocity_offset = LaunchConfiguration('imu_angular_velocity_offset')
-    imu_angular_velocity_scale = LaunchConfiguration('imu_angular_velocity_scale')
-    imu_angular_velocity_deadband = LaunchConfiguration('imu_angular_velocity_deadband')
 
     vehicle_bringup_share = FindPackageShare('vehicle_bringup')
+    stack_share = FindPackageShare('f1tenth_stack')
     urg_share = FindPackageShare('urg_node')
 
-    base_config = PathJoinSubstitution([vehicle_bringup_share, 'config', 'params.yaml'])
-    env_config = PathJoinSubstitution([vehicle_bringup_share, 'config', 'environments', env])
+    base_config = PathJoinSubstitution([stack_share, 'config', 'params.yaml'])
+    env_config = PathJoinSubstitution([stack_share, 'config', 'environments', env])
 
     return LaunchDescription([
         DeclareLaunchArgument('env', default_value='real_car'),
@@ -39,11 +35,6 @@ def generate_launch_description():
         DeclareLaunchArgument('steering_angle_to_servo_offset', default_value='0.5304'),
         DeclareLaunchArgument('wheelbase', default_value='0.33'),
         DeclareLaunchArgument('publish_tf', default_value='true'),
-        DeclareLaunchArgument('use_imu_angular_velocity', default_value='false'),
-        DeclareLaunchArgument('imu_topic', default_value='sensors/imu/raw'),
-        DeclareLaunchArgument('imu_angular_velocity_offset', default_value='0.0'),
-        DeclareLaunchArgument('imu_angular_velocity_scale', default_value='1.0'),
-        DeclareLaunchArgument('imu_angular_velocity_deadband', default_value='0.0'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([vehicle_bringup_share, 'launch', 'hardware.launch.py'])
@@ -86,14 +77,9 @@ def generate_launch_description():
                 'speed_to_erpm_gain': speed_to_erpm_gain,
                 'speed_to_erpm_offset': speed_to_erpm_offset,
                 'use_servo_cmd_to_calc_angular_velocity': True,
-                'use_imu_to_calc_angular_velocity': use_imu_angular_velocity,
                 'steering_angle_to_servo_gain': steering_angle_to_servo_gain,
                 'steering_angle_to_servo_offset': steering_angle_to_servo_offset,
                 'wheelbase': wheelbase,
-                'imu_topic': imu_topic,
-                'imu_angular_velocity_offset': imu_angular_velocity_offset,
-                'imu_angular_velocity_scale': imu_angular_velocity_scale,
-                'imu_angular_velocity_deadband': imu_angular_velocity_deadband,
                 'publish_tf': publish_tf,
             }],
         ),
@@ -107,5 +93,15 @@ def generate_launch_description():
                 [env_config, '.yaml'],
             ],
             condition=IfCondition(enable_teleop),
+        ),
+        Node(
+            package='vehicle_teleop',
+            executable='ackermann_cmd_mux',
+            name='ackermann_cmd_mux',
+            output='screen',
+            parameters=[
+                base_config,
+                [env_config, '.yaml'],
+            ],
         ),
     ])

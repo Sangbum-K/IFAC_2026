@@ -42,12 +42,12 @@ def generate_launch_description():
     lidar_launch = LaunchConfiguration('lidar_launch')
 
     base_config = PathJoinSubstitution([
-        FindPackageShare('vehicle_bringup'),
+        FindPackageShare('f1tenth_stack'),
         'config',
         'params.yaml',
     ])
     env_config = PathJoinSubstitution([
-        FindPackageShare('vehicle_bringup'),
+        FindPackageShare('f1tenth_stack'),
         'config',
         'environments',
         env,

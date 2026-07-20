@@ -1,5 +1,9 @@
-perception:
+obstacle_detector_node:
   ros__parameters:
-    publish_topic: /perception/objects
-    publish_period: 0.5
-    detection_threshold: 0.45
+    scan_topic: /scan
+    frame_id_override: car_state/laser
+    range_max: 10.0
+    cluster_eps: 0.18
+    gating_distance: 0.5
+    track_timeout: 12
+    boundary_polygon_xy: [0.0, -2.5, 8.0, -2.5, 8.0, 2.5, 0.0, 2.5]

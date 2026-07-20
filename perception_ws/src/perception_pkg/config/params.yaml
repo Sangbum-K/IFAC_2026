@@ -1,5 +1,19 @@
-perception:
+obstacle_detector_node:
   ros__parameters:
-    detection_threshold: 0.5
-    publish_topic: /perception/objects
-    publish_period: 1.0
+    scan_topic: /scan
+    obstacle_topic: /perception/obstacles
+    frame_id_override: ''
+    range_min: 0.05
+    range_max: 10.0
+    fov_min_deg: -180.0
+    fov_max_deg: 180.0
+    median_kernel: 3
+    cluster_eps: 0.18
+    min_cluster_size: 3
+    gating_distance: 0.5
+    track_timeout: 10
+    v_thresh: 0.25
+    n_confirm: 5
+    n_release: 8
+    min_publish_hits: 2
+    boundary_polygon_xy: []

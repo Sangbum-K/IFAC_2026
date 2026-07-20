@@ -1,5 +1,10 @@
-perception:
+obstacle_detector_node:
   ros__parameters:
-    publish_topic: /perception/objects
-    publish_period: 0.1
-    detection_threshold: 0.55
+    # real-car LiDAR topic/frame from the IFAC hardware stack
+    scan_topic: /scan
+    frame_id_override: laser
+    range_max: 12.0
+    cluster_eps: 0.16
+    gating_distance: 0.45
+    track_timeout: 8
+    boundary_polygon_xy: []

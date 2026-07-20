@@ -11,7 +11,8 @@ import numpy as np
 def preprocess_scan(ranges, angle_min, angle_increment,
                      range_min=0.05, range_max=10.0,
                      fov_min=-np.pi, fov_max=np.pi,
-                     median_kernel=3):
+                     median_kernel=3,
+                     boundary_polygon=None):
     """
     LaserScan.ranges (list/array) -> 필터링된 (x, y) 포인트 배열 반환
 
@@ -23,6 +24,8 @@ def preprocess_scan(ranges, angle_min, angle_increment,
     range_min/max : 유효 거리 범위 (센서 스펙 + 실사용 범위)
     fov_min/max : 관심 각도 범위 (rad). 차량 전방만 볼 경우 좁게 설정
     median_kernel : 스파이크 노이즈 제거용 median filter 커널 크기 (홀수)
+    boundary_polygon : (M, 2) ndarray 또는 list, laser frame 기준 허용 다각형.
+                       None이면 경계 필터를 적용하지 않음.
 
     Returns
     -------
@@ -51,6 +54,14 @@ def preprocess_scan(ranges, angle_min, angle_increment,
     xs = r * np.cos(a)
     ys = r * np.sin(a)
     points = np.stack([xs, ys], axis=1)
+
+    # 3) track boundary polygon 내부 포인트만 사용
+    if boundary_polygon is not None and len(points) > 0:
+        polygon = np.asarray(boundary_polygon, dtype=np.float32)
+        if polygon.ndim == 2 and polygon.shape[0] >= 3 and polygon.shape[1] == 2:
+            mask = _points_in_polygon(points, polygon)
+            points = points[mask]
+
     return points
 
 
@@ -65,3 +76,23 @@ def _median_filter_1d(arr, kernel):
         if len(finite) > 0:
             out[i] = np.median(finite)
     return out
+
+
+def _points_in_polygon(points, polygon):
+    """Ray casting 기반 point-in-polygon 테스트."""
+    x = points[:, 0]
+    y = points[:, 1]
+    inside = np.zeros(len(points), dtype=bool)
+
+    x1 = polygon[:, 0]
+    y1 = polygon[:, 1]
+    x2 = np.roll(x1, -1)
+    y2 = np.roll(y1, -1)
+
+    for ax, ay, bx, by in zip(x1, y1, x2, y2):
+        intersects = ((ay > y) != (by > y))
+        denom = (by - ay) + 1e-12
+        x_intersection = (bx - ax) * (y - ay) / denom + ax
+        inside ^= intersects & (x < x_intersection)
+
+    return inside

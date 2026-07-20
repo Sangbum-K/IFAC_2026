@@ -5,7 +5,7 @@
 joy_node:
   ros__parameters:
     dev: /dev/input/js0
-    deadzone: 0.15
+    deadzone: 0.1
     autorepeat_rate: 20.0
 
 estop_node:
@@ -34,16 +34,26 @@ vehicle:
 ackermann_joy_teleop:
   ros__parameters:
     joy_topic: /joy
-    ackermann_topic: /ackermann_cmd
-    speed_axis: 1
+    ackermann_topic: /manual_ackermann_cmd
+    speed_axis: 7
     steering_axis: 3
     enable_button: 5
     reverse_button: 0
     require_enable_button: false
-    max_speed: 1.0
-    max_speed_reverse: 1.0
+    max_speed: 1.5
+    max_speed_reverse: 0.8
     max_steering_angle: 0.4189
     joy_timeout: 0.5
     publish_rate: 30.0
     speed_deadzone: 0.05
     steering_deadzone: 0.05
+
+ackermann_cmd_mux:
+  ros__parameters:
+    joy_topic: /joy
+    manual_ackermann_topic: /manual_ackermann_cmd
+    autonomous_ackermann_topic: /autonomy/ackermann_cmd
+    output_ackermann_topic: /ackermann_cmd
+    autonomous_button: 5
+    command_timeout: 0.5
+    publish_rate: 30.0
