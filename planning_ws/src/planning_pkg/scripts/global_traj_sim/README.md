@@ -6,7 +6,67 @@ ROS 없이 `.venv`만으로 도는 global trajectory 생성 + 시뮬레이션 �
 (`s_m; x_m; y_m; d_right; d_left; psi_rad; kappa_radpm; vx_mps; ax_mps2`)를
 생성하고, pure pursuit + kinematic bicycle 모델로 폐루프 추종 시뮬레이션을 돌린다.
 
+---
+
+## ⚡ 빠른 시작 — `make_raceline.sh` (원샷 생성기)
+
+아래 "설치" + "실행"을 손으로 안 하고 **명령어 한 줄**로 끝내는 래퍼.
+`venv 생성 → 라이브러리 설치 → step4_main.py 실행` 을 자동으로 한다.
+
+> 전제(STEP 0): 맵 `.png` + `.yaml` 을 `planning_pkg/maps/` 에 미리 넣어둘 것.
+> 인자로 주는 맵 이름은 `maps/<이름>.png` 의 **확장자 뺀 파일명**과 같아야 함.
+
+```bash
+cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
+./make_raceline.sh 새트랙
+```
+
+옵션은 맵 이름 **뒤에** 붙이면 그대로 step4_main.py 로 전달된다:
+
+```bash
+./make_raceline.sh 새트랙 --v-max 6.0 --safe-dist 0.35
+```
+
+### 스크립트 동작 (3단계 자동)
+
+1. **venv 확인/생성** — `~/IFAC_ws/.venv` 없으면 만들고, 있으면 재사용.
+2. **라이브러리 확인/설치** — `numpy scipy pillow pyyaml matplotlib` import 되는지
+   검사해서 없을 때만 pip 설치. 있으면 건너뜀.
+3. **레이스라인 생성** — `step4_main.py --map <맵> [옵션]` 실행.
+
+첫 실행은 설치 때문에 몇 분, **두 번째부터는 몇 초.** `set -e` 라 중간에 하나라도
+실패하면 거기서 멈춘다. 맵 이름 없이 실행하면 사용법을 출력하고 종료.
+
+### 자주 쓰는 옵션 (전체는 아래 "실행" 참고)
+
+| 옵션 | 기본값 | 의미 |
+|------|--------|------|
+| `--v-max` | `7.0` | 최대 속도 [m/s] |
+| `--mu` | `0.85` | 노면 마찰계수 (접지 낮으면 낮춰라) |
+| `--margin` | `0.15` | 벽에서 띄우는 안전 여유 [m] |
+| `--safe-dist` | `0.30` | 센터라인 추출 시 벽 최소 이격 [m] |
+| `--raceline {center,iqp,sp}` | `iqp` | 라인 종류 |
+
+> **실차 첫 주행 팁:** 보수적으로 시작 →
+> `./make_raceline.sh 새트랙 --v-max 5.0 --mu 0.6 --margin 0.25`
+> 잘 돌면 v-max 올리고 mu/margin 조여가며 반복.
+
+### 끝나면
+
+- 그림 : `outputs/<맵>_trajectory.png` — 라인/속도/시뮬 궤적 눈으로 확인
+- CSV  : `outputs/` + `config/global_trajectory/` 두 곳에 저장 (후자를 튜너·런타임이 읽음)
+
+다음 단계(튜너 편집 → 빌드 반영)는 [`../tuner/README.md`](../tuner/README.md) 참고.
+런타임에 반영하려면 CSV 생성 후:
+```bash
+cd ~/IFAC_ws/planning_ws && colcon build --packages-select planning_pkg && source install/setup.bash
+```
+
+---
+
 ## 설치 (어떤 환경에서든)
+
+> `make_raceline.sh` 를 쓰면 이 아래 "설치/실행"은 자동으로 처리됨. 수동으로 하려면:
 
 ```bash
 cd <workspace root>          # IFAC_ws-main
