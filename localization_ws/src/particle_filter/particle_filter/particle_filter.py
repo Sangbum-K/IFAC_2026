@@ -688,8 +688,12 @@ class ParticleFiler(Node):
         self.particles = proposal_distribution
     
     def expected_pose(self):
-        # returns the expected value of the pose given the particle distribution
-        return np.dot(self.particles.transpose(), self.weights)
+        # x, y use weighted arithmetic means; yaw uses a weighted circular mean.
+        xy = np.dot(self.particles[:, :2].transpose(), self.weights)
+        sin_yaw = np.dot(np.sin(self.particles[:, 2]), self.weights)
+        cos_yaw = np.dot(np.cos(self.particles[:, 2]), self.weights)
+        yaw = np.arctan2(sin_yaw, cos_yaw)
+        return np.array([xy[0], xy[1], yaw])
 
     def lookup_laser_to_base_pose(self):
         '''Lookup the fixed laser->base_link transform without blocking node startup.'''

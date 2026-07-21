@@ -45,7 +45,16 @@ def generate_launch_description():
         'use_sim_time',
         default_value='false',
         description='Use simulation clock if true.')
-    ld = LaunchDescription([localize_la, use_sim_time_la])
+    map_yaml_path_la = DeclareLaunchArgument(
+        'map_yaml_path',
+        default_value=os.path.join(
+            get_package_share_directory('particle_filter'),
+            'maps',
+            map_name + '.yaml',
+        ),
+        description='Map yaml path used by the PF map_server.',
+    )
+    ld = LaunchDescription([localize_la, use_sim_time_la, map_yaml_path_la])
 
     # nodes
     pf_node = Node(
@@ -63,7 +72,7 @@ def generate_launch_description():
         executable='map_server',
         name='map_server',
         output='screen',
-        parameters=[{'yaml_filename': os.path.join(get_package_share_directory('particle_filter'), 'maps', map_name + '.yaml')},
+        parameters=[{'yaml_filename': LaunchConfiguration('map_yaml_path')},
                     {'topic': 'map'},
                     {'frame_id': 'map'},
                     {'use_sim_time': LaunchConfiguration('use_sim_time')}]

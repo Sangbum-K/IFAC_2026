@@ -11,6 +11,8 @@ def generate_launch_description():
     backend = LaunchConfiguration('backend')
     mode = LaunchConfiguration('mode')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    map_yaml_path = LaunchConfiguration('map_yaml_path')
+    posegraph_path = LaunchConfiguration('posegraph_path')
 
     slam_mapping_config = PathJoinSubstitution([
         FindPackageShare('localization_bringup'),
@@ -58,6 +60,16 @@ def generate_launch_description():
             default_value='false',
             description='Use simulation clock if true.',
         ),
+        DeclareLaunchArgument(
+            'map_yaml_path',
+            default_value='/tmp/f1tenth_track_map.yaml',
+            description='Map yaml path for amcl or particle_filter localization.',
+        ),
+        DeclareLaunchArgument(
+            'posegraph_path',
+            default_value='/tmp/f1tenth_track_posegraph',
+            description='Slam toolbox posegraph path for localization mode.',
+        ),
         Node(
             package='slam_toolbox',
             executable='async_slam_toolbox_node',
@@ -73,7 +85,13 @@ def generate_launch_description():
             executable='localization_slam_toolbox_node',
             name='slam_toolbox',
             output='screen',
-            parameters=[slam_localization_config, {'use_sim_time': use_sim_time}],
+            parameters=[
+                slam_localization_config,
+                {
+                    'use_sim_time': use_sim_time,
+                    'map_file_name': posegraph_path,
+                },
+            ],
             condition=IfCondition(PythonExpression([
                 "'", backend, "' == 'slam_toolbox' and '", mode, "' == 'localization'"
             ])),
@@ -83,7 +101,13 @@ def generate_launch_description():
             executable='map_server',
             name='map_server',
             output='screen',
-            parameters=[map_server_config, {'use_sim_time': use_sim_time}],
+            parameters=[
+                map_server_config,
+                {
+                    'use_sim_time': use_sim_time,
+                    'yaml_filename': map_yaml_path,
+                },
+            ],
             condition=use_amcl,
         ),
         Node(
@@ -116,6 +140,7 @@ def generate_launch_description():
             ),
             launch_arguments={
                 'use_sim_time': use_sim_time,
+                'map_yaml_path': map_yaml_path,
             }.items(),
             condition=use_particle_filter,
         ),
