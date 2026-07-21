@@ -33,6 +33,11 @@ install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
 )
 
+# real_car.launch.py가 자율 스택 시작 전에 띄우는 파티클 필터 수렴 대기 노드.
+install(PROGRAMS scripts/wait_for_localization.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(FILES package.xml
   DESTINATION share/${PROJECT_NAME}
 )

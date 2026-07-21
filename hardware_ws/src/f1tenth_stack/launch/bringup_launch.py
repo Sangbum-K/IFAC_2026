@@ -29,6 +29,7 @@ from launch.actions import IncludeLaunchDescription
 from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
 import os
+import yaml
 
 def generate_launch_description():
     joy_teleop_config = os.path.join(
@@ -41,6 +42,11 @@ def generate_launch_description():
         'config',
         'vesc.yaml'
     )
+    # Read the current calibration values straight out of vesc.yaml so it stays
+    # the single source of truth: editing vesc.yaml alone changes the defaults
+    # below, while a `:=` launch argument can still override for quick tuning.
+    with open(vesc_config, 'r') as f:
+        vesc_defaults = yaml.safe_load(f)['/**']['ros__parameters']
     sensors_config = os.path.join(
         get_package_share_directory('f1tenth_stack'),
         'config',
@@ -69,7 +75,37 @@ def generate_launch_description():
         default_value=mux_config,
         description='Descriptions for ackermann mux configs')
 
-    ld = LaunchDescription([joy_la, vesc_la, sensors_la, mux_la])
+    # VESC calibration overrides - exposed as launch args so they can be
+    # tuned from the command line without editing vesc.yaml each time.
+    speed_to_erpm_gain_la = DeclareLaunchArgument(
+        'speed_to_erpm_gain',
+        default_value=str(vesc_defaults['speed_to_erpm_gain']),
+        description='erpm = speed_to_erpm_gain * speed (m/s) + speed_to_erpm_offset')
+    speed_to_erpm_offset_la = DeclareLaunchArgument(
+        'speed_to_erpm_offset',
+        default_value=str(vesc_defaults['speed_to_erpm_offset']),
+        description='erpm = speed_to_erpm_gain * speed (m/s) + speed_to_erpm_offset')
+    steering_angle_to_servo_gain_la = DeclareLaunchArgument(
+        'steering_angle_to_servo_gain',
+        default_value=str(vesc_defaults['steering_angle_to_servo_gain']),
+        description='servo = steering_angle_to_servo_gain * steering angle (rad) + steering_angle_to_servo_offset')
+    steering_angle_to_servo_offset_la = DeclareLaunchArgument(
+        'steering_angle_to_servo_offset',
+        default_value=str(vesc_defaults['steering_angle_to_servo_offset']),
+        description='servo = steering_angle_to_servo_gain * steering angle (rad) + steering_angle_to_servo_offset')
+
+    vesc_calibration_params = {
+        'speed_to_erpm_gain': LaunchConfiguration('speed_to_erpm_gain'),
+        'speed_to_erpm_offset': LaunchConfiguration('speed_to_erpm_offset'),
+        'steering_angle_to_servo_gain': LaunchConfiguration('steering_angle_to_servo_gain'),
+        'steering_angle_to_servo_offset': LaunchConfiguration('steering_angle_to_servo_offset'),
+    }
+
+    ld = LaunchDescription([
+        joy_la, vesc_la, sensors_la, mux_la,
+        speed_to_erpm_gain_la, speed_to_erpm_offset_la,
+        steering_angle_to_servo_gain_la, steering_angle_to_servo_offset_la,
+    ])
 
     joy_node = Node(
         package='joy',
@@ -87,13 +123,13 @@ def generate_launch_description():
         package='vesc_ackermann',
         executable='ackermann_to_vesc_node',
         name='ackermann_to_vesc_node',
-        parameters=[LaunchConfiguration('vesc_config')]
+        parameters=[LaunchConfiguration('vesc_config'), vesc_calibration_params]
     )
     vesc_to_odom_node = Node(
         package='vesc_ackermann',
         executable='vesc_to_odom_node',
         name='vesc_to_odom_node',
-        parameters=[LaunchConfiguration('vesc_config')]
+        parameters=[LaunchConfiguration('vesc_config'), vesc_calibration_params]
     )
     vesc_driver_node = Node(
         package='vesc_driver',
@@ -118,7 +154,7 @@ def generate_launch_description():
         executable='ackermann_mux',
         name='ackermann_mux',
         parameters=[LaunchConfiguration('mux_config')],
-        remappings=[('ackermann_cmd_out', 'ackermann_drive')]
+        remappings=[('ackermann_drive_out', 'ackermann_cmd')]
     )
     static_tf_node = Node(
         package='tf2_ros',

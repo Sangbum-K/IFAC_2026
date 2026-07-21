@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -13,6 +13,13 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     map_yaml_path = LaunchConfiguration('map_yaml_path')
     posegraph_path = LaunchConfiguration('posegraph_path')
+    rviz = LaunchConfiguration('rviz')
+
+    pf_rviz_config = PathJoinSubstitution([
+        FindPackageShare('particle_filter'),
+        'rviz',
+        'pf.rviz',
+    ])
 
     slam_mapping_config = PathJoinSubstitution([
         FindPackageShare('localization_bringup'),
@@ -43,6 +50,12 @@ def generate_launch_description():
     use_particle_filter = IfCondition(PythonExpression([
         "'", backend, "' == 'particle_filter' and '", mode, "' == 'localization'"
     ]))
+    # 파티클 필터는 켜자마자 맵 전체에 파티클을 흩뿌린 상태라 사람이 RViz에서
+    # 2D Pose Estimate로 초기 위치를 찍어줘야 한다. 그래서 RViz를 같이 띄운다.
+    show_pf_rviz = IfCondition(PythonExpression([
+        "'", backend, "' == 'particle_filter' and '", mode, "' == 'localization'"
+        " and '", rviz, "' in ('true', 'True', '1')"
+    ]))
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -69,6 +82,11 @@ def generate_launch_description():
             'posegraph_path',
             default_value='/tmp/f1tenth_track_posegraph',
             description='Slam toolbox posegraph path for localization mode.',
+        ),
+        DeclareLaunchArgument(
+            'rviz',
+            default_value='true',
+            description='(backend:=particle_filter) 초기 위치 지정용 RViz 실행 여부',
         ),
         Node(
             package='slam_toolbox',
@@ -143,5 +161,28 @@ def generate_launch_description():
                 'map_yaml_path': map_yaml_path,
             }.items(),
             condition=use_particle_filter,
+        ),
+        Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2_localization',
+            output='log',
+            arguments=['-d', pf_rviz_config],
+            parameters=[{'use_sim_time': use_sim_time}],
+            condition=show_pf_rviz,
+        ),
+        LogInfo(
+            msg=(
+                '\n'
+                '=========================================================\n'
+                ' 파티클 필터 초기 위치를 지정하세요 (RViz 창):\n'
+                '  1. 차를 맵상 아는 지점(보통 출발선)에 실제로 갖다 놓기\n'
+                '  2. 상단 툴바 "2D Pose Estimate" 클릭\n'
+                '  3. 맵에서 차가 있는 위치를 클릭 → 차 앞 방향으로 드래그\n'
+                '  4. 주황 파티클이 한 점으로 뭉치면 성공\n'
+                ' (위치를 완전히 잃으면 "Publish Point"로 전체 재분산)\n'
+                '=========================================================\n'
+            ),
+            condition=show_pf_rviz,
         ),
     ])

@@ -16,6 +16,7 @@ import math
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from nav_msgs.msg import Odometry
@@ -313,8 +314,15 @@ class OpponentPredictorNode(Node):
 
 def main():
     rclpy.init()
-    rclpy.spin(OpponentPredictorNode())
-    rclpy.shutdown()
+    node = OpponentPredictorNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
