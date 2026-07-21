@@ -6,9 +6,8 @@
 
   <!-- Ackermann to VESC node -->
   <node pkg="vesc_ackermann" exec="ackermann_to_vesc_node" name="ackermann_to_vesc_node" output="screen">
-    <param name="speed_to_erpm_gain" value="4200.0" />
-    <param name="speed_to_erpm_offset" value="0.0" />
-    <param name="steering_angle_to_servo_gain" value="-1.2135" />
-    <param name="steering_angle_to_servo_offset" value="0.5304" />
+    <!-- Pull calibration from f1tenth_stack/config/vesc.yaml so this standalone
+         debug launch never drifts from the values used by bringup_launch.py -->
+    <param from="$(find-pkg-share f1tenth_stack)/config/vesc.yaml" />
   </node>
 </launch>
