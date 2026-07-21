@@ -1,25 +1,26 @@
 <?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>f1tenth_stack</name>
-  <version>0.0.0</version>
-  <description>F1TENTH-style bringup package for vehicle launch and configuration.</description>
-  <maintainer email="you@example.com">you</maintainer>
-  <license>Apache-2.0</license>
+  <version>0.0.1</version>
+  <description>Onboard drivers for vesc and sensors for F1TENTH vehicles.</description>
+  <maintainer email="billyzheng.bz@gmail.com">Hongrui Zheng</maintainer>
+  <license>MIT</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>ackermann_msgs</depend>
+  <depend>urg_node</depend>
+  <depend>joy</depend>
+  <depend>joy_teleop</depend>
+  <depend>rosbridge_server</depend>
+  <depend>vesc</depend>
+  <depend>ackermann_mux</depend>
+  <depend>std_msgs</depend>
+  <depend>sick_scan_xd</depend>
 
-  <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>joy</exec_depend>
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
-  <exec_depend>localization_bringup</exec_depend>
-  <exec_depend>robot_state_publisher</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>urg_node</exec_depend>
-  <exec_depend>vehicle_bringup</exec_depend>
-  <exec_depend>vehicle_teleop</exec_depend>
-  <exec_depend>vesc_ackermann</exec_depend>
-  <exec_depend>vesc_driver</exec_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

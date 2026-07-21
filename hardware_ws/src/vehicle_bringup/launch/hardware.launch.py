@@ -101,7 +101,7 @@ def generate_launch_description():
         Node(
             package='joy',
             executable='joy_node',
-            name='joy_node',
+            name='joy',
             output='screen',
             parameters=[base_config, [env_config, '.yaml']],
             condition=IfCondition(enable_joy),

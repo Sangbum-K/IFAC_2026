@@ -21,7 +21,7 @@ install(TARGETS estop_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY config launch urdf
+install(DIRECTORY launch urdf
   DESTINATION share/${PROJECT_NAME}
 )
 
