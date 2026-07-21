@@ -6,13 +6,13 @@ obstacle_detector_node:
     # (구 frame_id_override는 라벨만 바꿔 좌표가 어긋나던 버그로 제거됨).
     target_frame: map
     tf_timeout_sec: 0.05
-    range_min: 0.05
-    range_max: 10.0
-    fov_min_deg: -135.0
-    fov_max_deg: 135.0
+    range_min: 0.1
+    range_max: 5.0
+    fov_min_deg: -80.0
+    fov_max_deg: 80.0
     median_kernel: 3
     cluster_eps: 0.18
-    min_cluster_size: 3
+    min_cluster_size: 5
     gating_distance: 0.5
     track_timeout: 10
     v_thresh: 0.25
