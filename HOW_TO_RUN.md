@@ -55,8 +55,9 @@ LiDAR /scan
 source /opt/ros/humble/setup.zsh
 
 # planning 먼저 — 여기에 메시지 패키지가 있음. 나머지는 이 순서대로.
+# --base-paths src 를 반드시 붙이세요 (이유는 아래 주의사항 참고).
 for ws in planning perception control integration; do
-  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
+  cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
 done
 ```
 
@@ -65,11 +66,18 @@ done
 ```bash
 # 하드웨어 + 위치추정 (시뮬에선 gym이 대신하므로 불필요)
 for ws in hardware localization; do
-  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
+  cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
 done
 ```
 
-> ⚠️ **주의 3가지**
+> ⚠️ **주의**
+> - **`perception_ws`에서는 `--base-paths src` 없이 `colcon build`를 하면
+>   `perception_pkg`가 빌드되지 않습니다.** 워크스페이스 **루트**에 남아 있는
+>   `setup.py`(+ `obstacle_detector_node.py` 등 압축 해제 잔재) 때문에 colcon이
+>   루트를 `f1tenth_perception`이라는 패키지로 오인하고 `src/`로 내려가지
+>   않습니다. 에러 없이 "0 packages" 로 끝나서 **고친 코드가 반영 안 된 채로
+>   주행하게 되는** 함정입니다. 확인: `colcon list` 결과가
+>   `perception_pkg src/perception_pkg` 여야 정상.
 > - `--symlink-install` 쓰지 마세요. 기존 빌드 캐시와 충돌해서 이상한
 >   에러(`ae_hyu_msgs` / `ament_cmake_python` 심링크 에러)가 납니다.
 > - `zsh` 터미널에서 `setup.bash`를 source 하면
@@ -188,7 +196,61 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 
 ## 4. 실차로 실행하기
 
+> ⚠️ **먼저 읽을 것 — 2026-07-21 hardware_ws 재구성(950b3b5) 이후 자율 명령
+> 배선이 끊겨 있습니다.** 조이스틱 수동 주행은 되지만 **자율 명령이 바퀴까지
+> 가지 않습니다.** 아래 3곳이 어긋나 있으니 실차 자율 주행 전에 반드시 확인:
+> - control_pkg는 `/autonomy/ackermann_cmd`로 발행하는데, 새 `ackermann_mux`는
+>   `drive`/`teleop`만 구독합니다.
+> - 새 mux 출력은 `ackermann_drive`인데, `ackermann_to_vesc_node`는
+>   `ackermann_cmd`를 구독합니다.
+> - `estop_node`와 `/ackermann_cmd_mux/mode`가 사라졌습니다 (아래 "실차 안전장치"
+>   절의 버튼 4/5 설명은 현재 유효하지 않습니다).
+
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
+
+### 4-A. 한 줄로 실행 (권장)
+
+터미널 하나에서:
+
+```bash
+ros2 launch integration_pkg real_car.launch.py
+```
+
+이 한 줄이 A→B→C를 **자동 순서로** 처리합니다:
+
+1. 하드웨어 bringup (LiDAR/VESC/joy/mux/TF)
+2. 5초 뒤 particle_filter + **RViz(pf.rviz) 자동 실행**
+3. `wait_for_localization` 게이트가 파티클 수렴을 감시하며 1초마다 상태 로그
+4. **수렴이 확인되면 자율 스택(perception+planning+control)을 자동 시작**
+
+사람이 할 일은 **RViz에서 `2D Pose Estimate` 한 번 찍는 것뿐**입니다
+(방법은 아래 4-1의 "초기 위치 찍는 순서" 참고).
+
+게이트 로그로 어디서 막혔는지 바로 알 수 있습니다:
+
+```
+대기 중: /scan 없음 — 하드웨어(LiDAR)가 안 떴습니다
+대기 중: map -> base_link TF 없음 — PF가 아직 TF를 안 냅니다
+대기 중: 파티클이 아직 흩어져 있음 (spread=3.42m > 0.35m) — RViz에서 2D Pose Estimate로 초기 위치를 찍으세요
+수렴 확인 중 (spread=0.12m, 6/10)
+수렴 완료 (파티클 spread=0.11m) — 자율 스택을 시작합니다.
+```
+
+옵션:
+
+```bash
+# 이미 하드웨어가 떠 있을 때 (B부터)
+ros2 launch integration_pkg real_car.launch.py hardware:=false
+
+# 화면 없이 / 자율 스택은 수동으로
+ros2 launch integration_pkg real_car.launch.py rviz:=false autostart:=false
+
+# 2분 안에 수렴 못 하면 자율 스택을 아예 띄우지 않음
+ros2 launch integration_pkg real_car.launch.py wait_timeout:=120.0
+```
+
+### 4-B. 터미널 3개로 따로 실행 (디버깅용)
+
 **순서가 매우 중요합니다.** C(자율스택)는 B의 파티클 필터가 실제로
 `/pf/pose/odom`과 `map` TF를 내보내기 시작한 **뒤에** 띄워야 합니다.
 안 그러면 C의 노드들이 아래처럼 무한 대기에 빠집니다(이게 가장 흔한 실수):
@@ -205,8 +267,10 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 ### 4-0. 터미널 A — 하드웨어 bringup
 
 ```bash
-# LiDAR, VESC, odom, TF, estop, 조이스틱
-ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet
+# LiDAR, VESC, odom, TF, mux, 조이스틱
+# (2026-07-21 재구성으로 파일명이 bringup_launch.py로 바뀌었고 env/sensor_interface
+#  인자는 없어졌습니다. LiDAR IP 등은 f1tenth_stack/config/sensors.yaml에서 설정.)
+ros2 launch f1tenth_stack bringup_launch.py
 ```
 
 `/scan`, `/odom`이 나오는지 확인:
@@ -237,10 +301,11 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 > laser→base_link TF가 없으면 클릭이 무시되고
 > `Cannot set pose yet, waiting for laser transform` 로그만 뜹니다.
 
-**RViz 열기** (localization launch는 RViz를 자동으로 안 띄움):
+**RViz는 localization launch가 자동으로 띄웁니다** (`rviz:=false`로 끌 수 있음).
+따로 띄우려면 — 반드시 **설치된** 설정 파일을 쓰세요:
 
 ```bash
-rviz2 -d ~/IFAC_ws/localization_ws/src/particle_filter/rviz/pf.rviz
+rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz
 ```
 
 **초기 위치 찍는 순서:**
@@ -367,6 +432,20 @@ ros2 launch control_pkg control.launch.py env:=sim
 **차가 벽을 따라 후진하거나 이상하게 감**
 → frenet 좌표가 깨진 것. `2D Pose Estimate`로 차를 레이스라인 위에 다시 놓기.
 
+**RViz를 띄웠는데 맵/파티클이 하나도 안 보임**
+→ 예전 `pf.rviz`는 **ROS1 rviz 포맷**이라 RViz2에서 디스플레이가 전부 사라졌습니다.
+  현재는 RViz2 포맷으로 교체돼 있으니, 소스가 아니라 **설치된** 설정을 쓰세요:
+  `rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz`
+  (`localization.launch.py`가 자동으로 띄워주므로 보통 직접 실행할 일은 없습니다.)
+
+**코드를 고쳤는데 실행하면 예전 동작 그대로**
+→ `perception_ws`에서 `--base-paths src` 없이 빌드했을 가능성이 큽니다 (1-A 주의사항).
+  `colcon list`로 `perception_pkg`가 잡히는지 먼저 확인하세요.
+
+**종료할 때 `obstacle_detector_node`에 `Exception in thread Thread-1`**
+→ tf2 TransformListener의 내부 스레드가 남기는 로그로, 프로세스는 정상 종료(exit 0)합니다.
+  `process has died [exit code 1]`이 함께 뜨면 그건 다른 문제입니다.
+
 **빌드 에러 (`ae_hyu_msgs`, 심링크 관련)**
 → `--symlink-install` 썼거나 옛 캐시 남음. 해당 ws에서
 `rm -rf build install log && colcon build`.
@@ -387,20 +466,23 @@ source /opt/ros/humble/setup.zsh
 # 공통(시뮬·실차): planning perception control integration
 # 실차면 뒤에 hardware localization 도 추가
 for ws in planning perception control integration; do   # 실차: ... integration hardware localization
-  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
+  cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
 done
+# ⚠️ --base-paths src 빼면 perception_pkg가 조용히 안 빌드됨 (1-A 주의사항)
 
 # ── 매번 실행 ──
 # 시뮬 (source 시뮬용 블록 후, 터미널 1개):
 ros2 launch integration_pkg stack.launch.py
 
-# 실차 (source 실차용 블록 후, 터미널 3개 — A→B→C 순서 엄수):
-ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet   # A 하드웨어
-ros2 launch localization_bringup localization.launch.py backend:=particle_filter        # B 위치추정
-#   → RViz 열고(rviz2 -d .../particle_filter/rviz/pf.rviz) "2D Pose Estimate"로
-#     실제 차 위치 클릭+드래그 → 파티클 수렴시키기. 아래 둘이 나와야 C로 넘어감:
-#     ros2 topic hz /pf/pose/odom   /   ros2 run tf2_ros tf2_echo map base_link
+# 실차 (source 실차용 블록 후, 터미널 1개):
+ros2 launch integration_pkg real_car.launch.py
+#   → RViz가 자동으로 뜸. "2D Pose Estimate"로 실제 차 위치 클릭+드래그.
+#   → 파티클이 수렴하면 자율 스택이 자동 시작됨.
+# ⚠️ 자율 명령 배선이 950b3b5 이후 끊겨 있음 — 4번 맨 위 경고 확인
+
+# 실차를 단계별로 나눠 띄우려면 (디버깅용, 터미널 3개 — A→B→C 순서 엄수):
+ros2 launch f1tenth_stack bringup_launch.py                                             # A 하드웨어
+ros2 launch localization_bringup localization.launch.py backend:=particle_filter        # B 위치추정(+RViz)
 ros2 launch integration_pkg stack.launch.py env:=real_car                               # C 자율스택
-# 주행: 조이스틱 버튼 5 = 자율 ON/OFF 토글, estop 버튼 = 즉시 정지
 # ⚠️ C에서 "Waiting for odom (real)" / "map ... does not exist" 반복 = B 미수렴 (4번 참고)
 ```
