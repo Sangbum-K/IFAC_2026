@@ -6,8 +6,12 @@
     speed_to_erpm_offset: 0.0
 
     # servo value (0 to 1) =  steering_angle_to_servo_gain * steering angle (radians) + steering_angle_to_servo_offset
-    steering_angle_to_servo_gain: -1.2135
-    steering_angle_to_servo_offset: 0.5304
+    # Measured 2026-07-22. Gain comes from a symmetric circle pair at delta
+    # +-0.18 rad (3.12 m / 1.96 m diameters); offset comes from a 4.5 m straight
+    # run, which probes delta = 0 directly. Both circles and the straight run sit
+    # on one line to within 0.2 deg. See ~/TUNING_STATUS.md.
+    steering_angle_to_servo_gain: -0.8206
+    steering_angle_to_servo_offset: 0.403
 
     port: /dev/ttyACM0
     duty_cycle_min: 0.0
@@ -20,8 +24,11 @@
     speed_max: 23250.0
     position_min: 0.0
     position_max: 0.0
-    servo_min: 0.15
-    servo_max: 0.85
+    servo_min: 0.05
+    # Right-hand steering stalls the servo from ~0.7196 (measured on a stand,
+    # audible buzz). Clip below that so a full stick deflection cannot drive the
+    # servo into the mechanical stop.
+    servo_max: 0.70
 
 # No longer needed, all parameters are shared
 # ackermann_to_vesc_node:

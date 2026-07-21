@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'throttle_interpolator = f1tenth_stack.throttle_interpolator:main',
+            'joy_toggle_teleop = f1tenth_stack.joy_toggle_teleop:main',
         ],
     },
 )

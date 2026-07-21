@@ -114,9 +114,9 @@ def generate_launch_description():
         parameters=[LaunchConfiguration('joy_config')]
     )
     joy_teleop_node = Node(
-        package='joy_teleop',
-        executable='joy_teleop',
-        name='joy_teleop',
+        package='f1tenth_stack',
+        executable='joy_toggle_teleop',
+        name='joy_toggle_teleop',
         parameters=[LaunchConfiguration('joy_config')]
     )
     ackermann_to_vesc_node = Node(
