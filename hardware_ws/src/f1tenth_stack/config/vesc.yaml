@@ -2,7 +2,11 @@
   # general parameters shared by all vesc-related nodes
   ros__parameters:
     # erpm (electrical rpm) = speed_to_erpm_gain * speed (meters / second) + speed_to_erpm_offset
-    speed_to_erpm_gain: 4614.0
+    # Measured 2026-07-22 via tape measure + stopwatch over a 9 m straight,
+    # commanded 0.8/1.0/1.5 m/s (topic pub, not joystick). Three independent
+    # speeds agree within +-2% with mixed sign -> noise floor, not a real bias.
+    # See ~/TUNING_STATUS.md.
+    speed_to_erpm_gain: 4255.1
     speed_to_erpm_offset: 0.0
 
     # servo value (0 to 1) =  steering_angle_to_servo_gain * steering angle (radians) + steering_angle_to_servo_offset
