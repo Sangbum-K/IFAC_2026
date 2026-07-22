@@ -48,7 +48,7 @@ ros2 launch f1tenth_stack bringup_launch.py
 - `joy` / `joy_teleop` — 조이스틱 입력 → `/teleop`
 - `vesc_driver_node` — VESC 시리얼 통신
 - `ackermann_to_vesc_node` — Ackermann 명령 → VESC
-- `vesc_to_odom_node` — `/odom` + `odom→base_link` TF
+- `vesc_to_odom_node` — VESC 속도 + IMU 상대 yaw 기반 `/odom` + `odom→base_link` TF
 - `urg_node` — 라이다 → `/scan`
 - `ackermann_mux` — teleop/navigation 먹스 → `ackermann_drive`
 - `static_baselink_to_laser` — `base_link→laser` static TF (0.27, 0, 0.11)
@@ -87,7 +87,7 @@ rviz2
 
 - `joy_teleop.yaml` — 조이스틱 축/버튼·데드맨 매핑
 - `mux.yaml` — teleop/navigation 우선순위
-- `vesc.yaml` — VESC 게인·포트·wheelbase
+- `vesc.yaml` — VESC 게인·포트·wheelbase·IMU yaw odometry 설정
 - `sensors.yaml` — 라이다 IP/포트 등
 - `f1tenth_online_async.yaml` — slam_toolbox 매핑 파라미터
 

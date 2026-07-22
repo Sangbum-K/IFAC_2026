@@ -34,10 +34,12 @@
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <vesc_msgs/msg/vesc_state_stamped.hpp>
 
@@ -45,6 +47,7 @@ namespace vesc_ackermann
 {
 
 using nav_msgs::msg::Odometry;
+using sensor_msgs::msg::Imu;
 using std_msgs::msg::Float64;
 using vesc_msgs::msg::VescStateStamped;
 
@@ -57,28 +60,47 @@ private:
   // ROS parameters
   std::string odom_frame_;
   std::string base_frame_;
+  std::string imu_topic_;
   /** State message does not report servo position, so use the command instead */
   bool use_servo_cmd_;
+  /** Use relative AHRS yaw instead of integrating the commanded steering model. */
+  bool use_imu_yaw_;
   // conversion gain and offset
   double speed_to_erpm_gain_, speed_to_erpm_offset_;
   double steering_to_servo_gain_, steering_to_servo_offset_;
   double wheelbase_;
+  double imu_yaw_timeout_;
+  double imu_angular_velocity_scale_;
+  double imu_yaw_variance_;
+  double max_integration_dt_;
   bool publish_tf_;
 
   // odometry state
   double x_, y_, yaw_;
+  double last_speed_;
   Float64::SharedPtr last_servo_cmd_;  ///< Last servo position commanded value
   VescStateStamped::SharedPtr last_state_;  ///< Last received state message
+
+  // IMU state. The AHRS quaternion is unwrapped and made relative to its first sample,
+  // so an arbitrary magnetic/global heading never leaks into the odom frame.
+  std::mutex imu_mutex_;
+  bool has_imu_yaw_;
+  double last_imu_yaw_raw_;
+  double imu_yaw_unwrapped_;
+  double imu_angular_velocity_z_;
+  builtin_interfaces::msg::Time last_imu_stamp_;
 
   // ROS services
   rclcpp::Publisher<Odometry>::SharedPtr odom_pub_;
   rclcpp::Subscription<VescStateStamped>::SharedPtr vesc_state_sub_;
   rclcpp::Subscription<Float64>::SharedPtr servo_sub_;
+  rclcpp::Subscription<Imu>::SharedPtr imu_sub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_pub_;
 
   // ROS callbacks
   void vescStateCallback(const VescStateStamped::SharedPtr state);
   void servoCmdCallback(const Float64::SharedPtr servo);
+  void imuCallback(const Imu::SharedPtr imu);
 };
 
 }  // namespace vesc_ackermann

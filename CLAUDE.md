@@ -43,8 +43,9 @@ python3 ~/steer_stand.py sweep ... # 스탠드 테스트 (speed 0 고정)
   서보가 떨림. `TUNING_STATUS.md` §0에 절차와 실제 사고 기록이 있음.
 - **`ros2 param set`은 안 먹음.** `ackermann_to_vesc.cpp`가 생성자에서만 읽음
   → launch 재시작 필요.
-- **`/odom`으로 조향·속도를 검증하면 안 됨.** `vesc_to_odom`이 같은 gain으로
-  되나눠서 오차가 상쇄됨. 줄자 같은 외부 기준으로 측정할 것.
+- **`/odom`만으로 속도를 검증하면 안 됨.** 같은 eRPM gain을 사용하므로 줄자 같은
+  외부 기준으로 측정할 것. 조향 방향은 현재 `use_imu_yaw: true`에서 IMU 상대 yaw를
+  사용하므로 서보 명령 모델과 독립적으로 확인할 수 있다.
 - **zsh에서 `source /opt/ros/humble/setup.bash`는 깨짐.** `setup.zsh`를 쓸 것.
 - launch 전 `ls -l /dev/ttyACM0` 확인. 포트가 없으면 `vesc_driver_node`가
   조용히 죽고 자동 복구되지 않음.

@@ -328,9 +328,11 @@ ros2 topic echo /sensors/core --field state.voltage_input
   → 차가 안 움직임. **반드시 버튼 5로 AUTONOMOUS 전환** 후 로그에
   `--> AUTONOMOUS (joystick ignored)` 확인.
 
-- **`/odom`으로 조향 오차를 못 잰다.** `vesc_to_odom.cpp:108-110`이 서보
-  **명령값**을 같은 gain/offset으로 되나눠 조향각을 복원함. 조향 엔코더가 없어서
-  δ=0을 명령하면 오돔은 항상 완벽한 직선을 그림. → 반드시 **줄자로 물리 측정.**
+- **IMU yaw odometry 적용 전에는 `/odom`으로 조향 오차를 못 쟀다.** 현재는
+  `vesc.yaml`의 `use_imu_yaw: true`로 VESC AHRS 상대 yaw를 사용하므로 `/odom` yaw가
+  서보 명령 모델과 독립적이다. 단, 속도·거리 스케일은 여전히 같은 eRPM gain을
+  사용하므로 반드시 **줄자로 물리 측정**해 검증할 것. `use_imu_yaw: false`로 되돌리면
+  예전처럼 서보 명령값을 같은 gain/offset으로 복원하므로 이 독립성이 사라진다.
 
 - **`vesc_driver_node`는 포트가 없으면 조용히 죽는다.** launch 로그에
   `process has finished cleanly`가 뜨고 끝. 죽은 뒤 VESC를 연결해도 자동 복구

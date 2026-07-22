@@ -44,6 +44,16 @@ vesc_to_odom_node:
     base_frame: base_link
     # publish odom to base link tf
     publish_tf: true
+    # Use the VESC AHRS quaternion as relative yaw. The recorded mapping lap measured
+    # 358.1 deg from IMU versus 390.8 deg from the steering model, reducing closure
+    # error from 1.44 m to about 0.30 m in offline replay.
+    use_imu_yaw: true
+    imu_topic: sensors/imu/raw
+    imu_yaw_timeout: 0.20
+    # Current hardware_ws driver exposes VESC gyro in deg/s on sensor_msgs/Imu.
+    imu_angular_velocity_scale: 0.017453292519943295
+    imu_yaw_variance: 0.003
+    max_integration_dt: 0.20
     use_servo_cmd_to_calc_angular_velocity: true
     # car wheelbase (this vehicle: 33cm)
     wheelbase: 0.33
