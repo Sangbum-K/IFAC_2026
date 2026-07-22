@@ -196,15 +196,20 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 
 ## 4. 실차로 실행하기
 
-> ⚠️ **먼저 읽을 것 — 2026-07-21 hardware_ws 재구성(950b3b5) 이후 자율 명령
-> 배선이 끊겨 있습니다.** 조이스틱 수동 주행은 되지만 **자율 명령이 바퀴까지
-> 가지 않습니다.** 아래 3곳이 어긋나 있으니 실차 자율 주행 전에 반드시 확인:
-> - control_pkg는 `/autonomy/ackermann_cmd`로 발행하는데, 새 `ackermann_mux`는
->   `drive`/`teleop`만 구독합니다.
-> - 새 mux 출력은 `ackermann_drive`인데, `ackermann_to_vesc_node`는
->   `ackermann_cmd`를 구독합니다.
-> - `estop_node`와 `/ackermann_cmd_mux/mode`가 사라졌습니다 (아래 "실차 안전장치"
->   절의 버튼 4/5 설명은 현재 유효하지 않습니다).
+> ⚠️ **먼저 읽을 것 — 2026-07-21 hardware_ws 재구성(950b3b5)으로 끊겼던 자율
+> 명령 배선은 2026-07-23에 복구됐지만, 비상정지는 아직 빠져 있습니다.**
+> - ✅ 자율 명령: `ackermann_mux`의 `navigation` 입력이
+>   `/autonomy/ackermann_cmd`(control_pkg 발행)를 구독하도록 `mux.yaml`에서
+>   복구. mux 출력은 launch의 `ackermann_drive_out:=ackermann_cmd` remap으로
+>   `ackermann_to_vesc_node`에 연결됩니다.
+> - ✅ 자율/수동 토글: `joy_toggle_teleop`이 버튼 5로 래치 전환. 수동일 땐
+>   `/teleop`(priority 100)이 자율(priority 10)을 가리고, 자율로 넘기면 0속도
+>   버스트 뒤 침묵해서 mux가 자율 명령으로 폴스루합니다.
+> - ❌ **비상정지는 아직 배선 안 됨.** `estop_node.cpp`는 남아 있지만
+>   `bringup_launch.py`가 띄우지 않고 `mux.yaml`에 `locks` 항목도 없습니다.
+>   `/ackermann_cmd_mux/mode`도 없습니다. **아래 "실차 안전장치" 절의 버튼 4(LB)
+>   설명은 현재 유효하지 않으니, 정지는 버튼 5로 수동 전환하거나 차단기를
+>   쓰세요.**
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
 

@@ -2,7 +2,9 @@ ackermann_mux:
   ros__parameters:
     topics:
       navigation:
-        topic   : drive
+        # control_pkg publishes here on the real car (real_car.yaml
+        # ackermann_topic). The sim uses /drive instead, for the gym.
+        topic   : /autonomy/ackermann_cmd
         timeout : 0.2
         priority: 10
       joystick:

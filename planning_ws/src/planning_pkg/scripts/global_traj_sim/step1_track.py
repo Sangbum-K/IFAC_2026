@@ -63,7 +63,7 @@ class Track:
         fig = plt.figure()
         cs = plt.contour(self.free_mask.astype(float), levels=[0.5])
         segs = []
-        for path in cs.get_paths():
+        for path in _contour_paths(cs):
             for poly in path.to_polygons(closed_only=False):
                 segs.append(np.asarray(poly))
         plt.close(fig)
@@ -79,6 +79,13 @@ class Track:
         # outer loop encloses larger area
         polys.sort(key=lambda p: abs(_signed_area(p)), reverse=True)
         return polys[0], polys[1]
+
+
+def _contour_paths(cs):
+    """matplotlib 3.8+ 는 ContourSet.get_paths(), 그 이전은 cs.collections."""
+    if hasattr(cs, "get_paths"):
+        return cs.get_paths()
+    return [p for coll in cs.collections for p in coll.get_paths()]
 
 
 def _polyline_length(p):

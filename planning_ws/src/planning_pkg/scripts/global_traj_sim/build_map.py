@@ -84,6 +84,17 @@ OUT_DIR = HERE / "outputs"
 
 
 # ============================================================ 1. 트랙 추출
+def _contour_paths(cs):
+    """ContourSet에서 Path 목록을 꺼낸다.
+
+    matplotlib 3.8+ 는 ContourSet.get_paths() 를 주지만, 그 이전 버전은
+    레벨별 LineCollection(`cs.collections`)에 Path가 들어 있다.
+    """
+    if hasattr(cs, "get_paths"):
+        return cs.get_paths()
+    return [p for coll in cs.collections for p in coll.get_paths()]
+
+
 def _polyline_length(p):
     return np.sum(np.hypot(*np.diff(p, axis=0).T))
 
@@ -180,7 +191,7 @@ def load_track(map_name):
     fig = plt.figure()
     cs = plt.contour(ring.astype(float), levels=[0.5])
     segs = []
-    for path in cs.get_paths():
+    for path in _contour_paths(cs):
         for poly in path.to_polygons(closed_only=False):
             segs.append(np.asarray(poly))
     plt.close(fig)

@@ -1,9 +1,29 @@
 # 새 맵으로 레이스라인 만들기
 
-`maps/`에 `<맵>.png` + `<맵>.yaml`을 넣은 뒤, 아래를 순서대로 실행.
+`maps/`에 `<맵>.png`(또는 `.pgm`) + `<맵>.yaml`을 넣은 뒤, 아래를 순서대로 실행.
 (예시는 맵 이름이 `my_map`)
 
-### 1. yaml의 image 파일명이 실제 png와 같은지 확인
+> 이미지 포맷은 png가 아니어도 된다. `build_map.py`는 yaml의 `image:` 필드를
+> PIL로 열기 때문에 `.pgm`도 그대로 쓴다 (변환 불필요).
+
+### 0. venv (이 기계 한정 주의사항)
+
+`python3-venv`(ensurepip)가 없어서 pip 있는 venv를 못 만든다. 시스템
+패키지를 그대로 쓰는 venv로 만든다:
+
+```bash
+cd ~/IFAC_ws && python3 -m venv --system-site-packages --without-pip .venv
+```
+
+그리고 **실행할 때 반드시 `PYTHONNOUSERSITE=1`을 붙일 것.** `~/.local`에
+numpy 2.2.6이 사용자 설치로 들어 있는데, dist-packages의 scipy·matplotlib은
+numpy 1.x로 컴파일돼 있어서 그대로 두면 `_ARRAY_API not found` /
+`numpy.core.multiarray failed to import`로 죽는다. 이 변수를 주면 user-site가
+빠지면서 numpy 1.21.5 + scipy 1.8.0 + matplotlib 3.5.1 조합이 잡힌다.
+
+(같은 이유로 `make_raceline.sh`는 이 기계에서 안 된다 — venv에 pip이 없다.)
+
+### 1. yaml의 image 파일명이 실제 이미지와 같은지 확인
 ```bash
 grep image ~/IFAC_ws/planning_ws/src/planning_pkg/maps/my_map.yaml
 ```
@@ -11,7 +31,7 @@ grep image ~/IFAC_ws/planning_ws/src/planning_pkg/maps/my_map.yaml
 ### 2. 레이스라인 생성
 ```bash
 cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
-~/IFAC_ws/.venv/bin/python build_map.py my_map
+PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_map
 ```
 
 ### 3. 빌드

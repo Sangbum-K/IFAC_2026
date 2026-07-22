@@ -8,3 +8,9 @@ log/
 .pytest_cache/
 
 .vscode/
+
+# 레이스라인 생성용 virtualenv (시스템 파이썬 심링크라 이식 불가)
+.venv/
+
+# rosbag 측정 데이터 — 로컬 보관용
+yaw_baseline_*/

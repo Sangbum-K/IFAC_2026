@@ -1,3 +1,7 @@
+import os
+
+import yaml
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
@@ -5,6 +9,20 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+
+def _default_map_yaml_path():
+    """particle_filter/config/localize.yaml 의 `map:` 이름을 실제 yaml 경로로.
+
+    이 값은 아래에서 localize_launch.py 로 그대로 넘어간다. 예전 기본값은
+    존재하지 않는 /tmp/f1tenth_track_map.yaml 이었고, 그게 localize_launch.py
+    자신의 기본값(패키지 maps/<map>.yaml)을 덮어써서 map_server 가 맵을 못 읽고
+    조용히 죽었다 — PF 가 영영 수렴하지 않는 원인이었다.
+    """
+    pf_share = get_package_share_directory('particle_filter')
+    with open(os.path.join(pf_share, 'config', 'localize.yaml')) as f:
+        map_name = yaml.safe_load(f)['map_server']['ros__parameters']['map']
+    return os.path.join(pf_share, 'maps', map_name + '.yaml')
 
 
 def generate_launch_description():
@@ -75,8 +93,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'map_yaml_path',
-            default_value='/tmp/f1tenth_track_map.yaml',
-            description='Map yaml path for amcl or particle_filter localization.',
+            default_value=_default_map_yaml_path(),
+            description='Map yaml path for amcl or particle_filter localization. '
+                        '기본값은 particle_filter/config/localize.yaml 의 map: 이름을 따른다.',
         ),
         DeclareLaunchArgument(
             'posegraph_path',
