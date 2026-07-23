@@ -31,6 +31,7 @@ from scipy import ndimage
 from scipy.interpolate import splprep, splev
 from scipy.optimize import lsq_linear
 from scipy.spatial import cKDTree
+from skimage.morphology import skeletonize
 
 import matplotlib
 matplotlib.use("Agg")
@@ -51,6 +52,9 @@ RESOLUTION_OVERRIDE = None
 # 하는데, 이걸 미리 메워 깨끗한 단일 루프로 만든다. closing(팽창→침식)이라
 # 코리도 폭은 안 줄고 오목한 곳만 채운다. 0이면 정리 안 함.
 INFIELD_FILL_M = 0.8
+# infield 안의 이보다 작은 구멍(SLAM 스페클: 몇 px짜리 free 웅덩이)은 벽으로 메운다[m^2].
+# medial-axis 골격이 스페클에서 가지를 치는 걸 막는다.
+MIN_ISLAND_M2 = 0.3
 
 # --- 레이스라인 생성 파라미터 ------------------------------------------------
 V_MAX      = 6.0     # 최대 속도 [m/s]  (소형 트랙 → 보수적. 잘 돌면 올려라)
@@ -113,6 +117,70 @@ def _resample_closed(pts, n):
     return np.column_stack([x, y])
 
 
+def _px_to_world(rc, resolution, origin, H):
+    """rc: (N,2) (row, col) 픽셀 → 월드 (x, y). load_track 안의 것과 동일 규약."""
+    rc = np.atleast_2d(rc)
+    x = origin[0] + rc[:, 1] * resolution
+    y = origin[1] + (H - rc[:, 0]) * resolution
+    return np.column_stack([x, y])
+
+
+def _medial_axis_loop(ring):
+    """트랙(free 링) 마스크의 medial-axis를 단일 폐루프 마스크로.
+
+    안·바깥 경계 중점(midpoint) 방식은 인필드가 아웃필드 벽까지 뻗는 '게이트'에서
+    중점이 한쪽 벽으로 붕괴해 곡률이 튄다(R~0.3m 스파이크). medial-axis는 항상
+    코리도 한가운데를 지나 게이트에서도 안 튄다.
+
+    스퍼(핑거/오목한 곳에서 생기는 막다른 가지)는 끝점(8-이웃 <=1개)을 순수
+    루프만 남을 때까지 반복 제거해 없앤다. 순수 사이클은 끝점이 없어 안 깎인다.
+    """
+    sk = skeletonize(ring)
+    k3 = np.ones((3, 3), np.uint8)
+    while True:
+        nb = ndimage.convolve(sk.astype(np.uint8), k3, mode="constant") - sk
+        ends = sk & (nb <= 1)
+        if not ends.any():
+            break
+        sk = sk & ~ends
+    if not sk.any():
+        raise RuntimeError("medial-axis 폐루프를 못 찾음 "
+                           "(트랙이 안 닫혔거나 코리도가 너무 얇음)")
+    lbl, nl = ndimage.label(sk, structure=k3)
+    if nl > 1:                              # 남은 조각 중 가장 큰 루프만
+        sizes = ndimage.sum(sk, lbl, range(1, nl + 1))
+        sk = lbl == (1 + int(np.argmax(sizes)))
+    return sk
+
+
+def _order_loop(sk):
+    """폐루프 골격 마스크의 픽셀을 이웃끼리 이어진 순서 (row,col) 로 정렬."""
+    ys, xs = np.nonzero(sk)
+    pts = np.column_stack([ys, xs]).astype(float)
+    tree = cKDTree(pts)
+    n = len(pts)
+    used = np.zeros(n, bool)
+    order = [0]
+    used[0] = True
+    cur = 0
+    for _ in range(n - 1):
+        _, idx = tree.query(pts[cur], k=min(6, n))
+        nxt = -1
+        for j in np.atleast_1d(idx)[1:]:
+            if not used[j] and np.hypot(*(pts[j] - pts[cur])) < 1.9:
+                nxt = j
+                break
+        if nxt < 0:
+            break
+        order.append(nxt)
+        used[nxt] = True
+        cur = nxt
+    if len(order) < 0.8 * n:
+        raise RuntimeError(f"medial-axis 루프 정렬 실패 ({len(order)}/{n} px만 "
+                           "연결됨 — 골격이 끊겼을 수 있음)")
+    return pts[order]
+
+
 def load_track(map_name):
     """맵 yaml/png 로드 → free 마스크 + 링(트랙) 검출 → 월드 좌표 경계.
 
@@ -166,6 +234,22 @@ def load_track(map_name):
             print(f"      infield 정리: 오목한 곳 {filled_new_holes} px "
                   f"메움 (close {close_it} px = {INFIELD_FILL_M:.1f} m)")
 
+    # --- SLAM 스페클 제거: infield 안의 아주 작은 구멍은 벽으로 메운다 ----------
+    # (몇 px짜리 free 웅덩이가 medial-axis 골격에 가짜 가지를 만든다)
+    if MIN_ISLAND_M2 > 0:
+        min_px = int(round(MIN_ISLAND_M2 / (resolution * resolution)))
+        holes = ndimage.binary_fill_holes(ring) & ~ring
+        hl, hn = ndimage.label(holes)
+        n_speckle = 0
+        for lab in range(1, hn + 1):
+            m = hl == lab
+            if m.sum() < min_px:
+                ring[m] = True
+                n_speckle += 1
+        if n_speckle > 0:
+            print(f"      스페클 제거: 작은 구멍 {n_speckle}개 메움 "
+                  f"(< {MIN_ISLAND_M2:.2f} m^2)")
+
     # --- 참고용 크기 확인 (스케일은 안 바꿈, 정상 범위인지 경고만) ----------
     # 트랙이 기울어져 있을 수 있으므로 PCA(주축)로 긴 변/짧은 변 실측.
     rows, cols = np.nonzero(ring)
@@ -200,17 +284,25 @@ def load_track(map_name):
         raise RuntimeError(f"트랙 경계 2개를 기대했는데 {len(segs)}개만 검출됨")
     polys = [px_to_world(np.column_stack([s[:, 1], s[:, 0]])) for s in segs]
     polys.sort(key=lambda p: abs(_signed_area(p)), reverse=True)
-    return polys[0], polys[1], resolution, origin   # outer, inner
+    # outer, inner, resolution, origin, 트랙 마스크(ring), 이미지 높이(H)
+    return polys[0], polys[1], resolution, origin, ring, H
 
 
-def extract_centerline(outer, inner, n_raw=1500, smooth=5.0, ds=DS_OUT):
-    """안·바깥 경계 중점 → 주기 스플라인 스무딩 → 균일 리샘플 + 기하량."""
-    inner_r = _resample_closed(inner, n_raw)
+def extract_centerline(outer, inner, ring, resolution, origin, H,
+                       smooth=3.0, ds=DS_OUT):
+    """트랙 마스크의 medial-axis(거리변환 중심선) → 주기 스플라인 → 균일 리샘플.
+
+    예전엔 안·바깥 경계 중점으로 중앙선을 잡았는데, 인필드가 아웃필드 벽까지
+    뻗는 '게이트'에서 중점이 한쪽 벽으로 붕괴해 곡률이 튀었다(R~0.3m 스파이크).
+    medial-axis는 항상 코리도 한가운데를 지나 게이트에서도 안 튄다.
+    폭(d_left/d_right)만 물리 경계(outer/inner)에서 부호 있는 거리로 계산한다.
+    """
     outer_tree = cKDTree(outer)
-    _, idx = outer_tree.query(inner_r)
-    mid = 0.5 * (inner_r + outer[idx])
-
-    tck, _ = splprep([mid[:, 0], mid[:, 1]], s=smooth, per=1)
+    loop_rc = _order_loop(_medial_axis_loop(ring))          # (row, col) 순서
+    loop_xy = _px_to_world(loop_rc, resolution, origin, H)
+    # 픽셀 계단 노이즈를 지운 뒤 주기 스플라인
+    loop_r = _resample_closed(loop_xy, max(len(loop_xy), 800))
+    tck, _ = splprep([loop_r[:, 0], loop_r[:, 1]], s=smooth, per=1)
     u = np.linspace(0, 1, 20000, endpoint=False)
     x, y = splev(u, tck)
     dl = np.hypot(np.diff(x, append=x[0]), np.diff(y, append=y[0]))
@@ -484,8 +576,8 @@ def main():
 
     # 1) 트랙 추출 (+ 실측 크기 스케일 보정) --------------------------------
     print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
-    outer, inner, resolution, origin = load_track(m)
-    center = extract_centerline(outer, inner)
+    outer, inner, resolution, origin, ring, H = load_track(m)
+    center = extract_centerline(outer, inner, ring, resolution, origin, H)
     center = roll_to_start(center)
     print(f"      centerline: {len(center['s'])} pts, 길이 {center['s'][-1]:.1f} m")
 

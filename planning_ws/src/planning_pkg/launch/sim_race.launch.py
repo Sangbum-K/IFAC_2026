@@ -5,6 +5,7 @@ Pitwall 시뮬 노드들 + RViz를 한 번에 실행한다.
 
   ros2 launch planning_pkg sim_race.launch.py                    # Spielberg (기본)
   ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
+  ros2 launch planning_pkg sim_race.launch.py map:=my_track      # 실차 트랙 (suffix 자동)
   ros2 launch planning_pkg sim_race.launch.py rviz:=false
 
 맵 추가 방법: maps/에 <맵>_map.{png,yaml}을 넣고
@@ -30,6 +31,7 @@ RViz 사용법 (unicorn 튜토리얼과 동일):
   source ~/sim_ws/install/setup.bash 후 planning_ws setup.bash를 source.
 """
 
+import glob
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -40,14 +42,16 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 
-# raceline 생성 파라미터와 일치해야 하는 CSV 파일명 접미사 (suffix:= 인자로 덮어쓰기)
-RACELINE_SUFFIX = 'max15.00ms_margin0.15m_mu0.85'
-
-# 상대 차량 '주차장' (제거 시 이동 위치): 레이스라인에서 30m+ 떨어진 맵 구석
+# 상대 차량 '주차장' (제거 시 이동 위치): 레이스라인에서 최대한 떨어진 맵 구석.
+# 맵에 없으면 아래 launch_setup이 맵 경계 밖 구석으로 자동 폴백한다.
 PARK_POSES = {
     'Spielberg_map': (-79.81, -31.26),
     'Budapest_map': (-56.0, 103.0),
     'my_map': (-20.0, -20.0),   # 트랙(x:18~25, y:-3~8)에서 ~47m 떨어진 구석
+    # my_track은 19.5x10.5m로 작아 LiDAR(≈30m) 밖에 못 숨긴다. 레이스라인
+    # (x:[-7.8,5.0] y:[-0.4,5.1]) 바깥 좌상단 구석 — 외벽에 가려지길 기대.
+    # 상대가 유령 장애물로 보이면 정적 장애물(Publish Point)로 회피를 시험할 것.
+    'my_track': (-12.0, 8.5),
 }
 
 
@@ -75,13 +79,27 @@ def launch_setup(context, *args, **kwargs):
     if not os.path.exists(map_stem + '.yaml'):
         raise RuntimeError(f'맵 없음: {map_stem}.yaml (maps/ 에 추가 필요)')
 
+    gt_dir = os.path.join(planning_share, 'config', 'global_trajectory')
     suffix = LaunchConfiguration('suffix').perform(context)
-    traj_csv = f'{map_name}_iqp_{suffix}.csv'
+    if not suffix:
+        # suffix 미지정 시 해당 맵의 iqp CSV를 찾아 접미사를 자동 추론한다.
+        # 맵마다 raceline 파라미터가 달라 하나의 고정 접미사로는 안 맞기 때문
+        # (Spielberg/Budapest = max15..., my_track/my_map = max6...).
+        iqp_glob = sorted(glob.glob(os.path.join(gt_dir, f'{map_name}_iqp_*.csv')))
+        if not iqp_glob:
+            raise RuntimeError(
+                f'raceline 없음: {gt_dir}/{map_name}_iqp_*.csv '
+                '(step4_main.py로 생성 후 colcon build 필요)')
+        traj_csv = os.path.basename(iqp_glob[0])
+        suffix = traj_csv[len(f'{map_name}_iqp_'):-len('.csv')]
+    else:
+        traj_csv = f'{map_name}_iqp_{suffix}.csv'
     ot_csv = f'{map_name}_sp_{suffix}.csv'
     center_csv = f'{map_name}_centerline.csv'
-    traj_csv_path = os.path.join(planning_share, 'config', 'global_trajectory', traj_csv)
+    traj_csv_path = os.path.join(gt_dir, traj_csv)
     sx, sy, stheta = _read_start_pose(traj_csv_path)
-    park_x, park_y = PARK_POSES[map_name]
+    # 맵이 PARK_POSES에 없으면 시작점에서 멀찍이 떨어진 곳으로 폴백(KeyError 방지)
+    park_x, park_y = PARK_POSES.get(map_name, (sx - 40.0, sy - 40.0))
 
     # gym 기본 설정 위에 맵과 시작 포즈를 덮어쓴다.
     # 상대(agent 2)는 주차장(레이스라인에서 30m+, ego LiDAR 밖)에서 시작 —
@@ -249,9 +267,11 @@ def generate_launch_description():
         DeclareLaunchArgument('map', default_value='Spielberg_map',
                               description='맵 이름 (maps/<이름>.yaml, ' +
                                           ', '.join(PARK_POSES)),
-        DeclareLaunchArgument('suffix', default_value=RACELINE_SUFFIX,
+        DeclareLaunchArgument('suffix', default_value='',
                               description='raceline CSV 접미사 (iqp/sp 공통). '
-                                          '예: my_map은 max7.00ms_margin0.15m_mu0.85'),
+                                          '비워두면 맵의 iqp CSV에서 자동 추론 '
+                                          '(예: my_track=max6.00ms_margin0.15m_mu0.75). '
+                                          '한 맵에 여러 raceline이 있을 때만 지정.'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='RViz 실행 여부'),
         DeclareLaunchArgument('tracker', default_value='true',

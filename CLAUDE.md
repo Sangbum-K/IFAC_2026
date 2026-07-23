@@ -6,9 +6,14 @@ F1TENTH 자율주행 스택. ROS 2 Humble, 쉘은 **zsh**.
 
 | 경로 | 내용 |
 |---|---|
-| `hardware_ws/` | f1tenth_stack — VESC 드라이버, 조이스틱 teleop, mux, LiDAR |
-| `control_ws/` | control_pkg — 경로 추종 제어기 |
-| `perception_ws/` | perception_pkg — 장애물 탐지, particle_filter 로컬라이제이션 |
+| `hardware_ws/` | f1tenth_stack(VESC·joy teleop·mux·LiDAR bringup), ackermann_mux, vesc, urg_node. (`vehicle_bringup`은 legacy) |
+| `localization_ws/` | localization_bringup, particle_filter — 위치추정(`backend:=particle_filter`가 `/pf/pose/odom`+map→odom TF) |
+| `perception_ws/` | perception_pkg — LiDAR 장애물 탐지 |
+| `planning_ws/` | planning_pkg(레이스라인 추종+회피), monitor_pkg, pitwall_panel, **메시지 정의**(f1tenth_planning_msgs, f1tenth_perception_msgs) |
+| `control_ws/` | control_pkg — pure pursuit(ETH MAP) 경로 추종 제어기 |
+| `integration_ws/` | integration_pkg — 전체 스택 통합 launch + 헬스 모니터 |
+
+전체 실행 절차는 `README.md` / `HOW_TO_RUN.md` 참고.
 
 ## 차량 캘리브레이션
 

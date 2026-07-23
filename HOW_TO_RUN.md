@@ -64,11 +64,23 @@ done
 ### 1-B. 실차에서만 추가로
 
 ```bash
+# 최초 1회: hardware_ws 시스템 의존성 설치. rosdep이 필요한 걸 전부 잡아준다
+# (laser_proc, serial_driver, urg_c, urg_node_msgs, teleop_tools_msgs 등).
+# 이미 실차 PC에서 빌드해봤다면 대개 설치돼 있어 이 단계는 no-op.
+rosdep install --from-paths hardware_ws/src --ignore-src -r -y
+#   (rosdep이 처음이면: sudo rosdep init && rosdep update 먼저)
+
 # 하드웨어 + 위치추정 (시뮬에선 gym이 대신하므로 불필요)
 for ws in hardware localization; do
   cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
 done
 ```
+
+> ⚠️ 의존성이 빠지면 `urg_node`(→`laser_proc`)·`vesc_driver`(→`serial_driver`)가
+> 컴파일 실패하고 뒤따르는 `f1tenth_stack`까지 연쇄로 안 빌드됩니다.
+> **apt로 직접 깔 거면 최소 다음이 필요** — 하나만 빠져도 다음 실패로 막힘:
+> `ros-humble-laser-proc ros-humble-serial-driver ros-humble-urg-c
+> ros-humble-urg-node-msgs ros-humble-teleop-tools-msgs`. (그래서 `rosdep` 권장.)
 
 > ⚠️ **주의**
 > - **`perception_ws`에서는 `--base-paths src` 없이 `colcon build`를 하면
@@ -106,9 +118,16 @@ source ~/IFAC_ws/planning_ws/install/setup.zsh
 source ~/IFAC_ws/perception_ws/install/setup.zsh
 source ~/IFAC_ws/control_ws/install/setup.zsh
 source ~/IFAC_ws/integration_ws/install/setup.zsh
+
+source /opt/ros/humble/setup.bash
+source ~/sim_ws/install/setup.bash
+source ~/IFAC_ws/planning_ws/install/setup.bash
+source ~/IFAC_ws/perception_ws/install/setup.bash
+source ~/IFAC_ws/control_ws/install/setup.bash
+source ~/IFAC_ws/integration_ws/install/setup.bash
 ```
 
-**실차용** (`sim_ws` 대신 `hardware_ws` + `localization_ws`):
+**실차용** (`sim_ws` 대신 `hardware_ws` + `localization_ws`)
 
 ```bash
 source /opt/ros/humble/setup.zsh
@@ -139,9 +158,10 @@ ros2 launch integration_pkg stack.launch.py
 
 이 한 줄이 아래를 전부 띄웁니다:
 - f1tenth_gym_ros 시뮬레이터 (차 2대: 내 차 + 상대 차)
-- 실제 perception 파이프라인 (LiDAR → 장애물 탐지)
-- planning 스택 (레이스라인 추종 + 회피)
-- control_ws의 C++ 컨트롤러
+- 실제 perception 파이프라인 (LiDAR → 장애물 탐지 → frenet 변환)
+- planning 스택: 레이스라인(RACE) 추종 + **spliner 회피** + **SP 레인체인지**
+  (`local_trajectory_node` + `spliner_node` + `recovery_supervisor_node`)
+- control_ws의 C++ 컨트롤러 (ETH MAP)
 - RViz (화면)
 - integration 헬스 모니터
 
@@ -150,6 +170,9 @@ ros2 launch integration_pkg stack.launch.py
 ### 3-2. 다른 맵 / RViz 끄기
 
 ```bash
+# 실차 트랙(my_track)을 시뮬에서 — 실차와 동일한 spliner+SP 라인으로 주행
+ros2 launch integration_pkg stack.launch.py map:=my_track
+
 # 헝가로링(코너 많은 맵)
 ros2 launch integration_pkg stack.launch.py map:=Budapest_map
 
@@ -157,7 +180,15 @@ ros2 launch integration_pkg stack.launch.py map:=Budapest_map
 ros2 launch integration_pkg stack.launch.py rviz:=false
 ```
 
-사용 가능한 맵: `Spielberg_map`(기본), `Budapest_map`, `my_map`(실차 트랙)
+사용 가능한 시뮬 맵: `Spielberg_map`(기본), `Budapest_map`, `my_map`, **`my_track`(실차 트랙)**.
+맵마다 raceline 접미사(예: my_track=`max6...`, Spielberg=`max15...`)가 다르지만
+launch가 `config/global_trajectory/<맵>_iqp_*.csv`에서 **자동 추론**하므로 그냥
+`map:=<이름>`만 주면 됩니다.
+
+> ⚠️ **my_track은 19.5×10.5m로 작습니다.** 상대 차(gym 2번째 에이전트)를 LiDAR
+> 사거리(≈30m) 밖에 '주차'시킬 공간이 없어, 스폰 안 해도 상대/벽이 유령 장애물로
+> 몇 개 잡힙니다(`obs` 값이 큼). 주행 자체는 정상이며, **깨끗한 회피 데모는
+> `Publish Point`로 정적 장애물을 직접 놓아** 확인하는 걸 권장합니다.
 
 ### 3-3. RViz에서 조작하기
 
@@ -196,20 +227,24 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 
 ## 4. 실차로 실행하기
 
-> ⚠️ **먼저 읽을 것 — 2026-07-21 hardware_ws 재구성(950b3b5)으로 끊겼던 자율
-> 명령 배선은 2026-07-23에 복구됐지만, 비상정지는 아직 빠져 있습니다.**
-> - ✅ 자율 명령: `ackermann_mux`의 `navigation` 입력이
->   `/autonomy/ackermann_cmd`(control_pkg 발행)를 구독하도록 `mux.yaml`에서
->   복구. mux 출력은 launch의 `ackermann_drive_out:=ackermann_cmd` remap으로
->   `ackermann_to_vesc_node`에 연결됩니다.
-> - ✅ 자율/수동 토글: `joy_toggle_teleop`이 버튼 5로 래치 전환. 수동일 땐
->   `/teleop`(priority 100)이 자율(priority 10)을 가리고, 자율로 넘기면 0속도
+> ⚠️ **먼저 읽을 것 — 명령 배선 현황 (2026-07-23 확인, 헤드리스 기동 검증됨)**
+> - ✅ **자율 명령**: `ackermann_mux`의 `navigation` 입력이
+>   `/autonomy/ackermann_cmd`(control_pkg 발행)를 구독 → mux 출력이
+>   `ackermann_drive_out:=ackermann_cmd` remap으로 `ackermann_to_vesc_node`에 연결.
+> - ✅ **자율/수동 토글**: `joy_toggle_teleop`이 버튼 5로 래치 전환. 수동일 땐
+>   `teleop`(우선순위 100)이 자율(우선순위 10)을 가리고, 자율로 넘기면 0속도
 >   버스트 뒤 침묵해서 mux가 자율 명령으로 폴스루합니다.
-> - ❌ **비상정지는 아직 배선 안 됨.** `estop_node.cpp`는 남아 있지만
->   `bringup_launch.py`가 띄우지 않고 `mux.yaml`에 `locks` 항목도 없습니다.
->   `/ackermann_cmd_mux/mode`도 없습니다. **아래 "실차 안전장치" 절의 버튼 4(LB)
->   설명은 현재 유효하지 않으니, 정지는 버튼 5로 수동 전환하거나 차단기를
->   쓰세요.**
+> - ❌ **비상정지(E-stop)는 배선 안 됨.** `/safety/emergency_stop`을 발행하는
+>   노드가 없습니다(joy에 estop 버튼 없음, `estop_node.cpp`는 launch 안 되는
+>   legacy `vehicle_bringup`에만, `mux.yaml`에 `locks` 없음, `/ackermann_cmd_mux/mode`
+>   없음). **정지는 버튼 5로 수동 전환하거나 차단기/`Ctrl-C`를 쓰세요.** 자세한
+>   내용은 아래 "실차 안전장치" 절 참고.
+
+> 🔑 **실차 PC에서도 오늘 `git pull` 했으면 실행 전에 반드시 다시 빌드하세요**
+> (특히 `planning_ws`·`perception_ws`). 안 그러면 install에 옛 맵/파라미터가 남아
+> **옛 맵으로 주행**하거나 `Cannot open CSV ...Spielberg_map_centerline.csv`로
+> 죽습니다. 현재 맵은 `my_track`입니다 — `colcon list`/로그로 `my_track_iqp...`가
+> 로드되는지 확인. (빌드 순서는 위 1장, planning 먼저.)
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
 
@@ -261,9 +296,10 @@ ros2 launch integration_pkg real_car.launch.py wait_timeout:=120.0
 안 그러면 C의 노드들이 아래처럼 무한 대기에 빠집니다(이게 가장 흔한 실수):
 
 ```
-[frenet_frame_node]   Waiting for odom (real)...          ← /pf/pose/odom 이 없음
+[frenet_frame_node]   Waiting for odom (real)...              ← /pf/pose/odom 이 없음
 [local_trajectory_node] RUN: has_global=true, has_frenet=false
-[obstacle_detector_node] TF lookup laser -> map failed: "map" ... does not exist
+[control]             Local waypoints missing or stale -> stop  ← 궤적이 안 옴 → 정지
+[perception_obstacle_bridge_node] TF base_link->map 없음        ← PF map TF가 없음
 ```
 
 > 위 로그가 계속 반복되면 **B가 안 떴거나, 초기 포즈를 안 줘서 파티클 필터가
@@ -291,8 +327,8 @@ ros2 topic hz /odom     # VESC odom 이 나와야 함
 # 파티클 필터 (map→odom TF + /pf/pose/odom 발행)
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 #   ⚠️ backend:=particle_filter 를 반드시 명시! (기본값은 slam_toolbox)
-#   ⚠️ 현재 my_map 기준으로 설정됨 (localize.yaml map: my_map,
-#      particle_filter/maps/my_map.{yaml,png}). 다른 맵이면 함께 교체.
+#   ⚠️ 현재 my_track 기준으로 설정됨 (localize.yaml map: my_track,
+#      particle_filter/maps/my_track.{pgm,yaml}). 다른 맵이면 함께 교체.
 ```
 
 #### 초기 위치 잡기 (필수) — 파티클 필터 초기화
@@ -355,7 +391,7 @@ ros2 run tf2_ros tf2_echo map base_link   # map→base_link TF가 실제 차 위
 ```bash
 #   ※ 실차는 sim_ws source 하지 말 것
 #   ※ 실차 planner는 map:= 인자를 무시하고 planning_pkg/config/params.yaml의
-#     trajectory/overtaking/centerline CSV 기본값을 읽는다 (현재 my_map 기준).
+#     trajectory/overtaking/centerline CSV 기본값을 읽는다 (현재 my_track 기준).
 #     다른 맵이면 params.yaml의 세 CSV 파일명을 교체 후 colcon build.
 ros2 launch integration_pkg stack.launch.py env:=real_car
 ```
@@ -364,42 +400,49 @@ ros2 launch integration_pkg stack.launch.py env:=real_car
 `[Frenet] XY(...) => s:.. d:..` 로그로 바뀝니다. 최종 확인은
 `ros2 topic echo /integration/status` (3-4 참고).
 
-### 4-1. 조이스틱으로 조종하기
+### 4-3. 조이스틱으로 조종하기
 
 하드웨어 bringup(터미널 A)이 뜨면 조이스틱이 바로 물립니다. 아래 매핑은
-`hardware_ws/src/f1tenth_stack/config/params.yaml` 기준이며, **버튼/축 번호는
-Xbox 계열 기준**입니다(패드가 다르면 번호가 다를 수 있음 —
-`ros2 topic echo /joy`로 확인).
+`joy_toggle_teleop` 노드(`hardware_ws/src/f1tenth_stack/config/joy_teleop.yaml`)
+기준이며, **버튼/축 번호는 Xbox 계열 기준**입니다(패드가 다르면 번호가 다를 수
+있음 — `ros2 topic echo /joy`로 확인).
 
 | 조작 | 입력 | 동작 |
 |---|---|---|
-| **전진/후진 속도** | 축 `1` (왼쪽 스틱 상하) | 앞으로 밀면 전진, 최고 1.5 m/s (후진 버튼과 함께면 후진 0.8 m/s) |
-| **조향** | 축 `3` (오른쪽 스틱 좌우) | 좌/우 조향 (±0.4189 rad) |
-| **후진** | 버튼 `0` (A) | 누른 채로 있으면 속도축이 후진으로 |
-| **자율 ↔ 수동 토글** | 버튼 `5` (RB) | 누를 때마다 전환. 시작은 수동 |
-| **비상 정지 토글** | 버튼 `4` (LB) | 누르면 정지 래치, 다시 누르면 해제 |
+| **전진/후진 속도** | 축 `1` (왼쪽 스틱 상하) | 앞으로 밀면 전진, 뒤로 당기면 후진. 최고 ±1.5 m/s (`max_speed`) |
+| **조향** | 축 `3` (오른쪽 스틱 좌우) | 좌/우 조향 (±0.34 rad, `max_steering_angle`) |
+| **자율 ↔ 수동 토글** | 버튼 `5` (RB) | 누를 때마다 전환. **시작은 수동** |
 
-- **수동 명령은 `/manual_ackermann_cmd`** 로 나가고, `ackermann_cmd_mux`가
-  자율 명령(`/autonomy/ackermann_cmd`)과 섞어 최종 `/ackermann_cmd`를 냅니다.
-- **부드러운 가속**: teleop이 `max_accel`(기본 3.0 m/s²)로 속도를 램핑해서 VESC
-  오픈루프에서 급출발을 막습니다. 스틱을 확 밀어도 서서히 붙습니다.
-- **현재 모드 확인**: `ros2 topic echo /ackermann_cmd_mux/mode`
-  → `manual` / `autonomous` / `estop` / `idle` 중 하나가 나옵니다.
-- 스틱을 놓거나 조이스틱이 0.5초(`joy_timeout`) 끊기면 자동으로 속도 0.
+> ℹ️ 이 teleop에는 **별도 후진 버튼도, 비상정지 버튼도 없습니다.** 후진은 스틱을
+> 뒤로 당기면 됩니다(속도축이 음수). 정지는 스틱 중립 또는 아래 "안전장치" 참고.
+
+- **수동 명령은 `teleop` 토픽**으로 나가고(`AckermannDriveStamped`), `ackermann_mux`가
+  이를 자율 명령(`/autonomy/ackermann_cmd`)보다 **높은 우선순위**로 받아 최종
+  `/ackermann_cmd`를 냅니다. 수동일 때는 teleop이 자율 명령을 가립니다.
+- **현재 모드 확인**: `joy_toggle_teleop` 로그에 `--> MANUAL` / `--> AUTONOMOUS`가
+  찍힙니다. (`/ackermann_cmd_mux/mode` 같은 모드 토픽은 **없습니다.**)
+- 수동 모드에서 스틱을 놓거나 조이스틱이 0.5초(`joy_timeout`) 끊기면 속도 0을 냅니다.
 
 ### 실차 안전장치
 
 - **자율/수동 전환은 조이스틱 버튼 5(RB)** 입니다.
   - control_pkg는 `autonomous_on_start: true`로 자율 명령(`/autonomy/ackermann_cmd`)을
-    계속 내보내지만, **mux는 수동 모드로 시작**하므로 처음엔 바퀴로 안 나갑니다.
-  - **버튼 5를 누르는 순간마다 수동 ↔ 자율 토글**(엣지 트리거)됩니다.
-  - 각 명령이 0.5초 넘게 끊기면(`command_timeout`) 그 소스는 무시하고 정지합니다.
-- **비상 정지는 버튼 4(LB) 토글**입니다 (`latch_estop: false`). 누르면
-  `estop_node`가 `/safety/emergency_stop`을 true로 래치 → mux가 어느 모드든
-  **무조건 정지 명령으로 덮어씀**(최우선). **다시 누르면 해제**됩니다.
-  (이전의 "누르고 있는 동안만 정지" 방식에서 토글로 바뀌었습니다.)
-- 실차 속도 상한은 안전상 제한돼 있습니다
-  (`control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`)
+    계속 내보내지만, **teleop이 수동 모드로 시작**해 mux의 높은 우선순위 입력을
+    점유하므로 처음엔 바퀴로 안 나갑니다.
+  - **버튼 5를 누르면** teleop이 0속도 버스트 후 침묵 → mux가 자율 명령으로
+    폴스루합니다(엣지 트리거). 다시 누르면 수동으로 돌아옵니다.
+  - mux의 각 입력은 timeout(0.2초)이 지나면 무시됩니다.
+- ⚠️ **비상 정지(E-stop)는 현재 배선돼 있지 않습니다.**
+  - control_node는 `/safety/emergency_stop`(latched Bool)을 구독해 true면 즉시
+    정지하도록 돼 있지만, **이 토픽을 발행하는 노드가 스택에 없습니다**
+    (joy에 estop 버튼 없음, `estop_node.cpp`는 launch 안 되는 legacy
+    `vehicle_bringup`에만 존재, mux에 lock 항목 없음).
+  - 즉 **소프트웨어 즉시정지는 없습니다.** 정지 수단은 (1) 버튼 5로 수동 전환 후
+    스틱 중립, (2) 물리 kill 스위치/차단기, (3) `Ctrl-C`.
+  - 실차 주행 전, estop을 실제로 쓸 거면 팀과 배선(joy 버튼→`/safety/emergency_stop`
+    발행 노드, 또는 mux lock)을 먼저 확정하세요.
+- 실차 속도 상한은 안전상 **1.0 m/s**로 제한돼 있습니다
+  (`control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`).
 
 ---
 
@@ -443,9 +486,12 @@ ros2 launch control_pkg control.launch.py env:=sim
   `rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz`
   (`localization.launch.py`가 자동으로 띄워주므로 보통 직접 실행할 일은 없습니다.)
 
-**코드를 고쳤는데 실행하면 예전 동작 그대로**
-→ `perception_ws`에서 `--base-paths src` 없이 빌드했을 가능성이 큽니다 (1-A 주의사항).
-  `colcon list`로 `perception_pkg`가 잡히는지 먼저 확인하세요.
+**코드/파라미터를 고쳤는데(또는 `git pull` 후) 실행하면 예전 동작 그대로**
+→ 실행은 소스가 아니라 `install/`을 씁니다. **고친 뒤 반드시 다시 `colcon build`**
+  하세요. 예: 맵을 `my_track`으로 바꾼 뒤 재빌드를 안 하면 install엔 옛 맵이 남아
+  `Cannot open CSV .../Spielberg_map_centerline.csv` 같은 로드 실패가 납니다.
+→ `perception_ws`는 추가로 `--base-paths src` 없이 빌드하면 조용히 안 잡힙니다
+  (1-A 주의사항). `colcon list`로 `perception_pkg`가 잡히는지 확인하세요.
 
 **종료할 때 `obstacle_detector_node`에 `Exception in thread Thread-1`**
 → tf2 TransformListener의 내부 스레드가 남기는 로그로, 프로세스는 정상 종료(exit 0)합니다.
@@ -482,8 +528,8 @@ ros2 launch integration_pkg stack.launch.py
 # 실차 (source 실차용 블록 후, 터미널 1개):
 ros2 launch integration_pkg real_car.launch.py
 #   → RViz가 자동으로 뜸. "2D Pose Estimate"로 실제 차 위치 클릭+드래그.
-#   → 파티클이 수렴하면 자율 스택이 자동 시작됨.
-# ⚠️ 자율 명령 배선이 950b3b5 이후 끊겨 있음 — 4번 맨 위 경고 확인
+#   → 파티클이 수렴하면 자율 스택이 자동 시작됨. 버튼 5로 자율 명령 인가.
+# ⚠️ 비상정지(E-stop)는 배선 안 돼 있음 — 4번 맨 위 경고 / "실차 안전장치" 참고
 
 # 실차를 단계별로 나눠 띄우려면 (디버깅용, 터미널 3개 — A→B→C 순서 엄수):
 ros2 launch f1tenth_stack bringup_launch.py                                             # A 하드웨어

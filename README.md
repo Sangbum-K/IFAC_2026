@@ -16,7 +16,7 @@ ROS 2 **Humble** 기반 F1TENTH 자율주행 스택입니다. LiDAR로 장애물
 
 | 워크스페이스 | 역할 | 핵심 패키지 |
 |---|---|---|
-| `hardware_ws` | 실차 하드웨어 bringup (joy, VESC, LiDAR, odom, TF, estop, cmd mux) | `f1tenth_stack`, `vehicle_bringup`, `vehicle_teleop`, `vesc`, `urg_node` |
+| `hardware_ws` | 실차 하드웨어 bringup (joy, VESC, LiDAR, odom, TF, cmd mux) | `f1tenth_stack`, `ackermann_mux`, `vesc`, `urg_node` |
 | `localization_ws` | 위치 추정 (particle_filter / slam_toolbox / AMCL) | `localization_bringup`, `particle_filter` |
 | `perception_ws` | LiDAR 장애물 탐지 | `perception_pkg` |
 | `planning_ws` | 레이스라인 추종 + 회피 경로 + 모니터/RViz 패널 + **메시지 정의** | `planning_pkg`, `monitor_pkg`, `pitwall_panel`, `f1tenth_planning_msgs`, `f1tenth_perception_msgs` |
@@ -28,7 +28,10 @@ ROS 2 **Humble** 기반 F1TENTH 자율주행 스택입니다. LiDAR로 장애물
 ```bash
 source /opt/ros/humble/setup.zsh
 
-cd /home/miru/IFAC_ws
+cd ~/IFAC_ws
+# 최초 1회: 시스템 의존성 설치 (특히 hardware_ws — 없으면 urg_node/vesc_driver 빌드 실패)
+rosdep install --from-paths */src --ignore-src -r -y
+
 colcon build
 ```
 
@@ -37,22 +40,22 @@ colcon build
 ```bash
 source /opt/ros/humble/setup.zsh
 
-cd /home/miru/IFAC_ws/localization_ws
+cd ~/IFAC_ws/localization_ws
 colcon build
 
-source /home/miru/IFAC_ws/localization_ws/install/setup.zsh
+source ~/IFAC_ws/localization_ws/install/setup.zsh
 
-cd /home/miru/IFAC_ws/hardware_ws
+cd ~/IFAC_ws/hardware_ws
 colcon build
 ```
 
-실차는 여기에 **명령 mux**가 붙습니다 (`vehicle_teleop/ackermann_cmd_mux`):
+실차는 여기에 **명령 mux**가 붙습니다 (`ackermann_mux` + `f1tenth_stack`의 `joy_toggle_teleop`).
 
 루트에서 빌드했다면 아래 한 줄이면 충분합니다.
 
 ```bash
 source /opt/ros/humble/setup.zsh
-source /home/miru/IFAC_ws/install/setup.zsh
+source ~/IFAC_ws/install/setup.zsh
 ```
 
 워크스페이스를 나눠서 빌드했다면 실행 전에는 아래 순서로 source 합니다.
@@ -70,6 +73,13 @@ done
 ```
 
 > ⚠️ 주의
+> - **`git pull`/소스 수정 후에는 반드시 다시 `colcon build`** 하세요. 실행은
+>   `install/`을 쓰므로, 빌드 안 하면 옛 맵·옛 파라미터로 주행합니다. (실제로
+>   맵을 `my_track`으로 바꾼 뒤 재빌드를 안 해서 `Spielberg_map_centerline.csv`
+>   로드 실패로 이어진 적이 있음.)
+> - `hardware_ws`는 시스템 의존성 `ros-humble-laser-proc`(urg_node)·
+>   `ros-humble-serial-driver`(vesc_driver)가 없으면 빌드가 실패합니다. 위
+>   `rosdep install`로 먼저 설치하세요.
 > - `--symlink-install` 쓰지 마세요 (심링크/캐시 충돌 에러 유발).
 > - 빌드가 꼬이면 해당 ws에서 `rm -rf build install log && colcon build`.
 > - 다른 PC에서 복사해 와 `CMakeCache.txt directory is different` 에러가 나면
@@ -89,30 +99,42 @@ ros2 launch integration_pkg stack.launch.py           # env:=sim 기본
 
 ### 실차 (터미널 3개, 각 터미널에서 필요한 ws를 source 후)
 ```bash
-# A) 하드웨어 — LiDAR·VESC·odom·TF·estop·cmd mux
-ros2 launch f1tenth_stack bringup.launch.py env:=real_car sensor_interface:=ethernet
+# A) 하드웨어 — LiDAR·VESC·odom·TF·joy·cmd mux (인자 없음. LiDAR IP 등은 config/sensors.yaml)
+ros2 launch f1tenth_stack bringup_launch.py
 
-# B) 위치추정 — 반드시 backend:=particle_filter 명시 (기본값은 slam_toolbox)
+# B) 위치추정 — 반드시 backend:=particle_filter 명시 (기본값은 slam_toolbox). 맵은 my_track
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 
 # C) 자율주행 스택 — perception + planning + control + 모니터
 ros2 launch integration_pkg stack.launch.py env:=real_car
 ```
 
+> 위 3개를 자동 순서로 묶은 원커맨드도 있습니다: `ros2 launch integration_pkg real_car.launch.py`
+> (하드웨어→PF+RViz→파티클 수렴 게이트→자율 스택. 사람은 RViz에서 `2D Pose Estimate`만 찍으면 됨.)
+
 ### 매핑 (SLAM Toolbox)
 ```bash
-ros2 launch f1tenth_stack mapping.launch.py env:=mapping sensor_interface:=ethernet
+# A) 하드웨어 bringup
+ros2 launch f1tenth_stack bringup_launch.py
+# B) SLAM Toolbox 매핑 모드 (map→odom TF + /map 생성)
+ros2 launch localization_bringup localization.launch.py backend:=slam_toolbox mode:=mapping
 ```
 
 ---
 
 ## 실차 안전장치
 
-- **자율주행 토글은 조이스틱 버튼 5** (mux 엣지 트리거). 시작 시 control_pkg는
-  `autonomous_on_start: true`로 자율 명령을 내보내지만, mux가 수동 모드로 시작하므로
-  **버튼 5를 눌러야 실제로 자율 명령이 바퀴로 나갑니다.**
-- **비상 정지**: `/safety/emergency_stop`(latched Bool)이 true면 즉시 정지, 최우선.
-- 실차 속도 상한은 안전상 제한돼 있습니다
+- **자율주행 토글은 조이스틱 버튼 5** (`joy_toggle_teleop`, 엣지 트리거). 시작 시
+  control_pkg는 `autonomous_on_start: true`로 자율 명령(`/autonomy/ackermann_cmd`)을
+  내보내지만, teleop이 **수동 모드로 시작**해 mux(joystick 우선순위)를 점유하므로
+  **버튼 5를 눌러야** teleop이 침묵하고 자율 명령이 바퀴로 나갑니다.
+- ⚠️ **비상 정지(E-stop)는 현재 배선돼 있지 않습니다.** control_node는
+  `/safety/emergency_stop`(latched Bool)을 구독하지만 이 토픽을 **발행하는 노드가
+  없고**(joy에 estop 버튼 없음, `estop_node`는 legacy `vehicle_bringup`에만 있어
+  bringup에서 안 뜸), mux에도 lock이 없습니다. 즉 **소프트웨어 즉시정지는 없습니다.**
+  정지 수단은 (1) 버튼 5로 수동 전환 후 스틱 중립, (2) 물리 kill 스위치/차단기,
+  (3) `Ctrl-C`. 실차 주행 전 estop 배선 여부를 팀과 확정하세요.
+- 실차 속도 상한은 안전상 **1.0 m/s**로 제한돼 있습니다
   (`control_ws/src/control_pkg/config/environments/real_car.yaml`의
   `vehicle/max_speed_mps`).
 
