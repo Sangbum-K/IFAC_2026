@@ -61,6 +61,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/sector_gating", true);
     this->declare_parameter("spliner/ot_min_clearance", 0.95);
     this->declare_parameter("spliner/ot_max_kappa", 0.1);
+    // 라인 스위치 (기본 maneuver): true면 오프셋 레인 스위치를 1순위로 시도하고
+    // 모든 레인이 막힐 때만 DoSpline을 폴백으로 호출한다. false면 기존 동작(DoSpline 우선).
+    this->declare_parameter("spliner/use_lane_switch", true);
+    this->declare_parameter("spliner/lane_blend_out_m", 5.0);
     this->declare_parameter("spliner/sp_lane_change", true);
     // 추월 완료 판정 s 간격: 상대 앞머리가 ego 뒤로 이만큼 벌어져야
     // 라인 복귀 시작 (그 전 복귀는 반 차신도 안 앞선 상대 앞 끼어들기)
@@ -102,6 +106,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     sector_gating_ = this->get_parameter("spliner/sector_gating").as_bool();
     ot_min_clearance_ = this->get_parameter("spliner/ot_min_clearance").as_double();
     ot_max_kappa_ = this->get_parameter("spliner/ot_max_kappa").as_double();
+    use_lane_switch_ = this->get_parameter("spliner/use_lane_switch").as_bool();
+    lane_blend_out_m_ = this->get_parameter("spliner/lane_blend_out_m").as_double();
     sp_lane_change_ = this->get_parameter("spliner/sp_lane_change").as_bool();
     lc_pass_clear_m_ = this->get_parameter("spliner/lc_pass_clear_m").as_double();
     ot_sector_min_len_m_ = this->get_parameter("spliner/ot_sector_min_len_m").as_double();
@@ -488,39 +494,62 @@ void SplinerNode::Run() {
             bool try_evade = in_sector || closest.is_static;
             active_bound_mindist_ = try_evade ? ot_bound_mindist_ : spline_bound_mindist_;
             active_speed_scale_ = in_sector ? ot_speed_scale_ : 1.0;
-            // SP 레인체인지: 동적 상대 전용, 섹터(직선) 여부와 무관하게 시도.
-            // 직선에선 SP≈IQP라 상대와 겹쳐 검증에서 자연 탈락하고, 코너에서
-            // 두 라인이 벌어질 때 인사이드 찌르기가 성립 — 섹터 게이팅의
-            // 예외지만 SP 라인 자체가 검증된 레이싱 라인이라 안전하다.
+            // 회피 시도 진입 알림 (try_evade 상승엣지)
+            if (try_evade && !in_ot_sector_) {
+                pitwall::Event(in_sector ? "추월 섹터 — 라인 스위치 시도"
+                                         : "정적 장애물 — 라인 스위치 시도");
+            }
+
+            // ── Tier 1: 라인 스위치 (기본 maneuver) ─────────────────────────
+            // 오프셋 레인(±apex)으로 ease-on→hold→ease-back(rule-based). 정적
+            // 장애물은 항상, 동적 상대는 추월 섹터 안에서만(try_evade) 시도한다
+            // — 코너의 긴 오프셋 추월은 페이스 우위를 상쇄하므로 코너 동적은
+            // SP(Tier 1b)/트레일링 몫.
+            if (use_lane_switch_ && try_evade) {
+                evasion_valid = TryLaneSwitch(closest, all_ahead,
+                                              evasion_wpnts, mrks);
+            }
+
+            // ── Tier 1b: SP 레인체인지 (옵션, 동적 상대 전용) ───────────────
+            // 섹터 무관 — 코너에서 IQP/SP가 벌어질 때 인사이드 찌르기. 오프셋
+            // 레인이 막혔거나(위 실패) 미시도일 때 검증된 SP 라인으로 갈아탄다.
             bool lc_done = false;
-            if (sp_lane_change_ && has_sp_ && !closest.is_static) {
+            if (!evasion_valid && sp_lane_change_ && has_sp_ &&
+                !closest.is_static) {
                 lc_done = BuildSpLaneChange(closest, all_ahead,
                                             evasion_wpnts, mrks);
                 if (lc_done && !lc_active_) {
                     pitwall::Event("SP 레인체인지 추월");
                 }
+                evasion_valid = lc_done;
             }
             lc_active_ = lc_done;
-            if (lc_done) {
-                evasion_valid = true;
-            } else if (try_evade) {
-                if (!in_ot_sector_) {
-                    pitwall::Event(in_sector ? "추월 섹터 — 공격 회피 시도"
-                                             : "코너 정적 장애물 — 회피 시도");
-                }
-                evasion_valid = DoSpline(closest, evasion_wpnts, mrks);
+
+            // ── Tier 2: free-form 스플라인 폴백 (모든 레인 막힘) ────────────
+            // 고정 오프셋/SP 레인이 전부 막혔을 때만 DoSpline을 "호출"한다 —
+            // 자연 3차 스플라인이 고정 레인이 못 덮는 틈으로 d(s)를 최적화해
+            // 마지막으로 회피 해를 찾는다.
+            bool used_spline = false;
+            if (!evasion_valid && try_evade) {
+                used_spline = DoSpline(closest, evasion_wpnts, mrks);
+                evasion_valid = used_spline;
             }
+            if (used_spline && !spline_fallback_active_) {
+                pitwall::Event("모든 레인 막힘 — 스플라인 폴백");
+            }
+            spline_fallback_active_ = used_spline;
             in_ot_sector_ = try_evade;
+
+            // ── Tier 3: 트레일링 (회피 완전 불가 — 감속 추종/정지) ─────────
+            // raceline 유지 + 장애물 뒤 trailing_gap에서 장애물 속도(정적이면
+            // 0)까지 감속. 없으면 ego가 감속 없이 정면으로 돌진한다.
             if (!evasion_valid) {
-                // 회피 불가(트랙경계 abort / 사이드 스위치 거부 / 양쪽 차단) 폴백:
-                // raceline을 유지한 채 장애물 뒤 trailing_gap에서 장애물
-                // 속도(정적이면 0)까지 감속하는 궤적 발행 — ForzaETH 상태머신의
-                // TRAILING 대응. 없으면 ego가 감속 없이 정면으로 돌진한다.
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks);
                 used_trailing = evasion_valid;
             }
+
             // 정적 장애물 회피 성공 -> 경로 끝까지 커밋 (동적/예측 상대는
             // 움직이므로 커밋하지 않고 기존처럼 매 사이클 갱신)
             if (evasion_valid && !used_trailing &&
@@ -666,6 +695,184 @@ double SplinerNode::ApexFor(
     double target = obs.d_right - evasion_dist_;
     return std::clamp(std::max(target, balanced),
                       -std::max(wall - active_bound_mindist_, 0.0), 0.0);
+}
+
+bool SplinerNode::TryLaneSwitch(
+    const f1tenth_planning_msgs::msg::Obstacle &closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
+    visualization_msgs::msg::MarkerArray &out_mrks) {
+
+    int gb_size = static_cast<int>(gb_wpnts_.size());
+    if (gb_size < 2) {
+        return false;
+    }
+
+    // apex 인덱스 = 장애물 중심 (s wrap 처리, DoSpline과 동일)
+    double s_apex;
+    if (closest_obs.s_end < closest_obs.s_start) {
+        s_apex = (closest_obs.s_end + gb_max_s_ + closest_obs.s_start) / 2.0;
+    } else {
+        s_apex = (closest_obs.s_end + closest_obs.s_start) / 2.0;
+    }
+    int apex_idx = static_cast<int>(s_apex / wpnt_dist_) % gb_size;
+
+    // 사이드: MoreSpace(빈 공간)가 우선. 단 이미 회피 중(|d|>thresh)이면
+    // 히스테리시스로 현재 사이드를 유지한다 — mid-evasion 사이드 뒤집힘은
+    // 장애물 사이로 끌려드는 충돌 원인 (DoSpline과 동일 정책).
+    std::string more_side = MoreSpace(closest_obs, apex_idx).first;
+    std::string first = more_side;
+    if (std::abs(cur_d_) > side_switch_d_tresh_ && !last_ot_side_.empty()) {
+        first = last_ot_side_;
+    }
+    std::string second = (first == "left") ? "right" : "left";
+
+    // 후보 레인: 우선 사이드 → 반대 사이드. 목표 오프셋 d_hold = ApexFor
+    // (장애물 가장자리 + evasion_dist, 벽 클램프). 벽 클램프로 evasion_dist_min
+    // 조차 못 챙기면 그 레인은 막힌 것 → 스킵. 첫 성공 레인을 반환한다.
+    for (const std::string &side : {first, second}) {
+        double d_hold = ApexFor(side, closest_obs, apex_idx);
+        bool clears = (side == "left")
+            ? d_hold >= closest_obs.d_left + evasion_dist_min_
+            : d_hold <= closest_obs.d_right - evasion_dist_min_;
+        if (!clears) {
+            continue;
+        }
+        if (BuildLaneSwitch(d_hold, closest_obs, all_ahead,
+                            out_wpnts, out_mrks)) {
+            last_ot_side_ = side;
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+                "LaneSwitch %s d_hold=%.2f s_apex=%.1f (%zu wpnts)",
+                side.c_str(), d_hold, Mod(s_apex, gb_max_s_),
+                out_wpnts.wpnts.size());
+            return true;
+        }
+        out_wpnts.wpnts.clear();
+        out_mrks.markers.clear();
+    }
+    return false;
+}
+
+bool SplinerNode::BuildLaneSwitch(
+    double d_hold,
+    const f1tenth_planning_msgs::msg::Obstacle &closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
+    visualization_msgs::msg::MarkerArray &out_mrks) {
+
+    int gb_size = static_cast<int>(gb_wpnts_.size());
+    if (gb_size < 2) {
+        return false;
+    }
+
+    // 장애물까지의 상대 거리. 추월 중이면 ego가 상대 몸통 옆까지 진입(alongside).
+    double span = Mod(closest_obs.s_end - closest_obs.s_start, gb_max_s_);
+    double behind = Mod(cur_s_ - closest_obs.s_start, gb_max_s_);
+    bool alongside = behind < span + 1.0;
+    // 옆에 붙었는데 아직 회피 오프셋이 없으면(=이제 막 감지) 새 레인스위치
+    // 기하가 안 나온다 — 진입 블렌드가 장애물을 관통한다. DoSpline/trailing 몫.
+    if (alongside && std::abs(cur_d_) < evasion_dist_min_) {
+        return false;
+    }
+    double dist_front, dist_back;
+    if (alongside) {
+        dist_front = 0.0;
+        dist_back = Mod(closest_obs.s_end - cur_s_, gb_max_s_);
+    } else {
+        dist_front = Mod(closest_obs.s_start - cur_s_, gb_max_s_);
+        dist_back = dist_front + span;
+        if (dist_front > lookahead_m_ + 5.0) {
+            return false;   // 너무 멀다
+        }
+    }
+
+    // hold 구간: 장애물 앞뒤 0.5m 여유 (pure pursuit 대각선 커팅 방지, DoSpline 동일).
+    // 진입 블렌드는 장애물 앞에서 끝나게, 복귀는 lane_blend_out_m에 걸쳐.
+    double hold_start = std::max(dist_front - 0.5, 0.0);
+    double hold_end = dist_back + 0.5;
+    double blend_in = std::clamp(hold_start, alongside ? 1.0 : 1.5, 8.0);
+    double total = hold_end + lane_blend_out_m_;
+
+    int n = static_cast<int>(total / wpnt_dist_);
+    if (n < 8) {
+        return false;
+    }
+
+    // 동적 상대면 추월 페이스 하한(v_floor) 강제 — 나란히 달리다 추월이 영원히
+    // 안 끝나는 것 방지. 정적이면 0 (raceline 프로파일 그대로).
+    double v_floor = closest_obs.is_static ? 0.0 :
+        std::max(closest_obs.vs, 0.0) /
+        std::max(cmd_speed_scale_, 0.05) * dyn_pass_speed_ratio_;
+
+    out_wpnts.wpnts.reserve(n);
+    std::vector<std::pair<double, double>> xy(n);
+    for (int i = 0; i < n; ++i) {
+        double t = i * wpnt_dist_;
+        double s = Mod(cur_s_ + t, gb_max_s_);
+        int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
+        double d;
+        if (t < blend_in) {
+            double w = (blend_in > 1e-6) ? t / blend_in : 1.0;
+            w = w * w * (3.0 - 2.0 * w);   // smoothstep
+            d = cur_d_ * (1.0 - w) + d_hold * w;
+        } else if (t < hold_end) {
+            d = d_hold;                    // 오프셋 레인 유지
+        } else {
+            double w = std::clamp((t - hold_end) / lane_blend_out_m_, 0.0, 1.0);
+            w = w * w * (3.0 - 2.0 * w);
+            d = d_hold * (1.0 - w);        // raceline 복귀
+        }
+        // 경계 검사는 블렌드 구간만 — hold 구간(오프셋)은 ApexFor로 이미
+        // 클리어런스 확보된 값이라 벽 마진 검사에서 튕겨낼 필요가 없다.
+        bool on_hold = (t >= blend_in) && (t < hold_end);
+        if (!on_hold) {
+            double wall = (d >= 0.0) ? std::abs(gb_wpnts_[gi].d_left)
+                                     : std::abs(gb_wpnts_[gi].d_right);
+            if (std::abs(d) > wall - spline_bound_mindist_) {
+                out_wpnts.wpnts.clear();
+                return false;
+            }
+        }
+        xy[i] = FrenetToCartesian(s, d);
+
+        f1tenth_planning_msgs::msg::Wpnt wpnt;
+        wpnt.id = static_cast<int32_t>(i);
+        wpnt.s_m = s;
+        wpnt.d_m = d;
+        wpnt.x_m = xy[i].first;
+        wpnt.y_m = xy[i].second;
+        wpnt.d_left = gb_wpnts_[gi].d_left - d;
+        wpnt.d_right = gb_wpnts_[gi].d_right + d;
+        wpnt.psi_rad = gb_wpnts_[gi].psi_rad;   // 아래에서 실제 헤딩으로 갱신
+        wpnt.kappa_radpm = gb_wpnts_[gi].kappa_radpm;
+        double vx = std::min(gb_wpnts_[gi].vx_mps * active_speed_scale_, gb_vmax_);
+        if (v_floor > 0.0) {
+            vx = std::clamp(vx, std::min(v_floor, gb_vmax_), gb_vmax_);
+        }
+        wpnt.vx_mps = vx;
+        wpnt.ax_mps2 = gb_wpnts_[gi].ax_mps2;
+        out_wpnts.wpnts.push_back(wpnt);
+    }
+
+    // 다른 장애물이 이 레인을 막는지 검사 (closest는 ApexFor로 클리어런스
+    // 확보 → 제외). 막으면 이 레인 실패 → 상위에서 다음 후보/DoSpline.
+    if (!CheckPathCollision(out_wpnts.wpnts, all_ahead, closest_obs.id, nullptr)) {
+        out_wpnts.wpnts.clear();
+        return false;
+    }
+
+    // 인접 점으로 실제 헤딩 계산 + 시각화 마커
+    for (size_t i = 0; i + 1 < out_wpnts.wpnts.size(); ++i) {
+        out_wpnts.wpnts[i].psi_rad = std::atan2(
+            xy[i + 1].second - xy[i].second, xy[i + 1].first - xy[i].first);
+    }
+    out_mrks.markers.reserve(out_wpnts.wpnts.size());
+    for (size_t i = 0; i < out_wpnts.wpnts.size(); ++i) {
+        out_mrks.markers.push_back(MakeWpntMarker(
+            xy[i].first, xy[i].second, out_wpnts.wpnts[i].vx_mps,
+            static_cast<int>(i)));
+    }
+    return true;
 }
 
 bool SplinerNode::DoSpline(

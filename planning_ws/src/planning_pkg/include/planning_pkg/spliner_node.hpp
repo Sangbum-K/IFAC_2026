@@ -56,6 +56,26 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
+  // ── 라인 스위치 (기본 maneuver, rule-based) ─────────────────────────────
+  // 오프셋 레인(±apex)으로 smoothstep ease-on→hold→ease-back. 최적화 없음:
+  // 사이드는 MoreSpace(빈 공간)+히스테리시스, 오프셋은 ApexFor로 정하고 고정
+  // 블렌드로 진입/복귀한다. 우선/반대 사이드 오프셋이 모두 막히면 Run()이
+  // DoSpline(free-form)을 "호출"한다 — 그게 폴백이다.
+  bool TryLaneSwitch(
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks);
+  // 목표 오프셋 d_hold로 ease-on→hold→ease-back 궤적 생성 + 충돌/경계 검증.
+  // closest_obs는 d_hold(=ApexFor)로 이미 클리어런스 확보 → 충돌검사에서 제외,
+  // '다른' 장애물이 이 레인을 막는지만 본다. 막히면 false.
+  bool BuildLaneSwitch(
+    double d_hold,
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks);
+
   // 경로를 lookahead 내 장애물들과 (s,d) 충돌 검사 (정적 커밋 유효성 검증,
   // SP 레인체인지 검증에 사용). exclude_id: 회피/추종 대상 장애물 자신은
   // 제외 (경로가 의도적으로 그 주변/뒤를 지나므로).
@@ -150,6 +170,10 @@ private:
   double trailing_decel_{2.5};
   double cmd_speed_scale_{1.0};
   bool trailing_active_{false};
+  // 라인 스위치 (기본 maneuver)
+  bool use_lane_switch_{true};       // false면 기존처럼 DoSpline을 1순위로
+  double lane_blend_out_m_{5.0};     // raceline 복귀 블렌드 길이 [m]
+  bool spline_fallback_active_{false};  // "모든 레인 막힘 -> 스플라인" 상승엣지 이벤트용
   // 이중장애물 재계획 파라미터 (mina Task 2)
   double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
   double cluster_gap_s_m_{8.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
