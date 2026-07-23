@@ -58,6 +58,15 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('v_thresh', 0.25)
         self.declare_parameter('n_confirm', 5)
         self.declare_parameter('n_release', 8)
+        # 정적/동적 위치분산 근거 (map 프레임)
+        self.declare_parameter('static_pos_std', 0.08)   # 이 미만 분산 = 정적 [m]
+        self.declare_parameter('dynamic_pos_std', 0.20)  # 이 초과 분산 = 동적 [m]
+        self.declare_parameter('dynamic_release', 40)    # 상대(동적) 정적복귀 프레임 (길게)
+        # 재식별(occlusion 후 같은 id 부활) + 미확정 트랙 게이팅
+        self.declare_parameter('reid_distance', 0.7)     # 재식별 허용 거리 [m]
+        self.declare_parameter('reid_timeout_sec', 1.0)  # 소멸 트랙 보관 시간 [s]
+        self.declare_parameter('pos_hist_len', 20)       # 위치분산 판별 윈도우 [frames]
+        self.declare_parameter('min_hits', 3)            # 이만큼 관측돼야 장애물로 발행
 
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('obstacle_topic', '/perception/obstacles')
@@ -84,6 +93,10 @@ class ObstacleDetectorNode(Node):
         self.v_thresh = p('v_thresh').value
         self.n_confirm = p('n_confirm').value
         self.n_release = p('n_release').value
+        self.static_pos_std = p('static_pos_std').value
+        self.dynamic_pos_std = p('dynamic_pos_std').value
+        self.dynamic_release = p('dynamic_release').value
+        self.min_hits = p('min_hits').value
 
         rate = max(float(p('process_rate_hz').value), 0.1)
         self.min_period = 1.0 / rate
@@ -97,6 +110,9 @@ class ObstacleDetectorNode(Node):
         self.tracker = Tracker(
             gating_distance=p('gating_distance').value,
             track_timeout=p('track_timeout').value,
+            reid_distance=p('reid_distance').value,
+            reid_timeout=p('reid_timeout_sec').value,
+            pos_hist_len=int(p('pos_hist_len').value),
         )
 
         scan_topic = p('scan_topic').value
@@ -199,17 +215,32 @@ class ObstacleDetectorNode(Node):
             classify_track(
                 track, v_thresh=self.v_thresh,
                 n_confirm=self.n_confirm, n_release=self.n_release,
+                static_pos_std=self.static_pos_std,
+                dynamic_pos_std=self.dynamic_pos_std,
+                dynamic_release=self.dynamic_release,
             )
+
+            # 관측이 부족한(확정 전) 트랙은 노이즈 클러스터일 수 있어 발행하지 않는다.
+            # 단, 한 번 동적 확정된 상대는 occlusion 코스팅 중에도 계속 발행해
+            # 다운스트림(GP/회피)이 상대를 놓치지 않게 한다.
+            if track.hits < self.min_hits and not track.ever_dynamic:
+                continue
 
             x, y = track.kf.position
             vx, vy = track.kf.velocity
+
+            # 코스팅(미관측 외삽) 중이면 신뢰도를 감쇠 — 다운스트림이 측정값과
+            # 외삽값을 구분할 수 있게 한다 (misses가 timeout에 가까울수록 0).
+            coast = 1.0
+            if track.misses > 0:
+                coast = max(0.0, 1.0 - track.misses / float(self.tracker.track_timeout))
 
             obs = Obstacle()
             obs.id = track.id
             obs.position = Point(x=float(x), y=float(y), z=0.0)
             obs.velocity = Vector3(x=float(vx), y=float(vy), z=0.0)
             obs.is_dynamic = bool(track.is_dynamic)
-            obs.confidence = float(track.confidence)
+            obs.confidence = float(track.confidence * coast)
             obs.radius = float(track.radius)
 
             obstacle_array.obstacles.append(obs)
