@@ -13,4 +13,6 @@ log/
 .venv/
 
 # rosbag 측정 데이터 — 로컬 보관용
+# (db3 하나가 수백 MB라 GitHub 파일 한도 100MB를 넘는다)
 yaw_baseline_*/
+run_*/
