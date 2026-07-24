@@ -32,10 +32,7 @@ LiDAR /scan
 
 ## 1. 최초 1회: 빌드
 
-빌드는 **딱 이 순서**로 해야 합니다. 뒤 패키지가 앞 패키지의 메시지
-(`f1tenth_planning_msgs`, `f1tenth_perception_msgs`)를 참조하기 때문입니다.
-
-시뮬만 돌릴지, 실차까지 돌릴지에 따라 빌드할 워크스페이스가 다릅니다.
+시뮬만 돌릴지, 실차까지 돌릴지에 따라 빌드 대상이 다릅니다.
 
 | | 시뮬 | 실차 |
 |---|---|---|
@@ -47,60 +44,33 @@ LiDAR /scan
 | `localization_ws` (particle_filter) | — | ✅ |
 | `~/sim_ws` (f1tenth_gym_ros) | ✅ 별도 | — |
 
-### 1-A. 공통 (시뮬·실차 모두)
+빌드는 두 단계입니다 — 의존성은 **차량당 1회**, 코드 빌드는 **고칠 때마다**.
 
 ```bash
-# ROS 2 Humble 환경 켜기 (모든 터미널에서 맨 먼저)
-# 현재 터미널이 zsh면 .zsh, bash면 .bash 를 쓰세요.
-source /opt/ros/humble/setup.zsh
-
-# planning 먼저 — 여기에 메시지 패키지가 있음. 나머지는 이 순서대로.
-# --base-paths src 를 반드시 붙이세요 (이유는 아래 주의사항 참고).
-for ws in planning perception control integration; do
-  cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
-done
+cd ~/IFAC_ws
+./setup_deps.sh          # ① 차량당 1회: rosdep 의존성 + range_libc + numpy 검사
+./build_all.sh           # ② 매번: 순서대로 colcon build (실차)
+./build_all.sh sim       #         시뮬 (hardware/localization 제외)
 ```
 
-### 1-B. 실차에서만 추가로
+- **`setup_deps.sh`** (차량당 1회) — `rosdep`으로 `tf_transformations`·`transforms3d`·
+  `laser_proc`·`serial_driver` 등 설치(apt라 sudo 비밀번호를 물어봄) + `range_libc` 빌드.
+  `range_libc` 소스가 없으면 clone 명령을 안내:
+  `git clone https://github.com/f1tenth/range_libc ~/range_libc`.
+- **`build_all.sh`** (매번) — 빌드 순서(planning 먼저 — 메시지 패키지가 여기 있음)와
+  `--base-paths src`를 보장하며 **colcon build 만** 한다. 차량이 같으면 의존성은 이미
+  있으므로 다시 설치하지 않는다. 시작 시 numpy·PF 의존성만 빠르게 확인하고 안 돼
+  있으면 `./setup_deps.sh`를 실행하라며 멈춘다. 끝에 실행용 source 블록(아래 2장) 출력.
 
-```bash
-# 최초 1회: hardware_ws 시스템 의존성 설치. rosdep이 필요한 걸 전부 잡아준다
-# (laser_proc, serial_driver, urg_c, urg_node_msgs, teleop_tools_msgs 등).
-# 이미 실차 PC에서 빌드해봤다면 대개 설치돼 있어 이 단계는 no-op.
-rosdep install --from-paths hardware_ws/src --ignore-src -r -y
-#   (rosdep이 처음이면: sudo rosdep init && rosdep update 먼저)
+> ⚠️ **numpy는 apt 1.x 고정.** `pip install --user`로 numpy 2.x가 깔리면
+> scipy·pythran·ROS C확장이 ABI로 깨지고 particle_filter가 조용히 죽습니다.
+> 스크립트가 시작할 때 검사하며, 오염됐다면: `python3 -m pip uninstall -y numpy`.
+> 시뮬을 돌리려면 `~/sim_ws`(f1tenth_gym_ros)는 **별도로** 빌드돼 있어야 합니다.
 
-# 하드웨어 + 위치추정 (시뮬에선 gym이 대신하므로 불필요)
-for ws in hardware localization; do
-  cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
-done
-```
-
-> ⚠️ 의존성이 빠지면 `urg_node`(→`laser_proc`)·`vesc_driver`(→`serial_driver`)가
-> 컴파일 실패하고 뒤따르는 `f1tenth_stack`까지 연쇄로 안 빌드됩니다.
-> **apt로 직접 깔 거면 최소 다음이 필요** — 하나만 빠져도 다음 실패로 막힘:
-> `ros-humble-laser-proc ros-humble-serial-driver ros-humble-urg-c
-> ros-humble-urg-node-msgs ros-humble-teleop-tools-msgs`. (그래서 `rosdep` 권장.)
-
-> ⚠️ **주의**
-> - **`perception_ws`에서는 `--base-paths src` 없이 `colcon build`를 하면
->   `perception_pkg`가 빌드되지 않습니다.** 워크스페이스 **루트**에 남아 있는
->   `setup.py`(+ `obstacle_detector_node.py` 등 압축 해제 잔재) 때문에 colcon이
->   루트를 `f1tenth_perception`이라는 패키지로 오인하고 `src/`로 내려가지
->   않습니다. 에러 없이 "0 packages" 로 끝나서 **고친 코드가 반영 안 된 채로
->   주행하게 되는** 함정입니다. 확인: `colcon list` 결과가
->   `perception_pkg src/perception_pkg` 여야 정상.
-> - `--symlink-install` 쓰지 마세요. 기존 빌드 캐시와 충돌해서 이상한
->   에러(`ae_hyu_msgs` / `ament_cmake_python` 심링크 에러)가 납니다.
-> - `zsh` 터미널에서 `setup.bash`를 source 하면
->   `.../local_setup.bash not found` 같은 오류가 날 수 있습니다.
->   `zsh`에서는 반드시 `setup.zsh`를 쓰세요.
-> - 빌드가 꼬이면 그 워크스페이스의 `build/ install/ log/`를 **통째로 지우고**
->   다시 빌드하세요: `rm -rf build install log && colcon build`
-> - 다른 PC에서 복사해 온 워크스페이스라서
->   `CMakeCache.txt directory is different` 에러가 나면 먼저
->   `colcon build --cmake-clean-cache`를 한 번 실행하세요.
-> - 시뮬을 돌리려면 별도로 `~/sim_ws`(f1tenth_gym_ros)가 빌드돼 있어야 합니다.
+**빌드가 꼬이면** — 해당 ws에서 통째로 지우고 다시 빌드:
+`rm -rf build install log && colcon build --base-paths src`.
+`--symlink-install`은 쓰지 마세요(`ae_hyu_msgs`/심링크 에러). 다른 PC에서 복사해
+`CMakeCache.txt directory is different`가 나면 `colcon build --cmake-clean-cache` 한 번.
 
 ---
 
@@ -118,13 +88,6 @@ source ~/IFAC_ws/planning_ws/install/setup.zsh
 source ~/IFAC_ws/perception_ws/install/setup.zsh
 source ~/IFAC_ws/control_ws/install/setup.zsh
 source ~/IFAC_ws/integration_ws/install/setup.zsh
-
-source /opt/ros/humble/setup.bash
-source ~/sim_ws/install/setup.bash
-source ~/IFAC_ws/planning_ws/install/setup.bash
-source ~/IFAC_ws/perception_ws/install/setup.bash
-source ~/IFAC_ws/control_ws/install/setup.bash
-source ~/IFAC_ws/integration_ws/install/setup.bash
 ```
 
 **실차용** (`sim_ws` 대신 `hardware_ws` + `localization_ws`)
@@ -244,7 +207,7 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 > (특히 `planning_ws`·`perception_ws`). 안 그러면 install에 옛 맵/파라미터가 남아
 > **옛 맵으로 주행**하거나 `Cannot open CSV ...Spielberg_map_centerline.csv`로
 > 죽습니다. 현재 맵은 `my_track`입니다 — `colcon list`/로그로 `my_track_iqp...`가
-> 로드되는지 확인. (빌드 순서는 위 1장, planning 먼저.)
+> 로드되는지 확인. (재빌드는 위 1장의 `./build_all.sh`.)
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
 
@@ -490,8 +453,8 @@ ros2 launch control_pkg control.launch.py env:=sim
 → 실행은 소스가 아니라 `install/`을 씁니다. **고친 뒤 반드시 다시 `colcon build`**
   하세요. 예: 맵을 `my_track`으로 바꾼 뒤 재빌드를 안 하면 install엔 옛 맵이 남아
   `Cannot open CSV .../Spielberg_map_centerline.csv` 같은 로드 실패가 납니다.
-→ `perception_ws`는 추가로 `--base-paths src` 없이 빌드하면 조용히 안 잡힙니다
-  (1-A 주의사항). `colcon list`로 `perception_pkg`가 잡히는지 확인하세요.
+→ `perception_ws`는 `--base-paths src` 없이 빌드하면 조용히 안 잡힙니다
+  (`build_all.sh`는 항상 이걸 씀). 수동 빌드했다면 `colcon list`로 `perception_pkg` 확인.
 
 **종료할 때 `obstacle_detector_node`에 `Exception in thread Thread-1`**
 → tf2 TransformListener의 내부 스레드가 남기는 로그로, 프로세스는 정상 종료(exit 0)합니다.
@@ -512,14 +475,10 @@ pkill -f "gym_bridge|sim_race|stack.launch"
 ## 7. 요약 (치트시트)
 
 ```bash
-# ── 최초 1회 빌드 (순서 중요, planning 먼저) ──
-source /opt/ros/humble/setup.zsh
-# 공통(시뮬·실차): planning perception control integration
-# 실차면 뒤에 hardware localization 도 추가
-for ws in planning perception control integration; do   # 실차: ... integration hardware localization
-  cd ~/IFAC_ws/${ws}_ws && colcon build --base-paths src && source install/setup.zsh
-done
-# ⚠️ --base-paths src 빼면 perception_pkg가 조용히 안 빌드됨 (1-A 주의사항)
+# ── 차량당 1회: 의존성 (rosdep + range_libc + numpy) ──
+cd ~/IFAC_ws && ./setup_deps.sh       # 시뮬은: ./setup_deps.sh sim
+# ── 코드 고칠 때마다: 빌드 ──
+./build_all.sh                        # 실차 (시뮬은: ./build_all.sh sim). 끝에 source 블록 출력
 
 # ── 매번 실행 ──
 # 시뮬 (source 시뮬용 블록 후, 터미널 1개):
