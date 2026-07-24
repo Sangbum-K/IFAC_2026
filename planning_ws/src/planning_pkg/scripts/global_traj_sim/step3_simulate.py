@@ -4,7 +4,8 @@ Mirrors the ROS pipeline without ROS:
   - local_trajectory_node: an 80-waypoint local window around the car's s
   - crazy_controller (pure-pursuit mode): speed-scaled L1 lookahead
     L1 = clip(m_l1 * v + q_l1, t_clip_min, t_clip_max)   (pp_params_sim.yaml)
-  - plant: kinematic bicycle, wheelbase L = 0.324 m (F1TENTH)
+  - plant: kinematic bicycle, wheelbase L = 0.33 m (실차 실측)
+    조향 한계는 실차 검증값 0.36 rad(20.7°) — 순정 명목 24°가 아님.
 """
 
 import numpy as np
@@ -13,7 +14,7 @@ from scipy.spatial import cKDTree
 
 class PurePursuitSim:
     def __init__(self, traj,
-                 wheelbase=0.324, max_steer=0.4189,
+                 wheelbase=0.33, max_steer=0.36,
                  m_l1=0.3, q_l1=0.4, t_clip_min=0.8, t_clip_max=5.0,
                  a_acc_max=5.5, a_dec_max=7.0,
                  num_local_waypoints=80, dt=0.01):

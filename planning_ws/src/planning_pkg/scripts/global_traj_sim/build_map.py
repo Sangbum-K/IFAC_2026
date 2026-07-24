@@ -67,9 +67,15 @@ MARGIN     = 0.08    # CSV의 d_left/d_right에서 추가로 빼는 벽 여유 [
 RACELINE   = "iqp"   # "iqp"(최소곡률) | "sp"(최단거리) | "center"(중앙선)
 MAKE_SP    = True    # iqp일 때 SP 추월 라인도 함께 생성
 
-# --- 차량/컨트롤러 파라미터 (F1TENTH 표준, 트랙 크기와 무관) -----------------
-WHEELBASE  = 0.324   # [m]
-MAX_STEER  = 0.4189  # [rad] (24°)
+# --- 차량/컨트롤러 파라미터 (실차 실측값, 트랙 크기와 무관) ------------------
+# ⚠️ 이 두 값은 출력 CSV(라인 형상·속도 프로파일)에 영향이 없다. 레이스라인은
+#    optimize_raceline_iqp(기하 QP) + build_trajectory(곡률·mu)만으로 정해진다.
+#    아래 두 값은 PurePursuitSim 폐루프 검증에만 쓰여 "실차 조향 한계로 이 라인을
+#    실제로 따라갈 수 있는가"(lat err)를 판정한다 → 반드시 실차값이어야 의미 있음.
+WHEELBASE  = 0.33    # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동일)
+MAX_STEER  = 0.36    # [rad] (20.7°) 실차 검증 조향 한계. TUNING_STATUS 기준이며
+                     # control_pkg vehicle/max_steering_angle_rad와 동일하게 유지할 것
+                     # (순정 링키지 명목 24°=0.4189가 아니라 실측 포화 한계값)
 A_ACC_MAX  = 5.5     # 최대 가속 [m/s²]
 A_DEC_MAX  = 7.0     # 최대 제동 [m/s²]
 N_LOCAL_WP = 80      # 로컬 윈도우 웨이포인트 수 (local_trajectory_node와 동일)

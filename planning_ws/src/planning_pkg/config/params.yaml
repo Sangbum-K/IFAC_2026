@@ -162,7 +162,9 @@ waypoint_tracker_node:
                                          # lookahead < 코너 R 이어야 함 (was 1.2)
     tracker/max_lookahead_m: 1.2         # S-bend 변곡 오버슛 억제 (was 3.0)
     tracker/wheelbase_m: 0.33
-    tracker/max_steer_rad: 0.4
+    tracker/max_steer_rad: 0.36          # 실차 검증 조향 한계 20.7° (was 0.4).
+                                         # control_pkg vehicle/max_steering_angle_rad와
+                                         # 일치시켜 sim이 실차보다 낙관적이지 않게 함
     tracker/speed_scale: 0.30            # my_track: 연속 R~1.4m 헤어핀+S-bend라 저속이어야
                                          # pure-pursuit 조향 반전이 오버슛 없이 따라감
     tracker/waypoint_timeout_sec: 0.5    # 로컬 경로 두절 시 정지
@@ -194,7 +196,7 @@ opponent_driver_node:
     opponent/size_m: 0.3             # F1TENTH 실차 폭 (was 0.4)
     opponent/drive_rate_hz: 40.0
     opponent/wheelbase_m: 0.33
-    opponent/max_steer_rad: 0.4
+    opponent/max_steer_rad: 0.36     # 상대도 동급 F1TENTH -> 실차 조향 한계 동일
     opponent/park_x: -79.81          # '제거' 시 주차 위치 (launch sx1/sy1과 일치)
     opponent/park_y: -31.26
     opponent/park_radius_m: 5.0

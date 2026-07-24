@@ -34,16 +34,23 @@ spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet
     spliner/lookahead_m: 8.0
-    spliner/evasion_dist: 0.75
+    # 대회 맵 = my_track(실폭 median 1.25 m, min 1.0 m). 예전 대형 트랙 값 0.75는
+    # 벽 클램프로 회피가 상시 abort → 소형 트랙 값 0.35로 정렬 (real_car.yaml과 동일).
+    # 당일 맵이 확연히 넓으면 0.5~0.75로 다시 올릴 것.
+    spliner/evasion_dist: 0.35
     spliner/inside_speed_scale: 0.7
-    spliner/path_check_margin: 0.20
+    # 좁은 코리도(폭~1.25 m)에서 0.20은 유효 회피경로를 과도히 배제 → 0.15로 정렬.
+    spliner/path_check_margin: 0.15
     spliner/cmd_speed_scale: 1.0
 
 recovery_supervisor_node:
   ros__parameters:
     recovery/obstacle_topic: /perception/obstacles_frenet
     recovery/stuck_timeout_sec: 1.5
-    recovery/boundary_stop_margin_m: 0.20
+    # my_track: 섹터 공격 모드가 벽 0.15 m(ot_bound_mindist)까지 접근하므로 정지
+    # 판정은 반드시 그보다 작아야(안 그럼 회피 중 오탐 COLLISION_STOP) → 0.10.
+    # 예전 값 0.20은 0.15 위반 → 회피 시작하자마자 래치 정지가 걸렸음.
+    recovery/boundary_stop_margin_m: 0.10
     recovery/boundary_persist_sec: 0.2
     recovery/rear_check_dist_m: 2.0
     recovery/recovery_reverse_speed_mps: 0.4

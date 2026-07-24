@@ -8,13 +8,14 @@
 # =============================================================================
 
 vehicle:
-  # --- 기하 (Traxxas Slash 1/10 순정, crazy_controller l1_params.yaml과 동일) ---
-  wheelbase_m: 0.324          # 축거. crazy_controller L=0.324와 반드시 일치시킬 것
+  # --- 기하 (실차 실측: 전폭 30 cm / 전장 55 cm) ---
+  wheelbase_m: 0.33           # 축거. 실차 실측 = hardware vesc.yaml wheelbase
   length_m: 0.55              # 범퍼 포함 전장. 충돌 판정/추월 완료 판정에 사용
-  width_m: 0.30               # 전폭. 트랙 경계 여유 계산에 사용
-  # --- 조향 (순정 Traxxas 2075 서보 기준) ---
-  max_steer_rad: 0.4189       # 최대 조향각 24deg. 순정 링키지 한계.
-                              #   금속기어 서보/링키지 개조 시 0.45~0.48까지 상향 가능
+  width_m: 0.30               # 전폭. 트랙 경계 여유 계산에 사용 (반폭 0.15)
+  # --- 조향 (실차 검증값) ---
+  max_steer_rad: 0.36         # 최대 조향각 20.7deg. 실측 서보 포화 한계로,
+                              #   순정 명목 24deg(0.4189)가 아님. TUNING_STATUS 기준.
+                              #   control_pkg vehicle/max_steering_angle_rad와 동일 유지
   max_steer_rate_radps: 4.5   # 서보 속도 한계(60deg/0.17s@6V 무부하 -> 부하 고려 감축).
                               #   값을 올리면 심이 낙관적이 됨. 실차 잰 값으로 교체 권장
   # --- 종방향 (Velineon 3500kV + VXL-3s, 기존 raceline CSV 통계에서 도출) ---
