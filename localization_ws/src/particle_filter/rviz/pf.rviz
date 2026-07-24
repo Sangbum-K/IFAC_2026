@@ -87,6 +87,48 @@ Visualization Manager:
         Depth: 5
         Durability Policy: Volatile
         Reliability Policy: Reliable
+    # planner_visualizer_node(planning_pkg)가 발행하는 주행 경로.
+    # real_car.launch.py에서 자율 스택이 뜬 뒤부터 나온다.
+    - Class: rviz_default_plugins/MarkerArray
+      Name: GlobalPath
+      Enabled: true
+      Namespaces: {}
+      Topic:
+        Value: /planning/global_waypoints_markers
+        Depth: 10
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/MarkerArray
+      Name: LocalPath
+      Enabled: true
+      Namespaces: {}
+      Topic:
+        Value: /planning/local_waypoints_markers
+        Depth: 10
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Centerline
+      Enabled: false
+      Namespaces: {}
+      Topic:
+        Value: /planning/centerline_markers
+        Depth: 10
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+    # control_node(pure pursuit)가 지금 조준 중인 lookahead point.
+    - Class: rviz_default_plugins/PointStamped
+      Name: LookaheadPoint
+      Enabled: true
+      Alpha: 1
+      Color: 255; 0; 255
+      History Length: 1
+      Radius: 0.12
+      Topic:
+        Value: /control/lookahead_point
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
     - Class: rviz_default_plugins/TF
       Name: TF
       Enabled: false

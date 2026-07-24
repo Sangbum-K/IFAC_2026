@@ -16,7 +16,10 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     overtaking_csv_file_ = this->get_parameter("global_trajectory/overtaking_csv_file").as_string();
     publish_rate_hz_ = this->get_parameter("global_trajectory/publish_rate_hz").as_double();
     velocity_scale_ = this->get_parameter("global_trajectory/velocity_scale").as_double();
-    velocity_scale_ = std::clamp(velocity_scale_, 0.5, 1.4);
+    // 하한 0.05: control의 vehicle/max_speed_mps가 raceline v-min(2.64 m/s)보다
+    // 낮게 걸린 저속 테스트에서는 스케일을 0.2 이하로 내려야 wpnt 속도와 실속이
+    // 일치한다(하한 0.5면 최저 1.32 m/s라 control clamp가 계속 물림).
+    velocity_scale_ = std::clamp(velocity_scale_, 0.05, 1.4);
 
     RCLCPP_INFO(this->get_logger(), "trajectory_csv_file: %s", trajectory_csv_file_.c_str());
     RCLCPP_INFO(this->get_logger(), "publish_rate_hz: %f", publish_rate_hz_);
@@ -64,8 +67,8 @@ GlobalTrajectoryNode::~GlobalTrajectoryNode() {}
 void GlobalTrajectoryNode::ProcessParams() {
     this->get_parameter("global_trajectory/velocity_scale", velocity_scale_);
 
-    // 안전을 위한 클리핑 수행
-    velocity_scale_ = std::clamp(velocity_scale_, 0.5, 1.4);
+    // 안전을 위한 클리핑 수행 (하한 근거는 생성자 참조)
+    velocity_scale_ = std::clamp(velocity_scale_, 0.05, 1.4);
 }
 
 void GlobalTrajectoryNode::Run() {

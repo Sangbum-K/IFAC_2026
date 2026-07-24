@@ -8,53 +8,52 @@ ROS 없이 `.venv`만으로 도는 global trajectory 생성 + 시뮬레이션 �
 
 ---
 
-## ⚡ 빠른 시작 — `make_raceline.sh` (원샷 생성기)
+## ⚡ 빠른 시작 — `build_map.py` (맵 하나 → CSV 원샷)
 
-아래 "설치" + "실행"을 손으로 안 하고 **명령어 한 줄**로 끝내는 래퍼.
-`venv 생성 → 라이브러리 설치 → step4_main.py 실행` 을 자동으로 한다.
+**맵으로 레이스라인 만드는 경로는 이거 하나다.** step1(트랙 추출)+step2(IQP
+라인·속도)+step3(시뮬)+step4(저장)를 한 파일로 합친 것이라, 아래 step1~4 파일은
+파이프라인 이해·수정용 참고 구현으로만 남아 있다.
 
-> 전제(STEP 0): 맵 `.png` + `.yaml` 을 `planning_pkg/maps/` 에 미리 넣어둘 것.
-> 인자로 주는 맵 이름은 `maps/<이름>.png` 의 **확장자 뺀 파일명**과 같아야 함.
+> 전제(STEP 0): 맵 `.png`(또는 `.pgm`) + `.yaml` 을 `planning_pkg/maps/` 에 미리
+> 넣어둘 것. 인자로 주는 맵 이름은 `maps/<이름>.yaml` 의 **확장자 뺀 파일명**과
+> 같아야 하고, yaml의 `image:` 필드도 **maps/ 안의 실제 파일**이어야 한다.
 
 ```bash
 cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
-./make_raceline.sh 새트랙
+PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
 ```
 
-옵션은 맵 이름 **뒤에** 붙이면 그대로 step4_main.py 로 전달된다:
+**전체 절차(venv 준비·scikit-image 설치·빌드·RViz 튜너)와 이 기계 특유의 함정은
+[`../../maps/README.md`](../../maps/README.md) 가 단일 기준 문서다.** 요약하면:
 
-```bash
-./make_raceline.sh 새트랙 --v-max 6.0 --safe-dist 0.35
-```
+- `PYTHONNOUSERSITE=1` 없이 돌리면 `~/.local`의 numpy 2.2.6이 잡혀
+  dist-packages scipy/matplotlib이 `_ARRAY_API not found`로 죽는다.
+- `skimage`(medial-axis 중앙선)가 필요한데, pip으로 깔면 numpy 2.x를 딸려
+  깔아서 같은 문제를 만든다 → 깐 뒤 venv의 numpy를 uninstall해서 되돌릴 것.
 
-### 스크립트 동작 (3단계 자동)
+### 옵션은 없다 — 상수를 고친다
 
-1. **venv 확인/생성** — `~/IFAC_ws/.venv` 없으면 만들고, 있으면 재사용.
-2. **라이브러리 확인/설치** — `numpy scipy pillow pyyaml matplotlib` import 되는지
-   검사해서 없을 때만 pip 설치. 있으면 건너뜀.
-3. **레이스라인 생성** — `step4_main.py --map <맵> [옵션]` 실행.
+`build_map.py` 상단 `설정` 블록에 전부 모여 있다 (`V_MAX` 6.0, `MU` 0.75,
+`SAFE_DIST` 0.25, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP` True,
+`INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …). 표와 의미는 maps/README.md 참고.
 
-첫 실행은 설치 때문에 몇 분, **두 번째부터는 몇 초.** `set -e` 라 중간에 하나라도
-실패하면 거기서 멈춘다. 맵 이름 없이 실행하면 사용법을 출력하고 종료.
+> **실차 첫 주행 팁:** 보수적으로 시작 → `V_MAX 5.0 / MU 0.6 / SAFE_DIST 0.35`.
+> 잘 돌면 V_MAX 올리고 MU·SAFE_DIST 조여가며 반복.
 
-### 자주 쓰는 옵션 (전체는 아래 "실행" 참고)
-
-| 옵션 | 기본값 | 의미 |
-|------|--------|------|
-| `--v-max` | `7.0` | 최대 속도 [m/s] |
-| `--mu` | `0.85` | 노면 마찰계수 (접지 낮으면 낮춰라) |
-| `--margin` | `0.15` | 벽에서 띄우는 안전 여유 [m] |
-| `--safe-dist` | `0.30` | 센터라인 추출 시 벽 최소 이격 [m] |
-| `--raceline {center,iqp,sp}` | `iqp` | 라인 종류 |
-
-> **실차 첫 주행 팁:** 보수적으로 시작 →
-> `./make_raceline.sh 새트랙 --v-max 5.0 --mu 0.6 --margin 0.25`
-> 잘 돌면 v-max 올리고 mu/margin 조여가며 반복.
+> `WHEELBASE`/`MAX_STEER`는 출력 CSV에 영향이 **없다** — 폐루프 시뮬에서
+> "실차 조향 한계로 이 라인을 따라갈 수 있나"(lat err)를 보는 데만 쓰이므로
+> 반드시 실차 실측값(현재 0.33 m / 0.36 rad)으로 둘 것.
 
 ### 끝나면
 
 - 그림 : `outputs/<맵>_trajectory.png` — 라인/속도/시뮬 궤적 눈으로 확인
 - CSV  : `outputs/` + `config/global_trajectory/` 두 곳에 저장 (후자를 튜너·런타임이 읽음)
+- 회피 계층용 : `config/centerline/<맵>_centerline.csv`, `_walls.csv`
+
+### `make_raceline.sh` 는 이 기계에서 쓰지 말 것
+
+`PYTHONNOUSERSITE`를 안 붙이는 데다 구 파이프라인 `step4_main.py`를 부르고,
+`.venv`가 `--without-pip`으로 만들어져 있어 자동 설치 단계도 의도대로 안 돈다.
 
 다음 단계(튜너 편집 → 빌드 반영)는 [`../tuner/README.md`](../tuner/README.md) 참고.
 런타임에 반영하려면 CSV 생성 후:
@@ -64,23 +63,24 @@ cd ~/IFAC_ws/planning_ws && colcon build --packages-select planning_pkg && sourc
 
 ---
 
-## 설치 (어떤 환경에서든)
+## (참고) 단계별 step 스크립트 — 구 파이프라인
 
-> `make_raceline.sh` 를 쓰면 이 아래 "설치/실행"은 자동으로 처리됨. 수동으로 하려면:
+> 이 기계에서 맵을 만들 땐 위의 `build_map.py`를 쓴다. 아래는 파이프라인을
+> 단계별로 뜯어보거나 다른 환경으로 옮길 때의 참고용.
 
 ```bash
 cd <workspace root>          # IFAC_ws-main
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-## 실행
-
-```bash
+.venv/bin/pip install -r requirements.txt   # + scikit-image (build_map.py용)
 .venv/bin/python planning_ws/global_traj_sim/step4_main.py --map Spielberg_map
 ```
 
 옵션: `--v-max 7.0 --mu 0.85 --margin 0.15 --laps 1 --out <dir>`
+
+`step4_main.py`의 중앙선 추출은 안·바깥 경계 **중점** 방식이라, 인필드가
+아웃필드 벽까지 뻗는 '게이트'에서 중점이 한쪽 벽으로 붕괴해 곡률이 튄다
+(R~0.3 m 스파이크). `build_map.py`는 이걸 medial-axis(골격)로 바꿔 해결했다 —
+소형 실내 트랙에서 두 결과가 다르면 이 차이 때문이다.
 
 ### Raceline 모드: `--raceline {center,iqp}` (기본 iqp)
 
@@ -102,7 +102,7 @@ ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
 # 또는 시뮬 주행과 함께: ros2 launch planning_pkg sim_race.launch.py tuner:=true
 ```
 
-정적 미리보기는 step4가 저장하는 `outputs/*_trajectory.png` 참고.
+정적 미리보기는 `build_map.py`가 저장하는 `outputs/*_trajectory.png` 참고.
 
 지원 맵: Spielberg처럼 트랙이 폐곡선 링 형태인 맵 (`f1tenth_gym_ros/maps/`).
 levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 있어
@@ -120,12 +120,14 @@ levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 �
 
 | 단계 | 파일 | 대응하는 ROS 노드 |
 |---|---|---|
+| **맵 → CSV 전체 (실사용)** | **`build_map.py`** | (오프라인 raceline 생성) |
 | 맵 → centerline 추출 | `step1_track.py` | (오프라인 raceline 생성 단계) |
 | 속도 프로파일 + CSV | `step2_global_trajectory.py` | `global_trajectory_node` 입력 생성 |
 | 로컬 윈도우(80 wpt) + pure pursuit + 차량 모델 | `step3_simulate.py` | `local_trajectory_node` + `crazy_controller` + f1tenth sim |
 
 컨트롤러/차량 파라미터는 `crazy_controller` 설정을 따름:
-wheelbase 0.324 m, L1 = clip(0.3·v + q_l1, t_clip_min, t_clip_max).
+L1 = clip(0.3·v + q_l1, t_clip_min, t_clip_max). wheelbase는 `build_map.py`가
+실차 실측 **0.33 m**, 조향 한계 0.36 rad(20.7°)을 쓴다 (`TUNING_STATUS.md` 기준).
 속도 프로파일은 friction-circle 기반 forward-backward pass (mu·g 횡가속 한계,
 가속 5.5 / 제동 7.0 m/s²).
 

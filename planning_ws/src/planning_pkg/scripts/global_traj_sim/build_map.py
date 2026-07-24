@@ -127,10 +127,18 @@ def _resample_closed(pts, n):
 
 
 def _px_to_world(rc, resolution, origin, H):
-    """rc: (N,2) (row, col) 픽셀 → 월드 (x, y). load_track 안의 것과 동일 규약."""
+    """rc: (N,2) (row, col) 픽셀 → 월드 (x, y). load_track 안의 것과 동일 규약.
+
+    map_server(nav2 map_io) 셀 중심 규약과 맞춘다: yaml origin은 이미지 좌하단
+    코너의 pose이고, 이미지 row는 위에서부터라 grid row = H-1-row.
+        x = origin_x + (col + 0.5) * res
+        y = origin_y + (H - row - 0.5) * res
+    0.5 셀을 빼먹으면 트랙 모델 전체가 PF가 정합하는 occupancy grid 대비
+    (-res/2, +res/2) 만큼 대각선으로 밀린다(0.05 m/px에서 3.5 cm).
+    """
     rc = np.atleast_2d(rc)
-    x = origin[0] + rc[:, 1] * resolution
-    y = origin[1] + (H - rc[:, 0]) * resolution
+    x = origin[0] + (rc[:, 1] + 0.5) * resolution
+    y = origin[1] + (H - rc[:, 0] - 0.5) * resolution
     return np.column_stack([x, y])
 
 
@@ -187,6 +195,12 @@ def _order_loop(sk):
     if len(order) < 0.8 * n:
         raise RuntimeError(f"medial-axis 루프 정렬 실패 ({len(order)}/{n} px만 "
                            "연결됨 — 골격이 끊겼을 수 있음)")
+    if len(order) < n:
+        # 20%까지는 위에서 통과시키지만, 빠진 픽셀은 중앙선에 점프를 만들고
+        # 그 자리에서 곡률이 튄다. 조용히 넘기지 말고 알린다.
+        print(f"      [warn] medial-axis 픽셀 {n - len(order)}/{n} "
+              f"({100 * (1 - len(order) / n):.1f}%) 누락 — 중앙선에 점프/곡률 "
+              "스파이크가 생길 수 있음 (outputs/*_trajectory.png 확인)")
     return pts[order]
 
 
@@ -275,10 +289,7 @@ def load_track(map_name):
               f"→ yaml resolution 확인 (RESOLUTION_OVERRIDE로 덮어쓰기 가능)")
 
     def px_to_world(rc):
-        rc = np.atleast_2d(rc)
-        x = origin[0] + rc[:, 1] * resolution
-        y = origin[1] + (H - rc[:, 0]) * resolution
-        return np.column_stack([x, y])
+        return _px_to_world(rc, resolution, origin, H)
 
     # --- 링 경계선을 contour로 뽑아 월드 좌표 폴리라인 2개(outer/inner) ------
     fig = plt.figure()
@@ -306,7 +317,6 @@ def extract_centerline(outer, inner, ring, resolution, origin, H,
     medial-axis는 항상 코리도 한가운데를 지나 게이트에서도 안 튄다.
     폭(d_left/d_right)만 물리 경계(outer/inner)에서 부호 있는 거리로 계산한다.
     """
-    outer_tree = cKDTree(outer)
     loop_rc = _order_loop(_medial_axis_loop(ring))          # (row, col) 순서
     loop_xy = _px_to_world(loop_rc, resolution, origin, H)
     # 픽셀 계단 노이즈를 지운 뒤 주기 스플라인
@@ -328,14 +338,10 @@ def extract_centerline(outer, inner, ring, resolution, origin, H,
     kappa = (dx * ddy - dy * ddx) / np.power(dx * dx + dy * dy, 1.5)
     s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))])
 
-    inner_tree = cKDTree(inner)
-    d_inner, i_in = inner_tree.query(xy)
-    d_outer, _ = outer_tree.query(xy)
-    t_vec = np.column_stack([dx, dy])
-    to_inner = inner[i_in] - xy
-    cross = t_vec[:, 0] * to_inner[:, 1] - t_vec[:, 1] * to_inner[:, 0]
-    d_left = np.where(cross > 0, d_inner, d_outer)
-    d_right = np.where(cross > 0, d_outer, d_inner)
+    # 폭은 레이스라인과 같은 함수로 잰다. 예전엔 여기서 '최근접 inner/outer 점까지의
+    # 거리'만 썼는데, 헤어핀에서는 최근접 벽 점이 옆이 아니라 앞/뒤라 폭이 과소평가됐다.
+    # _compute_widths 는 |lon| < long_window 인 '옆에 있는' 점만 본다.
+    d_left, d_right = _compute_widths(xy, psi, outer, inner)
     return {"xy": xy, "psi": psi, "kappa": kappa, "s": s,
             "d_left": d_left, "d_right": d_right}
 
@@ -461,10 +467,51 @@ def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
             "psi": geo["psi"], "kappa": kappa, "vx": v, "ax": ax}
 
 
-def roll_to_start(traj, start_xy=(0.0, 0.0), forward_x=True):
+def loop_orientation(xy):
+    """폐루프의 진행 방향을 'cw' / 'ccw' 로. 부호면적 규약(양수=CCW)."""
+    return "ccw" if _signed_area(xy) > 0.0 else "cw"
+
+
+def resolve_orientation(traj, start_xy=(0.0, 0.0), want=None):
+    """이 궤적을 어느 방향으로 낼지 결정해서 'cw'/'ccw' 로 돌려준다.
+
+    want 가 'cw'/'ccw' 면 그대로 쓴다(권장). None 이면 예전 forward_x 휴리스틱 —
+    start_xy 최근접점에서 map +x 를 향하도록 맞춘다.
+
+    ⚠️ 휴리스틱은 map (0,0) 이 '매핑을 시작할 때 차량 pose' 일 때만 의미가 있다.
+       SLAM 은 map frame 을 차량 초기 pose 에 정렬하므로 원래는 성립하지만,
+       yaml 의 origin 을 손으로 바꾸면 (0,0) 이 임의의 점이 되어 기준이 무너진다.
+       그때는 라인 전체가 실제 주행 방향과 반대로 나올 수 있고, 이 스크립트는
+       그걸 스스로 알아챌 방법이 없다. 반드시 --dir 로 명시할 것.
+    """
+    xy = traj["xy"]
+    current = loop_orientation(xy)
+    if want is not None:
+        print(f"      [dir] 지정된 주행 방향: {want.upper()}")
+        return want
+
+    i0 = int(np.argmin(np.hypot(xy[:, 0] - start_xy[0], xy[:, 1] - start_xy[1])))
+    c = float(np.cos(traj["psi"][i0]))
+    resolved = current if c >= 0.0 else ("cw" if current == "ccw" else "ccw")
+    print(f"      [dir] 자동 판정: map(0,0) 최근접점에서 cos(psi)={c:+.3f} "
+          f"→ {resolved.upper()}")
+    if abs(c) < 0.3:
+        print(f"      [warn] 판정 여유가 작다 (|cos|={abs(c):.3f} < 0.3). 시작점 "
+              "부근 트랙이 map +x 에 거의 수직이라 방향이 뒤집힐 수 있음 "
+              "→ --dir cw|ccw 로 명시할 것")
+    return resolved
+
+
+def roll_to_start(traj, start_xy=(0.0, 0.0), orientation=None):
+    """start_xy 최근접점을 인덱스 0 으로 굴리고, 필요하면 진행 방향을 뒤집는다.
+
+    orientation: 'cw' | 'ccw' — 결과 루프의 진행 방향. None 이면 방향 유지.
+    센터라인과 레이스라인이 각자 판정하면 서로 역방향이 될 수 있으므로,
+    호출부에서 한 번 결정한 값을 모든 라인에 같이 넘길 것.
+    """
     xy = traj["xy"]
     i0 = int(np.argmin(np.hypot(xy[:, 0] - start_xy[0], xy[:, 1] - start_xy[1])))
-    flip = forward_x and np.cos(traj["psi"][i0]) < 0.0
+    flip = orientation is not None and loop_orientation(xy) != orientation
 
     def reorder(a):
         a = np.roll(a, -i0, axis=0)
@@ -579,6 +626,11 @@ def main():
     ap = argparse.ArgumentParser(description="맵 이름 하나로 레이스라인 생성")
     ap.add_argument("map", nargs="?", default="my_map",
                     help="maps/<이름>.png/.yaml 의 확장자 뺀 이름")
+    ap.add_argument("--dir", choices=("cw", "ccw"), default=None,
+                    help="주행 방향을 명시한다 (권장). 생략하면 map(0,0) 최근접점이 "
+                         "+x 를 향하도록 자동 판정하는데, 이는 map origin 이 "
+                         "SLAM 시작 시 차량 pose 일 때만 맞다. yaml origin 을 손으로 "
+                         "고쳤다면 반드시 지정할 것.")
     args = ap.parse_args()
     m = args.map
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -587,7 +639,10 @@ def main():
     print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
     outer, inner, resolution, origin, ring, H = load_track(m)
     center = extract_centerline(outer, inner, ring, resolution, origin, H)
-    center = roll_to_start(center)
+    # 방향은 여기서 '한 번만' 정하고 레이스라인에도 그대로 넘긴다. 각자 판정하면
+    # 시작점 부근이 map +x 에 수직일 때 센터라인과 레이스라인이 역방향이 된다.
+    orientation = resolve_orientation(center, want=args.dir)
+    center = roll_to_start(center, orientation=orientation)
     print(f"      centerline: {len(center['s'])} pts, 길이 {center['s'][-1]:.1f} m")
 
     walls = np.vstack([
@@ -601,15 +656,24 @@ def main():
     # 2) 레이스라인 + 속도 프로파일 ----------------------------------------
     if RACELINE == "iqp":
         print("[2/4] IQP 최소곡률 라인 + 속도 프로파일 ...")
-        geo = roll_to_start(optimize_raceline_iqp(center, outer, inner))
+        geo = roll_to_start(optimize_raceline_iqp(center, outer, inner),
+                            orientation=orientation)
     elif RACELINE == "sp":
         print("[2/4] SP 최단거리 라인 + 속도 프로파일 ...")
         geo = roll_to_start(optimize_raceline_iqp(center, outer, inner,
-                                                  objective="length"))
+                                                  objective="length"),
+                            orientation=orientation)
     else:
         print("[2/4] 중앙선 라인 + 속도 프로파일 ...")
         geo = center
     traj = build_trajectory(geo)
+    start_heading = float(traj["psi"][0])
+    print(f"      [dir] 주행 방향 {orientation.upper()} · 출발점 "
+          f"({traj['xy'][0, 0]:+.2f}, {traj['xy'][0, 1]:+.2f}) m, "
+          f"헤딩 {np.degrees(start_heading):+.1f}° (map +x 기준 CCW)")
+    print("      ↑ 실차를 이 지점에 이 방향으로 놓는 게 맞는지 눈으로 확인할 것. "
+          "폐루프 시뮬은 헤딩을 궤적 자신에서 가져오므로 방향이 뒤집혀도 "
+          "정상으로 보인다.")
     tag = {"iqp": "iqp_", "sp": "sp_"}.get(RACELINE, "")
     csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
     for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
@@ -619,7 +683,8 @@ def main():
     if RACELINE == "iqp" and MAKE_SP:
         print("      SP 추월 라인 생성 ...")
         geo_sp = roll_to_start(optimize_raceline_iqp(center, outer, inner,
-                                                     objective="length"))
+                                                     objective="length"),
+                               orientation=orientation)
         traj_sp = build_trajectory(geo_sp)
         sp_name = f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
         for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
@@ -652,9 +717,29 @@ def main():
                      cmap="viridis", s=4, label=f"{RACELINE} raceline (vx)")
     ax.plot(log["x"], log["y"], "r-", lw=0.8, alpha=0.8, label="driven path")
     ax.plot(traj["xy"][0, 0], traj["xy"][0, 1], "b*", ms=14, label="start")
+    # 주행 방향 화살표. 폐루프 시뮬은 초기 헤딩을 궤적 자신에서 가져오므로
+    # 방향이 뒤집혀 있어도 깨끗하게 돈다 → 방향 검증은 이 그림으로만 가능하다.
+    n_arrow = 12
+    step = max(len(traj["xy"]) // n_arrow, 1)
+    for i in range(0, len(traj["xy"]), step):
+        ax.annotate("", xytext=traj["xy"][i],
+                    xy=traj["xy"][i] + 0.45 * np.array(
+                        [np.cos(traj["psi"][i]), np.sin(traj["psi"][i])]),
+                    arrowprops=dict(arrowstyle="-|>", color="crimson",
+                                    lw=1.4, mutation_scale=14))
+    ax.annotate("", xytext=traj["xy"][0],
+                xy=traj["xy"][0] + 0.9 * np.array(
+                    [np.cos(start_heading), np.sin(start_heading)]),
+                arrowprops=dict(arrowstyle="-|>", color="blue", lw=2.5,
+                                mutation_scale=20))
     fig.colorbar(pts, ax=ax, label="vx [m/s]")
     ax.set_aspect("equal"); ax.legend(loc="upper right")
-    ax.set_title(f"{m}: global trajectory & lap ({lap_time:.2f} s/lap)")
+    # 제목은 ASCII로 — 이 기계 matplotlib 기본 폰트에 한글 글리프가 없어서
+    # 한글을 쓰면 전부 두부(tofu)로 깨진다.
+    ax.set_title(f"{m}: global trajectory & lap ({lap_time:.2f} s/lap)\n"
+                 f"travel dir {orientation.upper()}, start heading "
+                 f"{np.degrees(start_heading):+.1f} deg "
+                 f"-- check against real car placement")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
     fig.tight_layout(); fig.savefig(OUT_DIR / f"{m}_trajectory.png", dpi=150)
 

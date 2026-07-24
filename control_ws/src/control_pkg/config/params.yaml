@@ -17,7 +17,7 @@ control:
     imu_acceleration_sign: -1.0
 
     # ETH Forza MAP/L1 controller parameters.
-    "map/t_clip_min": 0.7
+    "map/t_clip_min": 0.5
     "map/t_clip_max": 8.0
     "map/m_l1": 0.47
     "map/q_l1": -0.2

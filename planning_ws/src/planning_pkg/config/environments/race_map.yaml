@@ -12,6 +12,14 @@ planning:
     output_topic: /planning/plan
     service_name: /planning/compute_plan
 
+# ⚠️ [저속 테스트 임시 · 2026-07-24] control이 vehicle/max_speed_mps: 1.0으로
+#    묶여 있는 동안만 유효. 근거와 원복 방법은 real_car.yaml의 동일 블록 참조.
+global_trajectory_node:
+  ros__parameters:
+    # TEMP (원복: 1.0) — 6.00 * 0.1666 = 1.00 m/s (0.44~1.00 m/s).
+    # 당일 맵 raceline의 v-max가 6이 아니면 (cap / v-max)로 다시 계산할 것.
+    global_trajectory/velocity_scale: 0.1666
+
 frenet_frame_node:
   ros__parameters:
     frenet_frame/odom_mode: real
@@ -33,12 +41,15 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet
-    spliner/lookahead_m: 8.0
+    spliner/lookahead_m: 5.0            # TEMP (원복: 8.0) — 1 m/s 기준. real_car.yaml 참조
     # 대회 맵 = my_track(실폭 median 1.25 m, min 1.0 m). 예전 대형 트랙 값 0.75는
     # 벽 클램프로 회피가 상시 abort → 소형 트랙 값 0.35로 정렬 (real_car.yaml과 동일).
     # 당일 맵이 확연히 넓으면 0.5~0.75로 다시 올릴 것.
     spliner/evasion_dist: 0.35
-    spliner/inside_speed_scale: 0.7
+    spliner/trailing_engage_dist_m: 2.0  # TEMP (원복: 6.0) — 1 m/s 제동거리 0.2 m
+    spliner/squeeze_brake_dist_m: 1.0    # TEMP (원복: 3.0)
+    spliner/inside_speed_scale: 0.9      # TEMP (원복: 0.7) — 저속에선 0.7배가 정지마찰
+    spliner/squeeze_speed_scale: 0.8     # TEMP (원복: 0.35)
     # 좁은 코리도(폭~1.25 m)에서 0.20은 유효 회피경로를 과도히 배제 → 0.15로 정렬.
     spliner/path_check_margin: 0.15
     spliner/cmd_speed_scale: 1.0
