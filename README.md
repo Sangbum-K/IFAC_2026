@@ -85,7 +85,10 @@ cd ~/IFAC_ws
 > - 빌드가 꼬이면 해당 ws에서 `rm -rf build install log` 후 다시 `./build_all.sh`.
 > - 다른 PC에서 복사해 와 `CMakeCache.txt directory is different` 에러가 나면
 >   `colcon build --cmake-clean-cache`를 한 번 실행하세요.
-> - 시뮬을 돌리려면 별도로 `~/sim_ws`(f1tenth_gym_ros)가 빌드돼 있어야 합니다.
+> - **시뮬(`sim_ws`)은 두 스크립트의 대상이 아닙니다** — 별도로 빌드해야 하고,
+>   경로는 레포 안의 `~/IFAC_ws/sim_ws`입니다(`~/sim_ws`가 아님). 현재
+>   `sim_ws/src/f1tenth_gym_ros`에 `.py` 소스가 없고 `install/` 산출물만 남아
+>   있으니, `install/`을 지우기 전에 소스를 복구해 두세요 (`sim_ws`는 git 미추적).
 
 ---
 
@@ -213,9 +216,13 @@ ros2 launch integration_pkg real_car.launch.py map:=my_track2
 
 | 대상 | 파일 |
 |---|---|
-| 하드웨어 공통 | `hardware_ws/src/vehicle_bringup/config/params.yaml` |
-| 하드웨어 환경별 | `hardware_ws/src/vehicle_bringup/config/environments/{sim,real_car,race_map,mapping}.yaml` |
-| control 환경별 | `control_ws/src/control_pkg/config/environments/*.yaml` |
+| LiDAR (Hokuyo IP·FOV) | `hardware_ws/src/f1tenth_stack/config/sensors.yaml` |
+| VESC (조향/속도 캘리브레이션) | `hardware_ws/src/f1tenth_stack/config/vesc.yaml` — **hardware_ws 전체의 single source of truth. launch 인자로 덮어쓰지 말 것** |
+| 명령 mux (우선순위·타임아웃) | `hardware_ws/src/f1tenth_stack/config/mux.yaml` |
+| 조이스틱 (버튼·축·상한) | `hardware_ws/src/f1tenth_stack/config/joy_teleop.yaml` |
+| control 공통 / 환경별 | `control_ws/src/control_pkg/config/params.yaml`, `config/environments/*.yaml` |
+| planning 공통 / 환경별 | `planning_ws/src/planning_pkg/config/params.yaml`, `config/environments/*.yaml` |
+| perception 공통 / 환경별 | `perception_ws/src/perception_pkg/config/params.yaml`, `config/environments/*.yaml` |
 | integration 환경별 | `integration_ws/src/integration_pkg/config/environments/*.yaml` |
 | localization | `localization_ws/src/localization_bringup/config/localization/*.yaml` |
 | particle_filter 맵 (기본값) | `localization_ws/src/particle_filter/config/localize.yaml` — `map:=`를 안 줬을 때만 쓰입니다. 당일 맵은 `map:=<이름>`으로 지정하는 편이 낫습니다 |
@@ -232,8 +239,7 @@ ros2 launch integration_pkg real_car.launch.py map:=my_track2
 - ROS 2 Humble 기준. `zsh` 터미널에서는 `setup.zsh`를 source 하세요
   (`setup.bash`를 쓰면 `local_setup.bash not found` 에러가 날 수 있음).
 - `f1tenth_stack`은 `f1tenth/f1tenth_system` 구조를 참고해 이 레포에 맞게 재구성한 것입니다.
+- 조향/속도 캘리브레이션의 단일 기준 문서는 **[TUNING_STATUS.md](TUNING_STATUS.md)** 입니다.
+  캘리브레이션 관련 작업 전에 먼저 읽으세요 (`hardware_ws/tools/`의 계측 스크립트 포함).
 - 확장 체크리스트: [F1TENTH_CHECKLIST.md](F1TENTH_CHECKLIST.md),
   진행 항목: [PITWALL_TODO.md](PITWALL_TODO.md).
-- `control_ws/build,install,log`가 과거에 커밋돼 git에 추적 중입니다.
-  `.gitignore`엔 이미 제외돼 있으니, 정리하려면
-  `git rm -r --cached control_ws/build control_ws/install control_ws/log` 후 커밋하세요.

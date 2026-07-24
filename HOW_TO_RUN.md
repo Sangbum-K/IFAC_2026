@@ -22,10 +22,11 @@ F1TENTH 자율주행 전체 스택(perception → planning → control)을 **시
 
 ```
 LiDAR /scan
-  → [perception] 장애물 탐지 → /perception/obstacles(_detected)
+  → [perception] 장애물 탐지 → 실차 /perception/obstacles · 시뮬 /perception/obstacles_detected
   → [planning] frenet 변환 → 회피 경로 → /local_waypoints
-  → [control] pure pursuit → /ackermann_cmd (실차) 또는 /drive (시뮬)
-  → 차량
+  → [control] pure pursuit → 실차 /autonomy/ackermann_cmd · 시뮬 /drive
+  → (실차만) ackermann_mux 가 조이스틱 teleop 과 중재 → /ackermann_cmd
+  → ackermann_to_vesc → VESC
 ```
 
 ---
@@ -40,9 +41,9 @@ LiDAR /scan
 | `perception_ws` | ✅ | ✅ |
 | `control_ws` | ✅ | ✅ |
 | `integration_ws` | ✅ | ✅ |
-| `hardware_ws` (LiDAR·VESC·odom·TF·estop·mux) | — | ✅ |
+| `hardware_ws` (LiDAR·VESC·odom·TF·mux·조이스틱) | — | ✅ |
 | `localization_ws` (particle_filter) | — | ✅ |
-| `~/sim_ws` (f1tenth_gym_ros) | ✅ 별도 | — |
+| `sim_ws` (f1tenth_gym_ros) | ✅ 별도 | — |
 
 빌드는 두 단계입니다 — 의존성은 **차량당 1회**, 코드 빌드는 **고칠 때마다**.
 
@@ -65,7 +66,14 @@ cd ~/IFAC_ws
 > ⚠️ **numpy는 apt 1.x 고정.** `pip install --user`로 numpy 2.x가 깔리면
 > scipy·pythran·ROS C확장이 ABI로 깨지고 particle_filter가 조용히 죽습니다.
 > 스크립트가 시작할 때 검사하며, 오염됐다면: `python3 -m pip uninstall -y numpy`.
-> 시뮬을 돌리려면 `~/sim_ws`(f1tenth_gym_ros)는 **별도로** 빌드돼 있어야 합니다.
+
+> ⚠️ **시뮬(`sim_ws`)은 `build_all.sh` 대상이 아닙니다** — 별도로 빌드해야 합니다.
+> 경로는 레포 안의 **`~/IFAC_ws/sim_ws`** 입니다(`~/sim_ws`가 아님).
+> 다만 현재 `sim_ws/src/f1tenth_gym_ros`에 **`.py` 소스가 없고 `__pycache__`만
+> 남아 있습니다.** 기존 `sim_ws/install/`에 빌드 산출물이 있어 지금 있는 건
+> 돌지만, `install/`을 지우면 복구할 수 없습니다. 시뮬을 계속 쓸 거라면
+> `install/.../f1tenth_gym_ros/gym_bridge.py`에서 소스를 되살리거나
+> upstream(f1tenth_gym_ros)에서 다시 받아 두세요. (`sim_ws`는 git 미추적)
 
 **빌드가 꼬이면** — 해당 ws에서 통째로 지우고 다시 빌드:
 `rm -rf build install log && colcon build --base-paths src`.
@@ -83,7 +91,7 @@ cd ~/IFAC_ws
 
 ```bash
 source /opt/ros/humble/setup.zsh
-source ~/sim_ws/install/setup.zsh
+source ~/IFAC_ws/sim_ws/install/setup.zsh
 source ~/IFAC_ws/planning_ws/install/setup.zsh
 source ~/IFAC_ws/perception_ws/install/setup.zsh
 source ~/IFAC_ws/control_ws/install/setup.zsh
@@ -411,7 +419,7 @@ ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
   - 실차 주행 전, estop을 실제로 쓸 거면 팀과 배선(joy 버튼→`/safety/emergency_stop`
     발행 노드, 또는 mux lock)을 먼저 확정하세요.
 - 실차 속도 상한은 안전상 **1.0 m/s**로 제한돼 있습니다
-  (`control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`).
+  (`control_ws/src/control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`).
 
 ---
 
