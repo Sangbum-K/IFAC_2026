@@ -290,8 +290,11 @@ ros2 topic hz /odom     # VESC odom 이 나와야 함
 # 파티클 필터 (map→odom TF + /pf/pose/odom 발행)
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 #   ⚠️ backend:=particle_filter 를 반드시 명시! (기본값은 slam_toolbox)
-#   ⚠️ 현재 my_track 기준으로 설정됨 (localize.yaml map: my_track,
-#      particle_filter/maps/my_track.{pgm,yaml}). 다른 맵이면 함께 교체.
+#   맵을 안 주면 localize.yaml 의 map: 을 따른다 (현재 my_track).
+
+# 다른 맵을 쓰려면 map:=<이름> — ~/IFAC_ws/maps 를 먼저, 없으면
+# particle_filter/maps 를 찾는다. 매핑으로 만든 맵은 재빌드 없이 바로 쓰인다.
+ros2 launch localization_bringup localization.launch.py backend:=particle_filter map:=my_track2
 ```
 
 #### 초기 위치 잡기 (필수) — 파티클 필터 초기화
@@ -353,10 +356,13 @@ ros2 run tf2_ros tf2_echo map base_link   # map→base_link TF가 실제 차 위
 
 ```bash
 #   ※ 실차는 sim_ws source 하지 말 것
-#   ※ 실차 planner는 map:= 인자를 무시하고 planning_pkg/config/params.yaml의
-#     trajectory/overtaking/centerline CSV 기본값을 읽는다 (현재 my_track 기준).
-#     다른 맵이면 params.yaml의 세 CSV 파일명을 교체 후 colcon build.
+#   ※ map:= 를 안 주면 planning_pkg/config/params.yaml의 trajectory/overtaking/
+#     centerline CSV 기본값을 읽는다 (현재 my_track 기준).
 ros2 launch integration_pkg stack.launch.py env:=real_car
+
+#   다른 맵이면 map:=<이름> 하나로 CSV 3종이 함께 바뀐다 (params.yaml 수정 불필요).
+#   단 CSV는 planning_pkg/config/ 안에 있어야 하므로 새로 뽑았다면 재빌드 필요.
+ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
 ```
 
 정상이면 `frenet_frame_node`가 더는 "Waiting for odom"을 찍지 않고
@@ -495,4 +501,11 @@ ros2 launch f1tenth_stack bringup_launch.py                                     
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter        # B 위치추정(+RViz)
 ros2 launch integration_pkg stack.launch.py env:=real_car                               # C 자율스택
 # ⚠️ C에서 "Waiting for odom (real)" / "map ... does not exist" 반복 = B 미수렴 (4번 참고)
+
+# ── 새 트랙 매핑 (하드웨어+SLAM+RViz+저장 한 줄) ──
+ros2 launch integration_pkg mapping.launch.py map_name:=my_track2
+#   → 조이스틱으로 한 바퀴 → Ctrl+C → ~/IFAC_ws/maps/my_track2.{pgm,yaml}
+#   → 레이스라인 CSV는 별도: scripts/global_traj_sim/step4_main.py --map my_track2
+#      --maps-dir ~/IFAC_ws/maps  (뽑은 뒤 ./build_all.sh)
+#   → 주행: ros2 launch integration_pkg real_car.launch.py map:=my_track2
 ```
