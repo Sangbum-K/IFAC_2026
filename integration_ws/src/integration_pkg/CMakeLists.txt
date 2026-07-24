@@ -33,8 +33,11 @@ install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
 )
 
-# real_car.launch.py가 자율 스택 시작 전에 띄우는 파티클 필터 수렴 대기 노드.
-install(PROGRAMS scripts/wait_for_localization.py
+# real_car.launch.py가 자율 스택 시작 전에 띄우는 파티클 필터 수렴 대기 노드,
+# mapping.launch.py가 띄우는 맵 저장 노드.
+install(PROGRAMS
+  scripts/wait_for_localization.py
+  scripts/map_saver_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

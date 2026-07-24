@@ -17,6 +17,12 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <!-- map_saver_node.py (mapping.launch.py) -->
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- mapping.launch.py가 띄우는 SLAM 백엔드. localization_bringup의
+       slam_toolbox_mapping.yaml을 그대로 쓴다. -->
+  <exec_depend>slam_toolbox</exec_depend>
   <!-- real_car.launch.py에서만 쓰는 실차 워크스페이스. 시뮬 전용 PC에는 없어도
        stack.launch.py(env:=sim)는 그대로 동작하므로 exec_depend로만 둔다. -->
   <exec_depend>f1tenth_stack</exec_depend>
