@@ -12,7 +12,6 @@
   1) preprocess_scan()은 순수하게 "센서 프레임 기준 필터링 + xy 변환"만 담당 (boundary_polygon 파라미터 제거)
   2) transform_points()로 laser frame -> map(또는 원하는 target) frame 변환을 별도로 수행
   3) map frame으로 옮겨진 포인트에 대해 filter_points_in_polygon()으로 경계 필터를 적용
-
 이렇게 책임을 나누면 boundary_polygon은 map frame에 딱 한 번만 정의하면 되고,
 차량이 어디에 있든 항상 올바르게 동작합니다.
 """
