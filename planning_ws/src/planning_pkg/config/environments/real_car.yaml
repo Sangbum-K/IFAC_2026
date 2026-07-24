@@ -15,18 +15,13 @@ planning:
     output_topic: /planning/plan
     service_name: /planning/compute_plan
 
-# ⚠️ [저속 테스트 임시 · 2026-07-24] control이 vehicle/max_speed_mps: 1.0으로
-#    묶여 있는 동안만 유효한 값들. raceline v-min이 2.64 m/s라 그대로 두면
-#    control의 clamp가 전 구간에서 물려 (a) 속도 프로파일이 1.0 상수로 뭉개지고
-#    (b) 조향 LUT를 wpnt 속도(최대 6)로 조회해 실제 필요조향의 1.7~2.0배가 나온다
-#    (control_node.cpp calc_steering_angle의 speed_for_lookup = wpnt 속도).
-#    아래 "TEMP" 표시된 값을 되돌리면 6 m/s 세팅으로 복귀.
+# 실차 속도 프로파일. 현재 raceline 최고속도 6 m/s에 0.6667을 곱해
+# 약 4 m/s로 제한한다. control의 vehicle/max_speed_mps와 맞춰야 최종 clamp가
+# 속도 프로파일을 왜곡하지 않고 LUT도 명령 속도에 맞는 열을 조회한다.
 global_trajectory_node:
   ros__parameters:
-    # TEMP (원복: 1.0) — 6.00 * 0.1666 = 1.00 m/s. 프로파일 형상은 유지한 채
-    # 전 구간이 control cap 이하로 내려가 clamp가 물리지 않는다 (0.44~1.00 m/s).
-    # 주행 중 상향은 ros2 param set /global_trajectory_node ... 로 가능.
-    global_trajectory/velocity_scale: 0.1666
+    # 6.00 * 0.6667 ≈ 4.00 m/s. 주행 중 ros2 param set으로 조정 가능.
+    global_trajectory/velocity_scale: 0.6667
 
 frenet_frame_node:
   ros__parameters:

@@ -418,8 +418,10 @@ ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
     스틱 중립, (2) 물리 kill 스위치/차단기, (3) `Ctrl-C`.
   - 실차 주행 전, estop을 실제로 쓸 거면 팀과 배선(joy 버튼→`/safety/emergency_stop`
     발행 노드, 또는 mux lock)을 먼저 확정하세요.
-- 실차 속도 상한은 안전상 **1.0 m/s**로 제한돼 있습니다
-  (`control_ws/src/control_pkg/config/environments/real_car.yaml`의 `vehicle/max_speed_mps`).
+- 실차 설정의 현재 속도 상한은 **4.0 m/s**입니다
+  (`control_ws/src/control_pkg/config/environments/real_car.yaml`의
+  `vehicle/max_speed_mps`). 플래너는 6 m/s raceline에 `velocity_scale: 0.6667`을
+  적용해 같은 상한으로 맞춥니다.
 
 ---
 

@@ -4,8 +4,8 @@ control:
     odom_topic: /pf/pose/odom
     ackermann_topic: /autonomy/ackermann_cmd
     autonomous_on_start: true
-    "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
+    "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
 
-    # Conservative limit while using another vehicle's LUT.
-    "vehicle/max_speed_mps": 1.0
+    # Real-car speed cap; keep aligned with the planning velocity profile.
+    "vehicle/max_speed_mps": 4.0
     "vehicle/speed_scale": 1.0

@@ -5,6 +5,8 @@ directory:
 
 - `SIM_linear_lookup_table.csv`: simulator
 - `NUC2_hangar_pacejka_lookup_table.csv`: initial low-speed real-car testing
+- `NUC6_glc_pacejka_lookup_table.csv`: ForzaETH NUC6 GLC calibration
+  ([source](https://github.com/ForzaETH/race_stack/blob/ros2-humble/system_identification/steering_lookup/cfg/NUC6_glc_pacejka_lookup_table.csv))
 
 Replace the real-car table after identifying the IFAC vehicle and update
 `map/steering_lut_file` in the relevant environment profile.
