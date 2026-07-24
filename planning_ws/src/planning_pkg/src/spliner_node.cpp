@@ -39,6 +39,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/side_switch_d_tresh", 0.25);
     this->declare_parameter("spliner/obs_timeout_sec", 0.5);
     this->declare_parameter("spliner/use_prediction", true);
+    this->declare_parameter("spliner/use_trailing", true);
     this->declare_parameter("spliner/trailing_gap_m", 2.5);
     this->declare_parameter("spliner/trailing_decel", 2.5);
     // 컨트롤러가 wpnt 속도에 곱하는 스케일 (sim tracker 0.5, 실차 1.0).
@@ -87,6 +88,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     side_switch_d_tresh_ = this->get_parameter("spliner/side_switch_d_tresh").as_double();
     obs_timeout_sec_ = this->get_parameter("spliner/obs_timeout_sec").as_double();
     use_prediction_ = this->get_parameter("spliner/use_prediction").as_bool();
+    use_trailing_ = this->get_parameter("spliner/use_trailing").as_bool();
     trailing_gap_m_ = this->get_parameter("spliner/trailing_gap_m").as_double();
     trailing_decel_ = this->get_parameter("spliner/trailing_decel").as_double();
     cmd_speed_scale_ = this->get_parameter("spliner/cmd_speed_scale").as_double();
@@ -542,8 +544,10 @@ void SplinerNode::Run() {
 
             // ── Tier 3: 트레일링 (회피 완전 불가 — 감속 추종/정지) ─────────
             // raceline 유지 + 장애물 뒤 trailing_gap에서 장애물 속도(정적이면
-            // 0)까지 감속. 없으면 ego가 감속 없이 정면으로 돌진한다.
-            if (!evasion_valid) {
+            // 0)까지 감속. use_trailing=false면 이 감속/정지를 하지 않는다
+            // (회피 실패 시 회피 궤적 미발행 -> raceline 그대로 = 감속 없음.
+            //  주의: 통과 불가 장애물엔 감속 없이 접근하므로 충돌 위험).
+            if (!evasion_valid && use_trailing_) {
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks);

@@ -60,7 +60,10 @@ MIN_ISLAND_M2 = 0.3
 V_MAX      = 6.0     # 최대 속도 [m/s]  (소형 트랙 → 보수적. 잘 돌면 올려라)
 MU         = 0.75    # 노면 마찰계수    (실내/접지 낮으면 더 낮춰라 0.6~0.7)
 SAFE_DIST  = 0.25    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 여유
-MARGIN     = 0.15    # CSV의 d_left/d_right에서 추가로 빼는 벽 여유 [m]
+# 소형 트랙(my_track: 실폭 median 1.2 m, 최대 2.15 m)은 벽 여유를 크게 빼면
+# 회피용 가용 corridor가 0으로 붕괴한다. MARGIN은 주행선을 안 옮기고 CSV의
+# d_left/d_right 보고값만 줄이므로(주행 위험 0) 0.15→0.08로 낮춰 회피 여유 확보.
+MARGIN     = 0.08    # CSV의 d_left/d_right에서 추가로 빼는 벽 여유 [m]
 RACELINE   = "iqp"   # "iqp"(최소곡률) | "sp"(최단거리) | "center"(중앙선)
 MAKE_SP    = True    # iqp일 때 SP 추월 라인도 함께 생성
 

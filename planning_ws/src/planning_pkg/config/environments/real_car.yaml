@@ -38,12 +38,12 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet   # 브릿지 출력
-    spliner/lookahead_m: 8.0
-    spliner/evasion_dist: 0.75          # 실차: 횡 여유 확대
-                                        # 주의: 비섹터 bound 0.2와 합이 0.95 — 벽 여유
-                                        # ~1.05m 구간에선 abort 잦음. 섹터에선 여유 있음
+    spliner/lookahead_m: 8.0            # trailing_engage_dist_m(6.0) 이상 — 감속 예고 확보.
+                                        # (이전 8<12 모순: 12 m 전 감속인데 8 m 안에서만 감지)
+    spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
+                                        # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통
     spliner/inside_speed_scale: 0.7     # 회피 구간 감속 강화
-    spliner/path_check_margin: 0.20
+    spliner/path_check_margin: 0.15
     # (제거) stop_margin_m / stop_ramp_dist_m: spliner에 없는 파라미터였음 —
     # 정지 거동은 trailing_gap_m / trailing_decel / trailing_engage_dist_m가 담당
     # 실차 컨트롤러는 wpnt 속도를 그대로 사용 -> 반드시 1.0 (sim은 0.5).
@@ -54,10 +54,9 @@ recovery_supervisor_node:
   ros__parameters:
     recovery/obstacle_topic: /perception/obstacles_frenet  # 브릿지 출력 (spliner와 동일 소스)
     recovery/stuck_timeout_sec: 1.5
-    # ot_bound_mindist가 0.25로 오른 뒤로는 0.20과 상충하지 않음
-    # (공격 모드도 벽 여유 0.25는 유지 -> boundary 판정 0.20 아래로 안 내려감).
-    # ot_bound_mindist를 다시 낮추면 이 값도 함께 낮출 것.
-    recovery/boundary_stop_margin_m: 0.20
+    # my_track: ot_bound_mindist가 0.15로 내려가 회피 경로가 벽 0.15m까지 접근하므로
+    # boundary 정지 판정은 반드시 그보다 작아야(안 그럼 회피 중 오탐 정지) → 0.10.
+    recovery/boundary_stop_margin_m: 0.10
     recovery/boundary_persist_sec: 0.2
     recovery/rear_check_dist_m: 2.0
     recovery/recovery_reverse_speed_mps: 0.4

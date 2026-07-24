@@ -166,6 +166,7 @@ private:
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
   bool use_prediction_{true};   // Predictive Spliner: 예측 장애물이 원시 관측을 대체
+  bool use_trailing_{true};     // false면 회피 불가 시 감속/정지(trailing) 안 함
   double trailing_gap_m_{2.5};
   double trailing_decel_{2.5};
   double cmd_speed_scale_{1.0};

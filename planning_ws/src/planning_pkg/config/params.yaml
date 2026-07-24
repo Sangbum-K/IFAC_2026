@@ -13,9 +13,10 @@ planning:
 global_trajectory_node:
   ros__parameters:
     # my_track 실차: v-max 6, mu 0.75 (raceline 재생성 시 접미사 함께 교체)
-    global_trajectory/trajectory_csv_file: my_track_iqp_max6.00ms_margin0.15m_mu0.75.csv
+    # margin 0.08 = 소형 트랙 회피 corridor 확보용 (build_map MARGIN, 주행선 불변)
+    global_trajectory/trajectory_csv_file: my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv
     # SP 추월 라인 -> /global_waypoints/overtaking (H2H lane-change용, 없으면 미발행)
-    global_trajectory/overtaking_csv_file: my_track_sp_max6.00ms_margin0.15m_mu0.75.csv
+    global_trajectory/overtaking_csv_file: my_track_sp_max6.00ms_margin0.08m_mu0.75.csv
     global_trajectory/publish_rate_hz: 2.0
     global_trajectory/velocity_scale: 1.0   # 주행 중 ros2 param set으로 0.5~1.4 조정 가능
 
@@ -40,72 +41,81 @@ spliner_node:
     # 시도하고, 우선/반대 사이드가 모두 막힐 때만 DoSpline(free-form)을 폴백으로
     # 호출한다. false면 기존처럼 DoSpline을 1순위로 쓴다.
     spliner/use_lane_switch: true
-    spliner/lane_blend_out_m: 5.0        # raceline 복귀 블렌드 길이 [m]
-    spliner/lookahead_m: 20.0            # 이 거리 안 전방 장애물만 회피/감속
-                                         # gym 제동은 속도비례(정지거리 ~ v/1.0s)라 v15 raceline
-                                         # 접근속도(~7.5m/s 실속)에선 10m로는 못 멈추고 관통한다.
-                                         # squeeze 스플라인은 장애물 ~12m 앞에서 시작하므로
-                                         # 15면 감지=경로시작이라 수렴 예고거리가 0 -> 20 필요
-    spliner/evasion_dist: 0.65           # 장애물 가장자리 - apex "목표" 횡간격 [m]
-                                         # 벽이 좁으면 apex를 벽 마진 안으로 줄여서라도 회피 시도,
-                                         # 최소 evasion_dist_min까지 허용 (쉬운 회피포기 방지)
-    spliner/evasion_dist_min: 0.35       # 축소 허용 하한 [m] = 차 반폭 ~0.15 + 여유 0.2
+    # ── 소형 트랙(my_track: 랩 31.5 m, 실폭 median 1.2 m, R_min 1.35 m, v 3~6 m/s)
+    #    전용 스케일. 이전 값은 Spielberg/Budapest(랩 340 m, 폭 1.5 m, v 15 m/s)
+    #    기준이라 회피 스플라인 한 번(13 m)이 트랙의 40%를 먹어 회피가 무산됐다.
+    spliner/lane_blend_out_m: 2.5        # raceline 복귀 블렌드 길이 [m] (was 5.0)
+    spliner/lookahead_m: 10.0            # 이 거리 안 전방 장애물만 회피/감속 (was 20.0)
+                                         # 31.5 m 랩·6 m/s에선 10 m면 감속·횡이동 예고 충분.
+                                         # 반드시 trailing_engage_dist_m 이상일 것 (아래 6.0)
+    spliner/evasion_dist: 0.35           # 장애물 가장자리 - apex "목표" 횡간격 [m] (was 0.65)
+                                         # 좁은 트랙: 목표를 낮춰야 벽 클램프 전에 성립.
+                                         # 벽이 좁으면 evasion_dist_min까지 줄여서라도 시도
+    spliner/evasion_dist_min: 0.20       # 축소 허용 하한 [m] = 차 반폭 0.15 + 여유 0.05 (was 0.35)
     spliner/squeeze_speed_scale: 0.35    # 축소(squeeze) 회피 시 감속 배율 — 좁은 corridor를
                                          # 전속/부스트로 지나면 추적오차로 벽 접촉 (실측)
     # --- 접근 공격성: 감속은 장애물 직전에서만, 접근 구간은 기존 속도 유지 ---
     # (감지 즉시 감속하면 접근 내내 느려져 상대를 못 따라잡고 꽁무니만 쫓는다)
-    spliner/squeeze_brake_dist_m: 6.0    # squeeze 감속 시작: 횡이동 시작점 앞 이 거리부터 [m]
-    spliner/trailing_engage_dist_m: 12.0 # trailing 감속 시작: 정지 목표점 앞 이 거리부터 [m]
-                                         # 주의: 정적 장애물 제동거리(gym ~v/1s, 7.5m/s면 ~7.5m)
-                                         # 보다 짧게 잡으면 관통한다
+    spliner/squeeze_brake_dist_m: 3.0    # squeeze 감속 시작: 횡이동 시작점 앞 이 거리부터 [m] (was 6.0)
+    spliner/trailing_engage_dist_m: 6.0  # trailing 감속 시작: 정지 목표점 앞 이 거리부터 [m] (was 12.0)
+                                         # 6 m/s 제동거리 v^2/2a = 36/(2*2.5) = 7.2 m지만 실차 캡
+                                         # 낮고 squeeze로 이미 감속. lookahead(10) 이하여야 함
     spliner/dyn_pass_speed_ratio: 1.4    # 동적 상대 추월 중 최소 속도 = 상대 속도 x 이 배율.
                                          # 횡이동 후 이 부스트로 단숨에 옆을 지나가야 추월이
                                          # 끝난다 (1.15에선 나란히 달리며 결정적 순간을 놓침)
     spliner/obs_traj_tresh: 0.3          # raceline에서 이 이내 장애물만 대상 [m]
-    spliner/spline_bound_mindist: 0.2    # 회피 궤적 - 트랙 경계 최소 간격 [m]
-    spliner/pre_apex_dists: [-4.0, -3.0, -1.5]   # apex 앞 스플라인 절점 [m]
-    spliner/post_apex_dists: [2.0, 3.0, 4.0]     # apex 뒤 스플라인 절점 [m]
+    spliner/spline_bound_mindist: 0.12   # 회피 궤적 - 트랙 경계 최소 간격 [m] (was 0.2)
+                                         # 차 반폭 0.15 초과지만 margin0.08 여유로 실벽까진 0.20 m
+    spliner/pre_apex_dists: [-2.5, -1.8, -0.9]   # apex 앞 스플라인 절점 [m] (was [-4,-3,-1.5])
+    spliner/post_apex_dists: [1.2, 1.8, 2.5]     # apex 뒤 스플라인 절점 [m] (was [2,3,4])
     spliner/fixed_pred_time: 0.15        # 동적 장애물 등속 전파 시간 [s]
     spliner/outside_spline_scale: 1.75   # 코너 바깥 추월 시 스플라인 완만화 배율
     spliner/inside_speed_scale: 0.9      # 코너 안쪽 통과 시 속도 스케일
-    spliner/side_switch_d_tresh: 0.25    # |d|가 이보다 크면 추월 사이드 변경 금지 [m]
+    spliner/side_switch_d_tresh: 0.20    # |d|가 이보다 크면 추월 사이드 변경 금지 [m] (was 0.25)
     spliner/obs_timeout_sec: 0.5         # 이보다 오래된 장애물 메시지는 무시 (perception 두절 대비)
     spliner/use_prediction: true         # Predictive Spliner: 예측 충돌구간이 원시 관측 대체
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
-    # trailing_gap에서 장애물 속도(정적이면 0)까지 감속 — 정면 돌진 방지
-    spliner/trailing_gap_m: 2.5   # gym 1s 시정수 지연으로 감속 램프 추종오차 ~1.3m — 1.5면 범퍼 추돌 (실측)
+    # trailing_gap에서 장애물 속도(정적이면 0)까지 감속.
+    # use_trailing=false → 이 감속/정지를 하지 않는다 (사용자 요청).
+    # ⚠️ 통과 불가 장애물에도 감속 없이 접근 → 충돌 위험. 회피 가능하면 회피,
+    #    불가하면 raceline 그대로(감속 없음). 되돌리려면 true.
+    spliner/use_trailing: false
+    spliner/trailing_gap_m: 1.5   # (use_trailing=true일 때만) 정지 시 장애물 뒤 간격 [m]
     spliner/trailing_decel: 2.5
-    # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.5, 실차 1.0).
+    # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.35, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
-    spliner/cmd_speed_scale: 0.5
+    spliner/cmd_speed_scale: 0.30
     # 추월 섹터: 벽 여유가 충분한 s 구간을 자동 산출해 그 안에서만 회피 시도.
     # 밖에서는 TRAILING으로 따라가다 섹터에서 공격 모드(마진 완화+속도 부스트)로 승부.
     # RViz /planner/ot_sectors/markers (초록 라인)로 섹터 확인 가능.
     spliner/sector_gating: true
-    spliner/ot_min_clearance: 0.95       # 섹터 판정 최소 벽 여유 [m] = 장애물반폭(0.2)+evasion_dist+ot_bound_mindist
-    spliner/ot_max_kappa: 0.1            # 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m 이상만)
-                                         # 코너 아웃 추월은 경로 손실로 페이스 우위가 상쇄됨 —
-                                         # 코너에선 TRAILING으로 붙고 직선에서 승부.
-                                         # 두 조건 합산 커버: Spielberg ~75%, Budapest ~75%
+    spliner/ot_min_clearance: 0.50       # 섹터 판정 최소 벽 여유 [m] (was 0.95)
+                                         # = 장애물반폭(0.15)+evasion_dist_min(0.20)+ot_bound_mindist(0.15)
+                                         # my_track 넓은쪽 벽여유 mean 0.57/max 0.72라 0.95는 섹터 0개.
+                                         # 0.50이면 직선부 3구간(~15 m, 랩의 47%)이 섹터로 잡힘
+    spliner/ot_max_kappa: 0.4            # 섹터 판정 최대 곡률 [rad/m] (was 0.1, R>=2.5m)
+                                         # my_track은 R_min 1.35m·평균 R 3.6m라 0.1(R>=10m)이면
+                                         # 직선이 하나도 없다. 0.4로 완만한 구간만 섹터에 포함
     # SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋 대신
     # SP 라인으로 갈아타 통과 (라인이 상대와 겹치는 구간이면 자동 폴백)
     spliner/sp_lane_change: true
-    spliner/lc_pass_clear_m: 4.0         # 추월 완료 판정: 상대 앞머리가 ego 뒤로 이만큼
-                                         # 벌어져야 raceline 복귀 (그 전엔 SP 유지 + 페이스 강제)
-    spliner/ot_sector_min_len_m: 8.0     # 이보다 짧은 구간은 섹터에서 제외 (스플라인 길이 확보)
+    spliner/lc_pass_clear_m: 2.5         # 추월 완료 판정: 상대 앞머리가 ego 뒤로 이만큼
+                                         # 벌어져야 raceline 복귀 (was 4.0, 소형 트랙)
+    spliner/ot_sector_min_len_m: 3.0     # 이보다 짧은 구간은 섹터에서 제외 (was 8.0)
+                                         # 31.5 m 랩엔 8 m 연속 직선이 없어 섹터 0개였음
     # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
                                          # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
-    spliner/ot_bound_mindist: 0.25       # 섹터 내 회피의 벽 마진 [m] = 차 반폭 0.15 + 추적오차 0.1
-                                         # 0.1이었을 때 기하 판정은 통과인데 차 모서리가 벽을 스침 (실측).
-                                         # 공격성은 evasion_dist_min 축소 + 속도 부스트가 담당 —
-                                         # 적응형 apex라 벽 마진을 깎지 않아도 회피가 성립한다
+    spliner/ot_bound_mindist: 0.15       # 섹터 내 회피의 벽 마진 [m] = 차 반폭 0.15 (was 0.25)
+                                         # 소형 트랙은 추적오차 여유(0.1)를 뺄 수밖에 없음.
+                                         # margin0.08 CSV라 실벽까진 0.15+0.08=0.23 m 유지됨.
+                                         # recovery/boundary_stop_margin_m는 반드시 이보다 작을 것
     spliner/ot_speed_scale: 1.1          # 섹터 내 회피 궤적 속도 부스트 (raceline vmax 캡)
     spliner/path_check_margin: 0.15      # 경로-장애물 충돌 판정 횡 여유 [m] (커밋/SP 검증)
     # 장애물 클러스터링: 사이를 통과 못 하는 배치를 하나의 박스로 병합해
     # "바깥으로 크게 도는" 회피를 후보에 넣는다. 원시 상대와 예측
     # 충돌구간(수 m 앞)이 한 박스로 합쳐지는 역할도 겸한다.
-    spliner/cluster_gap_s_m: 8.0         # 이 s 간격 이내면 병합 후보 [m]
-    spliner/cluster_gap_d_m: 0.8         # 사이 corridor가 이보다 좁으면 병합 [m]
+    spliner/cluster_gap_s_m: 3.0         # 이 s 간격 이내면 병합 후보 [m] (was 8.0, 소형 트랙)
+    spliner/cluster_gap_d_m: 0.6         # 사이 corridor가 이보다 좁으면 병합 [m] (was 0.8)
     # 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식):
     # 위치 std 투표(min/max_std) + 정지 재분류(vs_reset)로 perception의
     # is_static을 덮어쓴다 — 파킹한 상대를 동적으로 두면 예측 유령·섹터
@@ -129,11 +139,10 @@ recovery_supervisor_node:
     recovery/stuck_min_progress_m: 0.10        # stuck 판정 최소 s 진행량 [m]
     recovery/min_forward_cmd_mps: 0.2          # 이 이상이 "전진 명령"으로 간주 [m/s]
     recovery/boundary_stop_margin_m: 0.05      # 경계 여유가 이보다 작으면 COLLISION_STOP
-                                               # 주의: v15 raceline은 코너 벽 여유가 ~0.3m라
-                                               # 0.15면 정상 주행도 걸림. 섹터 공격 모드
-                                               # (ot_bound_mindist 0.1)보다 반드시 작아야 함
+                                               # 섹터 공격 모드(ot_bound_mindist 0.15)보다
+                                               # 반드시 작아야 함 (안 그럼 회피 중 오탐 정지)
     recovery/boundary_persist_sec: 0.2         # 위반이 이 시간 지속돼야 정지 (코너 스파이크 오탐 방지)
-    recovery/rear_check_dist_m: 1.5            # 후진 전 후방 안전 확인 거리 [m]
+    recovery/rear_check_dist_m: 1.0            # 후진 전 후방 안전 확인 거리 [m] (was 1.5, 소형 트랙)
     recovery/recovery_reverse_speed_mps: 0.5   # 제한 후진 속도 (Control이 재리밋)
     recovery/recovery_max_reverse_distance_m: 0.5
     recovery/recovery_timeout_sec: 4.0
@@ -148,11 +157,14 @@ recovery_supervisor_node:
 waypoint_tracker_node:
   ros__parameters:
     tracker/t_lookahead: 0.5             # lookahead = clip(t*v, min, max) [s]
-    tracker/min_lookahead_m: 1.2
-    tracker/max_lookahead_m: 3.0
+    tracker/min_lookahead_m: 0.6         # my_track: R_min 1.38m 헤어핀(안쪽 벽 0.17m)에서
+                                         # 1.2m는 apex 건너편을 겨눠 안쪽 벽으로 컷→스핀.
+                                         # lookahead < 코너 R 이어야 함 (was 1.2)
+    tracker/max_lookahead_m: 1.2         # S-bend 변곡 오버슛 억제 (was 3.0)
     tracker/wheelbase_m: 0.33
     tracker/max_steer_rad: 0.4
-    tracker/speed_scale: 0.5             # 데모 중 감속하려면 낮출 것
+    tracker/speed_scale: 0.30            # my_track: 연속 R~1.4m 헤어핀+S-bend라 저속이어야
+                                         # pure-pursuit 조향 반전이 오버슛 없이 따라감
     tracker/waypoint_timeout_sec: 0.5    # 로컬 경로 두절 시 정지
     # 벽 충돌 복구 (gym은 충돌 시 차를 정지시킴 -> 후진으로 탈출)
     tracker/stuck_detect_sec: 0.6        # 전진 명령인데 이 시간 동안 정지면 스턱 판정
@@ -177,9 +189,9 @@ opponent_driver_node:
     # 직선 최고 7~10 m/s): ego 실속 1.9~7.5 평균 ~4는 대회 수준과 일치.
     # opp는 ego의 ~85% 페이스(scale 0.42 vs tracker 0.5) — 살짝 느린 경쟁자.
     # 이전 값(cap 2.0)은 opp를 상수 2 m/s로 눌러 추월 데모가 무의미했음.
-    opponent/max_speed_mps: 8.0      # 패널 ±0.5 버튼으로 조절되는 공통 상한
+    opponent/max_speed_mps: 6.0      # my_track raceline v-max 6와 정합 (was 8.0)
     opponent/speed_scale: 0.42       # path 모드: raceline 속도 대비 (ego의 ~85%)
-    opponent/size_m: 0.4
+    opponent/size_m: 0.3             # F1TENTH 실차 폭 (was 0.4)
     opponent/drive_rate_hz: 40.0
     opponent/wheelbase_m: 0.33
     opponent/max_steer_rad: 0.4
@@ -187,7 +199,7 @@ opponent_driver_node:
     opponent/park_y: -31.26
     opponent/park_radius_m: 5.0
     opponent/ftg_max_range_m: 8.0    # FTG: 스캔 클리핑 거리
-    opponent/ftg_bubble_m: 0.4       # FTG: 최근접점 safety bubble 반경
+    opponent/ftg_bubble_m: 0.3       # FTG: 최근접점 safety bubble 반경 (was 0.4)
     opponent/ftg_gap_min_m: 1.5      # FTG: 통과 가능 갭 최소 거리
 
 
@@ -200,10 +212,10 @@ opponent_predictor_node:
     predictor/gp_length_scale: 3.0   # RBF 길이 스케일 [m]
     predictor/gp_sigma_n: 0.08
     predictor/refit_every: 20        # N 관측마다 GP 재학습
-    predictor/horizon_sec: 8.0       # 따라잡기 탐색 호라이즌
+    predictor/horizon_sec: 6.0       # 따라잡기 탐색 호라이즌 (was 8.0, 소형 트랙)
     predictor/catch_gap_m: 0.8
-    predictor/pass_length_m: 5.0     # 추월 소요(~3-4s) 동안 상대가 전진하는 거리까지 커버
-                                     # (1.2였을 때 복귀 지점에 상대가 와 있어 접촉 — 실측)
+    predictor/pass_length_m: 3.5     # 추월 소요 동안 상대가 전진하는 거리까지 커버
+                                     # (was 5.0, 소형 트랙 저속이라 축소)
     predictor/publish_rate_hz: 10.0
     predictor/vs_reset: 0.1          # 최근 실측 |vs| 평균 미만이면 정지 상대로 보고 예측 중단 [m/s]
 
