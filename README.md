@@ -26,65 +26,63 @@ ROS 2 **Humble** 기반 F1TENTH 자율주행 스택입니다. LiDAR로 장애물
 워크스페이스는 아니지만 `maps/`는 **매핑으로 만든 맵이 저장되는 공용 폴더**입니다
 (`mapping.launch.py`의 기본 저장 위치이자 `map:=`가 가장 먼저 찾는 곳).
 
-가장 단순한 방법은 레포 루트에서 한 번에 빌드하는 것입니다.
-
-```bash
-source /opt/ros/humble/setup.zsh
-
-cd ~/IFAC_ws
-# 최초 1회: 시스템 의존성 설치 (특히 hardware_ws — 없으면 urg_node/vesc_driver 빌드 실패)
-rosdep install --from-paths */src --ignore-src -r -y
-
-colcon build
-```
-
-워크스페이스를 나눠서 빌드할 때는 `f1tenth_stack`가 `localization_bringup`를 참조하므로 아래 순서를 권장합니다.
-
-```bash
-source /opt/ros/humble/setup.zsh
-
-cd ~/IFAC_ws/localization_ws
-colcon build
-
-source ~/IFAC_ws/localization_ws/install/setup.zsh
-
-cd ~/IFAC_ws/hardware_ws
-colcon build
-```
-
 실차는 여기에 **명령 mux**가 붙습니다 (`ackermann_mux` + `f1tenth_stack`의 `joy_toggle_teleop`).
 
-루트에서 빌드했다면 아래 한 줄이면 충분합니다.
+---
+
+## 빌드
+
+루트의 스크립트 두 개가 전부입니다. **직접 `colcon build`를 치지 마세요** —
+워크스페이스 순서와 `--base-paths src`를 스크립트가 챙깁니다.
 
 ```bash
-source /opt/ros/humble/setup.zsh
-source ~/IFAC_ws/install/setup.zsh
+cd ~/IFAC_ws
+./setup_deps.sh          # ① 머신당 1회 — 시스템 의존성
+./build_all.sh           # ② 코드 고칠 때마다 — 빌드
 ```
 
-워크스페이스를 나눠서 빌드했다면 실행 전에는 아래 순서로 source 합니다.
+시뮬 전용 머신이면 두 스크립트 모두 `sim` 인자를 주세요 (`hardware_ws`·
+`localization_ws`와 `range_libc`를 건너뜁니다).
 
 ```bash
-source /opt/ros/humble/setup.zsh
-
-# 1) planning 먼저 — 메시지 패키지가 여기 있음
-cd ~/IFAC_ws/planning_ws && colcon build && source install/setup.zsh
-
-# 2) 나머지 (실차면 hardware_ws / localization_ws 포함)
-for ws in perception control integration hardware localization; do
-  cd ~/IFAC_ws/${ws}_ws && colcon build && source install/setup.zsh
-done
+./setup_deps.sh sim && ./build_all.sh sim
 ```
+
+### `setup_deps.sh` — 머신당 1회
+
+- `rosdep install`을 **모든 워크스페이스 `src`에 한 번에** 실행합니다.
+  한 호출로 넘겨야 크로스-워크스페이스 소스 의존(`f1tenth_planning_msgs` 등)을
+  "로컬 소스"로 인식해 헛되이 apt에서 찾지 않습니다.
+  `laser_proc`(urg_node)·`serial_driver`(vesc_driver)·`tf_transformations`·
+  `transforms3d` 등이 여기서 깔립니다.
+- **`range_libc`** 는 rosdep 밖의 유일한 수동 의존입니다 (실차만). `~/range_libc`
+  소스에서 빌드하므로 없으면 먼저 클론하세요:
+  `git clone https://github.com/f1tenth/range_libc ~/range_libc`
+
+### `build_all.sh` — 매번
+
+- 빌드 순서: `planning`(메시지 패키지가 여기 있어 항상 먼저) → `perception` →
+  `control` → `integration` → (실차) `hardware` → `localization`.
+- 각 워크스페이스를 `colcon build --base-paths src`로 빌드하고 곧바로 source 합니다.
+- 의존성이 없으면 빌드를 낭비하지 않고 멈춰 `./setup_deps.sh`를 안내합니다.
+- 끝에 **실행용 source 블록**을 출력하므로 그대로 복사해 쓰면 됩니다.
 
 > ⚠️ 주의
-> - **`git pull`/소스 수정 후에는 반드시 다시 `colcon build`** 하세요. 실행은
->   `install/`을 쓰므로, 빌드 안 하면 옛 맵·옛 파라미터로 주행합니다. (실제로
->   맵을 `my_track`으로 바꾼 뒤 재빌드를 안 해서 `Spielberg_map_centerline.csv`
->   로드 실패로 이어진 적이 있음.)
-> - `hardware_ws`는 시스템 의존성 `ros-humble-laser-proc`(urg_node)·
->   `ros-humble-serial-driver`(vesc_driver)가 없으면 빌드가 실패합니다. 위
->   `rosdep install`로 먼저 설치하세요.
+> - **두 스크립트는 zsh 전용입니다** (`#!/usr/bin/env zsh`). `bash setup_deps.sh`처럼
+>   호출하지 말고 `./setup_deps.sh`로 실행하세요.
+> - **`numpy`는 apt 1.x여야 합니다.** `~/.local`에 pip numpy 2.x가 깔리면
+>   scipy/ROS C확장이 ABI로 깨져 `particle_filter`가 조용히 죽습니다. 두 스크립트
+>   모두 시작할 때 이걸 검사하고 오염됐으면 중단합니다
+>   (고치기: `/usr/bin/python3 -m pip uninstall -y numpy`).
+> - **`git pull`/소스 수정 후에는 반드시 다시 `./build_all.sh`.** 실행은 `install/`을
+>   쓰므로, 빌드 안 하면 옛 맵·옛 파라미터로 주행합니다. (실제로 맵을 `my_track`으로
+>   바꾼 뒤 재빌드를 안 해서 `Spielberg_map_centerline.csv` 로드 실패로 이어진 적이 있음.)
+> - **`--base-paths src`가 빠지면 `perception_pkg`가 조용히 안 빌드됩니다.**
+>   워크스페이스 루트에 남은 잔재를 colcon이 패키지로 오인해 `src/`로 내려가지
+>   않습니다. `build_all.sh`는 항상 이 옵션을 씁니다. 수동 빌드했다면 `colcon list`로
+>   `perception_pkg`가 잡히는지 확인하세요.
 > - `--symlink-install` 쓰지 마세요 (심링크/캐시 충돌 에러 유발).
-> - 빌드가 꼬이면 해당 ws에서 `rm -rf build install log && colcon build`.
+> - 빌드가 꼬이면 해당 ws에서 `rm -rf build install log` 후 다시 `./build_all.sh`.
 > - 다른 PC에서 복사해 와 `CMakeCache.txt directory is different` 에러가 나면
 >   `colcon build --cmake-clean-cache`를 한 번 실행하세요.
 > - 시뮬을 돌리려면 별도로 `~/sim_ws`(f1tenth_gym_ros)가 빌드돼 있어야 합니다.
