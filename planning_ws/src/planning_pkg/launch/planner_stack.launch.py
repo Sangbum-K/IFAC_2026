@@ -9,21 +9,68 @@ override 가능:
 
   ros2 launch planning_pkg planner_stack.launch.py
   ros2 launch planning_pkg planner_stack.launch.py odom_mode:=real
+  ros2 launch planning_pkg planner_stack.launch.py map:=my_track2
   ros2 launch planning_pkg planner_stack.launch.py \
       trajectory_csv_file:=<다른 raceline>.csv centerline_csv_file:=<맵>_centerline.csv
+
+map:=<이름> 은 CSV 3종을 이름으로 한꺼번에 바꾸는 지름길이다. 파일명에
+속도/마진/mu가 붙어 있어(<맵>_iqp_max6.00ms_margin0.08m_mu0.75.csv) 이름만으로는
+유도할 수 없으므로 glob으로 찾는다:
+  config/global_trajectory/<맵>_iqp_*.csv   raceline (필수)
+  config/global_trajectory/<맵>_sp_*.csv    SP 추월라인 (없으면 메인 라인만)
+  config/centerline/<맵>_centerline.csv     시각화용
+개별 *_csv_file 인자를 같이 주면 그쪽이 우선한다.
 
 (기존 planner_pkg_launch.py를 대체: 존재하지 않는 planner_config.yaml 참조와
 trajectory 파일명에서 centerline 이름을 소수점 파싱으로 유도하던 버그를 제거하고,
 centerline은 명시적 인자/params.yaml 기본값으로만 정한다.)
 """
 
+import glob
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+
+def _resolve_map_csvs(share_dir, map_name):
+    """map 이름 -> (raceline, sp, centerline) 파일명. 노드가 config/ 하위 상대경로로
+    여는 값이므로 basename만 돌려준다. 못 찾으면 (필수 항목만) 알아듣게 죽는다."""
+    traj_dir = os.path.join(share_dir, 'config', 'global_trajectory')
+    center_dir = os.path.join(share_dir, 'config', 'centerline')
+    notes = []
+
+    def pick(directory, pattern):
+        found = sorted(glob.glob(os.path.join(directory, pattern)))
+        if len(found) > 1:
+            notes.append('여러 개가 매칭돼 첫 번째를 씁니다 (%s): %s'
+                         % (pattern, ', '.join(os.path.basename(f) for f in found)))
+        return os.path.basename(found[0]) if found else None
+
+    raceline = pick(traj_dir, map_name + '_iqp_*.csv')
+    if raceline is None:
+        available = sorted({
+            os.path.basename(f).split('_iqp_')[0]
+            for f in glob.glob(os.path.join(traj_dir, '*_iqp_*.csv'))})
+        raise RuntimeError(
+            "map:=%s 의 raceline CSV(%s_iqp_*.csv)가 없습니다: %s\n"
+            '  사용 가능한 맵: %s\n'
+            '  (레이스라인을 아직 안 뽑았다면 scripts/global_traj_sim/step4_main.py 먼저)'
+            % (map_name, map_name, traj_dir, ', '.join(available) or '(없음)'))
+
+    sp = pick(traj_dir, map_name + '_sp_*.csv')
+    if sp is None:
+        sp = ''   # global_trajectory_node: 빈 문자열이면 메인 라인만 발행
+        notes.append('SP 추월라인(%s_sp_*.csv) 없음 — 메인 라인만 씁니다' % map_name)
+
+    centerline = map_name + '_centerline.csv'
+    if not os.path.isfile(os.path.join(center_dir, centerline)):
+        notes.append('centerline(%s) 없음 — 시각화만 비게 됩니다' % centerline)
+
+    return raceline, sp, centerline, notes
 
 
 def launch_setup(context, *args, **kwargs):
@@ -48,7 +95,15 @@ def launch_setup(context, *args, **kwargs):
         'recovery_supervisor_node': {},
         'planner_visualizer_node': {},
     }
-    traj_csv = LaunchConfiguration('trajectory_csv_file').perform(context)
+    # map:=<이름> — CSV 3종을 이름 하나로 해석한다. 개별 *_csv_file 인자가
+    # 같이 오면 그쪽이 우선.
+    map_name = LaunchConfiguration('map').perform(context)
+    map_traj = map_sp = map_center = None
+    map_notes = []
+    if map_name:
+        map_traj, map_sp, map_center, map_notes = _resolve_map_csvs(share_dir, map_name)
+
+    traj_csv = LaunchConfiguration('trajectory_csv_file').perform(context) or map_traj
     if traj_csv:
         overrides['global_trajectory_node'][
             'global_trajectory/trajectory_csv_file'] = traj_csv
@@ -56,6 +111,11 @@ def launch_setup(context, *args, **kwargs):
     if ot_csv:
         overrides['global_trajectory_node'][
             'global_trajectory/overtaking_csv_file'] = ot_csv
+    elif map_sp is not None:
+        # 빈 문자열도 반드시 덮어써야 한다 — 안 그러면 params.yaml에 남아 있는
+        # '이전 맵'의 SP 라인을 새 맵 위에서 그대로 읽는다.
+        overrides['global_trajectory_node'][
+            'global_trajectory/overtaking_csv_file'] = map_sp
     odom_mode = LaunchConfiguration('odom_mode').perform(context)
     if odom_mode:
         overrides['frenet_frame_node']['frenet_frame/odom_mode'] = odom_mode
@@ -63,7 +123,7 @@ def launch_setup(context, *args, **kwargs):
     if pose_topic:
         overrides['recovery_supervisor_node'][
             'recovery/pose_odom_topic'] = pose_topic
-    center_csv = LaunchConfiguration('centerline_csv_file').perform(context)
+    center_csv = LaunchConfiguration('centerline_csv_file').perform(context) or map_center
     if center_csv:
         overrides['planner_visualizer_node'][
             'planning_viz/centerline_csv_file'] = center_csv
@@ -110,6 +170,14 @@ def launch_setup(context, *args, **kwargs):
                 'bridge/input_topic': bridge_input}
         nodes.append(make_node('perception_obstacle_bridge_node.py'))
 
+    if map_name:
+        # 어떤 CSV가 실제로 걸렸는지 남긴다 — 맵을 바꿨는데 옛 라인이 물려
+        # 있으면 주행 중엔 알아채기 어렵다.
+        info = ['map:=%s -> raceline=%s, sp=%s, centerline=%s'
+                % (map_name, traj_csv, ot_csv or map_sp or '(없음)', center_csv)]
+        info += ['  주의: ' + n for n in map_notes]
+        nodes.insert(0, LogInfo(msg='\n'.join(info)))
+
     return nodes
 
 
@@ -118,6 +186,10 @@ def generate_launch_description():
         DeclareLaunchArgument('env', default_value='',
                               description='환경 프로파일 (config/environments/<env>.yaml): '
                                           '빈 값=sim 기본, real_car | race_map | mapping'),
+        DeclareLaunchArgument('map', default_value='',
+                              description='맵 이름. CSV 3종(raceline/SP/centerline)을 '
+                                          '이름으로 한꺼번에 해석한다. 빈 값이면 '
+                                          'params.yaml의 값을 그대로 사용'),
         DeclareLaunchArgument('trajectory_csv_file', default_value='',
                               description='raceline CSV 파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('overtaking_csv_file', default_value='',

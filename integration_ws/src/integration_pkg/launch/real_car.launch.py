@@ -12,6 +12,9 @@ RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, �
   G) wait_for_localization                  — 파티클 수렴까지 대기하는 게이트
   C) integration_pkg stack.launch.py env:=real_car   — G가 통과하면 자동 실행
 
+맵을 바꾸려면 (PF 맵 + planner CSV 3종이 한 번에 따라간다):
+  ros2 launch integration_pkg real_car.launch.py map:=my_track2
+
 부분 실행이 필요하면 인자로 끌 수 있다:
   hardware:=false      이미 A가 떠 있을 때
   localization:=false  이미 B가 떠 있을 때
@@ -59,6 +62,8 @@ def launch_setup(context, *args, **kwargs):
     rviz = LaunchConfiguration('rviz').perform(context)
     autostart = _is_true(LaunchConfiguration('autostart').perform(context))
     wait_timeout = LaunchConfiguration('wait_timeout').perform(context)
+    # 빈 값이면 각 하위 launch의 기존 기본값(localize.yaml / params.yaml)을 쓴다.
+    map_name = LaunchConfiguration('map').perform(context)
 
     actions = []
 
@@ -72,17 +77,20 @@ def launch_setup(context, *args, **kwargs):
     if localization:
         # /scan·/odom이 먼저 흐르게 잠깐 두고 PF를 띄운다. PF는 시작 직후
         # laser->base_link TF를 조회하는데, 그게 없으면 초기 포즈 클릭이 무시된다.
+        loc_args = {
+            'backend': 'particle_filter',
+            'mode': 'localization',
+            'use_sim_time': 'false',
+            'rviz': rviz,
+        }
+        if map_name:
+            loc_args['map'] = map_name
         actions.append(TimerAction(period=5.0, actions=[
             LogInfo(msg='[2/3] localization (particle_filter) + RViz...'),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     _share('localization_bringup') + '/launch/localization.launch.py'),
-                launch_arguments={
-                    'backend': 'particle_filter',
-                    'mode': 'localization',
-                    'use_sim_time': 'false',
-                    'rviz': rviz,
-                }.items(),
+                launch_arguments=loc_args.items(),
             ),
         ]))
 
@@ -94,10 +102,13 @@ def launch_setup(context, *args, **kwargs):
         parameters=[{'timeout_sec': float(wait_timeout)}],
     )
 
+    stack_args = {'env': 'real_car'}
+    if map_name:
+        stack_args['map'] = map_name
     stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             _share('integration_pkg') + '/launch/stack.launch.py'),
-        launch_arguments={'env': 'real_car'}.items(),
+        launch_arguments=stack_args.items(),
     )
 
     def on_gate_exit(event, _context):
@@ -130,5 +141,9 @@ def generate_launch_description():
                               description='수렴 후 자율 스택 자동 실행 여부'),
         DeclareLaunchArgument('wait_timeout', default_value='0.0',
                               description='수렴 대기 제한시간(초). 0이면 무한 대기'),
+        DeclareLaunchArgument('map', default_value='',
+                              description='맵 이름. PF 맵(particle_filter/maps/<이름>.yaml)과 '
+                                          'planner CSV 3종을 한 번에 전환한다. '
+                                          '빈 값이면 localize.yaml / params.yaml 기본값 유지'),
         OpaqueFunction(function=launch_setup),
     ])

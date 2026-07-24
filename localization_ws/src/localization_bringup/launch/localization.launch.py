@@ -3,7 +3,12 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -11,18 +16,56 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def _default_map_yaml_path():
-    """particle_filter/config/localize.yaml 의 `map:` 이름을 실제 yaml 경로로.
-
-    이 값은 아래에서 localize_launch.py 로 그대로 넘어간다. 예전 기본값은
-    존재하지 않는 /tmp/f1tenth_track_map.yaml 이었고, 그게 localize_launch.py
-    자신의 기본값(패키지 maps/<map>.yaml)을 덮어써서 map_server 가 맵을 못 읽고
-    조용히 죽었다 — PF 가 영영 수렴하지 않는 원인이었다.
-    """
+def _default_map_name():
+    """particle_filter/config/localize.yaml 의 `map:` 이름 (맵 이름의 단일 출처)."""
     pf_share = get_package_share_directory('particle_filter')
     with open(os.path.join(pf_share, 'config', 'localize.yaml')) as f:
-        map_name = yaml.safe_load(f)['map_server']['ros__parameters']['map']
-    return os.path.join(pf_share, 'maps', map_name + '.yaml')
+        return yaml.safe_load(f)['map_server']['ros__parameters']['map']
+
+
+def _resolve_map(context, *args, **kwargs):
+    """map:=<이름> 을 map_yaml_path 로 바꿔 넣는다.
+
+    두 곳을 순서대로 찾는다:
+      1) maps_dir (기본 ~/IFAC_ws/maps)  — mapping.launch.py 가 저장하는 곳.
+         여기서 먼저 찾기 때문에 새로 만든 맵을 재빌드 없이 바로 쓸 수 있다.
+      2) particle_filter/maps (설치본)   — 패키지에 포함돼 배포되는 맵.
+
+    map_yaml_path 를 직접 준 경우엔 건드리지 않는다(전체 경로 override).
+    map:= 도 없으면 localize.yaml 의 `map:` 을 따른다 — 기존 동작 그대로.
+
+    여기서 존재 확인을 하는 이유: 맵 파일이 없으면 map_server 가 조용히 죽고
+    PF 가 영영 수렴하지 않는다. 원인을 찾기 어려운 실패라 launch 단계에서 막는다.
+    """
+    if context.launch_configurations.get('map_yaml_path'):
+        return []
+
+    map_name = context.launch_configurations.get('map') or _default_map_name()
+    search_dirs = [
+        os.path.expanduser(context.launch_configurations.get('maps_dir') or ''),
+        os.path.join(get_package_share_directory('particle_filter'), 'maps'),
+    ]
+
+    for directory in search_dirs:
+        path = os.path.join(directory, map_name + '.yaml')
+        if directory and os.path.isfile(path):
+            context.launch_configurations['map_yaml_path'] = path
+            return [LogInfo(msg='map:=%s -> %s' % (map_name, path))]
+
+    listing = []
+    for directory in search_dirs:
+        if directory and os.path.isdir(directory):
+            names = sorted(os.path.splitext(f)[0] for f in os.listdir(directory)
+                           if f.endswith('.yaml'))
+            listing.append('    %s: %s' % (directory, ', '.join(names) or '(없음)'))
+        elif directory:
+            listing.append('    %s: (폴더 없음)' % directory)
+    raise RuntimeError(
+        'map:=%s 의 맵 파일(%s.yaml)을 찾을 수 없습니다.\n'
+        '  찾아본 곳:\n%s\n'
+        '  (매핑을 먼저 하세요: ros2 launch integration_pkg mapping.launch.py '
+        'map_name:=%s)'
+        % (map_name, map_name, '\n'.join(listing), map_name))
 
 
 def generate_launch_description():
@@ -92,11 +135,24 @@ def generate_launch_description():
             description='Use simulation clock if true.',
         ),
         DeclareLaunchArgument(
-            'map_yaml_path',
-            default_value=_default_map_yaml_path(),
-            description='Map yaml path for amcl or particle_filter localization. '
-                        '기본값은 particle_filter/config/localize.yaml 의 map: 이름을 따른다.',
+            'map',
+            default_value='',
+            description='맵 이름 (<이름>.yaml). maps_dir -> particle_filter/maps 순으로 '
+                        '찾는다. 빈 값이면 particle_filter/config/localize.yaml 의 map: 을 따른다.',
         ),
+        DeclareLaunchArgument(
+            'maps_dir',
+            default_value=os.path.expanduser('~/IFAC_ws/maps'),
+            description='map:= 을 먼저 찾아볼 폴더 (mapping.launch.py 의 저장 위치)',
+        ),
+        DeclareLaunchArgument(
+            'map_yaml_path',
+            default_value='',
+            description='맵 yaml 전체 경로 override. 주면 map:= 보다 우선한다. '
+                        '비우면 map:= 이름으로 자동 해석.',
+        ),
+        # map -> map_yaml_path 해석은 아래 노드들이 방문되기 전에 끝나야 한다.
+        OpaqueFunction(function=_resolve_map),
         DeclareLaunchArgument(
             'posegraph_path',
             default_value='/tmp/f1tenth_track_posegraph',

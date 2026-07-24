@@ -42,6 +42,8 @@ def launch_setup(context, *args, **kwargs):
 
     actions = []
 
+    map_name = LaunchConfiguration('map').perform(context)
+
     if env == 'sim':
         # gym + planner 스택 + sim 보조 노드 + RViz.
         # tracker:=false — python tracker 대신 control_ws C++ control_node 사용.
@@ -50,17 +52,23 @@ def launch_setup(context, *args, **kwargs):
             PythonLaunchDescriptionSource(
                 os.path.join(planning_share, 'launch', 'sim_race.launch.py')),
             launch_arguments={
-                'map': LaunchConfiguration('map').perform(context),
+                # sim은 gym 맵 이름이 따로 있어 기본값을 여기서 채운다.
+                'map': map_name or 'Spielberg_map',
                 'rviz': LaunchConfiguration('rviz').perform(context),
                 'tracker': 'false',
                 'perception': 'lidar',
             }.items(),
         ))
     else:
+        # 실차/race_map: map:=<이름>이 주어졌을 때만 CSV 3종을 그 맵으로 바꾼다.
+        # 빈 값이면 params.yaml 값을 그대로 둔다 (기존 동작).
+        planner_args = {'env': env}
+        if map_name:
+            planner_args['map'] = map_name
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(planning_share, 'launch', 'planner_stack.launch.py')),
-            launch_arguments={'env': env}.items(),
+            launch_arguments=planner_args.items(),
         ))
 
     actions.append(IncludeLaunchDescription(
@@ -91,8 +99,11 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('env', default_value='sim',
                               description='sim | real_car | race_map | mapping'),
-        DeclareLaunchArgument('map', default_value='Spielberg_map',
-                              description='(env:=sim) gym 맵 이름'),
+        DeclareLaunchArgument('map', default_value='',
+                              description='맵 이름. env:=sim이면 gym 맵(기본 '
+                                          'Spielberg_map), 그 외에는 planner의 '
+                                          'CSV 3종을 이 맵으로 전환. 빈 값이면 '
+                                          'params.yaml 값 유지'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='(env:=sim) RViz 실행 여부'),
         OpaqueFunction(function=launch_setup),
