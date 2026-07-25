@@ -7,7 +7,11 @@ step1(트랙 추출) + step2(IQP 라인·속도) + step3(시뮬) + step4(저장)
     # venv python으로
     ~/IFAC_ws/.venv/bin/python build_map.py my_map
 
-전제:  maps/<맵이름>.png + maps/<맵이름>.yaml 한 쌍이 있어야 함.
+전제:  <맵이름>.yaml + 거기서 가리키는 image(pgm/png) 한 쌍이 있어야 함.
+       맵은 두 곳을 순서대로 찾는다:
+         1) ~/IFAC_ws/maps      — mapping.launch.py 저장 위치 (복사 없이 바로 사용)
+         2) planning_pkg/maps   — 패키지에 함께 둔 맵
+       확장자는 yaml 의 image: 필드를 따르므로 pgm/png 아무거나 된다.
 
 모든 튜닝 파라미터는 바로 아래 '설정' 블록에 모아뒀다. 트랙 크기(스케일)는
 SLAM이 만든 yaml의 resolution/origin을 그대로 쓴다. EXPECTED_SIZE_M 은
@@ -98,7 +102,11 @@ G = 9.81
 HERE = Path(__file__).resolve().parent
 PKG_ROOT = next((p for p in HERE.parents if p.name == "planning_pkg"),
                 HERE.parent.parent)
-MAPS_DIR = PKG_ROOT / "maps"
+# 맵을 찾을 폴더 (앞에서부터 순서대로 — 먼저 있는 걸 쓴다):
+#   1) ~/IFAC_ws/maps        — mapping.launch.py 가 저장하는 워크스페이스 공용 폴더.
+#      여기서 먼저 찾으므로 매핑 직후 복사 없이 바로 build_map 을 돌릴 수 있다.
+#   2) planning_pkg/maps     — 패키지에 함께 두는 맵 (기존 동작).
+MAPS_SEARCH_DIRS = [Path.home() / "IFAC_ws" / "maps", PKG_ROOT / "maps"]
 CSV_DIR = PKG_ROOT / "config" / "global_trajectory"
 CENTERLINE_DIR = PKG_ROOT / "config" / "centerline"
 OUT_DIR = HERE / "outputs"
@@ -212,6 +220,24 @@ def _order_loop(sk):
     return pts[order]
 
 
+def _find_map_yaml(map_name):
+    """<맵>.yaml 을 MAPS_SEARCH_DIRS 순서로 찾아 경로를 돌려준다.
+
+    image(pgm/png) 는 yaml 의 image: 필드를 기준으로 같은 폴더에서 연다
+    (load_track 참조) — 확장자는 상관없다. 어디에도 없으면 찾아본 곳을
+    같이 알려주고 죽는다: 맵 이름 오타/미매핑을 launch 전에 잡기 위함.
+    """
+    for directory in MAPS_SEARCH_DIRS:
+        candidate = directory / f"{map_name}.yaml"
+        if candidate.is_file():
+            return candidate
+    searched = "\n".join(f"    {d}" for d in MAPS_SEARCH_DIRS)
+    raise FileNotFoundError(
+        f"맵 '{map_name}.yaml' 을 찾을 수 없습니다. 찾아본 곳:\n{searched}\n"
+        f"  (매핑을 먼저 하세요: ros2 launch integration_pkg mapping.launch.py "
+        f"map_name:={map_name})")
+
+
 def load_track(map_name):
     """맵 yaml/png 로드 → free 마스크 + 링(트랙) 검출 → 월드 좌표 경계.
 
@@ -219,7 +245,7 @@ def load_track(map_name):
     추출된 트랙 크기가 EXPECTED_SIZE_M 참고범위를 크게 벗어나면 경고만 낸다.
     반환: (outer, inner) 월드 좌표 경계 폴리라인, resolution, origin.
     """
-    yaml_path = MAPS_DIR / f"{map_name}.yaml"
+    yaml_path = _find_map_yaml(map_name)
     with open(yaml_path) as f:
         meta = yaml.safe_load(f)
     img = np.array(Image.open(yaml_path.parent / meta["image"]).convert("L"),
@@ -633,7 +659,8 @@ class PurePursuitSim:
 def main():
     ap = argparse.ArgumentParser(description="맵 이름 하나로 레이스라인 생성")
     ap.add_argument("map", nargs="?", default="my_map",
-                    help="maps/<이름>.png/.yaml 의 확장자 뺀 이름")
+                    help="<이름>.yaml 의 확장자 뺀 이름 "
+                         "(~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾음)")
     ap.add_argument("--dir", choices=("cw", "ccw"), default=None,
                     help="주행 방향을 명시한다 (권장). 생략하면 map(0,0) 최근접점이 "
                          "+x 를 향하도록 자동 판정하는데, 이는 map origin 이 "

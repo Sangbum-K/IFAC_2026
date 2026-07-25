@@ -1,15 +1,46 @@
-# IFAC_ws 실행 가이드 (처음부터 끝까지)
+# IFAC_ws 실행 가이드 
 
 F1TENTH 자율주행 전체 스택(perception → planning → control)을 **시뮬레이터**와
-**실차**에서 실행하는 방법입니다. ROS/터미널이 처음이어도 따라 할 수 있게
-한 줄씩 설명합니다.
+**실차**에서 실행하는 방법
+
+## 주행명령어 alias버전입니다
+빌드 안했으면
+```bash
+cd ~/IFAC_ws
+./build_all.sh  
+```
+매핑하기
+```bash
+sa #전체 소스
+mapp my_track  
+```
+플래닝용 csv파일생성
+```bash
+mkcsv my_track3 ccw 
+cd ~/IFAC_ws && ./build_all.sh 
+```
+만든 맵으로 주행
+```bash
+sa #전체 소스
+rc my_track
+# 맵 이름은 원하는대로 바꿔서 설정할 수 있음
+# 위 명령어들은 젯슨에 alias 설정함
+#   → RViz가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
+#   → 파티클 수렴하면 자율 스택 자동 시작 → 조이스틱 버튼 5로 자율주행 모드 실행
+```
+
+**나눠 띄우기 (디버깅용) — 터미널 3개, A→B→C 순서 엄수:**
+
+| 터미널 | 역할 | 명령 |
+| **A** | 하드웨어 (LiDAR·VESC·odom·TF·joy·mux) | `ros2 launch f1tenth_stack bringup_launch.py` |
+| **B** | 위치추정 (PF, map→odom TF + RViz) | `ros2 launch localization_bringup localization.launch.py backend:=particle_filter` |
+| **C** | 자율 스택 (perception+planning+control+모니터) | `ros2 launch integration_pkg stack.launch.py env:=real_car` |
+
+> - B는 `backend:=particle_filter`를 **반드시** 명시 (기본값은 slam_toolbox).
 
 ---
 
 ## 0. 이 워크스페이스가 하는 일
-
-차 한 대가 트랙을 스스로 도는 데 필요한 4가지가 각각 별도 워크스페이스에
-들어 있습니다.
 
 | 워크스페이스 | 역할 | 핵심 노드 |
 |---|---|---|
@@ -28,11 +59,7 @@ LiDAR /scan
   → (실차만) ackermann_mux 가 조이스틱 teleop 과 중재 → /ackermann_cmd
   → ackermann_to_vesc → VESC
 ```
-
----
-
 ## 1. 최초 1회: 빌드
-
 시뮬만 돌릴지, 실차까지 돌릴지에 따라 빌드 대상이 다릅니다.
 
 | | 시뮬 | 실차 |
@@ -109,25 +136,18 @@ source ~/IFAC_ws/integration_ws/install/setup.zsh
 source ~/IFAC_ws/hardware_ws/install/setup.zsh
 source ~/IFAC_ws/localization_ws/install/setup.zsh
 ```
+실차용 소스 alias 해서 sa치면 위에 블록 전체 실행됩니다!
 
-> 💡 매번 치기 귀찮으면 해당 블록을 `~/.bashrc` 맨 아래에 넣어두면 터미널 열 때
-> 자동으로 됩니다. (실차 PC엔 실차용, 시뮬 PC엔 시뮬용 블록.)
-> 💡 실차는 터미널 A/B/C가 각각 다른 launch를 쓰지만, 위 블록 하나를 모든
-> 터미널에서 source 해두면 안전합니다 (필요한 것만 골라 쓰게 됨).
-
----
-
-## 3. 시뮬레이터로 실행하기 (가장 많이 쓰는 방법)
+## 3. 시뮬레이터로 실행하기 
 
 ### 3-1. 한 줄로 전체 켜기
 
-터미널 하나에서 (위 2번 source 먼저 하고):
+터미널 하나에서 :
 
 ```bash
+sa
 ros2 launch integration_pkg stack.launch.py
 ```
-
-이 한 줄이 아래를 전부 띄웁니다:
 - f1tenth_gym_ros 시뮬레이터 (차 2대: 내 차 + 상대 차)
 - 실제 perception 파이프라인 (LiDAR → 장애물 탐지 → frenet 변환)
 - planning 스택: 레이스라인(RACE) 추종 + **spliner 회피** + **SP 레인체인지**
@@ -135,8 +155,6 @@ ros2 launch integration_pkg stack.launch.py
 - control_ws의 C++ 컨트롤러 (ETH MAP)
 - RViz (화면)
 - integration 헬스 모니터
-
-차가 곧바로 레이스라인을 따라 달리기 시작합니다.
 
 ### 3-2. 다른 맵 / RViz 끄기
 
@@ -152,9 +170,7 @@ ros2 launch integration_pkg stack.launch.py rviz:=false
 ```
 
 사용 가능한 시뮬 맵: `Spielberg_map`(기본), `Budapest_map`, `my_map`, **`my_track`(실차 트랙)**.
-맵마다 raceline 접미사(예: my_track=`max6...`, Spielberg=`max15...`)가 다르지만
-launch가 `config/global_trajectory/<맵>_iqp_*.csv`에서 **자동 추론**하므로 그냥
-`map:=<이름>`만 주면 됩니다.
+`map:=<이름>`형태로 원하는 맵 연결
 
 > ⚠️ **my_track은 19.5×10.5m로 작습니다.** 상대 차(gym 2번째 에이전트)를 LiDAR
 > 사거리(≈30m) 밖에 '주차'시킬 공간이 없어, 스폰 안 해도 상대/벽이 유령 장애물로
@@ -164,15 +180,11 @@ launch가 `config/global_trajectory/<맵>_iqp_*.csv`에서 **자동 추론**하�
 ### 3-3. RViz에서 조작하기
 
 RViz 창 위쪽 버튼을 씁니다.
-
-| 하고 싶은 것 | 방법 |
-|---|---|
-| **정적 장애물 놓기** | `Publish Point` 클릭 → 트랙 위 클릭 (차가 알아서 회피) |
-| **장애물 제거** | 그 장애물 근처를 다시 `Publish Point`로 클릭 |
-| **상대 차 스폰** | `2D Goal Pose` → 트랙 위 원하는 위치 클릭 |
-| **내 차 위치 옮기기** | `2D Pose Estimate` → 위치 클릭 |
-| **각종 제어 버튼** | 왼쪽 `Panels` → `PitwallPanel` (자율주행 ON/OFF, 상대 속도 등) |
-
+**정적 장애물 놓기** 'Publish Point' 클릭 → 트랙 위 클릭 (차가 알아서 회피) 
+**장애물 제거** 그 장애물 근처를 다시 `Publish Point`로 클릭 
+**상대 차** `2D Goal Pose` → 트랙 위 원하는 위치 클릭 
+**내 차 위치 옮기기** `2D Pose Estimate` → 위치 클릭 
+**각종 제어 버튼** 왼쪽 `Panels` → `PitwallPanel` (자율주행 ON/OFF, 상대 속도 등) 
 초록 반투명 선 = 추월 섹터(직선 구간에서만 공격적으로 추월).
 
 ### 3-4. 상태 확인
@@ -182,13 +194,10 @@ RViz 창 위쪽 버튼을 씁니다.
 ```bash
 ros2 topic echo /integration/status
 ```
-
 이런 한 줄이 1초마다 나옵니다:
-
 ```
 scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd=4.00
 ```
-
 - `OK` = 정상, `STALE` = 끊김, `WAIT` = 아직 신호 안 옴
 - `obs` = 인지된 장애물 수, `wpnts` = 경로 점 수, `v` = 현재 속도, `cmd` = 명령 속도
 
@@ -400,28 +409,15 @@ ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
   찍힙니다. (`/ackermann_cmd_mux/mode` 같은 모드 토픽은 **없습니다.**)
 - 수동 모드에서 스틱을 놓거나 조이스틱이 0.5초(`joy_timeout`) 끊기면 속도 0을 냅니다.
 
-### 실차 안전장치
+### 실차 안전장치 (요약 — 배선 상세는 [README](README.md#실차-안전장치))
 
-- **자율/수동 전환은 조이스틱 버튼 5(RB)** 입니다.
-  - control_pkg는 `autonomous_on_start: true`로 자율 명령(`/autonomy/ackermann_cmd`)을
-    계속 내보내지만, **teleop이 수동 모드로 시작**해 mux의 높은 우선순위 입력을
-    점유하므로 처음엔 바퀴로 안 나갑니다.
-  - **버튼 5를 누르면** teleop이 0속도 버스트 후 침묵 → mux가 자율 명령으로
-    폴스루합니다(엣지 트리거). 다시 누르면 수동으로 돌아옵니다.
-  - mux의 각 입력은 timeout(0.2초)이 지나면 무시됩니다.
-- ⚠️ **비상 정지(E-stop)는 현재 배선돼 있지 않습니다.**
-  - control_node는 `/safety/emergency_stop`(latched Bool)을 구독해 true면 즉시
-    정지하도록 돼 있지만, **이 토픽을 발행하는 노드가 스택에 없습니다**
-    (joy에 estop 버튼 없음, `estop_node.cpp`는 launch 안 되는 legacy
-    `vehicle_bringup`에만 존재, mux에 lock 항목 없음).
-  - 즉 **소프트웨어 즉시정지는 없습니다.** 정지 수단은 (1) 버튼 5로 수동 전환 후
-    스틱 중립, (2) 물리 kill 스위치/차단기, (3) `Ctrl-C`.
-  - 실차 주행 전, estop을 실제로 쓸 거면 팀과 배선(joy 버튼→`/safety/emergency_stop`
-    발행 노드, 또는 mux lock)을 먼저 확정하세요.
-- 실차 설정의 현재 속도 상한은 **4.0 m/s**입니다
-  (`control_ws/src/control_pkg/config/environments/real_car.yaml`의
+- **자율/수동 전환 = 조이스틱 버튼 5(RB).** 시작은 **수동**이라, 버튼 5를 눌러야
+  자율 명령이 바퀴로 나갑니다(teleop이 침묵 → mux가 자율로 폴스루). 다시 누르면 수동.
+- ⚠️ **비상정지(E-stop)는 배선 안 됨 — 소프트웨어 즉시정지가 없습니다.** 정지 수단은
+  (1) 버튼 5로 수동 전환 후 스틱 중립, (2) 물리 kill 스위치/차단기, (3) `Ctrl-C`.
+- 속도 상한 **4.0 m/s** (`control_pkg .../environments/real_car.yaml`의
   `vehicle/max_speed_mps`). 플래너는 6 m/s raceline에 `velocity_scale: 0.6667`을
-  적용해 같은 상한으로 맞춥니다.
+  곱해 같은 상한으로 맞춥니다.
 
 ---
 
@@ -515,7 +511,9 @@ ros2 launch integration_pkg stack.launch.py env:=real_car                       
 # ── 새 트랙 매핑 (하드웨어+SLAM+RViz+저장 한 줄) ──
 ros2 launch integration_pkg mapping.launch.py map_name:=my_track2
 #   → 조이스틱으로 한 바퀴 → Ctrl+C → ~/IFAC_ws/maps/my_track2.{pgm,yaml}
-#   → 레이스라인 CSV는 별도: scripts/global_traj_sim/step4_main.py --map my_track2
-#      --maps-dir ~/IFAC_ws/maps  (뽑은 뒤 ./build_all.sh)
+#   → 레이스라인 CSV는 별도 (.venv python, 맵은 ~/IFAC_ws/maps 자동 탐색):
+#        cd planning_ws/src/planning_pkg/scripts/global_traj_sim
+#        ~/IFAC_ws/.venv/bin/python build_map.py my_track2 --dir ccw
+#      뽑은 뒤 ./build_all.sh 로 CSV 반영
 #   → 주행: ros2 launch integration_pkg real_car.launch.py map:=my_track2
 ```

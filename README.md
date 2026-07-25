@@ -94,101 +94,74 @@ cd ~/IFAC_ws
 
 ## 실행 요약
 
-자세한 단계·RViz 조작·트러블슈팅은 **[HOW_TO_RUN.md](HOW_TO_RUN.md)** 참고.
+> 단계별 절차·RViz 조작·트러블슈팅은 **[HOW_TO_RUN.md](HOW_TO_RUN.md)** 에 있습니다.
+> 여기서는 **어떤 launch가 무엇을 켜는지**만 요약합니다. 실행 전 각 터미널에서
+> 필요한 워크스페이스를 먼저 source 하세요 (HOW_TO_RUN §2).
 
-### 시뮬 (gym 통합)
-```bash
-ros2 launch integration_pkg stack.launch.py           # env:=sim 기본
-```
+| 목적 | 명령 |
+|---|---|
+| **시뮬 전체** (gym+perception+planning+control+RViz) | `ros2 launch integration_pkg stack.launch.py` |
+| **실차 원커맨드** (하드웨어→PF+RViz→수렴 게이트→자율 스택) | `ros2 launch integration_pkg real_car.launch.py` |
+| **매핑** (하드웨어+SLAM+RViz+저장) | `ros2 launch integration_pkg mapping.launch.py map_name:=<이름>` |
 
-### 실차 (터미널 3개, 각 터미널에서 필요한 ws를 source 후)
-```bash
-# A) 하드웨어 — LiDAR·VESC·odom·TF·joy·cmd mux (인자 없음. LiDAR IP 등은 config/sensors.yaml)
-ros2 launch f1tenth_stack bringup_launch.py
+원커맨드로 실차를 띄우면 사람이 할 일은 **RViz에서 `2D Pose Estimate` 한 번**
+찍는 것뿐입니다. 파티클이 수렴하면 자율 스택이 자동으로 시작됩니다.
 
-# B) 위치추정 — 반드시 backend:=particle_filter 명시 (기본값은 slam_toolbox). 맵은 my_track
-ros2 launch localization_bringup localization.launch.py backend:=particle_filter
+### 실차를 터미널 3개로 나눠 띄우기 (디버깅용)
 
-# C) 자율주행 스택 — perception + planning + control + 모니터
-ros2 launch integration_pkg stack.launch.py env:=real_car
-```
+**반드시 A → B → C 순서.** C는 B가 `/pf/pose/odom`과 map TF를 내보낸 뒤에 띄워야 합니다.
 
-> 위 3개를 자동 순서로 묶은 원커맨드도 있습니다: `ros2 launch integration_pkg real_car.launch.py`
-> (하드웨어→PF+RViz→파티클 수렴 게이트→자율 스택. 사람은 RViz에서 `2D Pose Estimate`만 찍으면 됨.)
-
-### 매핑 (SLAM Toolbox)
-
-한 줄로 **하드웨어 bringup + SLAM + RViz + 맵 저장**까지 띄웁니다.
-
-```bash
-ros2 launch integration_pkg mapping.launch.py map_name:=my_track2
-```
-
-조이스틱으로 트랙을 천천히 한 바퀴 돌고 **`Ctrl+C`** 하면 그 시점의 맵이
-`~/IFAC_ws/maps/my_track2.{pgm,yaml}`로 저장됩니다.
-주행 중 중간 저장은 `ros2 service call /save_map std_srvs/srv/Trigger`.
-
-| 인자 | 기본값 | |
+| 터미널 | 역할 | 명령 |
 |---|---|---|
-| `map_name` | `my_map` | 저장할 맵 이름 |
-| `map_dir` | `~/IFAC_ws/maps` | 저장 디렉터리 |
-| `hardware` | `true` | 이미 bringup이 떠 있으면 `false` |
-| `rviz` | `true` | 맵이 채워지는 걸 보며 주행 |
-| `save_on_exit` | `true` | `false`면 `/save_map` 서비스로만 저장 |
+| **A** | 하드웨어 (LiDAR·VESC·odom·TF·joy·mux) | `ros2 launch f1tenth_stack bringup_launch.py` |
+| **B** | 위치추정 (PF, map→odom TF + RViz) | `ros2 launch localization_bringup localization.launch.py backend:=particle_filter` |
+| **C** | 자율 스택 (perception+planning+control+모니터) | `ros2 launch integration_pkg stack.launch.py env:=real_car` |
 
-저장 형식은 nav2 `map_server` 표준 **PGM(P5) + YAML**이며, 같은 `/map`에 대해
-`nav2 map_saver_cli`와 픽셀 바이트까지 동일합니다. yaml 끝에는 참고용으로
-`size_px` / `size_m` / `bounds_x_m` / `bounds_y_m`가 붙습니다
-(`map_server`는 모르는 키를 무시하므로 로드에 영향 없음).
+> B는 `backend:=particle_filter`를 **반드시** 명시하세요 (기본값은 slam_toolbox).
 
-> 맵 저장은 `/map`을 계속 캐시해 두고 종료 시 **파일로 직접** 씁니다.
-> 종료 시점에 slam_toolbox로 서비스를 호출하는 방식은 launch가 SIGINT를
-> 프로세스 그룹 전체에 동시에 보내 slam_toolbox가 이미 죽는 중이라 자주 실패합니다.
+### 매핑
 
-터미널을 나눠 띄우려면:
-```bash
-ros2 launch f1tenth_stack bringup_launch.py
-ros2 launch localization_bringup localization.launch.py backend:=slam_toolbox mode:=mapping
-```
+조이스틱으로 트랙을 한 바퀴 돌고 **`Ctrl+C`** 하면 그 시점의 맵이
+`~/IFAC_ws/maps/<이름>.{pgm,yaml}` (nav2 `map_server` 표준 PGM+YAML)로 저장됩니다.
+주행 중 중간 저장은 `ros2 service call /save_map std_srvs/srv/Trigger`.
+주요 인자: `map_name`(저장 이름), `map_dir`(기본 `~/IFAC_ws/maps`),
+`hardware:=false`(이미 bringup이 떠 있을 때), `rviz:=false`, `save_on_exit:=false`.
 
-### 맵 바꾸기
+### 맵 바꾸기 — `map:=<이름>`
 
-`map:=<이름>` 하나로 **PF 맵과 planner CSV 3종이 함께** 바뀝니다.
+`map:=` 하나로 **PF 맵 + planner CSV 3종**이 함께 전환됩니다. 어느 실차 launch에든 붙입니다.
 
 ```bash
-ros2 launch integration_pkg real_car.launch.py map:=my_track2   # 실차 원커맨드
+ros2 launch integration_pkg real_car.launch.py map:=my_track2          # 실차 원커맨드
 ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
-ros2 launch localization_bringup localization.launch.py backend:=particle_filter map:=my_track2
 ```
 
 - **PF 맵** — `~/IFAC_ws/maps/<이름>.yaml` → `particle_filter/maps/<이름>.yaml` 순으로
   찾습니다. 매핑으로 만든 맵은 **재빌드 없이** 바로 쓸 수 있습니다.
-- **planner CSV** — `<이름>_iqp_*.csv`, `<이름>_sp_*.csv`, `<이름>_centerline.csv`를
-  glob으로 찾습니다(파일명에 속도·마진·mu가 붙어 이름만으로 유도 불가). 이건
-  `planning_pkg/config/` 안에 있어야 하므로 **재빌드가 필요**합니다.
-- `map:=`를 **안 주면** 종전대로 `localize.yaml` / `params.yaml` 값을 씁니다.
-  `env:=sim`은 gym 맵 이름이라 기본값 `Spielberg_map` 그대로입니다.
+- **planner CSV** — `<이름>_iqp_*.csv` 등을 glob으로 찾습니다(파일명에 속도·마진·mu가
+  붙어 이름만으로 유도 불가). `planning_pkg/config/` 안에 있어야 하므로 새로 뽑았다면
+  **재빌드가 필요**합니다.
 - 맵 파일이 없으면 **launch 단계에서** 찾아본 폴더를 전부 보여주며 멈춥니다.
-  (전에는 `map_server`가 조용히 죽고 PF가 영영 수렴하지 않아 원인 찾기가 어려웠음)
+- 개별 override(`map_yaml_path:=`, `trajectory_csv_file:=`, `overtaking_csv_file:=`,
+  `centerline_csv_file:=`)가 `map:=`보다 우선합니다.
+- `map:=`를 **안 주면** `localize.yaml` / `params.yaml`의 기본값을 씁니다.
 
-개별 override는 `map:=`보다 우선합니다 — `map_yaml_path:=<전체경로>`,
-`trajectory_csv_file:=`, `overtaking_csv_file:=`, `centerline_csv_file:=`.
-
-새 맵을 만들어 주행하기까지의 전체 순서:
+**새 맵을 만들어 주행하기까지의 전체 순서:**
 
 ```bash
 # 1) 매핑 → ~/IFAC_ws/maps/my_track2.{pgm,yaml}
 ros2 launch integration_pkg mapping.launch.py map_name:=my_track2
 
-# 2) 레이스라인 CSV 3종 생성
+# 2) 레이스라인 CSV 생성 (.venv python, 주행 방향 명시 권장)
 cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
-python3 step4_main.py --map my_track2 --maps-dir ~/IFAC_ws/maps \
-    --v-max 6.0 --mu 0.75 --margin 0.08
+~/IFAC_ws/.venv/bin/python build_map.py my_track2 --dir ccw
+#    맵은 ~/IFAC_ws/maps 를 자동으로 찾음 (복사 불필요).
+#    속도·마찰·마진은 build_map.py 상단 '설정' 블록(V_MAX/MU/MARGIN/SAFE_DIST)에서 조정.
 
-# 3) CSV 반영을 위해 재빌드 (맵 자체는 재빌드 불필요)
+# 3) CSV 반영 재빌드 (맵 자체는 재빌드 불필요)
 cd ~/IFAC_ws && ./build_all.sh
 
-# 4) 주행 — localize.yaml/params.yaml은 손대지 않아도 됨
+# 4) 주행
 ros2 launch integration_pkg real_car.launch.py map:=my_track2
 ```
 
