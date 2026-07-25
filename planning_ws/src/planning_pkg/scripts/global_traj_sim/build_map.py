@@ -59,7 +59,15 @@ MIN_ISLAND_M2 = 0.3
 # --- 레이스라인 생성 파라미터 ------------------------------------------------
 V_MAX      = 6.0     # 최대 속도 [m/s]  (소형 트랙 → 보수적. 잘 돌면 올려라)
 MU         = 0.75    # 노면 마찰계수    (실내/접지 낮으면 더 낮춰라 0.6~0.7)
-SAFE_DIST  = 0.25    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 여유
+# 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
+#   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
+#   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
+#   0.17 m라 그대로면 접촉한다.
+#   0.40 → 벽여유 0.361 m, 차체-벽 0.211 m, lat err 0.170 m 빼고 +0.04 m 잔여.
+#   (중간값 0.35는 차체-벽 0.166 m로 lat err 0.177 m에 미달해서 기각)
+# 상한 주의: 최협부 실폭 1.0 m라 SAFE_DIST가 0.5를 넘으면 IQP가 불능이 된다.
+# 6 m/s로 올릴 땐 lat err가 0.215 m로 커지므로 여기서 더 올리거나 감속할 것.
+SAFE_DIST  = 0.40    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 여유
 # 소형 트랙(my_track: 실폭 median 1.2 m, 최대 2.15 m)은 벽 여유를 크게 빼면
 # 회피용 가용 corridor가 0으로 붕괴한다. MARGIN은 주행선을 안 옮기고 CSV의
 # d_left/d_right 보고값만 줄이므로(주행 위험 0) 0.15→0.08로 낮춰 회피 여유 확보.
@@ -677,7 +685,7 @@ def main():
     tag = {"iqp": "iqp_", "sp": "sp_"}.get(RACELINE, "")
     csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
     for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
-        write_csv(traj, dest, header_note=f"build_map ({m})")
+        write_csv(traj, dest, header_note=f"build_map ({m}, safe_dist={SAFE_DIST:.2f}m)")
         print(f"      wrote {dest}")
 
     if RACELINE == "iqp" and MAKE_SP:
@@ -688,7 +696,8 @@ def main():
         traj_sp = build_trajectory(geo_sp)
         sp_name = f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
         for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
-            write_csv(traj_sp, dest, header_note=f"build_map ({m}, SP overtake)")
+            write_csv(traj_sp, dest,
+                      header_note=f"build_map ({m}, SP overtake, safe_dist={SAFE_DIST:.2f}m)")
         print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
               f"SP {traj_sp['s'][-1]:.1f} m")
 

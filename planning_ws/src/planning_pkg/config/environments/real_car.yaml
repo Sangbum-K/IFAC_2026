@@ -15,12 +15,15 @@ planning:
     output_topic: /planning/plan
     service_name: /planning/compute_plan
 
-# 실차 속도 프로파일. 현재 raceline 최고속도 6 m/s에 0.6667을 곱해
-# 약 4 m/s로 제한한다. control의 vehicle/max_speed_mps와 맞춰야 최종 clamp가
-# 속도 프로파일을 왜곡하지 않고 LUT도 명령 속도에 맞는 열을 조회한다.
+# velocity_scale은 control의 vehicle/max_speed_mps와 반드시 짝을 맞출 것.
+# raceline v-max(6.0)가 control cap보다 높으면 control이 전 구간을 clamp해서
+# (a) 속도 프로파일이 cap 상수로 뭉개지고 (b) 조향 LUT를 wpnt 속도로 조회하는
+# 구조(control_node.cpp calc_steering_angle의 speed_for_lookup) 때문에 실제
+# 필요조향의 1.7~2.0배가 나온다. scale = (control cap) / 6.0 으로 계산.
 global_trajectory_node:
   ros__parameters:
-    # 6.00 * 0.6667 ≈ 4.00 m/s. 주행 중 ros2 param set으로 조정 가능.
+    # control max_speed_mps 4.0에 맞춤: 6.00 * 0.6667 = 4.00 m/s (1.81~4.00).
+    # 6 m/s로 올릴 땐 1.0으로. 클램프 범위는 [0.5, 1.4].
     global_trajectory/velocity_scale: 0.6667
 
 frenet_frame_node:
@@ -46,23 +49,11 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet   # 브릿지 출력
-    # TEMP (원복: 8.0) — 1 m/s에선 8 m = 8초 앞. 감지 즉시 회피/감속이 시작돼
-    # 트랙 1/4을 회피 상태로 달린다. trailing_engage_dist_m(2.0) 이상이고
-    # 스플라인 절점 범위(pre -2.5 ~ post +2.5 = 5 m)는 덮는 최소값.
-    spliner/lookahead_m: 5.0
+    spliner/lookahead_m: 8.0            # trailing_engage_dist_m(6.0) 이상 — 감속 예고 확보.
+                                        # (이전 8<12 모순: 12 m 전 감속인데 8 m 안에서만 감지)
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
                                         # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통
-    # TEMP (원복: 6.0 = params.yaml 기본값) — 6 m/s 제동거리 7.2 m 기준이었음.
-    # 1 m/s면 v^2/2a = 0.2 m라 2.0 m도 10배 여유.
-    spliner/trailing_engage_dist_m: 2.0
-    # TEMP (원복: 3.0 = params.yaml 기본값) — 위와 같은 이유.
-    spliner/squeeze_brake_dist_m: 1.0
-    # TEMP (원복: 0.7) — 감속 배율은 raceline 속도에 곱해지므로 저속에선
-    # 0.7 * 0.44 = 0.31 m/s까지 떨어져 구동이 정지 마찰에 걸린다.
-    spliner/inside_speed_scale: 0.9
-    # TEMP (원복: 0.35 = params.yaml 기본값) — 같은 이유. 0.35면 0.15 m/s.
-    # 애초에 이 감속은 고속 추적오차 대비용이라 1 m/s에선 불필요.
-    spliner/squeeze_speed_scale: 0.8
+    spliner/inside_speed_scale: 0.7     # 회피 구간 감속 강화
     spliner/path_check_margin: 0.15
     # (제거) stop_margin_m / stop_ramp_dist_m: spliner에 없는 파라미터였음 —
     # 정지 거동은 trailing_gap_m / trailing_decel / trailing_engage_dist_m가 담당

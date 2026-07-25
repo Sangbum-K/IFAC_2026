@@ -355,14 +355,18 @@ HMCL unicorn 튜토리얼의 raceline_tuner를 ROS2로 구현한 것. 코너별�
 
 ```bash
 # 방법 1: 시뮬과 함께 (같은 RViz에서 주행 보면서 편집)
-ros2 launch planning_pkg sim_race.launch.py tuner:=true
+ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
 
 # 방법 2: 튜너만 단독 실행 (gym 불필요, 맵 + 튜너 + RViz)
-ros2 launch planning_pkg raceline_tuner.launch.py            # 기본 IQP 라인 편집
-ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
+#   기본값이 my_track 기준 (stride 10 / falloff 3.0 / v_max 6.0 / mu 0.75)
+ros2 launch planning_pkg raceline_tuner.launch.py
+
+#   다른 맵은 map:= 하나만 — CSV는 <맵>_iqp_*.csv 로 자동 탐색
+ros2 launch planning_pkg raceline_tuner.launch.py \
+    map:=Spielberg_map stride:=25 falloff:=8.0 v_max:=15.0 mu:=0.85
 ```
 
-- **보라 구체** 드래그 → 주변 ±8 m가 코사인 falloff로 함께 이동
+- **보라 구체** 드래그 → 주변이 코사인 falloff(`falloff:=`, 기본 ±8 m)로 함께 이동
   (횡방향 성분만 적용, 벽에서 0.35 m 이내로는 못 들어가게 클램프)
 - **초록 수직 핸들** 드래그 → 그 구간 속도 조절 (높이 = 속도, 텍스트 표시)
 - 아무 핸들 **우클릭 메뉴**: 속도 재계산(마찰한계, 라인 수정 후 권장) /
@@ -371,6 +375,11 @@ ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
 
 저장은 **소스 트리의 CSV를 직접 수정**하고 원본은 `.bak`으로 백업한다.
 저장 후 `colcon build --packages-select planning_pkg` 해야 런타임에 반영.
+
+> `sim_race.launch.py tuner:=true` 는 CSV 경로만 넘기므로 stride/falloff/v_max/mu 가
+> **노드 기본값(25 / 8.0 / 12.0 / 0.85) 고정**이다 — my_track에선 드래그 범위가
+> 트랙 절반이 되고 "속도 재계산"이 12 m/s까지 올린다. 편집이 목적이면 방법 2를 쓸 것.
+> 자세한 건 [`scripts/tuner/README.md`](scripts/tuner/README.md).
 
 ## 포팅 TODO (통합 시 남은 작업)
 

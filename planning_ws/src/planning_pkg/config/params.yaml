@@ -14,6 +14,10 @@ global_trajectory_node:
   ros__parameters:
     # my_track 실차: v-max 6, mu 0.75 (raceline 재생성 시 접미사 함께 교체)
     # margin 0.08 = 소형 트랙 회피 corridor 확보용 (build_map MARGIN, 주행선 불변)
+    # 2026-07-24 재생성: build_map SAFE_DIST 0.25 -> 0.40 (파일명엔 안 들어감,
+    # CSV 첫 줄 헤더에 safe_dist 기록). 랩 29.3 m, 실측 최소 벽여유 0.36 m.
+    # ⚠️ 실제 주행 속도는 environments/<env>.yaml의 velocity_scale이 결정한다 —
+    # control의 vehicle/max_speed_mps와 짝을 맞출 것 (real_car.yaml 주석 참조).
     global_trajectory/trajectory_csv_file: my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv
     # SP 추월 라인 -> /global_waypoints/overtaking (H2H lane-change용, 없으면 미발행)
     global_trajectory/overtaking_csv_file: my_track_sp_max6.00ms_margin0.08m_mu0.75.csv

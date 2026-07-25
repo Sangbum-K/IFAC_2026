@@ -119,9 +119,12 @@ source ~/IFAC_ws/planning_ws/install/setup.bash
 
 ### 5. RViz 튜너 실행
 ```bash
-ros2 launch planning_pkg raceline_tuner.launch.py \
-    csv:=my_map_iqp_max6.00ms_margin0.08m_mu0.75.csv map:=my_map stride:=10 falloff:=3.0
+ros2 launch planning_pkg raceline_tuner.launch.py map:=<맵이름>
 ```
+CSV는 `<맵>_iqp_*.csv` 로 자동 탐색된다. 기본값(stride 10 / falloff 3.0 /
+v_max 6.0 / mu 0.75)은 **my_track 기준**이니, 다른 조건으로 뽑은 라인이면
+`v_max:` / `mu:` 를 그 값에 맞출 것 — 사용법은
+[`../scripts/tuner/README.md`](../scripts/tuner/README.md).
 
 ### 6. 튜너로 편집했으면 다시 빌드
 ```bash
