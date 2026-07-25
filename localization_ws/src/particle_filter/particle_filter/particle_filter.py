@@ -90,6 +90,9 @@ class ParticleFiler(Node):
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('laser_frame', 'laser')
+        self.declare_parameter('pose_jump_guard_enabled', True)
+        self.declare_parameter('max_pose_jump_translation_m', 0.30)
+        self.declare_parameter('max_pose_jump_yaw_rad', 0.35)
 
         # parameters
         self.ANGLE_STEP           = self.get_parameter('angle_step').value
@@ -119,6 +122,10 @@ class ParticleFiler(Node):
         self.ODOM_FRAME              = self.get_parameter('odom_frame').value
         self.BASE_FRAME              = self.get_parameter('base_frame').value
         self.LASER_FRAME             = self.get_parameter('laser_frame').value
+        self.POSE_JUMP_GUARD_ENABLED = self.get_parameter('pose_jump_guard_enabled').value
+        self.MAX_POSE_JUMP_TRANSLATION = self.get_parameter(
+            'max_pose_jump_translation_m').value
+        self.MAX_POSE_JUMP_YAW = self.get_parameter('max_pose_jump_yaw_rad').value
         
         # various data containers used in the MCL algorithm
         self.MAX_RANGE_PX = None
@@ -133,11 +140,13 @@ class ParticleFiler(Node):
         self.current_odom_pose = None
         self.laser_angles = None
         self.downsampled_angles = None
+        self.downsampled_ranges = None
         self.range_method = None
         self.last_time = None
         self.last_stamp = None
         self.first_sensor_update = True
         self.state_lock = Lock()
+        self.jump_reject_count = 0
 
         # cache this to avoid memory allocation in motion model
         self.local_deltas = np.zeros((self.MAX_PARTICLES, 3))
@@ -360,7 +369,8 @@ class ParticleFiler(Node):
 
     def lidarCB(self, msg):
         '''
-        Initializes reused buffers, and stores the relevant laser scanner data for later use.
+        Initializes reused buffers, stores the latest laser scan, and updates
+        the filter once per fresh scan.
         '''
         if not isinstance(self.laser_angles, np.ndarray):
             self.get_logger().info('...Received first LiDAR message')
@@ -370,14 +380,20 @@ class ParticleFiler(Node):
             self.viz_ranges = np.zeros(self.downsampled_angles.shape[0], dtype=np.float32)
             self.get_logger().info(str(self.downsampled_angles.shape[0]))
 
-        # store the necessary scanner information for later processing
-        self.downsampled_ranges = np.array(msg.ranges[::self.ANGLE_STEP])
+        # Replace NaN/Inf/no-return rays with max range so the sensor model
+        # never sees invalid values on long straights or open track segments.
+        downsampled_ranges = np.array(msg.ranges[::self.ANGLE_STEP], dtype=np.float32)
+        invalid = np.logical_or(~np.isfinite(downsampled_ranges), downsampled_ranges <= 0.0)
+        downsampled_ranges[invalid] = self.MAX_RANGE_METERS
+        np.clip(downsampled_ranges, 0.0, self.MAX_RANGE_METERS, out=downsampled_ranges)
+        self.downsampled_ranges = downsampled_ranges
         self.lidar_initialized = True
-        # self.update()
+        self.update()
 
     def odomCB(self, msg):
         '''
-        Store deltas between consecutive odometry messages in the coordinate space of the car.
+        Store deltas between consecutive odometry messages in the coordinate
+        space of the car and accumulate them until the next scan update.
 
         Odometry data is accumulated via dead reckoning, so it is very inaccurate on its own.
         '''
@@ -395,17 +411,19 @@ class ParticleFiler(Node):
             rot = Utils.rotation_matrix(-self.last_pose[2])
             delta = np.array([position - self.last_pose[0:2]]).transpose()
             local_delta = (rot*delta).transpose()
-            
-            self.odometry_data = np.array([local_delta[0,0], local_delta[0,1], orientation - self.last_pose[2]])
+
+            delta_pose = np.array([
+                local_delta[0,0],
+                local_delta[0,1],
+                self.wrap_angle(orientation - self.last_pose[2]),
+            ])
+            self.odometry_data = self.compose_pose_2d(self.odometry_data, delta_pose)
             self.last_pose = pose
             self.last_stamp = msg.header.stamp
             self.odom_initialized = True
         else:
             self.get_logger().info('...Received first Odometry message')
             self.last_pose = pose
-
-        # this topic is slower than lidar, so update every time we receive a message
-        self.update()
 
     def clicked_pose(self, msg):
         '''
@@ -439,7 +457,10 @@ class ParticleFiler(Node):
         self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
         self.particles[:,0] = laser_pose[0] + np.random.normal(loc=0.0,scale=0.5,size=self.MAX_PARTICLES)
         self.particles[:,1] = laser_pose[1] + np.random.normal(loc=0.0,scale=0.5,size=self.MAX_PARTICLES)
-        self.particles[:,2] = laser_pose[2] + np.random.normal(loc=0.0,scale=0.4,size=self.MAX_PARTICLES)
+        self.particles[:,2] = self.wrap_angle(
+            laser_pose[2] + np.random.normal(loc=0.0,scale=0.4,size=self.MAX_PARTICLES))
+        self.inferred_pose = np.copy(laser_pose)
+        self.odometry_data[:] = 0.0
         self.state_lock.release()
 
     def initialize_global(self):
@@ -460,6 +481,8 @@ class ParticleFiler(Node):
         Utils.map_to_world(permissible_states, self.map_info)
         self.particles = permissible_states
         self.weights[:] = 1.0 / self.MAX_PARTICLES
+        self.inferred_pose = None
+        self.odometry_data[:] = 0.0
         self.state_lock.release()
 
     def precompute_sensor_model(self):
@@ -541,6 +564,7 @@ class ParticleFiler(Node):
         proposal_dist[:,0] += np.random.normal(loc=0.0,scale=self.MOTION_DISPERSION_X,size=self.MAX_PARTICLES)
         proposal_dist[:,1] += np.random.normal(loc=0.0,scale=self.MOTION_DISPERSION_Y,size=self.MAX_PARTICLES)
         proposal_dist[:,2] += np.random.normal(loc=0.0,scale=self.MOTION_DISPERSION_THETA,size=self.MAX_PARTICLES)
+        proposal_dist[:,2] = self.wrap_angle(proposal_dist[:,2])
 
     def sensor_model(self, proposal_dist, obs, weights):
         '''
@@ -551,7 +575,7 @@ class ParticleFiler(Node):
         There are 4 different variants using various features of RangeLibc for demonstration purposes.
         - VAR_REPEAT_ANGLES_EVAL_SENSOR is the most stable, and is very fast.
         - VAR_NO_EVAL_SENSOR_MODEL directly indexes the precomputed sensor model. This is slow
-                                   but it demonstrates what self.range_method.eval_sensor_model does
+                                   but avoids RangeLib weight underflow by accumulating in log space
         - VAR_RADIAL_CDDT_OPTIMIZATIONS is only compatible with CDDT or PCDDT, it implments the radial
                                         optimizations to CDDT which simultaneously performs ray casting
                                         in two directions, reducing the amount of work by roughly a third
@@ -629,20 +653,23 @@ class ParticleFiler(Node):
             # compute the ranges for all the particles in a single functon call
             self.range_method.calc_range_many(self.queries, self.ranges)
 
-            # resolve the sensor model by discretizing and indexing into the precomputed table
-            obs /= float(self.map_info.resolution)
-            ranges = self.ranges / float(self.map_info.resolution)
-            obs[obs > self.MAX_RANGE_PX] = self.MAX_RANGE_PX
-            ranges[ranges > self.MAX_RANGE_PX] = self.MAX_RANGE_PX
+            # Resolve the sensor model by discretizing and indexing into the
+            # precomputed table, but accumulate in log space to avoid
+            # underflow when many beams are multiplied together.
+            obs_px = np.rint(
+                np.clip(obs / float(self.map_info.resolution), 0, self.MAX_RANGE_PX)
+            ).astype(np.uint16)
+            range_px = np.rint(
+                np.clip(self.ranges / float(self.map_info.resolution), 0, self.MAX_RANGE_PX)
+            ).astype(np.uint16).reshape(self.MAX_PARTICLES, num_rays)
 
-            intobs = np.rint(obs).astype(np.uint16)
-            intrng = np.rint(ranges).astype(np.uint16)
-
-            # compute the weight for each particle
-            for i in range(self.MAX_PARTICLES):
-                weight = np.product(self.sensor_model_table[intobs,intrng[i*num_rays:(i+1)*num_rays]])
-                weight = np.power(weight, self.INV_SQUASH_FACTOR)
-                weights[i] = weight
+            sensor_probs = self.sensor_model_table[obs_px[np.newaxis, :], range_px]
+            log_weights = np.sum(
+                np.log(np.maximum(sensor_probs, 1e-12)),
+                axis=1,
+            ) * self.INV_SQUASH_FACTOR
+            log_weights -= np.max(log_weights)
+            np.exp(log_weights, out=weights)
         else:
             self.get_logger().info('PLEASE SET rangelib_variant PARAM to 0-4')
 
@@ -675,7 +702,10 @@ class ParticleFiler(Node):
             t_sensor = time.time()
 
         # normalize importance weights
-        self.weights /= np.sum(self.weights)
+        weight_sum = np.sum(self.weights)
+        if not np.isfinite(weight_sum) or weight_sum <= 1e-12:
+            return False
+        self.weights /= weight_sum
         if self.SHOW_FINE_TIMING:
             t_norm = time.time()
             t_total = (t_norm - t)/100.0
@@ -686,6 +716,7 @@ class ParticleFiler(Node):
 
         # save the particles
         self.particles = proposal_distribution
+        return True
     
     def expected_pose(self):
         # x, y use weighted arithmetic means; yaw uses a weighted circular mean.
@@ -694,6 +725,34 @@ class ParticleFiler(Node):
         cos_yaw = np.dot(np.cos(self.particles[:, 2]), self.weights)
         yaw = np.arctan2(sin_yaw, cos_yaw)
         return np.array([xy[0], xy[1], yaw])
+
+    def restore_motion_only_pose(self, particles, weights, action):
+        self.particles = np.copy(particles)
+        self.weights = np.copy(weights)
+        weight_sum = np.sum(self.weights)
+        if not np.isfinite(weight_sum) or weight_sum <= 1e-12:
+            self.weights[:] = 1.0 / float(self.MAX_PARTICLES)
+        else:
+            self.weights /= weight_sum
+        cosines = np.cos(self.particles[:,2])
+        sines = np.sin(self.particles[:,2])
+        self.local_deltas[:,0] = cosines*action[0] - sines*action[1]
+        self.local_deltas[:,1] = sines*action[0] + cosines*action[1]
+        self.local_deltas[:,2] = action[2]
+        self.particles[:,:] += self.local_deltas
+        self.particles[:,2] = self.wrap_angle(self.particles[:,2])
+        self.inferred_pose = self.expected_pose()
+
+    def should_reject_pose_update(self, predicted_pose, candidate_pose):
+        correction = self.inverse_pose_2d(predicted_pose)
+        correction = self.compose_pose_2d(correction, candidate_pose)
+        correction_xy = np.hypot(correction[0], correction[1])
+        correction_yaw = abs(self.wrap_angle(correction[2]))
+        reject = (
+            correction_xy > self.MAX_POSE_JUMP_TRANSLATION or
+            correction_yaw > self.MAX_POSE_JUMP_YAW
+        )
+        return reject, correction_xy, correction_yaw
 
     def lookup_laser_to_base_pose(self):
         '''Lookup the fixed laser->base_link transform without blocking node startup.'''
@@ -743,6 +802,10 @@ class ParticleFiler(Node):
         yaw = -pose[2]
         return np.array([x, y, np.arctan2(np.sin(yaw), np.cos(yaw))])
 
+    @staticmethod
+    def wrap_angle(theta):
+        return np.arctan2(np.sin(theta), np.cos(theta))
+
     def update(self):
         '''
         Apply the MCL function to update particle filter state. 
@@ -764,12 +827,38 @@ class ParticleFiler(Node):
                 observation = np.copy(self.downsampled_ranges).astype(np.float32)
                 action = np.copy(self.odometry_data)
                 self.odometry_data = np.zeros(3)
+                prior_particles = np.copy(self.particles)
+                prior_weights = np.copy(self.weights)
+                prior_pose = None if self.inferred_pose is None else np.copy(self.inferred_pose)
 
                 # run the MCL update algorithm
-                self.MCL(action, observation)
+                sensor_update_ok = self.MCL(action, observation)
 
-                # compute the expected value of the robot pose
-                self.inferred_pose = self.expected_pose()
+                if sensor_update_ok:
+                    candidate_pose = self.expected_pose()
+                    if self.POSE_JUMP_GUARD_ENABLED and prior_pose is not None:
+                        predicted_pose = self.compose_pose_2d(prior_pose, action)
+                        reject, correction_xy, correction_yaw = self.should_reject_pose_update(
+                            predicted_pose, candidate_pose)
+                        if reject:
+                            self.jump_reject_count += 1
+                            if self.jump_reject_count <= 5 or self.jump_reject_count % 20 == 0:
+                                self.get_logger().warn(
+                                    'Rejected PF scan update: correction %.2fm, %.1fdeg exceeds guard; '
+                                    'keeping odom-propagated pose' % (
+                                        correction_xy,
+                                        np.degrees(correction_yaw),
+                                    )
+                                )
+                            self.restore_motion_only_pose(prior_particles, prior_weights, action)
+                        else:
+                            self.inferred_pose = candidate_pose
+                    else:
+                        self.inferred_pose = candidate_pose
+                else:
+                    self.get_logger().warn(
+                        'PF sensor update produced invalid weights; keeping odom-propagated pose')
+                    self.restore_motion_only_pose(prior_particles, prior_weights, action)
                 self.state_lock.release()
                 t2 = time.time()
 
