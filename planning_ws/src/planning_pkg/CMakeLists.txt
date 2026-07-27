@@ -8,7 +8,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(example_interfaces REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -17,14 +16,6 @@ find_package(ament_index_cpp REQUIRED)
 find_package(f1tenth_planning_msgs REQUIRED)
 
 include_directories(include)
-
-# --- 팀 골격 노드 (인터페이스 자리표시자, /perception/objects -> /planning/plan) ---
-add_executable(planning_node src/planning_node.cpp)
-ament_target_dependencies(planning_node
-  rclcpp
-  std_msgs
-  example_interfaces
-)
 
 # --- raceline 추종 파이프라인 (기존 planner_pkg에서 이식, 헤더/빌드 복원) ---
 # raceline CSV -> /global_waypoints (2 Hz)
@@ -67,7 +58,6 @@ ament_target_dependencies(planner_visualizer_node
 )
 
 install(TARGETS
-  planning_node
   global_trajectory_node
   frenet_frame_node
   local_trajectory_node

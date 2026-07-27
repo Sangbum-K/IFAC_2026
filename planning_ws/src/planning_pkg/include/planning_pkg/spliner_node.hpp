@@ -143,6 +143,26 @@ private:
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
 
+  // --- 고속 회피용 기하/속도 예산 ---------------------------------------
+  // 진폭 amplitude[m]의 smoothstep 횡이동을 속도 v[m/s]에서 수행할 때,
+  // 피크 횡가속이 blend_lat_acc_max_ 이내가 되는 최소 거리 [m].
+  //   d(t) = A*s(w), w = t/L, s(w) = 3w^2-2w^3
+  //   |d''|_max = 6*A*v^2/L^2  ->  L >= v*sqrt(6A/a_max)
+  // 거리를 상수로 두면 횡가속이 v^2로 커져 그립을 넘는다 (6 m/s에서 1.5g 실측 계산).
+  double BlendDist(double amplitude, double speed) const;
+
+  // raceline에서 d만큼 오프셋된 경로의 실제 곡률.
+  // 곡률 중심 쪽으로 붙으면 반경이 줄어 더 빨리 감속해야 한다.
+  //   kappa' = kappa / (1 - d*kappa)      (d>0 = 진행방향 왼쪽)
+  static double OffsetKappa(double kappa, double d);
+
+  // 회피 궤적의 속도 프로파일을 물리적으로 성립하게 만든다:
+  //  1) 각 점의 오프셋 곡률로 횡그립 상한 v <= sqrt(path_lat_acc_max/|kappa'|)
+  //  2) 뒤에서 앞으로 역방향 패스로 종방향 감속 한계 적용
+  //     v[i] <= sqrt(v[i+1]^2 + 2*path_decel_max*ds)
+  // 직선에서는 아무것도 깎지 않고(가속 유지), 코너 진입 전에만 크게 감속한다.
+  void ApplySpeedProfile(std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts) const;
+
   // 자연 3차 스플라인: 절점 (xs, ys)를 지나는 곡선을 query 지점들에서 평가
   static std::vector<double> NaturalCubicSpline(
     const std::vector<double> & xs, const std::vector<double> & ys,
@@ -170,6 +190,11 @@ private:
   double trailing_gap_m_{2.5};
   double trailing_decel_{2.5};
   double cmd_speed_scale_{1.0};
+  // 고속 회피 기하/속도 예산 (BlendDist / ApplySpeedProfile)
+  double blend_lat_acc_max_{3.0};   // 횡 전환에 배정할 그립 [m/s^2]
+  double blend_dist_max_m_{8.0};    // 전환 거리 상한 [m]
+  double path_lat_acc_max_{7.0};    // 오프셋 경로 곡률 -> 속도 상한용 그립 [m/s^2]
+  double path_decel_max_{6.0};      // 회피 궤적 역방향 감속 한계 [m/s^2]
   bool trailing_active_{false};
   // 라인 스위치 (기본 maneuver)
   bool use_lane_switch_{true};       // false면 기존처럼 DoSpline을 1순위로
@@ -247,7 +272,10 @@ private:
   rclcpp::Time predicted_stamp_{0, 0, RCL_ROS_TIME};
   std::vector<f1tenth_planning_msgs::msg::Wpnt> gb_wpnts_;
   double gb_vmax_{0.0};
-  double gb_max_s_{0.0};
+  // 트랙 한 바퀴 길이 = 마지막 wpnt s + 점 간격. 마지막 s가 아니라 반드시
+  // '+ 간격'이어야 한다 — local_trajectory_node / perception 브릿지가 쓰는
+  // 모듈러스와 같은 값이라야 wrap 근처에서 s가 어긋나지 않는다.
+  double track_len_{0.0};
   double wpnt_dist_{0.1};
   double cur_s_{0.0};
   double cur_d_{0.0};

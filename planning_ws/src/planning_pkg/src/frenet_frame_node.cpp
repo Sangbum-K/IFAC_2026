@@ -54,7 +54,7 @@ FrenetFrameNode::FrenetFrameNode(const std::string &node_name, const rclcpp::Nod
     
     // Timer init
     t_process_ = this->create_wall_timer(
-        std::chrono::milliseconds((int64_t)(1000 / loop_rate_hz_)),
+        std::chrono::duration<double>(1.0 / loop_rate_hz_),
         [this]() { this->Run(); });
         
     RCLCPP_INFO(this->get_logger(), "FrenetFrameNode initialized successfully");

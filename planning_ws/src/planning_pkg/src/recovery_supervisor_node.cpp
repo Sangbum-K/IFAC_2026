@@ -55,6 +55,7 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     this->declare_parameter("recovery/align_speed_mps", 0.5);
     this->declare_parameter("recovery/odom_timeout_sec", 0.5);
     this->declare_parameter("recovery/perception_timeout_sec", 0.5);
+    this->declare_parameter("recovery/local_wpnts_timeout_sec", 0.5);
     this->declare_parameter("recovery/pose_odom_topic", std::string("/pf/pose/odom"));
 
     loop_rate_hz_ = this->get_parameter("recovery/loop_rate_hz").as_double();
@@ -76,6 +77,8 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     odom_timeout_sec_ = this->get_parameter("recovery/odom_timeout_sec").as_double();
     perception_timeout_sec_ =
         this->get_parameter("recovery/perception_timeout_sec").as_double();
+    local_wpnts_timeout_sec_ =
+        this->get_parameter("recovery/local_wpnts_timeout_sec").as_double();
     const std::string pose_topic =
         this->get_parameter("recovery/pose_odom_topic").as_string();
 
@@ -85,6 +88,9 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     s_pose_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
         pose_topic, qos,
         std::bind(&RecoverySupervisorNode::CallbackPoseOdom, this, std::placeholders::_1));
+    s_global_wpnts_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
+        "/global_waypoints", qos,
+        std::bind(&RecoverySupervisorNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
     s_local_wpnts_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
         "/local_waypoints", qos,
         std::bind(&RecoverySupervisorNode::CallbackLocalWaypoints, this, std::placeholders::_1));
@@ -110,7 +116,7 @@ RecoverySupervisorNode::RecoverySupervisorNode(
         "/planner/recovery/marker", qos);
 
     t_run_ = this->create_wall_timer(
-        std::chrono::milliseconds((int64_t)(1000 / loop_rate_hz_)),
+        std::chrono::duration<double>(1.0 / loop_rate_hz_),
         [this]() { this->Run(); });
 
     RCLCPP_INFO(this->get_logger(),
@@ -133,20 +139,34 @@ void RecoverySupervisorNode::CallbackPoseOdom(const nav_msgs::msg::Odometry::Sha
     pose_stamp_ = this->now();
 }
 
+void RecoverySupervisorNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 트랙 길이 = 마지막 s + 점 간격. spliner_node / local_trajectory_node /
+    // perception 브릿지와 같은 정의를 써야 wrap 근처 s가 어긋나지 않는다.
+    if (msg->wpnts.size() < 2) {
+        return;
+    }
+    double spacing = msg->wpnts[1].s_m - msg->wpnts[0].s_m;
+    if (!(spacing > 1e-6)) {
+        RCLCPP_ERROR_THROTTLE(this->get_logger(), *get_clock(), 5000,
+            "global waypoints의 s 간격이 %.6f — 트랙 길이 갱신 불가", spacing);
+        return;
+    }
+    track_len_ = msg->wpnts.back().s_m + spacing;
+}
+
 void RecoverySupervisorNode::CallbackLocalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     local_wpnts_ = *msg;
     has_local_ = !msg->wpnts.empty();
-    // 트랙 길이 추정 (wrap-around용, 마지막 s가 최대값 근사)
-    for (const auto &w : msg->wpnts) {
-        gb_max_s_ = std::max(gb_max_s_ == 1e9 ? 0.0 : gb_max_s_, w.s_m);
-    }
+    local_wpnts_stamp_ = this->now();
 }
 
 void RecoverySupervisorNode::CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     obstacles_ = *msg;
     obstacles_stamp_ = this->now();
+    has_obstacles_ = true;
 }
 
 void RecoverySupervisorNode::CallbackEStop(const std_msgs::msg::Bool::SharedPtr msg) {
@@ -160,8 +180,22 @@ void RecoverySupervisorNode::CallbackReset(const std_msgs::msg::Bool::SharedPtr 
 }
 
 bool RecoverySupervisorNode::InputsStale(double now_sec) const {
-    return (now_sec - rclcpp::Time(frenet_stamp_).seconds()) > odom_timeout_sec_ ||
-           (now_sec - rclcpp::Time(obstacles_stamp_).seconds()) > perception_timeout_sec_;
+    if ((now_sec - rclcpp::Time(frenet_stamp_).seconds()) > odom_timeout_sec_) {
+        return true;
+    }
+    // /local_waypoints도 stale 검사 대상 — local_trajectory_node가 죽으면
+    // 마지막 경로로 경계/stuck을 계속 판정하게 된다.
+    if ((now_sec - rclcpp::Time(local_wpnts_stamp_).seconds()) > local_wpnts_timeout_sec_) {
+        return true;
+    }
+    // 장애물은 "받다가 끊긴" 경우만 stale. 한 번도 못 받은 상태(perception
+    // 미기동)를 stale로 보면 부팅 첫 사이클에 STOP으로 래치돼 버린다.
+    // 대신 그 상태에서는 IsRearSafe()가 후진을 거부한다.
+    if (has_obstacles_ &&
+        (now_sec - rclcpp::Time(obstacles_stamp_).seconds()) > perception_timeout_sec_) {
+        return true;
+    }
+    return false;
 }
 
 bool RecoverySupervisorNode::IsStuck(double now_sec) {
@@ -177,8 +211,8 @@ bool RecoverySupervisorNode::IsStuck(double now_sec) {
         stuck_ref_s_ = cur_s_;
         return false;
     }
-    double progress = Mod(cur_s_ - stuck_ref_s_, gb_max_s_);
-    if (progress > gb_max_s_ / 2.0) progress = 0.0;  // 후진/역방향은 진행으로 안 봄
+    double progress = Mod(cur_s_ - stuck_ref_s_, track_len_);
+    if (progress > track_len_ / 2.0) progress = 0.0;  // 후진/역방향은 진행으로 안 봄
     if (progress >= stuck_min_progress_m_) {
         stuck_since_sec_ = now_sec;  // 진행함 -> 타이머 리셋
         stuck_ref_s_ = cur_s_;
@@ -197,11 +231,18 @@ bool RecoverySupervisorNode::IsBoundaryViolation() const {
     return std::min(margin_left, margin_right) < boundary_stop_margin_m_;
 }
 
-bool RecoverySupervisorNode::IsRearSafe() const {
+bool RecoverySupervisorNode::IsRearSafe(double now_sec) const {
+    // 후방을 확인할 근거가 없으면 후진하지 않는다 — perception이 아직 한 번도
+    // 안 왔거나(부팅) 끊긴 상태에서 "장애물 리스트가 비었으니 안전"으로
+    // 판정하면 뒤를 못 본 채 후진하게 된다.
+    if (!has_obstacles_ ||
+        (now_sec - rclcpp::Time(obstacles_stamp_).seconds()) > perception_timeout_sec_) {
+        return false;
+    }
     // 후방 rear_check_dist_m 구간에 장애물(정적/동적/사람 추정 무관)이
     // 하나라도 있으면 후진 금지.
     for (const auto &obs : obstacles_.obstacles) {
-        double behind = Mod(cur_s_ - obs.s_end, gb_max_s_);
+        double behind = Mod(cur_s_ - obs.s_end, track_len_);
         if (behind < rear_check_dist_m_) {
             return false;
         }
@@ -226,7 +267,9 @@ void RecoverySupervisorNode::TransitionTo(State next, const std::string &reason)
 
 void RecoverySupervisorNode::Run() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!has_frenet_ || !has_local_) {
+    // track_len_은 모든 wrap 계산의 모듈러스라 0이면 Mod가 NaN을 낸다 —
+    // /global_waypoints를 받기 전에는 판단하지 않는다.
+    if (!has_frenet_ || !has_local_ || !(track_len_ > 0.0)) {
         return;  // 입력 없으면 판단 보류 (초기 부팅)
     }
     double now_sec = this->now().seconds();
@@ -235,7 +278,7 @@ void RecoverySupervisorNode::Run() {
     if (estop_) {
         TransitionTo(State::STOP, "E-stop");
     } else if (InputsStale(now_sec) && state_ != State::STOP) {
-        TransitionTo(State::STOP, "odom/perception timeout");
+        TransitionTo(State::STOP, "odom/perception/local_wpnts timeout");
     }
 
     switch (state_) {
@@ -267,8 +310,8 @@ void RecoverySupervisorNode::Run() {
         case State::STUCK_DETECTED:
             if (recovery_attempts_ >= recovery_max_attempts_) {
                 TransitionTo(State::STOP, "max recovery attempts exceeded");
-            } else if (!IsRearSafe()) {
-                TransitionTo(State::STOP, "rear not safe, no reverse");
+            } else if (!IsRearSafe(now_sec)) {
+                TransitionTo(State::STOP, "rear not safe/unknown, no reverse");
             } else {
                 recovery_attempts_++;
                 recover_start_sec_ = now_sec;
@@ -278,12 +321,12 @@ void RecoverySupervisorNode::Run() {
             break;
 
         case State::RECOVER_REVERSE: {
-            double reversed = Mod(recover_start_s_ - cur_s_, gb_max_s_);
-            if (reversed > gb_max_s_ / 2.0) reversed = 0.0;
+            double reversed = Mod(recover_start_s_ - cur_s_, track_len_);
+            if (reversed > track_len_ / 2.0) reversed = 0.0;
             bool timeout = (now_sec - recover_start_sec_) > recovery_timeout_sec_;
             if (timeout) {
                 TransitionTo(State::STOP, "reverse timeout");
-            } else if (!IsRearSafe()) {
+            } else if (!IsRearSafe(now_sec)) {
                 TransitionTo(State::STOP, "rear became unsafe during reverse");
             } else if (reversed >= recovery_max_reverse_distance_m_) {
                 recover_start_sec_ = now_sec;  // align 타이머 재사용

@@ -3,8 +3,9 @@
 F1TENTH 플래닝 패키지. 팀 인터페이스 규약:
 
 ```
-/perception/objects  ──▶  planning_node  ──▶  /planning/plan
-   (perception_pkg)          (여기)            (control_pkg)
+/perception/obstacles ──▶ spliner ─┐
+                                   ├─▶ /local_waypoints ──▶ control_node
+/global_waypoints ──▶ local_traj ──┘        (여기)           (control_ws)
 ```
 
 ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실행.
@@ -13,7 +14,6 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 
 | 위치 | 내용 | 상태 |
 |---|---|---|
-| `src/planning_node.cpp` | 팀 인터페이스 골격 노드 | 골격 (아래 "포팅 TODO") |
 | `src/global_trajectory_node.cpp` | raceline CSV → `/global_waypoints` (2 Hz) | **동작 코드** (planner_pkg 이식) |
 | `src/frenet_frame_node.cpp` | odom → Frenet (s,d) → `/car_state/frenet/odom` | **동작 코드** (〃) |
 | `src/local_trajectory_node.cpp` | 80 wpt 로컬 윈도우 → `/local_waypoints` (회피 궤적 splice) | **동작 코드** (〃 + 회피 병합) |
@@ -202,8 +202,7 @@ python scripts/global_traj_sim/step4_main.py --map Spielberg_map --raceline iqp 
 
 ### 2. 런타임 노드 (ROS 2, colcon 빌드)
 
-- `planning_node` — 현재는 std_msgs/String 골격. 실제 로직은 아래 포팅 TODO.
-- 나머지 raceline 추종/회피 노드는 위 표 참고. 시뮬 실행은 위
+- raceline 추종/회피 노드는 위 표 참고. 시뮬 실행은 위
   "RViz 시뮬레이션" 절, raceline 시각화·편집은 아래 "레이스라인 튜너" 절.
 
 ## 장애물 회피 (spliner_node)
@@ -314,10 +313,26 @@ opp cap을 1.2로 낮춰 실행).
 control_node 책임: `/planner/recovery/state`(String),
 `/planner/recovery/target_speed`(Float64; DRIVING=NaN, 정지=0.0, 후진=음수).
 STOP은 래치 — `/planner/recovery/reset`(Bool true)로만 해제.
-E-stop(`/safety/emergency_stop`)과 odom/perception 두절은 항상 최우선 STOP.
+E-stop(`/safety/emergency_stop`)과 odom/perception/local_waypoints 두절은
+항상 최우선 STOP.
 
-- **sim에서는 판정 모니터로만 동작** (waypoint_tracker는 자체 후진 복구 사용,
+> ⚠️ **현재 이 노드의 출력은 어디에도 연결돼 있지 않다 (2026-07-27 확인).**
+> `control_node`(control_ws, 타 팀 관리)는 `/local_waypoints`·odom·frenet·
+> imu·estop만 구독하므로, 여기서 내리는 정지/후진/복구 판정은 전부 계산만
+> 되고 차량 거동에는 영향이 없다. 실차에서 실제로 쓰려면 control 쪽에서
+> `/planner/recovery/target_speed`를 구독해야 한다:
+> - `NaN`이면 override 없음 (그대로 주행)
+> - 그 외 값은 control 자체 리밋을 다시 적용한 뒤 채택
+> - **후진(RECOVER_REVERSE)은 음수 속도**다. control이 speed를 `[0, max]`로
+>   clamp하는 한 전달되지 않으므로, 음수를 받는 경로가 함께 필요하다.
+>
+> 배선 전까지 이 노드는 진단/RViz 표시용 모니터로만 유효하다.
+
+- **sim에서도 판정 모니터로만 동작** (waypoint_tracker는 자체 후진 복구 사용,
   이 토픽을 소비하지 않음). yaw 소스는 launch가 `/ego_racecar/odom`으로 override.
+- **perception 미기동 상태는 "두절"로 보지 않는다** — stamp 기본값(0) 때문에
+  부팅 첫 사이클에 stale 판정이 나면 STOP으로 래치돼 버리기 때문. 대신 그
+  상태에서는 후방을 확인할 근거가 없으므로 `IsRearSafe()`가 후진을 거부한다.
 - 경계 위반은 `boundary_persist_sec`(0.2s) 이상 지속돼야 COLLISION_STOP —
   코너 순간 스파이크(벽 여유 ~0.3m + 추적오차 ~0.2m) 오탐 방지 (통합 시 추가).
 - **주의**: `boundary_stop_margin_m`은 반드시 섹터 공격 모드의
@@ -387,10 +402,10 @@ ros2 launch planning_pkg raceline_tuner.launch.py \
    (f1tenth_planning_msgs/ObstacleArray, Frenet s/d 필드 사용)를 구독한다. perception
    팀이 이 타입·토픽으로 발행하는지 합의 필요 (d>0 = 진행방향 왼쪽,
    장애물이 없어도 빈 배열을 주기 발행할 것 — 타임아웃 기반 안전장치와 연동).
-2. ~~planning_node 정리~~ — **해결**: control_ws의 `control_node`(C++ pure
-   pursuit + 스턱 복구 + E-stop)가 `/local_waypoints`를 직접 구독해
-   실차(`/ackermann_cmd`)/시뮬(`/drive`)로 명령한다 (environments 스위치).
-   `planning_node`(String 골격)는 이제 불필요 — 삭제 후보.
+2. ~~planning_node 정리~~ — **완료 (2026-07-27 삭제)**: control_ws의
+   `control_node`(C++ pure pursuit + E-stop)가 `/local_waypoints`를 직접
+   구독해 실차(`/autonomy/ackermann_cmd`)로 명령하므로 String 골격
+   `planning_node`는 불필요 — 소스·CMake 타깃·params 블록 모두 제거함.
 3. **대안 플래너 비교** — `scripts/global_traj_sim`의 step7(path_selection) /
    step8(frenet) 플래너와 spliner 방식을 시뮬레이션으로 비교. unicorn 스택의
    sqp_planner / lane_change_planner도 참고 후보.

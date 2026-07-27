@@ -47,12 +47,16 @@ private:
   double loop_rate_hz_{40.0};
   int num_local_waypoints_{80};
   double avoidance_timeout_sec_{0.5};
+  double frenet_odom_timeout_sec_{0.5};
 
   // State
   std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_;
   bool has_global_waypoints_{false};
   nav_msgs::msg::Odometry current_frenet_odom_;
   bool has_frenet_odom_{false};
+  // 수신 시각. frenet_frame_node나 localization이 죽으면 마지막 s로 로컬
+  // 윈도우를 계속 발행하게 되고, /local_waypoints는 겉보기에 '신선'하다.
+  rclcpp::Time frenet_odom_stamp_{0, 0, RCL_ROS_TIME};
   std::vector<f1tenth_planning_msgs::msg::Wpnt> avoidance_waypoints_;
   rclcpp::Time avoidance_stamp_{0, 0, RCL_ROS_TIME};
   int last_closest_index_{0};

@@ -1,6 +1,8 @@
 # 실차 (팀 인터페이스, 2026-07-20 기준 — planning_pkg environments/real_car.yaml 참조)
 #   odom: localization particle_filter가 직접 발행하는 /pf/pose/odom
-#   drive: control_node 출력 /ackermann_cmd
+#   drive: ackermann_mux 출력 /ackermann_cmd (control_node 출력은 그 앞단인
+#          /autonomy/ackermann_cmd). mux 뒤를 봐야 조이스틱 개입까지 포함한
+#          "차에 실제로 나간 명령"이 보이므로 의도적으로 mux 출력을 구독한다.
 #   obstacles: perception_obstacle_bridge 출력 /perception/obstacles_frenet (spliner와 동일 소스)
 monitor_node:
   ros__parameters:

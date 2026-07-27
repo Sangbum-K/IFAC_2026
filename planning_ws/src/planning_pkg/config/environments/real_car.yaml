@@ -8,13 +8,6 @@
 #   control: /local_waypoints + /pf/pose/odom + /car_state/frenet/odom 구독,
 #     /autonomy/ackermann_cmd 발행 (hardware ackermann_cmd_mux가 /ackermann_cmd로 중계)
 #   hardware: /odom (vesc), /scan, /safety/emergency_stop (latched)
-planning:
-  ros__parameters:
-    planning_horizon: 5.0
-    input_topic: /perception/objects
-    output_topic: /planning/plan
-    service_name: /planning/compute_plan
-
 # velocity_scale은 control의 vehicle/max_speed_mps와 반드시 짝을 맞출 것.
 # raceline v-max(6.0)가 control cap보다 높으면 control이 전 구간을 clamp해서
 # (a) 속도 프로파일이 cap 상수로 뭉개지고 (b) 조향 LUT를 wpnt 속도로 조회하는
@@ -22,9 +15,10 @@ planning:
 # 필요조향의 1.7~2.0배가 나온다. scale = (control cap) / 6.0 으로 계산.
 global_trajectory_node:
   ros__parameters:
-    # control max_speed_mps 4.0에 맞춤: 6.00 * 0.6667 = 4.00 m/s (1.81~4.00).
-    # 6 m/s로 올릴 땐 1.0으로. 클램프 범위는 [0.5, 1.4].
-    global_trajectory/velocity_scale: 0.6667
+    # 2026-07-27: 6 m/s 세팅. control의 vehicle/max_speed_mps도 6.0이어야 한다
+    # (4.0인 채로 두면 control이 전 구간 clamp + 조향 LUT 과다조회).
+    # 되돌릴 땐 4 m/s = 0.6667. 클램프 범위는 [0.5, 1.4].
+    global_trajectory/velocity_scale: 1.0
 
 frenet_frame_node:
   ros__parameters:
@@ -49,8 +43,19 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet   # 브릿지 출력
-    spliner/lookahead_m: 8.0            # trailing_engage_dist_m(6.0) 이상 — 감속 예고 확보.
-                                        # (이전 8<12 모순: 12 m 전 감속인데 8 m 안에서만 감지)
+    # perception real_car range_max(12.0)와 일치. 8.0이면 12 m에서 이미 보이는
+    # 장애물을 8 m까지 버려서 (a) 조기 레인스위치를 못 하고 (b) 6 m/s에서
+    # 정적 장애물 앞 정지가 불가능하다 (8 m: 5.70 m/s가 한계, 12 m: 7.25 m/s).
+    # 실제 감속 engage는 max(6.0, v*1.6+3.0) = 6 m/s에서 12.6 m 이므로 12가 정합.
+    spliner/lookahead_m: 12.0
+    spliner/loop_rate_hz: 30.0          # 6 m/s에서 재계획 간 이동 0.30 -> 0.20 m
+    # 정적 장애물 회피 예산 (6 m/s). 상수 거리 대신 그립으로 전환 거리를 잡는다.
+    spliner/blend_lat_acc_max: 3.0      # 6 m/s, d 0.42 -> 진입/복귀 5.5 m 자동 산출
+    spliner/blend_dist_max_m: 8.0
+    spliner/path_lat_acc_max: 7.0       # raceline은 7.36(0.75g)까지 씀 — 회피는 약간 보수적
+    spliner/path_decel_max: 6.0         # raceline 프로파일 최대 요구 6.27과 정합
+    spliner/lane_blend_out_m: 5.0       # 하한. 위 예산 계산값과 max로 결합
+    spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
                                         # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통
     spliner/inside_speed_scale: 0.7     # 회피 구간 감속 강화

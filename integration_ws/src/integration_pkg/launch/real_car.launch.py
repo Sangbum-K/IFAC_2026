@@ -8,7 +8,10 @@ RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, �
 
   A) f1tenth_stack bringup_launch.py       (LiDAR, VESC, joy, mux, TF)
   B) localization_bringup localization.launch.py backend:=particle_filter
-     + RViz(pf.rviz)                        — 5초 뒤 기동 (/scan·/odom이 먼저 나오게)
+                                            — 5초 뒤 기동 (/scan·/odom이 먼저 나오게)
+  M) monitor_pkg monitor.launch.py env:=real_car
+     초기 위치 지정 + 주행 모니터를 겸하는 RViz 창 하나. B와 같이 뜬다.
+     (pf.rviz는 안 띄운다 — monitor.rviz에 파티클/InferredPose를 병합해 뒀다)
   G) wait_for_localization                  — 파티클 수렴까지 대기하는 게이트
   C) integration_pkg stack.launch.py env:=real_car   — G가 통과하면 자동 실행
 
@@ -77,16 +80,20 @@ def launch_setup(context, *args, **kwargs):
     if localization:
         # /scan·/odom이 먼저 흐르게 잠깐 두고 PF를 띄운다. PF는 시작 직후
         # laser->base_link TF를 조회하는데, 그게 없으면 초기 포즈 클릭이 무시된다.
+        # RViz는 localization 쪽(pf.rviz)이 아니라 monitor_pkg가 띄운다 — 초기
+        # 위치 지정과 주행 모니터를 한 창에서 하려고 monitor.rviz에 PF 파티클
+        # 디스플레이를 병합해 뒀다. 여기서 rviz:=false로 pf.rviz를 막지 않으면
+        # 창이 두 개 뜬다.
         loc_args = {
             'backend': 'particle_filter',
             'mode': 'localization',
             'use_sim_time': 'false',
-            'rviz': rviz,
+            'rviz': 'false',
         }
         if map_name:
             loc_args['map'] = map_name
         actions.append(TimerAction(period=5.0, actions=[
-            LogInfo(msg='[2/3] localization (particle_filter) + RViz...'),
+            LogInfo(msg='[2/3] localization (particle_filter) + 모니터 RViz...'),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     _share('localization_bringup') + '/launch/localization.launch.py'),
@@ -94,11 +101,39 @@ def launch_setup(context, *args, **kwargs):
             ),
         ]))
 
+    # 모니터 RViz + monitor_node. localization과 같은 타이밍에 띄운다 (PF가
+    # 파티클을 뿌린 직후부터 초기 위치를 찍을 수 있어야 하므로).
+    # 랩타임/CTE 오버레이는 자율 스택(C)이 뜬 뒤부터 채워진다.
+    actions.append(TimerAction(period=5.0, actions=[
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                _share('monitor_pkg') + '/launch/monitor.launch.py'),
+            launch_arguments={'env': 'real_car', 'rviz': rviz}.items(),
+        ),
+    ] + ([
+        LogInfo(msg=(
+            '\n'
+            '=========================================================\n'
+            ' 파티클 필터 초기 위치를 지정하세요 (모니터 RViz 창):\n'
+            '  1. 차를 맵상 아는 지점(보통 출발선)에 실제로 갖다 놓기\n'
+            '  2. 상단 툴바 "2D Pose Estimate" 클릭\n'
+            '  3. 맵에서 차가 있는 위치를 클릭 -> 차 앞 방향으로 드래그\n'
+            '  4. 주황 파티클이 한 점으로 뭉치면 성공\n'
+            ' (위치를 완전히 잃으면 "Publish Point"로 전체 재분산)\n'
+            '=========================================================\n'
+        )),
+    ] if _is_true(rviz) else [])))
+
     gate = Node(
         package='integration_pkg',
         executable='wait_for_localization.py',
         name='wait_for_localization',
         output='screen',
+        # emulate_tty 없이는 rclpy 로그가 파이프에 물려 버퍼링돼서 화면에도
+        # launch.log 에도 안 남는다. 이 게이트는 "왜 안 넘어가는지"를 1초마다
+        # 알려주는 게 존재 이유인데, 정작 그 줄이 통째로 사라져 있었다.
+        # (2026-07-27 실차 세션: 3분간 아무 메시지 없이 멈춰 있는 것처럼 보였음)
+        emulate_tty=True,
         parameters=[{'timeout_sec': float(wait_timeout)}],
     )
 
@@ -136,7 +171,9 @@ def generate_launch_description():
         DeclareLaunchArgument('localization', default_value='true',
                               description='particle_filter localization 실행 여부'),
         DeclareLaunchArgument('rviz', default_value='true',
-                              description='초기 위치 지정용 RViz 실행 여부'),
+                              description='초기 위치 지정 + 주행 모니터 RViz'
+                                          '(monitor_pkg/rviz/monitor.rviz) 실행 여부. '
+                                          'false여도 monitor_node는 뜬다'),
         DeclareLaunchArgument('autostart', default_value='true',
                               description='수렴 후 자율 스택 자동 실행 여부'),
         DeclareLaunchArgument('wait_timeout', default_value='0.0',

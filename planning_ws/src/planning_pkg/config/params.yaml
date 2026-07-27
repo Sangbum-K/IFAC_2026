@@ -1,10 +1,3 @@
-planning:
-  ros__parameters:
-    planning_horizon: 5.0
-    input_topic: /perception/objects
-    output_topic: /planning/plan
-    service_name: /planning/compute_plan
-
 # ---------------------------------------------------------------------------
 # raceline 추종 파이프라인 (planner_stack.launch.py로 실행되는 4개 노드)
 # CSV는 share/planning_pkg/config/{global_trajectory,centerline}/ 에서 로드.
@@ -34,6 +27,10 @@ local_trajectory_node:
     local_trajectory/loop_rate_hz: 40.0
     local_trajectory/num_local_waypoints: 80
     local_trajectory/avoidance_timeout_sec: 0.5   # 이보다 오래된 회피 궤적은 무시
+    # frenet odom이 이보다 오래되면 /local_waypoints 발행을 멈춘다. 계속
+    # 발행하면 위치추정이 죽어도 구독자(control/recovery) 눈에는 경로가
+    # 신선해 보여서 stale 검출이 통째로 무력화된다.
+    local_trajectory/frenet_odom_timeout_sec: 0.5
 
 # 장애물 회피 스플라인 플래너 (ForzaETH/unicorn spliner C++ 포팅)
 # /perception/obstacles가 없으면 회피 발행 없음 -> raceline 추종에 영향 없음
@@ -89,6 +86,21 @@ spliner_node:
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.35, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30
+    # --- 고속 회피 예산 -----------------------------------------------------
+    # 횡 전환(진입/복귀/트레일링 d램프) 거리를 상수로 두면 피크 횡가속이
+    # 6*A*v^2/L^2 로 속도의 제곱에 비례해 커진다. 실제로 복귀 2.5m 고정은
+    # 4 m/s에서 0.65g, 6 m/s에서 1.46g를 요구했다 (mu 0.75 한계 0.75g).
+    # 아래 예산으로 L = v*sqrt(6A/a_max) 를 매 사이클 계산한다.
+    spliner/blend_lat_acc_max: 3.0    # 횡 전환에 배정할 그립 [m/s^2] (0.31g)
+    spliner/blend_dist_max_m: 8.0     # 전환 거리 상한 [m] — 장애물을 너무 일찍
+                                      # 피해 라인을 오래 벗어나지 않게
+    # 회피 궤적은 raceline을 d만큼 옮긴 경로라 곡률이 kappa/(1-d*kappa)로 변한다.
+    # 아래 두 값으로 (1) 오프셋 곡률 기반 속도 상한, (2) 역방향 감속 패스를
+    # 적용한다. 직선(kappa~0)에서는 아무것도 깎지 않아 가속이 유지되고,
+    # 코너 진입 전에서만 감속이 커진다.
+    spliner/path_lat_acc_max: 7.0     # 오프셋 경로 횡그립 [m/s^2] (raceline은 7.36 사용)
+    spliner/path_decel_max: 6.0       # 회피 궤적 역방향 감속 한계 [m/s^2]
+                                      # (raceline 프로파일 최대 요구 6.27과 정합)
     # 추월 섹터: 벽 여유가 충분한 s 구간을 자동 산출해 그 안에서만 회피 시도.
     # 밖에서는 TRAILING으로 따라가다 섹터에서 공격 모드(마진 완화+속도 부스트)로 승부.
     # RViz /planner/ot_sectors/markers (초록 라인)로 섹터 확인 가능.
@@ -154,7 +166,11 @@ recovery_supervisor_node:
     recovery/align_tolerance_rad: 0.35         # 재정렬 완료 heading 오차 [rad]
     recovery/align_speed_mps: 0.5              # 재정렬/재출발 저속 [m/s]
     recovery/odom_timeout_sec: 0.5             # odom 두절 -> STOP
-    recovery/perception_timeout_sec: 0.5       # perception 두절 -> STOP
+    recovery/perception_timeout_sec: 0.5       # perception "두절" -> STOP.
+                                               # 한 번도 못 받은 상태(미기동)는 두절이 아니다 —
+                                               # 그걸 STOP으로 보면 부팅 즉시 래치된다.
+                                               # 대신 그동안은 후진(IsRearSafe)이 거부된다.
+    recovery/local_wpnts_timeout_sec: 0.5      # /local_waypoints 두절 -> STOP
     recovery/pose_odom_topic: /pf/pose/odom    # yaw 소스 (sim launch가 /ego_racecar/odom로 override)
 
 # --- 시뮬레이션 전용 (sim_race.launch.py) ---

@@ -31,6 +31,7 @@ setup(
     entry_points={
         'console_scripts': [
             'obstacle_detector_node = perception_pkg.obstacle_detector_node:main',
+            'obstacle_viz_node = perception_pkg.obstacle_viz_node:main',
         ],
     },
 )

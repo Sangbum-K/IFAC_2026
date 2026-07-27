@@ -41,7 +41,7 @@ PlannerVisualizerNode::PlannerVisualizerNode(const std::string &node_name, const
     
     // Timer init
     t_run_node_ = this->create_wall_timer(
-        std::chrono::milliseconds((int64_t)(1000 / loop_rate_hz_)),
+        std::chrono::duration<double>(1.0 / loop_rate_hz_),
         [this]() { this->Run(); });
     
     RCLCPP_INFO(this->get_logger(), "PlannerVisualizerNode initialized successfully");

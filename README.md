@@ -18,7 +18,7 @@ ROS 2 **Humble** 기반 F1TENTH 자율주행 스택입니다. LiDAR로 장애물
 |---|---|---|
 | `hardware_ws` | 실차 하드웨어 bringup (joy, VESC, LiDAR, odom, TF, cmd mux) | `f1tenth_stack`, `ackermann_mux`, `vesc`, `urg_node` |
 | `localization_ws` | 위치 추정 (particle_filter / slam_toolbox / AMCL) | `localization_bringup`, `particle_filter` |
-| `perception_ws` | LiDAR 장애물 탐지 | `perception_pkg` |
+| `perception_ws` | LiDAR 장애물 탐지 + 마커 시각화 | `perception_pkg` |
 | `planning_ws` | 레이스라인 추종 + 회피 경로 + 모니터/RViz 패널 + **메시지 정의** | `planning_pkg`, `monitor_pkg`, `pitwall_panel`, `f1tenth_planning_msgs`, `f1tenth_perception_msgs` |
 | `control_ws` | pure pursuit 제어 (C++) | `control_pkg` |
 | `integration_ws` | 전체 스택을 한 번에 기동 + 헬스 모니터 + **매핑** | `integration_pkg` |

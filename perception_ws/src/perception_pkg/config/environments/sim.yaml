@@ -16,3 +16,14 @@ obstacle_detector_node:
     # 트랙 경계(벽) 필터는 planning 브릿지(bridge/wall_margin_m)가 raceline 기준으로
     # 수행하므로 여기서는 폴리곤을 쓰지 않는다.
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)
+
+# sim에서는 입출력 토픽을 둘 다 바꿔야 한다:
+#  - 입력: /perception/obstacles는 virtual_obstacle_node가 f1tenth_planning_msgs로
+#    쓰고 있어 타입이 충돌한다. detector 출력(/perception/obstacles_detected)을 본다.
+#  - 출력: /perception/obstacle_markers도 virtual_obstacle_node가 이미 쓴다(클릭한
+#    ground-truth). 같은 토픽에 두 발행자가 붙으면 서로 마커를 덮어쓰므로 분리한다.
+#    GT(초록/빨강)와 실제 인지 결과를 나란히 비교할 수 있다는 게 오히려 이득.
+obstacle_viz_node:
+  ros__parameters:
+    viz/input_topic: /perception/obstacles_detected
+    viz/output_topic: /perception/obstacles_detected_markers

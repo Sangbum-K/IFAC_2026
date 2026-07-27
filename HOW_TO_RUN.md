@@ -25,9 +25,29 @@ sa #전체 소스
 rc my_track
 # 맵 이름은 원하는대로 바꿔서 설정할 수 있음
 # 위 명령어들은 젯슨에 alias 설정함
-#   → RViz가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
+#   → RViz(monitor.rviz)가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
 #   → 파티클 수렴하면 자율 스택 자동 시작 → 조이스틱 버튼 5로 자율주행 모드 실행
 ```
+
+주행 데이터 녹화 (별도 터미널)
+```bash
+sa
+cd ~/IFAC_ws && rosbag       # run_MMDD_HHMMSS/ 로 저장, Ctrl+C 로 종료
+```
+
+### alias 목록 (`~/.zshrc`)
+
+| alias | 하는 일 |
+|---|---|
+| `sa` | IFAC_ws 전체 워크스페이스 source (오버레이 순서 고정) |
+| `rc [맵] [인자...]` | 실차 원커맨드 (`real_car.launch.py`) |
+| `mapp <맵> [인자...]` | 매핑 (`mapping.launch.py`) |
+| `mkcsv <맵> [cw\|ccw]` | 레이스라인/센터라인 CSV 생성 |
+| `rosbag` | 전체 토픽 녹화 (marker류 제외) |
+| `hw` | 하드웨어 bringup만 (`rc hardware:=false`와 짝) |
+| `cb` | `colcon build` |
+
+
 
 **나눠 띄우기 (디버깅용) — 터미널 3개, A→B→C 순서 엄수:**
 
@@ -239,7 +259,11 @@ ros2 launch integration_pkg real_car.launch.py
 이 한 줄이 A→B→C를 **자동 순서로** 처리합니다:
 
 1. 하드웨어 bringup (LiDAR/VESC/joy/mux/TF)
-2. 5초 뒤 particle_filter + **RViz(pf.rviz) 자동 실행**
+2. 5초 뒤 particle_filter + **RViz(monitor.rviz) 자동 실행**
+   — 초기 위치 지정과 주행 모니터를 겸하는 창 하나입니다. `pf.rviz`는 안 뜹니다
+   (파티클/InferredPose 디스플레이를 `monitor.rviz`에 병합해 뒀습니다).
+   같이 뜨는 `monitor_node`가 랩타임/CTE/속도 오버레이를 채웁니다
+   (자율 스택이 뜬 뒤부터).
 3. `wait_for_localization` 게이트가 파티클 수렴을 감시하며 1초마다 상태 로그
 4. **수렴이 확인되면 자율 스택(perception+planning+control)을 자동 시작**
 
@@ -325,10 +349,17 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 > laser→base_link TF가 없으면 클릭이 무시되고
 > `Cannot set pose yet, waiting for laser transform` 로그만 뜹니다.
 
-**RViz는 localization launch가 자동으로 띄웁니다** (`rviz:=false`로 끌 수 있음).
+**RViz는 `real_car.launch.py`가 monitor_pkg 설정으로 자동으로 띄웁니다**
+(`rviz:=false`로 끌 수 있음). 터미널 B를 직접 띄우는 경우(`localization.launch.py`
+단독 실행)에는 여전히 `pf.rviz`가 뜹니다.
+
 따로 띄우려면 — 반드시 **설치된** 설정 파일을 쓰세요:
 
 ```bash
+# 초기 위치 + 주행 모니터 (권장, real_car.launch.py가 쓰는 것과 같은 설정)
+rviz2 -d $(ros2 pkg prefix --share monitor_pkg)/rviz/monitor.rviz
+
+# 초기 위치만 보는 최소 구성
 rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz
 ```
 
@@ -458,8 +489,10 @@ ros2 launch control_pkg control.launch.py env:=sim
 **RViz를 띄웠는데 맵/파티클이 하나도 안 보임**
 → 예전 `pf.rviz`는 **ROS1 rviz 포맷**이라 RViz2에서 디스플레이가 전부 사라졌습니다.
   현재는 RViz2 포맷으로 교체돼 있으니, 소스가 아니라 **설치된** 설정을 쓰세요:
-  `rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz`
-  (`localization.launch.py`가 자동으로 띄워주므로 보통 직접 실행할 일은 없습니다.)
+  `rviz2 -d $(ros2 pkg prefix --share monitor_pkg)/rviz/monitor.rviz`
+  (`real_car.launch.py`가 자동으로 띄워주므로 보통 직접 실행할 일은 없습니다.)
+  `monitor.rviz`를 고쳤는데 반영이 안 되면 `planning_ws`를 다시 `colcon build`
+  했는지 확인 — RViz는 `install/`에 복사된 설정을 읽습니다.
 
 **코드/파라미터를 고쳤는데(또는 `git pull` 후) 실행하면 예전 동작 그대로**
 → 실행은 소스가 아니라 `install/`을 씁니다. **고친 뒤 반드시 다시 `colcon build`**

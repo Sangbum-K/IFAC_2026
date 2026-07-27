@@ -53,7 +53,7 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
 
     // Timer init - publish global waypoints periodically
     t_publish_waypoints_ = this->create_wall_timer(
-        std::chrono::milliseconds((int64_t)(1000 / publish_rate_hz_)),
+        std::chrono::duration<double>(1.0 / publish_rate_hz_),
         [this]() { this->Run(); });
 
     RCLCPP_INFO(this->get_logger(), "GlobalTrajectoryNode node initialized successfully");

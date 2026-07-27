@@ -28,3 +28,15 @@ obstacle_detector_node:
     dynamic_release: 40       # 상대(한번 동적)의 정적 복귀 연속 프레임 (정체성 유지)
     pos_hist_len: 20          # 위치분산 판별 윈도우 [frames]
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)
+
+# 인지 결과 -> RViz 마커 (monitor.rviz "Obstacles" 디스플레이).
+# 순수 구독자라 인지/플래닝 동작에는 영향이 없다.
+obstacle_viz_node:
+  ros__parameters:
+    viz/input_topic: /perception/obstacles
+    viz/output_topic: /perception/obstacle_markers
+    # 0이면 무한 — 인지가 죽어도 마커가 남아 있어 오히려 위험하다. 유한값 유지.
+    viz/marker_lifetime_sec: 0.5
+    viz/body_height_m: 0.3
+    viz/text_size_m: 0.25
+    viz/min_diameter_m: 0.05

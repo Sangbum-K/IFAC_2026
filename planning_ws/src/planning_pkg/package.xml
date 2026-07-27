@@ -8,7 +8,6 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
-  <depend>example_interfaces</depend>
   <!-- raceline 추종 파이프라인 노드들 (planner_pkg에서 이식) -->
   <depend>f1tenth_planning_msgs</depend>
   <depend>nav_msgs</depend>

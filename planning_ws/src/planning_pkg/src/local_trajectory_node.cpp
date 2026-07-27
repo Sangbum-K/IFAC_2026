@@ -21,10 +21,13 @@ LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rcl
     this->declare_parameter("local_trajectory/loop_rate_hz", 40.0);
     this->declare_parameter("local_trajectory/num_local_waypoints", 80);
     this->declare_parameter("local_trajectory/avoidance_timeout_sec", 0.5);
+    this->declare_parameter("local_trajectory/frenet_odom_timeout_sec", 0.5);
 
     loop_rate_hz_ = this->get_parameter("local_trajectory/loop_rate_hz").as_double();
     num_local_waypoints_ = this->get_parameter("local_trajectory/num_local_waypoints").as_int();
     avoidance_timeout_sec_ = this->get_parameter("local_trajectory/avoidance_timeout_sec").as_double();
+    frenet_odom_timeout_sec_ =
+        this->get_parameter("local_trajectory/frenet_odom_timeout_sec").as_double();
 
     RCLCPP_INFO(this->get_logger(), "loop_rate_hz: %f", loop_rate_hz_);
     RCLCPP_INFO(this->get_logger(), "num_local_waypoints: %d", num_local_waypoints_);
@@ -50,7 +53,7 @@ LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rcl
     
     // Timer init
     t_publish_ = this->create_wall_timer(
-        std::chrono::milliseconds((int64_t)(1000 / loop_rate_hz_)),
+        std::chrono::duration<double>(1.0 / loop_rate_hz_),
         [this]() { this->Run(); });
         
     RCLCPP_INFO(this->get_logger(), "LocalTrajectoryNode initialized successfully");
@@ -70,7 +73,8 @@ void LocalTrajectoryNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::Shar
     std::lock_guard<std::mutex> lock(mutex_frenet_odom_);
     current_frenet_odom_ = *msg;
     has_frenet_odom_ = true;
-    
+    frenet_odom_stamp_ = this->now();
+
     RCLCPP_DEBUG(this->get_logger(), "Received Frenet odom: s=%.3f, d=%.3f",
                 msg->pose.pose.position.x, msg->pose.pose.position.y);
 }
@@ -170,17 +174,29 @@ void LocalTrajectoryNode::Run() {
     // Get current data with thread safety
     std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_copy;
     nav_msgs::msg::Odometry frenet_odom_copy;
-    
+    rclcpp::Time frenet_odom_stamp(0, 0, RCL_ROS_TIME);
+
     {
         std::lock_guard<std::mutex> lock1(mutex_global_waypoints_);
         global_waypoints_copy = global_waypoints_;
     }
-    
+
     {
         std::lock_guard<std::mutex> lock2(mutex_frenet_odom_);
         frenet_odom_copy = current_frenet_odom_;
+        frenet_odom_stamp = frenet_odom_stamp_;
     }
-    
+
+    // frenet odom이 끊기면 로컬 윈도우를 발행하지 않는다. 계속 발행하면
+    // 마지막으로 알던 s 기준 경로가 40Hz로 '신선하게' 나가서, 구독자
+    // (control / recovery)가 위치추정이 죽은 걸 알 방법이 없다.
+    if ((this->now() - frenet_odom_stamp).seconds() > frenet_odom_timeout_sec_) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
+            "Frenet odom stale (>%.2fs) — 로컬 경로 발행 중단",
+            frenet_odom_timeout_sec_);
+        return;
+    }
+
     // Process with copied data (no more locks needed)
     PublishLocalWaypoints(global_waypoints_copy, frenet_odom_copy);
 }

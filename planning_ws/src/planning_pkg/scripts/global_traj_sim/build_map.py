@@ -7,6 +7,10 @@ step1(트랙 추출) + step2(IQP 라인·속도) + step3(시뮬) + step4(저장)
     # venv python으로
     ~/IFAC_ws/.venv/bin/python build_map.py my_map
 
+주행 방향은 **기본이 반시계(CCW)** 다 — 이 스택의 트랙은 CCW로 돈다는 전제.
+시계로 돌 맵만 `--dir cw` 를 준다. 생성된 CSV 첫 줄 헤더에 dir=CW/CCW 가 남으므로
+나중에 파일만 보고도 방향을 확인할 수 있다.
+
 전제:  <맵이름>.yaml + 거기서 가리키는 image(pgm/png) 한 쌍이 있어야 함.
        맵은 두 곳을 순서대로 찾는다:
          1) ~/IFAC_ws/maps      — mapping.launch.py 저장 위치 (복사 없이 바로 사용)
@@ -509,8 +513,8 @@ def loop_orientation(xy):
 def resolve_orientation(traj, start_xy=(0.0, 0.0), want=None):
     """이 궤적을 어느 방향으로 낼지 결정해서 'cw'/'ccw' 로 돌려준다.
 
-    want 가 'cw'/'ccw' 면 그대로 쓴다(권장). None 이면 예전 forward_x 휴리스틱 —
-    start_xy 최근접점에서 map +x 를 향하도록 맞춘다.
+    want 가 'cw'/'ccw' 면 그대로 쓴다(권장 — CLI 기본값은 ccw). None 이면 예전
+    forward_x 휴리스틱(--dir auto) — start_xy 최근접점에서 map +x 를 향하도록 맞춘다.
 
     ⚠️ 휴리스틱은 map (0,0) 이 '매핑을 시작할 때 차량 pose' 일 때만 의미가 있다.
        SLAM 은 map frame 을 차량 초기 pose 에 정렬하므로 원래는 성립하지만,
@@ -661,11 +665,12 @@ def main():
     ap.add_argument("map", nargs="?", default="my_map",
                     help="<이름>.yaml 의 확장자 뺀 이름 "
                          "(~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾음)")
-    ap.add_argument("--dir", choices=("cw", "ccw"), default=None,
-                    help="주행 방향을 명시한다 (권장). 생략하면 map(0,0) 최근접점이 "
-                         "+x 를 향하도록 자동 판정하는데, 이는 map origin 이 "
-                         "SLAM 시작 시 차량 pose 일 때만 맞다. yaml origin 을 손으로 "
-                         "고쳤다면 반드시 지정할 것.")
+    ap.add_argument("--dir", choices=("cw", "ccw", "auto"), default="ccw",
+                    help="주행 방향 (기본 ccw). 이 스택의 트랙은 반시계로 돈다 — "
+                         "시계로 돌 맵만 cw 를 준다. auto 는 예전 휴리스틱으로, "
+                         "map(0,0) 최근접점이 +x 를 향하도록 맞춘다. 이는 map origin "
+                         "이 SLAM 시작 시 차량 pose 이고 그때 차가 주행 방향을 보고 "
+                         "있었을 때만 맞으므로 권장하지 않는다.")
     args = ap.parse_args()
     m = args.map
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -676,7 +681,8 @@ def main():
     center = extract_centerline(outer, inner, ring, resolution, origin, H)
     # 방향은 여기서 '한 번만' 정하고 레이스라인에도 그대로 넘긴다. 각자 판정하면
     # 시작점 부근이 map +x 에 수직일 때 센터라인과 레이스라인이 역방향이 된다.
-    orientation = resolve_orientation(center, want=args.dir)
+    orientation = resolve_orientation(
+        center, want=None if args.dir == "auto" else args.dir)
     center = roll_to_start(center, orientation=orientation)
     print(f"      centerline: {len(center['s'])} pts, 길이 {center['s'][-1]:.1f} m")
 
@@ -712,7 +718,8 @@ def main():
     tag = {"iqp": "iqp_", "sp": "sp_"}.get(RACELINE, "")
     csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
     for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
-        write_csv(traj, dest, header_note=f"build_map ({m}, safe_dist={SAFE_DIST:.2f}m)")
+        write_csv(traj, dest, header_note=f"build_map ({m}, dir={orientation.upper()}, "
+                                          f"safe_dist={SAFE_DIST:.2f}m)")
         print(f"      wrote {dest}")
 
     if RACELINE == "iqp" and MAKE_SP:
@@ -724,7 +731,8 @@ def main():
         sp_name = f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
         for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
             write_csv(traj_sp, dest,
-                      header_note=f"build_map ({m}, SP overtake, safe_dist={SAFE_DIST:.2f}m)")
+                      header_note=f"build_map ({m}, SP overtake, "
+                                  f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)")
         print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
               f"SP {traj_sp['s'][-1]:.1f} m")
 

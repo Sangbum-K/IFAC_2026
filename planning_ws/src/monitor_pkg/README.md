@@ -19,6 +19,41 @@ rviz2 -d <planning_ws>/src/monitor_pkg/rviz/monitor.rviz
 `rviz/monitor.rviz`는 sim_race.rviz 기반(맵/스캔/차량/장애물/플래너 마커)에
 모니터 오버레이를 얹은 구성이라 이 창 하나로 전체 상황 파악 가능.
 
+## 실차 초기 위치 지정도 이 창에서 (pf.rviz 병합)
+
+`ros2 launch integration_pkg real_car.launch.py`가 띄우는 RViz가 이것입니다.
+예전에는 `localization.launch.py`가 `pf.rviz`를 따로 띄웠는데, 초기 위치를
+찍는 창과 주행을 보는 창이 나뉘어 있을 이유가 없어서 PF 디스플레이를
+`monitor.rviz`로 옮겼습니다:
+
+| 디스플레이 | 토픽 | 기본 |
+|---|---|---|
+| Particles (PoseArray, 주황) | `/pf/viz/particles` | on |
+| InferredPose (Arrow, 초록) | `/pf/viz/inferred_pose` | on |
+| FakeScan (PF 예측 스캔) | `/pf/viz/fake_scan` | **off** — `/scan`과 겹쳐 보면 수렴 품질 확인 |
+| TF | — | **off** — map→odom→base_link 연결 확인용 |
+
+툴바 `2D Pose Estimate`(→ `/initialpose`)와 `Fixed Frame: map`은 원래
+있었습니다. `Publish Point`(→ `/clicked_point`)로 파티클 전체 재분산.
+
+랩타임/CTE 오버레이는 자율 스택이 뜬 뒤부터 채워지므로, 초기 위치를 찍는
+동안에는 비어 있는 게 정상입니다.
+
+## 장애물 + 회피 라인
+
+`Obstacles` 디스플레이(`/perception/obstacle_markers`)는
+`perception_pkg/obstacle_viz_node`가 채웁니다. 예전에는 이 발행자가 sim에만
+있어서 실차에서 "회피 라인은 휘는데 뭘 피하는지 안 보이는" 상태였습니다.
+
+- 정적: 초록 원기둥 + `#id`
+- 동적: 빨강 원기둥 + 노랑 속도 화살표 + `#id D 1.2m/s`
+- 원기둥 지름 = 인지된 클러스터 지름 → `AvoidanceSpline`이 왜 그만큼
+  벌어졌는지 눈으로 대조 가능
+- 코스팅(외삽) 중인 트랙은 confidence만큼 투명해짐
+
+`ObstaclesDetected`(기본 off)는 sim 전용입니다 — sim에서는 `Obstacles`가
+`virtual_obstacle_node`의 ground-truth라 실제 인지 결과를 분리해 둡니다.
+
 ## 필요 패키지
 
 ```bash

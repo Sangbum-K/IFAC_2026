@@ -5,7 +5,15 @@ obstacle_detector_node:
     obstacle_topic: /perception/obstacles
     # localization particle_filter의 map->odom TF + hardware TF(base_link->laser)
     # 체인이 있어야 한다. TF가 없으면 스캔을 스킵한다 (잘못된 좌표 발행 방지).
-    target_frame: base_link
+    #
+    # base_link가 아니라 map이어야 한다. 트래킹/정적·동적 판별이 전부 이
+    # 프레임에서 돌기 때문에, base_link로 두면 차가 달릴 때 정지한 장애물의
+    # 좌표가 매 프레임 뒤로 흘러 속도(v_thresh)와 위치분산(dynamic_pos_std)이
+    # 둘 다 튄다 -> 정적 장애물이 동적으로 오분류된다.
+    # race_map.yaml은 원래부터 map이었고, real_car만 어긋나 있었다.
+    # real_car.launch.py는 PF 수렴 게이트를 통과한 뒤에 스택을 띄우므로
+    # 이 시점엔 map->base_link TF가 이미 있다.
+    target_frame: map
     tf_timeout_sec: 0.05
     range_max: 12.0
     cluster_eps: 0.16

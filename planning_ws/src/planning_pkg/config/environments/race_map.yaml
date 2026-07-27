@@ -5,13 +5,6 @@
 # 당일 맵 raceline 생성: slam 맵(png+yaml)을 maps/에 넣고
 #   python3 scripts/global_traj_sim/step4_main.py --map <당일맵> --raceline iqp --safe-dist 0.5
 # 후 colcon build (install에 CSV 복사).
-planning:
-  ros__parameters:
-    planning_horizon: 6.0
-    input_topic: /perception/objects
-    output_topic: /planning/plan
-    service_name: /planning/compute_plan
-
 # velocity_scale은 control의 vehicle/max_speed_mps와 짝을 맞출 것 (근거는
 # real_car.yaml의 동일 블록 참조). scale = (control cap) / (raceline v-max).
 global_trajectory_node:

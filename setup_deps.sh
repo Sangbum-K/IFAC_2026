@@ -51,16 +51,45 @@ if command -v rosdep >/dev/null; then
   src_paths=()
   for ws in $build_ws; do src_paths+=($ROOT/${ws}_ws/src); done
   info "rosdep install (${#build_ws} workspaces) — apt는 sudo 비밀번호를 물어봄"
-  rosdep install --from-paths $src_paths --ignore-src -r -y \
-    || print -P "%F{yellow}  ! rosdep 일부 실패 (오프라인/미초기화? 'sudo rosdep init && rosdep update')%f"
+  rosdep_ok=1
+  rosdep install --from-paths $src_paths --ignore-src -r -y || rosdep_ok=0
   # rosdep 의 pip installer 가 numpy 를 오염시켰는지 재확인
   np2=$($PY -c 'import numpy;print(numpy.__file__)' 2>/dev/null)
   [[ $np2 == $HOME/.local/* ]] && \
     fail "rosdep 이 ~/.local numpy 를 설치함 — '$PY -m pip uninstall -y numpy' 후 재실행"
-  ok "rosdep 완료"
+  if (( rosdep_ok )); then
+    ok "rosdep 완료"
+  else
+    # 예전엔 여기서도 "✓ rosdep 완료"를 찍었다. 그래서 sudo 비밀번호를 못 받아
+    # apt 가 통째로 실패한 날에도 성공처럼 보였고, monitor_pkg 오버레이가
+    # 조용히 빠진 채로 몇 주를 갔다. 실패는 실패라고 말한다.
+    print -P "%F{yellow}  ! rosdep 일부 실패 — 위 apt 로그 확인%f"
+    print   "    비밀번호 입력이 필요하다면 이 스크립트를 실제 터미널에서 실행할 것"
+    print   "    (오프라인/미초기화면: sudo rosdep init && rosdep update)"
+    print   "    아래 검증 단계에서 실제로 무엇이 빠졌는지 걸러낸다."
+  fi
 else
   fail "rosdep 미설치 — 'sudo apt install python3-rosdep2 && sudo rosdep init && rosdep update' 후 재실행"
 fi
+
+# ── RViz 2D 오버레이 (monitor_pkg) ──────────────────────────────────
+# monitor_pkg/package.xml 에 선언돼 있으니 rosdep 이 잡아야 정상인데, 위 rosdep
+# 실패는 경고만 내고 넘어가므로 조용히 빠질 수 있다. 실제로 그렇게 빠져서
+# monitor_pkg/CMakeLists 의 find_package(... QUIET) 가 monitor_node 를 통째로
+# 스킵했고, "빌드 성공했는데 랩타임/CTE 오버레이가 안 뜬다" 로 나타났다.
+# 여기서 못 박아 둔다 — 빌드가 아니라 셋업 단계에서 걸러야 하는 문제다.
+info "RViz 2D 오버레이 (monitor_pkg 랩타임/CTE 표시) 확인"
+missing_overlay=()
+for p in rviz_2d_overlay_msgs rviz_2d_overlay_plugins; do
+  [[ -d /opt/ros/humble/share/$p ]] || missing_overlay+=($p)
+done
+if (( ${#missing_overlay} )); then
+  print -P "%F{yellow}  ! 누락: ${missing_overlay[*]}%f"
+  print   "    설치:  sudo apt install ${${missing_overlay[@]/#/ros-humble-}//_/-}"
+  print   "    (없으면 monitor_node 가 빌드 자체를 스킵하고 오버레이가 전부 안 뜬다)"
+  fail "monitor_pkg 오버레이 의존성 누락"
+fi
+ok "rviz_2d_overlay_msgs / rviz_2d_overlay_plugins OK"
 
 # ── range_libc (rosdep 밖 유일한 진짜 수동 의존, 실차만) ────────────
 if (( need_rangelibc )); then

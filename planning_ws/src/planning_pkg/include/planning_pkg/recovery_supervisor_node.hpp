@@ -5,7 +5,16 @@
 //  - Control(control_node): 최종 속도·조향, 후진 하드 리밋, E-stop 우선 처리
 //  - Safety: /safety/emergency_stop=true는 항상 최우선 -> 즉시 STOP
 //
-// 출력 계약 (control_node가 구독):
+// ⚠️ 미배선 상태 (2026-07-27 확인): 아래 출력 계약의 구독자가 워크스페이스에
+//    아직 존재하지 않는다. control_node(control_ws, 타 팀 관리)는
+//    /local_waypoints·odom·frenet·imu·estop만 구독하므로, 이 노드의 판정은
+//    전부 계산만 되고 차량 거동에는 영향이 없다.
+//    → control_node가 /planner/recovery/target_speed를 구독하고
+//      (NaN이면 무시, 그 외에는 자체 리밋 적용 후 채택) 배선이 완료된다.
+//      후진(RECOVER_REVERSE)은 control이 speed를 [0, max]로 clamp하는 한
+//      전달 불가하므로, 음수 속도를 받는 경로도 함께 필요하다.
+//
+// 출력 계약 (control_node가 구독해야 함 — 위 경고 참조):
 //  - /planner/recovery/state       std_msgs/String  : 현재 상태 문자열 (진단/RViz)
 //  - /planner/recovery/target_speed std_msgs/Float64: 요청 속도 [m/s]
 //      DRIVING          -> NaN (override 없음, Control은 무시)
@@ -53,6 +62,7 @@ private:
 
   void CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void CallbackPoseOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void CallbackLocalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg);
   void CallbackEStop(const std_msgs::msg::Bool::SharedPtr msg);
@@ -62,7 +72,7 @@ private:
   // 판정 함수
   bool IsStuck(double now_sec);                 // 전진 명령 대비 s 진행량 부족
   bool IsBoundaryViolation() const;             // 트랙 경계 여유 < 임계값
-  bool IsRearSafe() const;                      // 후방 rear_check 구간 장애물 없음
+  bool IsRearSafe(double now_sec) const;                      // 후방 rear_check 구간 장애물 없음
   bool IsHeadingAligned() const;                // 차량 yaw vs local path psi
   bool InputsStale(double now_sec) const;       // odom/perception timeout
 
@@ -88,6 +98,7 @@ private:
   double align_speed_mps_{0.5};
   double odom_timeout_sec_{0.5};
   double perception_timeout_sec_{0.5};
+  double local_wpnts_timeout_sec_{0.5};
 
   // State
   State state_{State::DRIVING};
@@ -109,13 +120,21 @@ private:
   rclcpp::Time frenet_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time pose_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time obstacles_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time local_wpnts_stamp_{0, 0, RCL_ROS_TIME};
   bool has_frenet_{false};
   bool has_local_{false};
-  double gb_max_s_{1e9};
+  // "아직 한 번도 못 받음"과 "받다가 끊김"을 반드시 구분해야 한다. 안 그러면
+  // stamp 기본값(0) 때문에 부팅 첫 사이클에 stale로 판정돼 STOP으로 래치된다.
+  bool has_obstacles_{false};
+  // 트랙 한 바퀴 길이. /global_waypoints에서 (마지막 s + 간격)으로 받는다 —
+  // 로컬 윈도우 s의 러닝 맥스로 추정하면 첫 랩 동안 실제보다 작아서
+  // wrap 계산(IsRearSafe, 진행량)이 틀린다.
+  double track_len_{0.0};
   std::mutex mutex_;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_pose_odom_;
+  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_wpnts_;
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_local_wpnts_;
   rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr s_estop_;

@@ -1,6 +1,0 @@
-planning:
-  ros__parameters:
-    planning_horizon: 2.0
-    input_topic: /perception/objects
-    output_topic: /planning/plan
-    service_name: /planning/compute_plan
