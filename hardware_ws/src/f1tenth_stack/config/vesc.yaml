@@ -24,7 +24,7 @@
     current_max: 100.0
     brake_min: -20000.0
     brake_max: 200000.0
-    speed_min: -23250.0
+    speed_min: -26000.0
     speed_max: 26000.0
     position_min: 0.0
     position_max: 0.0

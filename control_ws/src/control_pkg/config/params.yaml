@@ -35,7 +35,7 @@ control:
 
     # Default to the temporary low-speed real-car LUT. Environment profiles
     # override this value where needed (for example, sim.yaml uses the SIM LUT).
-    "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
+    "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
 
     # Vehicle geometry and command limits.
     "vehicle/wheelbase_m": 0.33
