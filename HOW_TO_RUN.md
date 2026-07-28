@@ -12,17 +12,32 @@ cd ~/IFAC_ws
 매핑하기
 ```bash
 sa #전체 소스
-mapp my_track  
+mapp my_track0728   # 맵 이름 — 날짜 등으로 매번 새 이름을 쓸 것
 ```
+> `maps/`는 다른 어떤 폴더보다 먼저 검색되므로, 기존 맵이나 패키지 맵
+> (`particle_filter/maps`, `planning_pkg/maps`)과 같은 이름으로 저장하면 그 맵이
+> 조용히 가려집니다. 그래서 이름이 겹치면 **주행 시작 전에** launch가 거부합니다.
+> 정말 덮어쓸 때만 `mapp <이름> overwrite:=true` (기존 파일은 `.bak`으로 백업됨).
 플래닝용 csv파일생성
 ```bash
-mkcsv my_track3 ccw 
+mkcsv my_track0728 ccw   # 맵과 같은 이름 (기본 CCW, 시계 트랙만 cw)
 cd ~/IFAC_ws && ./build_all.sh 
 ```
+레이스라인 손보기 (선택)
+```bash
+sa
+tune my_track0728   # mkcsv로 만든 맵 이름. v_max/mu/stride/falloff 전부 자동
+# RViz에서 라인을 드래그 → 우클릭 "CSV 저장"
+# 저장은 '소스 트리' CSV를 덮어쓰므로 반드시:
+cd ~/IFAC_ws && ./build_all.sh
+```
+> `tune -h` 로 사용법 확인. 좁은 트랙에서 드래그가 안 먹으면 `tune my_track0728 min_wall:=0.25`,
+> 추월(sp) 라인을 편집하려면 `tune my_track0728 csv:=my_track0728_sp_max6.00ms_margin0.08m_mu0.75.csv`.
+
 만든 맵으로 주행
 ```bash
 sa #전체 소스
-rc my_track
+rc my_track0728   # mapp/mkcsv와 같은 이름 — 생략하면 옛 기본 맵(my_track)으로 돕니다
 # 맵 이름은 원하는대로 바꿔서 설정할 수 있음
 # 위 명령어들은 젯슨에 alias 설정함
 #   → RViz(monitor.rviz)가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
@@ -43,6 +58,7 @@ cd ~/IFAC_ws && rosbag       # run_MMDD_HHMMSS/ 로 저장, Ctrl+C 로 종료
 | `rc [맵] [인자...]` | 실차 원커맨드 (`real_car.launch.py`) |
 | `mapp <맵> [인자...]` | 매핑 (`mapping.launch.py`) |
 | `mkcsv <맵> [cw\|ccw]` | 레이스라인/센터라인 CSV 생성 |
+| `tune [맵] [인자...]` | 레이스라인 튜너 GUI (`raceline_tuner.launch.py`), 저장 후 `./build_all.sh` |
 | `rosbag` | 전체 토픽 녹화 (marker류 제외) |
 | `hw` | 하드웨어 bringup만 (`rc hardware:=false`와 짝) |
 | `cb` | `colcon build` |

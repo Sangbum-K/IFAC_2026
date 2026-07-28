@@ -5,9 +5,28 @@ RViz에서 레이스라인(라인 + 속도)을 인터랙티브하게 튜닝하�
 
 - 🟣 **보라 구체 드래그** → 라인을 좌우로 이동 (드래그의 **횡방향 성분만** 사용,
   주변이 코사인 falloff로 부드럽게 따라오고 벽 여유 안으로 자동 클램프)
-- 🟢 **초록 큐브 위/아래 드래그** → 그 구간 속도 조절 (핸들 높이 = 속도 × 0.3)
+- **속도 핸들 위/아래 드래그** → 그 구간 속도 조절 (핸들 높이 = 속도 × 0.3)
 - **핸들 우클릭 메뉴**: 속도 재계산(마찰한계) / 실행취소(최근 5회) / 전체 리셋 / CSV 저장
-- 미리보기 라인: 파랑(느림) → 빨강(빠름), 앵커마다 속도 텍스트
+
+### 화면에 뜨는 것
+
+| 표시 | 내용 |
+|---|---|
+| 바닥 라인 (`tuned_line`) | 주행 라인 자체 |
+| **속도 곡선** (`vel_curve`) | 속도 핸들을 잇는 곡선. 앵커끼리 직선으로 잇지 않고 **전 wpt(0.1 m)를 지나가므로** falloff로 만든 속도 변화가 그대로 부드럽게 보인다 |
+| 수직 눈금 (`vel_stems`) | 곡선 높이가 트랙 어느 지점인지 읽히도록 바닥과 연결 (0.5 m 간격) |
+| 속도 텍스트 (`vel_text`) | 앵커마다 숫자 |
+
+**색은 셋 다 속도에 연동**된다 (`_speed_color()` 하나를 공유):
+
+```
+느림 ──────────────────────────────────────── 빠름
+파랑 (0,0.35,1) → 청록 (0,0.9,0.8) → 노랑 (1,0.9,0) → 빨강 (1,0.15,0)
+```
+
+범위는 **현재 프로파일의 min~max**라 대비가 항상 최대다 (편집하면 같이 움직인다).
+속도 핸들은 높이뿐 아니라 색도 바뀌므로 드래그 후 `setPose`가 아니라 마커를
+다시 만들어 덮어쓴다.
 
 관련 파일:
 [`raceline_tuner_node.py`](raceline_tuner_node.py) ·
@@ -25,9 +44,14 @@ source ~/IFAC_ws/planning_ws/install/setup.zsh
 # 1) 튜너 단독 — 맵 + 튜너 + RViz (gym 불필요). 인자 없이 = 대회맵 my_track
 ros2 launch planning_pkg raceline_tuner.launch.py
 
-# 다른 맵이면 map:= 하나만 바꾸면 된다 (CSV는 자동으로 찾음)
-ros2 launch planning_pkg raceline_tuner.launch.py \
-    map:=Spielberg_map stride:=25 falloff:=8.0 v_max:=15.0 mu:=0.85
+# 다른 맵도 map:= 하나면 끝. CSV·v_max·mu·stride·falloff 전부 자동으로 정해진다
+ros2 launch planning_pkg raceline_tuner.launch.py map:=Spielberg_map
+
+# 단축어 (~/.zshrc, mapp/mkcsv 와 같은 자리). sa 로 source 한 뒤:
+tune                              # = 기본 맵
+tune my_track0727                 # = map:=my_track0727
+tune my_track0727 min_wall:=0.25  # 추가 인자는 그대로 전달
+tune --help                       # 사용법
 
 # 2) 시뮬과 함께 — 같은 RViz에서 주행 보면서 편집
 ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
@@ -37,17 +61,31 @@ ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
 자동으로 물고 들어가지만, stride/falloff/v_max/mu 는 **노드 기본값
 (25 / 8.0 m / 12.0 / 0.85) 고정**이다. 편집이 목적이면 단독 실행 쪽을 쓸 것.
 
-### launch 인자 (기본값 = my_track 기준)
+### launch 인자 — **`map:=` 말고는 넘길 게 없다**
 
-| 인자 | 기본값 | 의미 |
+`map:=` 하나만 주면 나머지는 CSV에서 유도된다. 명시하면 명시값이 이긴다.
+
+| 인자 | 기본값 | 어디서 유도되나 |
 |---|---|---|
-| `map` | `my_track` | 배경 맵 (`maps/<이름>.yaml`, 확장자 제외) |
+| `map` | `my_track` | 배경 맵 (`<이름>.yaml`, 확장자 제외). `~/IFAC_ws/maps` → `planning_pkg/maps` 순으로 탐색 |
 | `csv` | `''` (자동) | 비우면 `<map>_iqp_*.csv` 를 glob으로 찾는다. sp 라인 편집 시엔 직접 지정 |
-| `stride` | `10` | 핸들 간격 [wpt]. ds=0.1 m 이므로 10 = **1.0 m** |
-| `falloff` | `3.0` | 드래그 영향 반경 [m] |
-| `v_max` | `6.0` | "속도 재계산" 상한 [m/s] |
-| `mu` | `0.75` | "속도 재계산" 마찰계수 |
-| `min_wall` | `0.35` | 라인–벽 최소 여유 [m] |
+| `v_max` | `''` (자동) | **CSV 파일명의 `max<...>ms`** — 그 라인을 뽑을 때 쓴 값이므로 항상 정확하다 |
+| `mu` | `''` (자동) | **CSV 파일명의 `mu<...>`** |
+| `stride` | `''` (자동) | **전장** → 핸들 간격 1.0~2.5 m (핸들 ~30개). 29.3 m → `10`, 339 m → `25` |
+| `falloff` | `''` (자동) | **전장의 10%**, 3~8 m 클램프. 29.3 m → `3.0`, 339 m → `8.0` |
+| `min_wall` | `''` (0.35) | 라인–벽 최소 여유 [m]. 유도할 근거가 없어 노드 기본값 |
+
+띄울 때 터미널에 실제로 쓰인 값이 찍힌다:
+
+```
+[raceline_tuner] map=my_track0727 (…/maps/my_track0727.yaml)  csv=my_track0727_iqp_max6.00ms_margin0.08m_mu0.75.csv
+[raceline_tuner] 전장 30.5 m -> stride 10 wpt (1.0 m), falloff 3.05 m
+[raceline_tuner] v_max=6.0 m/s  mu=0.75  (파일명에서 자동)
+```
+
+파일명이 `_max…ms_…_mu….csv` 꼴이 아니면(직접 만든 CSV 등) v_max/mu를 못 읽고
+경고를 띄운 뒤 노드 기본값(12.0 / 0.85)으로 뜬다. 라인 편집에는 영향이 없고
+**"속도 재계산"에만** 쓰이므로, 그 메뉴를 쓸 거라면 `v_max:=` / `mu:=` 를 직접 넘길 것.
 
 맵/CSV가 없으면 launch가 **가능한 맵 목록과 함께 즉시 에러**를 낸다 (노드가
 조용히 죽지 않음). 현재 리포에 있는 조합:
@@ -65,16 +103,19 @@ ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
 
 ## ⚠️ 알아둘 것
 
-1. **`v_max` / `mu` 는 편집할 라인을 뽑을 때 쓴 값과 맞춰야 한다.**
-   "속도 재계산" 메뉴가 이 값으로 마찰한계를 다시 푼다. my_track 라인은
-   6 m/s · mu 0.75 로 만든 것이라 기본값이 그렇게 맞춰져 있지만, **Spielberg 등
-   다른 맵을 편집할 땐 `v_max:=15.0 mu:=0.85` 를 같이 넘겨야** 속도가 반토막 나지 않는다.
-   (라인만 옮기고 속도는 그대로 두려면 이 메뉴를 아예 누르지 않으면 된다.)
+1. **`v_max` / `mu` 는 손으로 넘기지 마라.** 편집할 라인을 뽑을 때 쓴 값과
+   어긋나면 "속도 재계산"이 엉뚱한 프로파일을 만든다(Spielberg 라인에 mu 0.75를
+   주면 속도가 반토막 난다). 이제 launch가 **CSV 파일명에서 읽으므로** 비워 두는 게
+   항상 맞다. 넘길 이유는 "일부러 다른 조건으로 다시 풀어 보고 싶을 때"뿐이다.
 
-2. **`falloff` 는 트랙 길이에 맞춰야 한다.**
-   my_track 전장이 **29.3 m** 뿐이라 노드 기본값 ±8 m 로 드래그하면 트랙의
-   **절반 이상**이 끌려온다. 그래서 launch 기본값을 3.0 으로 낮춰 뒀다.
-   Spielberg(339 m)처럼 큰 트랙은 `falloff:=8.0 stride:=25` 가 맞다.
+   **"속도 재계산"은 이제 `build_map.py` 와 같은 모델을 쓴다** (g-g 커플링 포함,
+   아래 참조). 예전에는 이 메뉴가 마찰한계를 넘는 프로파일을 만들어서 누르지 말라고
+   했지만, 지금은 라인을 옮긴 뒤 속도를 다시 푸는 정상 워크플로다.
+
+2. **`falloff` / `stride` 도 자동이다.** my_track 전장이 **29.3 m** 뿐이라
+   노드 기본값 ±8 m 로 드래그하면 트랙의 **절반 이상**이 끌려온다.
+   launch가 전장의 10%(3~8 m 클램프)로 잡으므로 my_track은 3.0,
+   Spielberg(339 m)는 8.0이 자동으로 나온다.
 
 3. **`min_wall` 0.35 m 가 좁은 트랙에선 빡빡하다.**
    my_track의 좌우 폭 합은 0.85~1.46 m(평균 1.09 m). 양쪽 0.35 m를 빼면
@@ -140,19 +181,31 @@ RViz에서 아무 핸들이나 **우클릭 → CSV 저장**. 그다음 리포 �
 
 ## 새 맵으로 튜닝하기
 
-1. **맵 파일 넣기** — `.png` + `.yaml` 을 [`maps/`](../../maps/) 에 복사.
-   `.yaml` 의 `image:` 줄이 실제 png 파일명과 같은지 확인.
+`mapp` 으로 만든 맵이면 **복사할 것이 없다.** 배경 맵을
+`~/IFAC_ws/maps` → `planning_pkg/maps` 순으로 찾기 때문이다
+(`build_map.py` / `localization.launch.py` 와 같은 순서, `.pgm` 도 그대로 로드).
+
+```bash
+mapp my_track0727                 # -> ~/IFAC_ws/maps/my_track0727.{pgm,yaml}
+mkcsv my_track0727 ccw            # -> src/.../config/global_trajectory/my_track0727_iqp_*.csv
+cd ~/IFAC_ws && ./build_all.sh    # CSV를 install 로 (맵은 복사 불필요)
+tune my_track0727                 # = ros2 launch planning_pkg raceline_tuner.launch.py map:=...
+```
+
+맵/CSV를 손으로 넣는 경우:
+
+1. **맵 파일 넣기** — `.png`(또는 `.pgm`) + `.yaml` 을 `~/IFAC_ws/maps/` 또는
+   [`maps/`](../../maps/) 에 복사. `.yaml` 의 `image:` 줄이 실제 이미지 파일명과
+   같은지 확인. `planning_pkg/maps/` 쪽에 넣었다면 맵은 심링크가 아니라 **빌드 시
+   복사**되므로 `colcon build --packages-select planning_pkg` 가 필요하다
+   (`~/IFAC_ws/maps` 는 빌드 없이 바로 읽는다).
 2. **raceline CSV 넣기** — 9열(`;` 구분) CSV를 `config/global_trajectory/` 에 복사.
    보통은 [`../global_traj_sim/`](../global_traj_sim/README.md) 의 `build_map.py`
    가 두 곳(`outputs/` + `config/`)에 자동으로 떨궈 준다.
-3. **빌드** — 맵은 심링크가 아니라 **빌드 시 복사**되므로, 새 맵은 빌드해야 RViz에 뜬다.
-   ```bash
-   cd ~/IFAC_ws/planning_ws && colcon build --packages-select planning_pkg
-   source install/setup.zsh
-   ```
-4. **실행** — `map:=<맵이름>` 만 넘기면 CSV는 자동으로 찾는다 (하드코딩된 맵 이름은 없다).
+   (튜너는 CSV만은 **소스 트리**에서 읽으므로 여기 있어야 한다.)
+3. **실행** — `map:=<맵이름>` 만 넘기면 CSV는 자동으로 찾는다 (하드코딩된 맵 이름은 없다).
    그 맵 라인을 뽑을 때 쓴 `v_max` / `mu` 도 같이 넘길 것.
-5. **편집 → 저장 → 다시 빌드**.
+4. **편집 → 저장 → `./build_all.sh`** (CSV를 install 에 반영해야 주행에 반영된다).
 
 맵 생성부터의 전체 절차는 [`maps/README.md`](../../maps/README.md) 참고.
 
@@ -177,8 +230,39 @@ s_m ; x_m ; y_m ; d_right ; d_left ; psi_rad ; kappa_radpm ; vx_mps ; ax_mps2
 `#` 로 시작하는 줄은 주석. 저장 시에도 헤더 2줄이 다시 붙는다.
 
 라인을 옮기면 `s / psi / kappa` 와 `d_left / d_right` 는 자동 갱신되고,
-**속도 재계산** 메뉴는 마찰한계(`v ≤ √(mu·g/κ)`) + 가감속 한계로
-forward-backward 프로파일을 다시 푼 뒤 `ax` 까지 채운다.
+**속도 재계산** 메뉴는 아래 모델로 forward-backward 프로파일을 다시 푼 뒤
+`ax` 까지 채운다.
+
+### 속도 재계산 모델 (= `build_map.py` 의 `velocity_profile()`)
+
+타이어가 낼 수 있는 힘은 `mu·g` 하나뿐이고 **선회와 가감속이 그 예산을 나눠 쓴다**
+(마찰원 / g-g diagram):
+
+```
+√(a_lat² + a_x²) ≤ mu·g
+```
+
+그래서 코너 정점에서 횡가속을 100% 쓰고 있으면 제동에 쓸 예산이 남지 않는다.
+forward/backward 패스는 매 지점에서 남은 예산만큼만 가감속을 허용한다:
+
+```python
+a_avail = a_max * √(1 - (a_lat / a_lat_max)²)
+```
+
+곡률 노이즈는 ±0.5 m **윈도우 최댓값**으로 잡는다. 이동평균을 쓰면 짧은 헤어핀의
+정점 곡률이 뭉개져 거기서만 속도가 올라가기 때문이다 (my_track R=1.0 m 정점에서
+2.72 → 2.99 m/s). 최댓값은 노이즈를 잡으면서 정점을 깎지 않는다.
+
+my_track 기준 실측 (요구 마찰 = `√(a_lat² + a_x²)/g`, mu 0.75):
+
+| | 요구 마찰 최대 | mu 초과 구간 |
+|---|---|---|
+| `build_map.py` (기준) | 0.77 | 0.3 m |
+| 튜너 — **g-g 도입 전** | **1.59** | **16.3 m / 29.3 m** |
+| 튜너 — 현재 | 0.75 | 0 m |
+
+현재 튜너는 어느 지점에서도 `build_map.py` 보다 빠르지 않다 (윈도우 최댓값 때문에
+평균 0.25 m/s 더 보수적). 즉 **재계산을 눌러서 라인이 더 공격적이 되는 일은 없다.**
 
 ---
 
@@ -188,15 +272,15 @@ forward-backward 프로파일을 다시 푼 뒤 `ax` 까지 채운다.
 `ros2 param set` 은 생성자에서만 읽으므로 **안 먹는다** — launch 인자로 넘기거나
 `launch/raceline_tuner.launch.py` 의 `parameters=[...]` 를 고칠 것.
 
-| 파라미터 | 노드 기본 | launch 인자 (기본) | 의미 |
-|----------|-----------|---------------------|------|
+| 파라미터 | 노드 기본 | launch 인자 | 의미 |
+|----------|-----------|--------------|------|
 | `tuner/raceline_csv` | `''` | `csv:` / `map:` 에서 결정 | 편집할 CSV 절대경로 |
 | `tuner/output_csv` | `''` | — (launch 편집 필요) | 비면 입력 파일에 덮어씀. 지정하면 그쪽에 저장(`.bak` 안 만듦) |
-| `tuner/handle_stride` | 25 | `stride:` (10) | 핸들 간격 [wpt] |
-| `tuner/falloff_window_m` | 8.0 | `falloff:` (3.0) | 드래그 영향 반경 [m] |
-| `tuner/min_wall_dist_m` | 0.35 | `min_wall:` (0.35) | 라인–벽 최소 여유 [m] |
-| `tuner/v_max_mps` | 12.0 | `v_max:` (6.0) | 속도 재계산 상한 [m/s] |
-| `tuner/mu` | 0.85 | `mu:` (0.75) | 마찰계수 |
+| `tuner/handle_stride` | 25 | `stride:` (전장에서 자동) | 핸들 간격 [wpt] |
+| `tuner/falloff_window_m` | 8.0 | `falloff:` (전장에서 자동) | 드래그 영향 반경 [m] |
+| `tuner/min_wall_dist_m` | 0.35 | `min_wall:` (노드 기본) | 라인–벽 최소 여유 [m] |
+| `tuner/v_max_mps` | 12.0 | `v_max:` (파일명에서 자동) | 속도 재계산 상한 [m/s] |
+| `tuner/mu` | 0.85 | `mu:` (파일명에서 자동) | 마찰계수 |
 | `tuner/a_acc_max` | 5.5 | — (launch 편집 필요) | 최대 가속 [m/s²] |
 | `tuner/a_dec_max` | 7.0 | — (launch 편집 필요) | 최대 감속 [m/s²] |
 | `tuner/vel_handle_scale` | 0.3 | — (launch 편집 필요) | 속도 핸들 높이 = v × scale [m] |
@@ -211,7 +295,7 @@ forward-backward 프로파일을 다시 푼 뒤 `ax` 까지 채운다.
 | 증상 | 원인 / 확인 |
 |---|---|
 | `raceline CSV가 없습니다` / `가능한 맵: …` | launch가 CSV를 못 찾은 것. `map:=` 이름 확인, 또는 `csv:=` 직접 지정 |
-| `맵이 없습니다: ….yaml` | 새 맵을 `src/planning_pkg/maps/` 에 넣고 `colcon build` 를 안 함 (맵은 복사됨) |
+| `맵이 없습니다: ….yaml` | 에러에 찾아본 폴더와 가능한 맵 목록이 찍힌다. `~/IFAC_ws/maps` 에도 `src/planning_pkg/maps/` 에도 없거나, 후자에 넣고 `colcon build` 를 안 한 것 (맵은 복사됨) |
 | `CSV 9열 아님` | 센터라인/벽 CSV를 넘긴 것. `config/global_trajectory/` 의 `_iqp_`/`_sp_` 파일이어야 함 |
 | 핸들은 보이는데 라인이 안 움직임 | 벽 여유 클램프에 걸린 것. `min_wall:=0.25` 로 낮춰 볼 것 (위 §3) |
 | "속도 재계산" 눌렀더니 속도가 확 바뀜 | `v_max:` / `mu:` 가 그 라인 생성값과 다름. 되돌리려면 우클릭 → 실행취소 |

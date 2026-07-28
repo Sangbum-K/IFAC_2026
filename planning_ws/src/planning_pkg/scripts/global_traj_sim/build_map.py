@@ -71,17 +71,49 @@ MU         = 0.75    # 노면 마찰계수    (실내/접지 낮으면 더 낮�
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
 #   0.17 m라 그대로면 접촉한다.
-#   0.40 → 벽여유 0.361 m, 차체-벽 0.211 m, lat err 0.170 m 빼고 +0.04 m 잔여.
-#   (중간값 0.35는 차체-벽 0.166 m로 lat err 0.177 m에 미달해서 기각)
-# 상한 주의: 최협부 실폭 1.0 m라 SAFE_DIST가 0.5를 넘으면 IQP가 불능이 된다.
-# 6 m/s로 올릴 땐 lat err가 0.215 m로 커지므로 여기서 더 올리거나 감속할 것.
-SAFE_DIST  = 0.40    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 여유
+# 2026-07-27: 올려도 소용없다는 걸 실측으로 확인 → 0.40 유지.
+#   "마진을 넉넉히" 주려고 0.55까지 올려봤는데, 이 값을 키우면 좁은 구간에서
+#   라인이 코리도 중앙으로 밀려 헤어핀 반경이 같이 줄어든다. my_track0727 실측:
+#     SAFE_DIST  벽여유min  R_min   판정
+#       0.40      0.350     1.01    PASS   <- 최적
+#       0.45      0.350     0.91    PASS (R 여유 3 cm뿐)
+#       0.50      0.425     0.76    FAIL (조향 포화)
+#       0.55      0.425     0.65    FAIL
+#   0.40->0.45 는 벽여유가 그대로면서 R 여유만 깎이고, 0.50부터는 못 돈다.
+#   즉 이 트랙의 구속 조건은 벽 여유가 아니라 **실차 조향 한계**(R>=0.88 m)다.
+#   벽 여유가 더 필요하면 SAFE_DIST 가 아니라 V_MAX(=추적오차)를 낮출 것.
+#   참고: 예전 주석의 "0.5 넘으면 IQP 불능"은 이제 해당 없다. 바운드를
+#   occupancy 마스크에서 받으면서, 코리도가 2*SAFE_DIST 보다 좁은 구간은
+#   불능이 아니라 '정중앙 고정'으로 처리된다(_solve_qp 의 narrow 분기).
+#   불능 대신 곡률로 대가를 치르는 형태로 바뀐 것이라 위 표가 나온다.
+SAFE_DIST  = 0.40    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 추적오차 여유
 # 소형 트랙(my_track: 실폭 median 1.2 m, 최대 2.15 m)은 벽 여유를 크게 빼면
 # 회피용 가용 corridor가 0으로 붕괴한다. MARGIN은 주행선을 안 옮기고 CSV의
 # d_left/d_right 보고값만 줄이므로(주행 위험 0) 0.15→0.08로 낮춰 회피 여유 확보.
 MARGIN     = 0.08    # CSV의 d_left/d_right에서 추가로 빼는 벽 여유 [m]
 RACELINE   = "iqp"   # "iqp"(최소곡률) | "sp"(최단거리) | "center"(중앙선)
 MAKE_SP    = True    # iqp일 때 SP 추월 라인도 함께 생성
+# SP(최단거리) 목적함수에 섞는 곡률 페널티 가중치.
+# 순수 최단거리는 코너를 다각형처럼 깎아 R이 0.4~0.8 m까지 떨어진다. 실차
+# 최소 회전반경은 wheelbase/tan(max_steer)=0.88 m라 그런 라인은 핸들을 끝까지
+# 꺾어도 못 따라간다 — 지금까지 만든 SP CSV가 전부(Spielberg 0.53, my_track
+# 0.79, my_track4 0.59) 이 한계를 넘고 있었는데 아무도 안 봤다.
+# 0이면 예전(순수 최단거리) 동작. 올릴수록 부드럽고 길어진다.
+SP_CURV_W  = 2.0
+# ⚠️ RACELINE="center"(원시 중앙선)는 이 트랙 규모에선 쓰지 말 것.
+# medial-axis 중앙선은 헤어핀에서 반경이 레이스라인보다 작아져 R이 0.3~0.4 m
+# 까지 떨어진다 (my_track 0.39 / my_track0727 0.31, 실차 한계 0.88 m).
+# 검증에서 걸러지긴 하지만 애초에 주행 가능한 라인이 안 나온다.
+# 벽에서 넉넉히 떨어져 달리고 싶으면 center 가 아니라 SAFE_DIST 를 올릴 것.
+
+# --- 최종 검증 (통과 못 하면 CSV를 안 쓰고 exit 1) ---------------------------
+# 2026-07-27: my_track0727에서 벽을 관통하는 IQP 라인이 그대로 CSV로 나가
+# 고속주행 테스트에 쓰인 사고가 있었다. 원인은 골격 정렬 실패 -> 중앙선이 벽을
+# 가로지름 -> 그 점에선 d_left=d_right=0 이라 QP가 "이미 정중앙"으로 보고 방치.
+# 어느 단계도 결과를 실제 occupancy 마스크에 대고 확인하지 않았다.
+# 이제 마지막에 반드시 검사하고, 실패하면 CSV를 만들지 않는다.
+CAR_HALF_WIDTH = 0.15    # 실차 전폭 0.30 m의 절반. 라인-벽 여유가 이 미만이면 접촉
+VERIFY_STRICT  = True    # False로 두면 경고만 하고 CSV를 쓴다 (권장하지 않음)
 
 # --- 차량/컨트롤러 파라미터 (실차 실측값, 트랙 크기와 무관) ------------------
 # ⚠️ 이 두 값은 출력 CSV(라인 형상·속도 프로파일)에 영향이 없다. 레이스라인은
@@ -162,6 +194,80 @@ def _px_to_world(rc, resolution, origin, H):
     return np.column_stack([x, y])
 
 
+class Grid:
+    """트랙 occupancy 마스크 + 월드↔픽셀 변환. **폭·침범 판정의 단일 기준**.
+
+    예전에는 폭을 경계 폴리라인(outer/inner)에 대한 최근접 거리로만 쟀다. 그
+    값 자체는 대체로 맞지만, 라인이 벽 '안'으로 들어가 버린 경우 d_left 와
+    d_right 가 둘 다 0 이 되어 "폭 0인 코리도 정중앙"과 구분이 안 됐다.
+    그래서 QP가 위반을 못 알아보고 그대로 뒀다(my_track0727 사고).
+
+    마스크에 법선을 쏘면 '그 점을 담고 있는 free 구간'을 부호 있는 alpha
+    범위로 얻을 수 있다. 점이 벽 안이면 두 끝이 같은 부호로 나와서 QP가
+    코리도 쪽으로 되끌어낸다 — 즉 최적화가 스스로 복구한다.
+    """
+
+    def __init__(self, ring, resolution, origin, H):
+        self.ring = ring
+        self.res = resolution
+        self.origin = np.asarray(origin, dtype=float)
+        self.H = H
+
+    def is_free(self, xy):
+        """월드 좌표 (N,2) → 그 셀이 주행 가능한가 (bool N). _px_to_world의 역."""
+        xy = np.atleast_2d(xy)
+        col = (xy[:, 0] - self.origin[0]) / self.res - 0.5
+        row = self.H - 0.5 - (xy[:, 1] - self.origin[1]) / self.res
+        ri = np.round(row).astype(int)
+        ci = np.round(col).astype(int)
+        ok = ((ri >= 0) & (ri < self.ring.shape[0])
+              & (ci >= 0) & (ci < self.ring.shape[1]))
+        out = np.zeros(len(xy), bool)
+        out[ok] = self.ring[ri[ok], ci[ok]]
+        return out
+
+    def corridor_interval(self, xy, psi, max_d=4.0, step=None):
+        """각 점에서 법선을 따라 스캔 → free 구간을 (a_lo, a_hi) [m] 로.
+
+        a_lo < 0 < a_hi 면 점이 코리도 안에 있고, 각각 우/좌 벽까지의 거리다.
+        점이 벽 안이면 가장 가까운 free 구간을 돌려주므로 a_lo, a_hi 가 같은
+        부호가 된다 → 그 방향으로 이동해야 한다는 뜻.
+
+        샘플 간격만큼(기본 res/2 = 2.5 cm) 항상 보수적으로(좁게) 나온다.
+        """
+        step = step if step is not None else 0.5 * self.res
+        m = int(round(max_d / step))
+        alphas = np.arange(-m, m + 1) * step          # alpha=0 은 인덱스 m
+        nrm = np.column_stack([-np.sin(psi), np.cos(psi)])
+        free = np.empty((len(xy), len(alphas)), bool)
+        for j, a in enumerate(alphas):
+            free[:, j] = self.is_free(xy + a * nrm)
+
+        a_lo = np.zeros(len(xy))
+        a_hi = np.zeros(len(xy))
+        for i in range(len(xy)):
+            idx = np.flatnonzero(free[i])
+            if len(idx) == 0:            # 법선 전체가 막힘 (있으면 맵이 이상함)
+                continue                 # a_lo = a_hi = 0 → 그 점은 이동 금지
+            brk = np.flatnonzero(np.diff(idx) > 1)
+            starts = np.r_[idx[0], idx[brk + 1]]
+            ends = np.r_[idx[brk], idx[-1]]
+            hit = np.flatnonzero((starts <= m) & (m <= ends))
+            k = (hit[0] if len(hit)
+                 else int(np.argmin(np.minimum(np.abs(starts - m),
+                                               np.abs(ends - m)))))
+            a_lo[i] = alphas[starts[k]]
+            a_hi[i] = alphas[ends[k]]
+        return a_lo, a_hi
+
+    def clearance(self, xy, psi, **kw):
+        """법선 좌우 벽까지 거리 중 작은 쪽 [m]. 벽 안이면 음수."""
+        a_lo, a_hi = self.corridor_interval(xy, psi, **kw)
+        inside = (a_lo <= 0.0) & (0.0 <= a_hi)
+        near = np.minimum(np.abs(a_lo), np.abs(a_hi))
+        return np.where(inside, near, -near)
+
+
 def _medial_axis_loop(ring):
     """트랙(free 링) 마스크의 medial-axis를 단일 폐루프 마스크로.
 
@@ -191,36 +297,83 @@ def _medial_axis_loop(ring):
 
 
 def _order_loop(sk):
-    """폐루프 골격 마스크의 픽셀을 이웃끼리 이어진 순서 (row,col) 로 정렬."""
+    """폐루프 골격 마스크의 픽셀을 이웃끼리 이어진 순서 (row,col) 로 정렬.
+
+    ⚠️ 예전 구현은 '가장 가까운 미사용 픽셀'만 보고 한 방향으로 걸었다.
+    skeletonize 결과에는 계단(staircase) 때문에 8-이웃이 3개인 픽셀이 몇 개
+    생기는데(my_track0727: 656 px 중 7개), 거기서 1 px짜리 곁가지로 새면 곧
+    막히고 `break` 로 걸음이 통째로 끝난다. 실제로 71 px(10.8%)를 버렸고,
+    그 자리에서 중앙선이 벽을 가로질러 결국 레이스라인이 벽을 관통했다.
+    경고만 찍고 통과시킨 게 사고를 키웠다.
+
+    그래서 세 가지를 바꿨다:
+      1. 진행 방향과 가장 잘 이어지는 이웃을 고른다 (계단 곁가지 회피).
+      2. 한쪽이 막히면 시작점에서 반대 방향으로도 걸어 앞에 붙인다.
+      3. 그래도 픽셀이 남거나 루프가 안 닫히면 **죽는다**. 중앙선이 깨진 채로
+         진행하면 뒤 단계가 조용히 잘못된 라인을 만든다.
+    """
     ys, xs = np.nonzero(sk)
     pts = np.column_stack([ys, xs]).astype(float)
-    tree = cKDTree(pts)
     n = len(pts)
+    if n < 8:
+        raise RuntimeError(f"medial-axis 골격이 너무 짧다 ({n} px)")
+    tree = cKDTree(pts)
     used = np.zeros(n, bool)
-    order = [0]
     used[0] = True
-    cur = 0
-    for _ in range(n - 1):
-        _, idx = tree.query(pts[cur], k=min(6, n))
-        nxt = -1
-        for j in np.atleast_1d(idx)[1:]:
-            if not used[j] and np.hypot(*(pts[j] - pts[cur])) < 1.9:
-                nxt = j
-                break
-        if nxt < 0:
-            break
-        order.append(nxt)
-        used[nxt] = True
-        cur = nxt
-    if len(order) < 0.8 * n:
-        raise RuntimeError(f"medial-axis 루프 정렬 실패 ({len(order)}/{n} px만 "
-                           "연결됨 — 골격이 끊겼을 수 있음)")
-    if len(order) < n:
-        # 20%까지는 위에서 통과시키지만, 빠진 픽셀은 중앙선에 점프를 만들고
-        # 그 자리에서 곡률이 튄다. 조용히 넘기지 말고 알린다.
-        print(f"      [warn] medial-axis 픽셀 {n - len(order)}/{n} "
-              f"({100 * (1 - len(order) / n):.1f}%) 누락 — 중앙선에 점프/곡률 "
-              "스파이크가 생길 수 있음 (outputs/*_trajectory.png 확인)")
+
+    def walk(start):
+        """start 에서 한쪽 방향으로 끝까지. start 포함 인덱스 리스트."""
+        order = [start]
+        cur = start
+        direction = None
+        while True:
+            best, best_score = -1, -np.inf
+            for j in tree.query_ball_point(pts[cur], r=1.9):
+                if used[j]:
+                    continue
+                step = pts[j] - pts[cur]
+                dist = float(np.hypot(*step))
+                if dist < 1e-9:
+                    continue
+                # 직진성 우선, 동점이면 가까운 쪽. 계단에서 곁가지로 새는 걸 막는다.
+                score = (float(step @ direction) / dist if direction is not None
+                         else 0.0) - 0.1 * dist
+                if score > best_score:
+                    best, best_score = j, score
+            if best < 0:
+                return order
+            direction = (pts[best] - pts[cur]) / np.hypot(*(pts[best] - pts[cur]))
+            used[best] = True
+            order.append(best)
+            cur = best
+
+    fwd = walk(0)
+    bwd = walk(0)                       # 0 의 반대쪽 이웃부터 (앞쪽은 이미 used)
+    order = bwd[:0:-1] + fwd            # 뒤쪽을 뒤집어 앞에 붙이고 0 은 한 번만
+
+    # 남는 픽셀이 몇 개 생기는 건 정상이다 — skeletonize 의 계단에서 대각으로
+    # 겹치는 '두께' 픽셀이라 건너뛰어도 경로가 끊기지 않는다(루프에 인접함).
+    # 반면 통째로 놓친 구간은 루프에서 멀리 떨어져 나온다. 그 둘을 개수가 아니라
+    # **루프까지의 거리**로 가른다. 예전처럼 개수 비율(20%)로 봐주면 실제로
+    # 놓친 구간(71 px)을 경고만 하고 통과시켜 벽을 가로지르는 중앙선이 나온다.
+    left = np.flatnonzero(~used)
+    if len(left):
+        far = left[cKDTree(pts[order]).query(pts[left])[0] > 1.9]
+        if len(far):
+            raise RuntimeError(
+                f"medial-axis 루프 정렬 실패: {len(far)}/{n} px 가 루프에서 "
+                "떨어져 남았다 (골격이 갈라졌거나 끊김). 그대로 두면 중앙선이 "
+                "벽을 가로지른다.\n"
+                "  → 맵을 다시 따거나 INFIELD_FILL_M / MIN_ISLAND_M2 를 올려 볼 것.")
+    # 닫힘 허용치는 한 걸음(1.9 px)이 아니라 3 px(0.15 m)로 둔다. 계단 구간에서
+    # 시작/끝 사이에 두께 픽셀 한 개가 낀 채 끝나는 게 정상이고(my_map: 2.0 px),
+    # 그 정도 틈은 뒤의 주기 스플라인이 매끄럽게 닫는다. 진짜로 끊긴 트랙은
+    # 수십 px 벌어지므로 이 값으로도 충분히 걸러진다.
+    gap = float(np.hypot(*(pts[order[-1]] - pts[order[0]])))
+    if gap > 3.0:
+        raise RuntimeError(
+            f"medial-axis 루프가 안 닫힘 (끝-시작 간격 {gap:.1f} px). "
+            "트랙이 닫힌 고리가 아니거나 골격이 끊겼다.")
     return pts[order]
 
 
@@ -346,8 +499,7 @@ def load_track(map_name):
     return polys[0], polys[1], resolution, origin, ring, H
 
 
-def extract_centerline(outer, inner, ring, resolution, origin, H,
-                       smooth=3.0, ds=DS_OUT):
+def extract_centerline(grid, smooth=3.0, ds=DS_OUT):
     """트랙 마스크의 medial-axis(거리변환 중심선) → 주기 스플라인 → 균일 리샘플.
 
     예전엔 안·바깥 경계 중점으로 중앙선을 잡았는데, 인필드가 아웃필드 벽까지
@@ -355,8 +507,8 @@ def extract_centerline(outer, inner, ring, resolution, origin, H,
     medial-axis는 항상 코리도 한가운데를 지나 게이트에서도 안 튄다.
     폭(d_left/d_right)만 물리 경계(outer/inner)에서 부호 있는 거리로 계산한다.
     """
-    loop_rc = _order_loop(_medial_axis_loop(ring))          # (row, col) 순서
-    loop_xy = _px_to_world(loop_rc, resolution, origin, H)
+    loop_rc = _order_loop(_medial_axis_loop(grid.ring))      # (row, col) 순서
+    loop_xy = _px_to_world(loop_rc, grid.res, grid.origin, grid.H)
     # 픽셀 계단 노이즈를 지운 뒤 주기 스플라인
     loop_r = _resample_closed(loop_xy, max(len(loop_xy), 800))
     tck, _ = splprep([loop_r[:, 0], loop_r[:, 1]], s=smooth, per=1)
@@ -376,12 +528,16 @@ def extract_centerline(outer, inner, ring, resolution, origin, H,
     kappa = (dx * ddy - dy * ddx) / np.power(dx * dx + dy * dy, 1.5)
     s = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))])
 
-    # 폭은 레이스라인과 같은 함수로 잰다. 예전엔 여기서 '최근접 inner/outer 점까지의
-    # 거리'만 썼는데, 헤어핀에서는 최근접 벽 점이 옆이 아니라 앞/뒤라 폭이 과소평가됐다.
-    # _compute_widths 는 |lon| < long_window 인 '옆에 있는' 점만 본다.
-    d_left, d_right = _compute_widths(xy, psi, outer, inner)
+    # 폭은 레이스라인과 같은 기준(occupancy 마스크에 법선 레이캐스트)으로 잰다.
+    a_lo, a_hi = grid.corridor_interval(xy, psi)
+    n_out = int(np.sum((a_lo > 0.0) | (a_hi < 0.0)))
+    if n_out:
+        # 골격 정렬이 성공했다면 여기 걸릴 일이 없다. 걸린다면 스무딩이 좁은
+        # 헤어핀의 모서리를 잘라먹은 것 — IQP가 되끌어내지만 알려는 둔다.
+        print(f"      [warn] 중앙선 {n_out}/{len(xy)} 점이 코리도 밖 "
+              f"(smooth={smooth} 이 헤어핀을 깎았을 수 있음)")
     return {"xy": xy, "psi": psi, "kappa": kappa, "s": s,
-            "d_left": d_left, "d_right": d_right}
+            "d_left": np.maximum(a_hi, 0.0), "d_right": np.maximum(-a_lo, 0.0)}
 
 
 # ============================================================ 2. IQP raceline
@@ -403,72 +559,71 @@ def _respline_closed(xy, ds, smooth=0.5):
     return {"s": s, "xy": np.column_stack([x, y]), "psi": psi, "kappa": kappa}
 
 
-def _compute_widths(xy, psi, outer, inner, long_window=1.0, k=32):
-    walls = np.vstack([outer, inner])
-    tree = cKDTree(walls)
-    k = min(k, len(walls))
-    _, idx = tree.query(xy, k=k)
-    rel = walls[idx] - xy[:, None, :]
-    t_vec = np.column_stack([np.cos(psi), np.sin(psi)])
-    lon = rel[:, :, 0] * t_vec[:, None, 0] + rel[:, :, 1] * t_vec[:, None, 1]
-    lat = -rel[:, :, 0] * t_vec[:, None, 1] + rel[:, :, 1] * t_vec[:, None, 0]
-    beside = np.abs(lon) < long_window
-    left_cand = np.where(beside & (lat > 0.0), lat, np.inf)
-    right_cand = np.where(beside & (lat < 0.0), -lat, np.inf)
-    d_left = left_cand.min(axis=1)
-    d_right = right_cand.min(axis=1)
-    for d in (d_left, d_right):
-        bad = ~np.isfinite(d)
-        if bad.any():
-            good_idx = np.flatnonzero(~bad)
-            d[bad] = np.interp(np.flatnonzero(bad), good_idx, d[good_idx],
-                               period=len(d))
-    return d_left, d_right
-
-
 def _solve_qp(ref, safe_dist_m, objective):
+    """법선 오프셋 alpha 에 대한 부등식 제약 최소제곱.
+
+    바운드는 마스크에서 받은 free 구간 [a_lo, a_hi] 에 safe_dist 를 물린 것이다.
+    a_lo/a_hi 는 부호가 있으므로, 기준점이 벽 안이면 두 끝이 같은 부호로 들어와
+    alpha 가 코리도 쪽으로 강제된다 — 위반이 스스로 복구된다.
+    코리도가 2*safe_dist 보다 좁으면 정중앙((a_lo+a_hi)/2)에 고정한다.
+    """
     n = len(ref["xy"])
     normal = np.column_stack([-np.sin(ref["psi"]), np.cos(ref["psi"])])
-    if objective == "curvature":
-        D = (np.roll(np.eye(n), -1, axis=1) - 2 * np.eye(n)
-             + np.roll(np.eye(n), 1, axis=1))
-    else:
-        D = np.roll(np.eye(n), -1, axis=1) - np.eye(n)
-    A = np.vstack([D @ np.diag(normal[:, 0]), D @ np.diag(normal[:, 1])])
-    b = -np.concatenate([D @ ref["xy"][:, 0], D @ ref["xy"][:, 1]])
-    lo = -(ref["d_right"] - safe_dist_m)
-    hi = ref["d_left"] - safe_dist_m
-    narrow = lo > hi
-    mid = 0.5 * (lo + hi)
+    D1 = np.roll(np.eye(n), -1, axis=1) - np.eye(n)          # 구간 길이
+    D2 = (np.roll(np.eye(n), -1, axis=1) - 2 * np.eye(n)
+          + np.roll(np.eye(n), 1, axis=1))                   # 곡률 근사
+    # SP는 순수 최단거리로 풀면 코너가 다각형이 되어 실차 조향 한계를 넘는다.
+    # 곡률 항을 sqrt(w) 로 세로로 쌓아 ||D1 x||^2 + w||D2 x||^2 를 최소화한다.
+    blocks = ([D2] if objective == "curvature"
+              else ([D1] if SP_CURV_W <= 0 else [D1, np.sqrt(SP_CURV_W) * D2]))
+    A = np.vstack([np.vstack([D @ np.diag(normal[:, 0]),
+                              D @ np.diag(normal[:, 1])]) for D in blocks])
+    b = -np.concatenate([np.concatenate([D @ ref["xy"][:, 0],
+                                         D @ ref["xy"][:, 1]]) for D in blocks])
+    lo = ref["a_lo"] + safe_dist_m
+    hi = ref["a_hi"] - safe_dist_m
+    # lsq_linear 은 lo < hi 를 '엄격하게' 요구한다. 코리도 폭이 정확히
+    # 2*safe_dist 면 lo == hi 가 되어 ValueError 로 죽는다 — 레이캐스트가
+    # 0.025 m 격자라 실제로 일어난다(my_track4). 등호도 narrow 로 본다.
+    narrow = lo >= hi - 1e-9
+    mid = 0.5 * (ref["a_lo"] + ref["a_hi"])
     lo = np.where(narrow, mid - 1e-6, lo)
     hi = np.where(narrow, mid + 1e-6, hi)
     return lsq_linear(A, b, bounds=(lo, hi)).x, normal
 
 
-def optimize_raceline_iqp(center, outer, inner, safe_dist_m=SAFE_DIST,
+def optimize_raceline_iqp(center, grid, safe_dist_m=SAFE_DIST,
                           n_iters=3, ds_opt=0.5, ds_out=DS_OUT,
                           objective="curvature"):
+    """중앙선을 법선 방향으로 밀어 최소곡률(IQP) 또는 최단거리(SP) 라인을 만든다.
+
+    폭/바운드는 매 반복 occupancy 마스크에서 다시 잰다(Grid.corridor_interval).
+    경계 폴리라인 최근접 거리로는 '벽 안에 들어간 점'을 못 알아봐서 위반이
+    영구히 남았다 — 그게 my_track0727 벽 관통의 직접 원인이었다.
+    """
     tag = "IQP" if objective == "curvature" else "SP"
     stride = max(int(round(ds_opt / (center["s"][1] - center["s"][0]))), 1)
-    ref = {k: center[k][::stride].copy()
-           for k in ("xy", "psi", "d_left", "d_right")}
+    ref = {k: center[k][::stride].copy() for k in ("xy", "psi")}
+    ref["a_lo"], ref["a_hi"] = grid.corridor_interval(ref["xy"], ref["psi"])
     for it in range(n_iters):
         alpha, normal = _solve_qp(ref, safe_dist_m, objective)
         geo = _respline_closed(ref["xy"] + alpha[:, None] * normal, ds_opt)
-        d_left, d_right = _compute_widths(geo["xy"], geo["psi"], outer, inner)
-        ref = {"xy": geo["xy"], "psi": geo["psi"],
-               "d_left": d_left, "d_right": d_right}
+        a_lo, a_hi = grid.corridor_interval(geo["xy"], geo["psi"])
+        ref = {"xy": geo["xy"], "psi": geo["psi"], "a_lo": a_lo, "a_hi": a_hi}
+        n_out = int(np.sum((a_lo > 0.0) | (a_hi < 0.0)))
         print(f"      {tag} iter {it + 1}/{n_iters}: "
               f"max|alpha|={np.max(np.abs(alpha)):.3f} m, "
-              f"max|kappa|={np.max(np.abs(geo['kappa'])):.3f} 1/m")
+              f"max|kappa|={np.max(np.abs(geo['kappa'])):.3f} 1/m, "
+              f"코리도 밖 {n_out}/{len(a_lo)}")
     alpha, normal = _solve_qp(ref, safe_dist_m, objective)
     xy_final = ref["xy"] + alpha[:, None] * normal
     geo = _respline_closed(xy_final, ds_out, smooth=0.0)
-    d_left, d_right = _compute_widths(geo["xy"], geo["psi"], outer, inner)
-    min_clear = min(d_left.min(), d_right.min())
-    if min_clear < safe_dist_m - 0.1:
-        print(f"      [warn] 최종 벽 여유 {min_clear:.2f} m < "
-              f"safe_dist {safe_dist_m:.2f} m (좁은 구간이거나 보정 한계)")
+    # 최종 해상도(0.1 m)에서 다시 재는 이유: 위 최적화는 0.5 m 격자에서만
+    # 바운드를 걸므로 절점 사이에서 스플라인이 처질 수 있다. CSV에 나가는
+    # d_left/d_right 는 실제로 주행할 점에서 잰 값이어야 한다.
+    a_lo, a_hi = grid.corridor_interval(geo["xy"], geo["psi"])
+    d_left = np.maximum(a_hi, 0.0)
+    d_right = np.maximum(-a_lo, 0.0)
     return {"s": geo["s"], "xy": geo["xy"], "psi": geo["psi"],
             "kappa": geo["kappa"], "d_left": d_left, "d_right": d_right}
 
@@ -567,6 +722,61 @@ def roll_to_start(traj, start_xy=(0.0, 0.0), orientation=None):
     return out
 
 
+def verify_line(name, traj, grid, half_width=CAR_HALF_WIDTH,
+                curvature_strict=True):
+    """최종 라인이 실제로 주행 가능한지 occupancy 마스크에 대고 검사.
+
+    ⚠️ 이 검사는 생략하면 안 된다. 2026-07-27 이전에는 어느 단계도 결과를
+    맵에 대고 확인하지 않아서, 벽을 관통하는 라인이 CSV로 그대로 나가
+    고속주행 테스트에 쓰였다 (my_track0727, 좌측 헤어핀 벽여유 0.016 m).
+
+    두 가지를 본다:
+      1. 벽 여유 >= 차 반폭 — 못 지키면 그 지점에서 차체가 벽에 닿는다.
+      2. 요구 회전반경 >= 실차 최소 회전반경 — 못 지키면 조향이 포화해
+         라인을 아예 못 따라간다 (핸들을 끝까지 꺾어도 모자람).
+
+    curvature_strict=False 는 SP 추월 라인 전용이다. SP는 최단거리라 코너를
+    깎아 R이 떨어지는데(SP_CURV_W로 완화해도 남는다), spliner는 SP 차선을
+    ot_max_kappa(0.4 = R>=2.5 m) 로 걸러낸 추월 섹터 안에서만 탄다. 실제로
+    my_track0727의 SP R 위반 8점은 전부 |kappa| 0.51~0.87 구간, 즉 섹터에서
+    배제되는 코너였다. 여기서 SP를 하드 실패시키면 곡률을 맞추려다 SP가
+    IQP와 겹쳐버려(간격 0.04 m) 추월 차선 자체가 사라진다.
+    반환: (ok, 진단 문자열 리스트)
+    """
+    clear = grid.clearance(traj["xy"], traj["psi"])
+    r_min_car = WHEELBASE / np.tan(MAX_STEER)
+    kappa = np.abs(traj["kappa"])
+    r_line = 1.0 / np.maximum(kappa, 1e-9)
+
+    tight = np.flatnonzero(clear < half_width)
+    sharp = np.flatnonzero(r_line < r_min_car)
+    msgs = [f"      {name}: 벽여유 min {clear.min():.3f} m "
+            f"(기준 {half_width:.2f}) · R_min {r_line.min():.2f} m "
+            f"(실차 한계 {r_min_car:.2f})"]
+
+    def spans(idx):
+        if len(idx) == 0:
+            return []
+        return np.split(idx, np.flatnonzero(np.diff(idx) > 3) + 1)
+
+    for g in spans(tight)[:5]:
+        msgs.append(f"        [FAIL] 벽여유 {clear[g].min():.3f} m @ "
+                    f"s={traj['s'][g[0]]:.1f}~{traj['s'][g[-1]]:.1f} m "
+                    f"xy=({traj['xy'][g[0], 0]:.2f},{traj['xy'][g[0], 1]:.2f})"
+                    f" — {len(g)}점")
+    lvl = "FAIL" if curvature_strict else "warn"
+    for g in spans(sharp)[:5]:
+        msgs.append(f"        [{lvl}] R={r_line[g].min():.2f} m @ "
+                    f"s={traj['s'][g[0]]:.1f}~{traj['s'][g[-1]]:.1f} m "
+                    f"xy=({traj['xy'][g[0], 0]:.2f},{traj['xy'][g[0], 1]:.2f})"
+                    f" — 조향 포화, {len(g)}점")
+    if len(sharp) and not curvature_strict:
+        msgs.append("        ↑ SP는 추월 섹터(ot_max_kappa) 안에서만 타므로 "
+                    "코너의 R 위반은 실주행에 안 쓰인다. 다만 위 구간이 "
+                    "직선부라면 SP_CURV_W 를 올릴 것.")
+    return len(tight) == 0 and (len(sharp) == 0 or not curvature_strict), msgs
+
+
 def write_csv(traj, path, header_note=""):
     cols = np.column_stack([
         traj["s"], traj["xy"][:, 0], traj["xy"][:, 1],
@@ -660,98 +870,10 @@ class PurePursuitSim:
 
 
 # ============================================================ 4. 오케스트레이션
-def main():
-    ap = argparse.ArgumentParser(description="맵 이름 하나로 레이스라인 생성")
-    ap.add_argument("map", nargs="?", default="my_map",
-                    help="<이름>.yaml 의 확장자 뺀 이름 "
-                         "(~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾음)")
-    ap.add_argument("--dir", choices=("cw", "ccw", "auto"), default="ccw",
-                    help="주행 방향 (기본 ccw). 이 스택의 트랙은 반시계로 돈다 — "
-                         "시계로 돌 맵만 cw 를 준다. auto 는 예전 휴리스틱으로, "
-                         "map(0,0) 최근접점이 +x 를 향하도록 맞춘다. 이는 map origin "
-                         "이 SLAM 시작 시 차량 pose 이고 그때 차가 주행 방향을 보고 "
-                         "있었을 때만 맞으므로 권장하지 않는다.")
-    args = ap.parse_args()
-    m = args.map
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 1) 트랙 추출 (+ 실측 크기 스케일 보정) --------------------------------
-    print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
-    outer, inner, resolution, origin, ring, H = load_track(m)
-    center = extract_centerline(outer, inner, ring, resolution, origin, H)
-    # 방향은 여기서 '한 번만' 정하고 레이스라인에도 그대로 넘긴다. 각자 판정하면
-    # 시작점 부근이 map +x 에 수직일 때 센터라인과 레이스라인이 역방향이 된다.
-    orientation = resolve_orientation(
-        center, want=None if args.dir == "auto" else args.dir)
-    center = roll_to_start(center, orientation=orientation)
-    print(f"      centerline: {len(center['s'])} pts, 길이 {center['s'][-1]:.1f} m")
-
-    walls = np.vstack([
-        np.column_stack([outer, np.zeros(len(outer))]),
-        np.column_stack([inner, np.ones(len(inner))])])
-    for dest in (OUT_DIR / f"{m}_walls.csv", CENTERLINE_DIR / f"{m}_walls.csv"):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(dest, walls, delimiter="; ", fmt="%.7f",
-                   header="x_m; y_m; wall_id(0=outer,1=inner)")
-
-    # 2) 레이스라인 + 속도 프로파일 ----------------------------------------
-    if RACELINE == "iqp":
-        print("[2/4] IQP 최소곡률 라인 + 속도 프로파일 ...")
-        geo = roll_to_start(optimize_raceline_iqp(center, outer, inner),
-                            orientation=orientation)
-    elif RACELINE == "sp":
-        print("[2/4] SP 최단거리 라인 + 속도 프로파일 ...")
-        geo = roll_to_start(optimize_raceline_iqp(center, outer, inner,
-                                                  objective="length"),
-                            orientation=orientation)
-    else:
-        print("[2/4] 중앙선 라인 + 속도 프로파일 ...")
-        geo = center
-    traj = build_trajectory(geo)
-    start_heading = float(traj["psi"][0])
-    print(f"      [dir] 주행 방향 {orientation.upper()} · 출발점 "
-          f"({traj['xy'][0, 0]:+.2f}, {traj['xy'][0, 1]:+.2f}) m, "
-          f"헤딩 {np.degrees(start_heading):+.1f}° (map +x 기준 CCW)")
-    print("      ↑ 실차를 이 지점에 이 방향으로 놓는 게 맞는지 눈으로 확인할 것. "
-          "폐루프 시뮬은 헤딩을 궤적 자신에서 가져오므로 방향이 뒤집혀도 "
-          "정상으로 보인다.")
-    tag = {"iqp": "iqp_", "sp": "sp_"}.get(RACELINE, "")
-    csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
-    for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
-        write_csv(traj, dest, header_note=f"build_map ({m}, dir={orientation.upper()}, "
-                                          f"safe_dist={SAFE_DIST:.2f}m)")
-        print(f"      wrote {dest}")
-
-    if RACELINE == "iqp" and MAKE_SP:
-        print("      SP 추월 라인 생성 ...")
-        geo_sp = roll_to_start(optimize_raceline_iqp(center, outer, inner,
-                                                     objective="length"),
-                               orientation=orientation)
-        traj_sp = build_trajectory(geo_sp)
-        sp_name = f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
-        for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
-            write_csv(traj_sp, dest,
-                      header_note=f"build_map ({m}, SP overtake, "
-                                  f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)")
-        print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
-              f"SP {traj_sp['s'][-1]:.1f} m")
-
-    for dest in (OUT_DIR / f"{m}_centerline.csv",
-                 CENTERLINE_DIR / f"{m}_centerline.csv"):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(dest, center["xy"], delimiter="; ", fmt="%.7f",
-                   header="x_m; y_m")
-
-    # 3) 폐루프 시뮬 --------------------------------------------------------
-    print(f"[3/4] {LAPS}랩 시뮬 (pure pursuit + 자전거 모델) ...")
-    log = PurePursuitSim(traj).run(n_laps=LAPS)
-    lap_time = log["t"][-1] / max(log["laps"], 1)
-    print(f"      lap time {lap_time:.2f} s, v_mean {log['v'].mean():.2f}, "
-          f"v_max {log['v'].max():.2f} m/s, |lat err| max "
-          f"{np.abs(log['d_err']).max():.3f} m")
-
-    # 4) 플롯 ---------------------------------------------------------------
-    print("[4/4] 플롯 저장 ...")
+def _save_plots(m, traj, center, outer, inner, orientation, start_heading,
+                grid=None, log=None, suffix=""):
+    """궤적/추종 그림 저장. 검증 실패 시에도 (log 없이) 진단용으로 부른다."""
+    lap_time = (log["t"][-1] / max(log["laps"], 1)) if log else float("nan")
     fig, ax = plt.subplots(figsize=(11, 8))
     ax.plot(*outer.T, "k-", lw=1); ax.plot(*inner.T, "k-", lw=1)
     if RACELINE == "iqp":
@@ -759,7 +881,15 @@ def main():
                 lw=0.8, alpha=0.7, label="centerline")
     pts = ax.scatter(traj["xy"][:, 0], traj["xy"][:, 1], c=traj["vx"],
                      cmap="viridis", s=4, label=f"{RACELINE} raceline (vx)")
-    ax.plot(log["x"], log["y"], "r-", lw=0.8, alpha=0.8, label="driven path")
+    if log is not None:
+        ax.plot(log["x"], log["y"], "r-", lw=0.8, alpha=0.8, label="driven path")
+    # 검증 위반 지점을 빨간 X 로 — 실패 그림에서 어디가 문제인지 바로 보이게
+    if grid is not None:
+        bad = grid.clearance(traj["xy"], traj["psi"]) < CAR_HALF_WIDTH
+        if bad.any():
+            ax.scatter(traj["xy"][bad, 0], traj["xy"][bad, 1], marker="x",
+                       c="red", s=60, lw=2, zorder=6,
+                       label=f"clearance < {CAR_HALF_WIDTH:.2f} m")
     ax.plot(traj["xy"][0, 0], traj["xy"][0, 1], "b*", ms=14, label="start")
     # 주행 방향 화살표. 폐루프 시뮬은 초기 헤딩을 궤적 자신에서 가져오므로
     # 방향이 뒤집혀 있어도 깨끗하게 돈다 → 방향 검증은 이 그림으로만 가능하다.
@@ -780,12 +910,18 @@ def main():
     ax.set_aspect("equal"); ax.legend(loc="upper right")
     # 제목은 ASCII로 — 이 기계 matplotlib 기본 폰트에 한글 글리프가 없어서
     # 한글을 쓰면 전부 두부(tofu)로 깨진다.
-    ax.set_title(f"{m}: global trajectory & lap ({lap_time:.2f} s/lap)\n"
+    head = (f"global trajectory & lap ({lap_time:.2f} s/lap)" if log
+            else "VERIFICATION FAILED -- no CSV written")
+    ax.set_title(f"{m}: {head}\n"
                  f"travel dir {orientation.upper()}, start heading "
                  f"{np.degrees(start_heading):+.1f} deg "
                  f"-- check against real car placement")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    fig.tight_layout(); fig.savefig(OUT_DIR / f"{m}_trajectory.png", dpi=150)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f"{m}_trajectory{suffix}.png", dpi=150)
+    plt.close(fig)
+    if log is None:
+        return
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
     axes[0].plot(log["s"], log["v"], label="v actual")
@@ -796,7 +932,144 @@ def main():
     axes[2].plot(log["s"], np.degrees(log["steer"]))
     axes[2].set_ylabel("steer [deg]"); axes[2].set_xlabel("s [m]")
     axes[0].set_title(f"{m}: closed-loop tracking")
-    fig.tight_layout(); fig.savefig(OUT_DIR / f"{m}_tracking.png", dpi=150)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f"{m}_tracking{suffix}.png", dpi=150)
+    plt.close(fig)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="맵 이름 하나로 레이스라인 생성")
+    ap.add_argument("map", nargs="?", default="my_map",
+                    help="<이름>.yaml 의 확장자 뺀 이름 "
+                         "(~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾음)")
+    ap.add_argument("--dir", choices=("cw", "ccw", "auto"), default="ccw",
+                    help="주행 방향 (기본 ccw). 이 스택의 트랙은 반시계로 돈다 — "
+                         "시계로 돌 맵만 cw 를 준다. auto 는 예전 휴리스틱으로, "
+                         "map(0,0) 최근접점이 +x 를 향하도록 맞춘다. 이는 map origin "
+                         "이 SLAM 시작 시 차량 pose 이고 그때 차가 주행 방향을 보고 "
+                         "있었을 때만 맞으므로 권장하지 않는다.")
+    args = ap.parse_args()
+    m = args.map
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1) 트랙 추출 (+ 실측 크기 스케일 보정) --------------------------------
+    print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
+    outer, inner, resolution, origin, ring, H = load_track(m)
+    grid = Grid(ring, resolution, origin, H)
+    center = extract_centerline(grid)
+    # 방향은 여기서 '한 번만' 정하고 레이스라인에도 그대로 넘긴다. 각자 판정하면
+    # 시작점 부근이 map +x 에 수직일 때 센터라인과 레이스라인이 역방향이 된다.
+    orientation = resolve_orientation(
+        center, want=None if args.dir == "auto" else args.dir)
+    center = roll_to_start(center, orientation=orientation)
+    print(f"      centerline: {len(center['s'])} pts, 길이 {center['s'][-1]:.1f} m")
+
+    walls = np.vstack([
+        np.column_stack([outer, np.zeros(len(outer))]),
+        np.column_stack([inner, np.ones(len(inner))])])
+
+    # 2) 레이스라인 + 속도 프로파일 ----------------------------------------
+    if RACELINE == "iqp":
+        print("[2/4] IQP 최소곡률 라인 + 속도 프로파일 ...")
+        geo = roll_to_start(optimize_raceline_iqp(center, grid),
+                            orientation=orientation)
+    elif RACELINE == "sp":
+        print("[2/4] SP 최단거리 라인 + 속도 프로파일 ...")
+        geo = roll_to_start(optimize_raceline_iqp(center, grid,
+                                                  objective="length"),
+                            orientation=orientation)
+    else:
+        # ⚠️ 이 모드는 검증을 거의 못 통과한다 (설정 블록 주석 참조).
+        print("[2/4] 중앙선 라인 + 속도 프로파일 ...")
+        geo = center
+    traj = build_trajectory(geo)
+    start_heading = float(traj["psi"][0])
+    print(f"      [dir] 주행 방향 {orientation.upper()} · 출발점 "
+          f"({traj['xy'][0, 0]:+.2f}, {traj['xy'][0, 1]:+.2f}) m, "
+          f"헤딩 {np.degrees(start_heading):+.1f}° (map +x 기준 CCW)")
+    print("      ↑ 실차를 이 지점에 이 방향으로 놓는 게 맞는지 눈으로 확인할 것. "
+          "폐루프 시뮬은 헤딩을 궤적 자신에서 가져오므로 방향이 뒤집혀도 "
+          "정상으로 보인다.")
+    # center 도 이름에 태그를 붙인다. planner_stack.launch.py 의 map:= 는
+    # <맵>_iqp_*.csv 만 글롭하므로, 태그가 붙어 있으면 center CSV가 실수로
+    # 메인 라인으로 잡히는 일이 없고 trajectory_csv_file:= 로만 쓰게 된다.
+    tag = {"iqp": "iqp_", "sp": "sp_", "center": "center_"}.get(RACELINE, "")
+    csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
+
+    traj_sp = sp_name = None
+    if RACELINE == "iqp" and MAKE_SP:
+        print("      SP 추월 라인 생성 ...")
+        geo_sp = roll_to_start(optimize_raceline_iqp(center, grid,
+                                                     objective="length"),
+                               orientation=orientation)
+        traj_sp = build_trajectory(geo_sp)
+        sp_name = f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
+        print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
+              f"SP {traj_sp['s'][-1]:.1f} m")
+
+    # 2b) 검증 — 통과 못 하면 CSV를 만들지 않는다 ---------------------------
+    # 라인을 실제 occupancy 마스크에 대고 확인하는 유일한 지점. 여기서 막지
+    # 않으면 벽을 관통하는 CSV가 그대로 실차로 나간다 (2026-07-27 사고).
+    print("      검증: 벽 여유 / 조향 한계 ...")
+    ok, msgs = verify_line(RACELINE.upper(), traj, grid)
+    if traj_sp is not None:
+        ok_sp, msgs_sp = verify_line("SP  ", traj_sp, grid,
+                                     curvature_strict=False)
+        ok, msgs = ok and ok_sp, msgs + msgs_sp
+    for line in msgs:
+        print(line)
+    if not ok:
+        print("\n" + "=" * 72)
+        print("  검증 실패 — CSV를 쓰지 않았습니다. 이 라인으로 주행하면 안 됩니다.")
+        print("  [벽여유] 위반이면 SAFE_DIST 를 올린다 (현재 %.2f m). 올려도"
+              % SAFE_DIST)
+        print("           안 늘면 트랙 최협부가 실제로 차폭+여유보다 좁은 것 →")
+        print("           맵을 다시 따거나 코스를 넓혀야 한다.")
+        print("  [R] 위반이면 SAFE_DIST 를 **내린다**. 값이 클수록 좁은 구간에서")
+        print("      라인이 중앙으로 밀려 코너 반경이 같이 줄기 때문이다 —")
+        print("      올리는 건 역효과다. 내려도 R<%.2f m 이면 코스 자체가 실차"
+              % (WHEELBASE / np.tan(MAX_STEER)))
+        print("      조향 한계를 넘는 것이라 헤어핀을 완만하게 다시 깔아야 한다.")
+        print("      (V_MAX/MU 를 만져도 R 은 안 바뀐다 — 기하 문제다)")
+        print("  위반 지점은 빨간 X 로 표시했습니다 → "
+              "outputs/%s_trajectory_FAILED.png" % m)
+        print("=" * 72 + "\n")
+        if VERIFY_STRICT:
+            _save_plots(m, traj, center, outer, inner, orientation,
+                        start_heading, grid=grid, suffix="_FAILED")
+            raise SystemExit(1)
+
+    for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
+        write_csv(traj, dest, header_note=f"build_map ({m}, dir={orientation.upper()}, "
+                                          f"safe_dist={SAFE_DIST:.2f}m)")
+        print(f"      wrote {dest}")
+    if traj_sp is not None:
+        for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
+            write_csv(traj_sp, dest,
+                      header_note=f"build_map ({m}, SP overtake, "
+                                  f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)")
+    for dest in (OUT_DIR / f"{m}_walls.csv", CENTERLINE_DIR / f"{m}_walls.csv"):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        np.savetxt(dest, walls, delimiter="; ", fmt="%.7f",
+                   header="x_m; y_m; wall_id(0=outer,1=inner)")
+    for dest in (OUT_DIR / f"{m}_centerline.csv",
+                 CENTERLINE_DIR / f"{m}_centerline.csv"):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        np.savetxt(dest, center["xy"], delimiter="; ", fmt="%.7f",
+                   header="x_m; y_m")
+
+    # 3) 폐루프 시뮬 --------------------------------------------------------
+    print(f"[3/4] {LAPS}랩 시뮬 (pure pursuit + 자전거 모델) ...")
+    log = PurePursuitSim(traj).run(n_laps=LAPS)
+    lap_time = log["t"][-1] / max(log["laps"], 1)
+    print(f"      lap time {lap_time:.2f} s, v_mean {log['v'].mean():.2f}, "
+          f"v_max {log['v'].max():.2f} m/s, |lat err| max "
+          f"{np.abs(log['d_err']).max():.3f} m")
+
+    # 4) 플롯 ---------------------------------------------------------------
+    print("[4/4] 플롯 저장 ...")
+    _save_plots(m, traj, center, outer, inner, orientation, start_heading,
+                grid=grid, log=log)
 
     print(f"\n완료. outputs/{m}_trajectory.png 확인. "
           f"CSV → config/global_trajectory/{csv_name}")

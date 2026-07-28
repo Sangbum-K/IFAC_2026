@@ -3,4 +3,3 @@ monitor_node:
   ros__parameters:
     monitor/odom_topic: /pf/pose/odom
     monitor/ackermann_topic: /ackermann_cmd
-    monitor/obstacle_topic: /perception/obstacles_frenet

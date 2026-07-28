@@ -4,7 +4,8 @@
 코너별로 라인과 속도를 RViz에서 직접 조절한다:
   - 보라 구체(2.5m 간격)를 드래그 -> 주변 라인이 코사인 falloff로 함께 이동
     (횡방향 성분만 적용, 트랙 경계-safe margin 안으로 자동 클램프)
-  - 초록 수직 핸들을 위아래로 드래그 -> 그 구간 속도 조절 (높이 = 속도)
+  - 속도 핸들을 위아래로 드래그 -> 그 구간 속도 조절 (높이 = 속도 * vel_handle_scale).
+    핸들·속도곡선·바닥라인 색이 모두 속도에 연동된다 (파랑 느림 -> 빨강 빠름)
   - 아무 핸들이나 우클릭 메뉴:
       속도 재계산(마찰한계) / 실행취소 / 전체 리셋 / CSV 저장
   - 저장 시 원본은 .bak으로 백업하고 같은 9열 CSV 포맷으로 기록.
@@ -24,6 +25,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Point
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
 from interactive_markers.menu_handler import MenuHandler
+from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import (InteractiveMarker, InteractiveMarkerControl,
                                     InteractiveMarkerFeedback, Marker, MarkerArray)
 
@@ -134,23 +136,38 @@ class RacelineTunerNode(Node):
         self.wpts[:, 6] = dpsi / ds  # kappa
 
     def _recompute_velocity(self):
-        """마찰한계 + 가감속 한계 forward-backward 속도 프로파일."""
+        """마찰한계 + g-g 커플링 forward-backward 속도 프로파일.
+
+        build_map.py 의 velocity_profile() 과 같은 모델이어야 한다. 타이어가 낼 수
+        있는 힘은 mu*g 하나뿐이고 선회와 가감속이 그 예산을 나눠 쓴다:
+
+            sqrt(a_lat^2 + a_x^2) <= mu*g
+
+        이 커플링이 없으면 '한계로 선회하면서 동시에 최대 제동'하는 프로파일이
+        나온다 (my_track 기준 요구 마찰 1.59g, 트랙의 61%가 한계 초과).
+        """
         kappa = np.abs(self.wpts[:, 6])
-        # 곡률 노이즈 완화 (이동평균 1m)
+        # 곡률 노이즈 완화 (±0.5 m) — 단, 평균이 아니라 윈도우 '최댓값'.
+        # 평균을 쓰면 짧은 헤어핀의 정점 곡률이 뭉개져 거기서만 속도가 올라간다
+        # (my_track R=1.0 m 정점에서 2.72 -> 2.99 m/s). 폐곡선이라 roll 로 감싼다.
         k = 5
-        kernel = np.ones(2 * k + 1) / (2 * k + 1)
-        kappa = np.convolve(np.concatenate([kappa[-k:], kappa, kappa[:k]]),
-                            kernel, mode='valid')
-        v = np.minimum(np.sqrt(self.mu * G / np.maximum(kappa, 1e-9)), self.v_max)
+        kappa = np.max([np.roll(kappa, sh) for sh in range(-k, k + 1)], axis=0)
+
+        a_lat_max = self.mu * G
+        v = np.minimum(np.sqrt(a_lat_max / np.maximum(kappa, 1e-9)), self.v_max)
         seg = np.maximum(np.diff(self.wpts[:, 0], append=self.wpts[-1, 0] + self.ds), 1e-6)
         n = len(v)
         for _ in range(3):
             for i in range(n):          # forward (가속 한계)
                 j = (i + 1) % n
-                v[j] = min(v[j], math.sqrt(v[i] ** 2 + 2 * self.a_acc * seg[i]))
+                a_lat = v[i] ** 2 * kappa[i]
+                a_avail = self.a_acc * math.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
+                v[j] = min(v[j], math.sqrt(v[i] ** 2 + 2 * a_avail * seg[i]))
             for i in range(n - 1, -1, -1):  # backward (감속 한계)
                 j = (i + 1) % n
-                v[i] = min(v[i], math.sqrt(v[j] ** 2 + 2 * self.a_dec * seg[i]))
+                a_lat = v[j] ** 2 * kappa[j]
+                a_avail = self.a_dec * math.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
+                v[i] = min(v[i], math.sqrt(v[j] ** 2 + 2 * a_avail * seg[i]))
         self.wpts[:, 7] = v
         # ax 프로파일도 갱신
         vn = np.roll(v, -1)
@@ -192,6 +209,35 @@ class RacelineTunerNode(Node):
         self.undo_stack.append(self.wpts.copy())
         if len(self.undo_stack) > 5:
             self.undo_stack.pop(0)
+
+    # -------------------------------------------------------- colormap
+    def _speed_color(self, v, alpha=1.0):
+        """속도 -> 파랑(느림) → 청록 → 노랑 → 빨강(빠름).
+
+        핸들 / 속도곡선 / 바닥 라인이 모두 이 함수를 쓰므로 세 표현의 색이
+        항상 일치한다. 범위는 현재 프로파일의 min~max (대비를 최대로).
+        """
+        lo, hi = self._v_range
+        t = float(np.clip((float(v) - lo) / (hi - lo), 0.0, 1.0))
+        # 파랑(0,0.35,1) -> 청록(0,0.9,0.8) -> 노랑(1,0.9,0) -> 빨강(1,0.15,0)
+        stops = [(0.00, (0.00, 0.35, 1.00)),
+                 (0.40, (0.00, 0.90, 0.80)),
+                 (0.72, (1.00, 0.90, 0.00)),
+                 (1.00, (1.00, 0.15, 0.00))]
+        for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+            if t <= t1:
+                f = (t - t0) / (t1 - t0)
+                rgb = [a + (b - a) * f for a, b in zip(c0, c1)]
+                break
+        else:
+            rgb = stops[-1][1]
+        return ColorRGBA(r=float(rgb[0]), g=float(rgb[1]), b=float(rgb[2]), a=float(alpha))
+
+    @property
+    def _v_range(self):
+        v = self.wpts[:, 7]
+        lo = float(v.min())
+        return lo, max(float(v.max()), lo + 0.1)
 
     # ----------------------------------------------------- marker setup
     def _make_all_markers(self):
@@ -244,7 +290,7 @@ class RacelineTunerNode(Node):
         box.type = Marker.CUBE
         box.scale.x = box.scale.y = 0.15
         box.scale.z = 0.1
-        box.color.g, box.color.a = 0.9, 0.95  # 초록
+        box.color = self._speed_color(v, alpha=0.95)   # 속도별 색 (곡선/바닥선과 동일)
 
         ctrl = InteractiveMarkerControl()
         ctrl.interaction_mode = InteractiveMarkerControl.MOVE_AXIS
@@ -271,9 +317,9 @@ class RacelineTunerNode(Node):
         im_pose_z = 0.03
         pose = self._make_pose(self.wpts[idx, 1], self.wpts[idx, 2], im_pose_z)
         self.server.setPose(f'pos_{idx}', pose)
-        pose_v = self._make_pose(self.wpts[idx, 1], self.wpts[idx, 2],
-                                 self.wpts[idx, 7] * self.z_scale)
-        self.server.setPose(f'vel_{idx}', pose_v)
+        # 속도 핸들은 위치(높이)뿐 아니라 '색'도 속도에 따라 바뀌므로 setPose 로는
+        # 부족하다 — 다시 만들어 덮어쓴다 (insert 는 같은 이름이면 교체).
+        self._make_vel_marker(idx)
 
     @staticmethod
     def _make_pose(x, y, z):
@@ -372,26 +418,59 @@ class RacelineTunerNode(Node):
         clear.action = Marker.DELETEALL
         arr.markers.append(clear)
 
+        stamp = self.get_clock().now().to_msg()
+
+        # 1) 바닥 라인 — 주행 라인 자체
         line = Marker()
         line.header.frame_id = 'map'
-        line.header.stamp = self.get_clock().now().to_msg()
+        line.header.stamp = stamp
         line.ns = 'tuned_line'
         line.id = 0
         line.type = Marker.LINE_STRIP
         line.scale.x = 0.07
         line.pose.orientation.w = 1.0
-        v = self.wpts[:, 7]
-        v_lo, v_hi = v.min(), max(v.max(), v.min() + 0.1)
-        from std_msgs.msg import ColorRGBA
         for r in self.wpts[::2]:
-            p = Point(x=r[1], y=r[2], z=0.02)
-            line.points.append(p)
-            t = (r[7] - v_lo) / (v_hi - v_lo)   # 파랑(느림) -> 빨강(빠름)
-            line.colors.append(ColorRGBA(r=float(t), g=0.2, b=float(1 - t), a=1.0))
+            line.points.append(Point(x=r[1], y=r[2], z=0.02))
+            line.colors.append(self._speed_color(r[7]))
         # 폐곡선
         line.points.append(Point(x=self.wpts[0, 1], y=self.wpts[0, 2], z=0.02))
         line.colors.append(line.colors[0])
         arr.markers.append(line)
+
+        # 2) 속도 곡선 — 핸들(초록 큐브)을 잇는 선. 앵커끼리 직선으로 잇지 않고
+        #    전 wpt(0.1 m)를 지나가므로 falloff 로 만든 속도 변화가 그대로 부드러운
+        #    곡선으로 보인다. 높이 = 속도 * z_scale 로 핸들과 정확히 같은 높이.
+        curve = Marker()
+        curve.header.frame_id = 'map'
+        curve.header.stamp = stamp
+        curve.ns = 'vel_curve'
+        curve.id = 0
+        curve.type = Marker.LINE_STRIP
+        curve.scale.x = 0.05
+        curve.pose.orientation.w = 1.0
+        for r in self.wpts:
+            curve.points.append(Point(x=r[1], y=r[2], z=r[7] * self.z_scale))
+            curve.colors.append(self._speed_color(r[7]))
+        curve.points.append(Point(x=self.wpts[0, 1], y=self.wpts[0, 2],
+                                  z=self.wpts[0, 7] * self.z_scale))
+        curve.colors.append(curve.colors[0])
+        arr.markers.append(curve)
+
+        # 3) 수직 눈금 — 곡선 높이가 어느 지점의 속도인지 읽히도록 바닥과 연결
+        stems = Marker()
+        stems.header.frame_id = 'map'
+        stems.header.stamp = stamp
+        stems.ns = 'vel_stems'
+        stems.id = 0
+        stems.type = Marker.LINE_LIST
+        stems.scale.x = 0.015
+        stems.pose.orientation.w = 1.0
+        for r in self.wpts[::5]:
+            c = self._speed_color(r[7], alpha=0.35)
+            stems.points.append(Point(x=r[1], y=r[2], z=0.02))
+            stems.points.append(Point(x=r[1], y=r[2], z=r[7] * self.z_scale))
+            stems.colors.extend([c, c])
+        arr.markers.append(stems)
 
         # 앵커마다 속도 텍스트
         for k, idx in enumerate(self.anchor_idxs[::2]):

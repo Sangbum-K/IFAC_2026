@@ -140,6 +140,91 @@ Visualization Manager:
       Reliability Policy: Reliable
       Value: /pf/viz/inferred_pose
     Value: true
+  # 차가 바라보는 방향 (odom heading). 항상 켜 둔다 — 초기 위치를 찍기 전에도
+  # odom 이 나오는 순간부터 차의 자세를 볼 수 있어야 한다.
+  # Keep: 1 = 최신 화살표 하나만 (기본값 100 이면 지나온 자리마다 화살표가
+  # 쌓여 트랙이 화살표로 뒤덮인다). Tolerance 0 = 매 메시지 갱신.
+  # 색은 우상단 CurrentPose 텍스트와 같은 하늘색으로 맞춰 뒀다.
+  - Angle Tolerance: 0
+    Class: rviz_default_plugins/Odometry
+    Covariance:
+      Orientation:
+        Alpha: 0.5
+        Color: 255; 255; 127
+        Color Style: Unique
+        Frame: Local
+        Offset: 1
+        Scale: 1
+        Value: false
+      Position:
+        Alpha: 0.30000001192092896
+        Color: 204; 51; 204
+        Scale: 1
+        Value: false
+      Value: false
+    Enabled: true
+    Keep: 1
+    Name: OdomHeadingReal
+    Position Tolerance: 0
+    Shape:
+      Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Color: 140; 210; 255
+      Head Length: 0.11999999731779099
+      Head Radius: 0.05999999865889549
+      Shaft Length: 0.2199999988079071
+      Shaft Radius: 0.02500000037252903
+      Value: Arrow
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /pf/pose/odom
+    Value: true
+  # sim 용 (gym GT odom). 실차/sim 이 동시에 뜨는 일은 없으므로 둘 다 켜 두고
+  # 발행되는 쪽만 그려지게 한다 — EgoModelSim/EgoModelReal 와 같은 방식.
+  - Angle Tolerance: 0
+    Class: rviz_default_plugins/Odometry
+    Covariance:
+      Orientation:
+        Alpha: 0.5
+        Color: 255; 255; 127
+        Color Style: Unique
+        Frame: Local
+        Offset: 1
+        Scale: 1
+        Value: false
+      Position:
+        Alpha: 0.30000001192092896
+        Color: 204; 51; 204
+        Scale: 1
+        Value: false
+      Value: false
+    Enabled: true
+    Keep: 1
+    Name: OdomHeadingSim
+    Position Tolerance: 0
+    Shape:
+      Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Color: 140; 210; 255
+      Head Length: 0.11999999731779099
+      Head Radius: 0.05999999865889549
+      Shaft Length: 0.2199999988079071
+      Shaft Radius: 0.02500000037252903
+      Value: Arrow
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /ego_racecar/odom
+    Value: true
   # PF가 예측한 가상 스캔. /scan과 겹쳐 보면 수렴 품질을 눈으로 볼 수 있지만
   # 평소엔 화면이 지저분해져서 꺼 둔다.
   - Alpha: 1
@@ -246,6 +331,30 @@ Visualization Manager:
       Reliability Policy: Reliable
       Value: /planning/global_waypoints_markers
     Value: true
+  # 실제로 지나온 궤적 (점마다 속도 색). 회색 고스트는 직전 랩.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: DrivenPath
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/driven_path
+    Value: true
+  # 궤적 -> 레이스라인 사다리. 길고 붉을수록 많이 벗어난 구간.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: RacelineDeviation
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/deviation_markers
+    Value: true
   - Class: rviz_default_plugins/MarkerArray
     Enabled: false
     Name: Centerline
@@ -290,35 +399,6 @@ Visualization Manager:
       Reliability Policy: Reliable
       Value: /planner/ot_sectors/markers
     Value: true
-  # 인지된 장애물 (perception_pkg/obstacle_viz_node).
-  # 정적=초록 원기둥 + `#id`, 동적=빨강 + 노랑 속도 화살표 + `#id D x.xm/s`.
-  # 원기둥 지름 = 인지된 클러스터 지름이라 AvoidanceSpline이 왜 그만큼
-  # 벌어졌는지 눈으로 대조할 수 있다.
-  - Class: rviz_default_plugins/MarkerArray
-    Enabled: true
-    Name: Obstacles
-    Namespaces: {}
-    Topic:
-      Depth: 5
-      Durability Policy: Volatile
-      History Policy: Keep Last
-      Reliability Policy: Reliable
-      Value: /perception/obstacle_markers
-    Value: true
-  # sim 전용. sim에서는 위 토픽이 virtual_obstacle_node의 ground-truth(클릭한
-  # 장애물)라, 실제 인지 결과는 이쪽으로 분리해서 나란히 비교한다.
-  # 실차에서는 발행자가 없으니 그냥 꺼 둔다.
-  - Class: rviz_default_plugins/MarkerArray
-    Enabled: false
-    Name: ObstaclesDetected
-    Namespaces: {}
-    Topic:
-      Depth: 5
-      Durability Policy: Volatile
-      History Policy: Keep Last
-      Reliability Policy: Reliable
-      Value: /perception/obstacles_detected_markers
-    Value: false
   - Alpha: 1
     Class: rviz_default_plugins/RobotModel
     Collision Enabled: false
@@ -366,11 +446,10 @@ Visualization Manager:
     Value: true
   # ── 주행 상태 오버레이 ────────────────────────────────────────────
   # 레이아웃 규칙 (좌상단 한 덩어리로 묶고 나머지 화면은 비워 둔다):
-  #   행1 y=10   LapInfo                              (흰색, 주 정보)
-  #   행2 y=46   FastestLapTime | MeanLapTime         (랩타임 계열)
-  #   행3 y=82   CurrentCTE | MaxCTE | MeanCTE        (호박색 계열)
+  #   행1 y=10    LapInfo                              (흰색, 주 정보)
+  #   행2 y=46    FastestLapTime | MeanLapTime         (랩타임 계열)
+  #   행3 y=82    CurrentCTE | MaxCTE | MeanCTE        (호박색 계열)
   #   게이지 y=124  Speed | Steering
-  #   우상단     ObstacleInfo
   # 모든 박스의 오른쪽 끝을 x=688 로 맞춰 세로선이 하나로 떨어지게 했다.
   #
   # height 는 줄 수에 맞춘다 (1줄=32, 2줄=58). 예전엔 전부 128 이었는데,
@@ -403,7 +482,7 @@ Visualization Manager:
     text size: 18
     ver_alignment: top
     ver_dist: 10
-    width: 882
+    width: 910
   - Align Bottom: false
     Background Alpha: 0.6200000047683716
     Background Color: 18; 20; 26
@@ -459,7 +538,7 @@ Visualization Manager:
     text size: 18
     ver_alignment: top
     ver_dist: 46
-    width: 446
+    width: 474
   - Align Bottom: false
     Background Alpha: 0.6200000047683716
     Background Color: 18; 20; 26
@@ -543,18 +622,17 @@ Visualization Manager:
     text size: 18
     ver_alignment: top
     ver_dist: 82
-    width: 350
-  # 2줄("Static: X\nDynamic: Y")이라 height 58. 우상단으로 빼서 좌측
-  # 랩/CTE 블록과 섞이지 않게 한다.
+    width: 378
+  # 현재 s 구간의 실제속도 vs 레이스라인 목표속도 (구간별 CSV는 ~/monitor_logs)
   - Align Bottom: false
     Background Alpha: 0.6200000047683716
     Background Color: 18; 20; 26
     Class: rviz_2d_overlay_plugins/TextOverlay
     Enabled: true
     Foreground Alpha: 1
-    Foreground Color: 255; 225; 120
+    Foreground Color: 150; 200; 240
     Invert Shadow: false
-    Name: ObstacleInfo
+    Name: SegmentInfo
     Overtake BG Color Properties: false
     Overtake FG Color Properties: true
     Overtake Position Properties: true
@@ -563,20 +641,17 @@ Visualization Manager:
       Durability Policy: Volatile
       History Policy: Keep Last
       Reliability Policy: Reliable
-      Value: /monitor/obstacle_info
+      Value: /monitor/segment_info
     Value: true
     font: DejaVu Sans Mono
-    height: 58
-    hor_alignment: right
+    height: 32
+    hor_alignment: left
     hor_dist: 10
     line width: 2
     text size: 18
     ver_alignment: top
-    ver_dist: 10
-    width: 225
-  # 게이지 2개. 예전엔 foreground alpha 0.2 라 채워지는 부분이 거의 안 보였다.
-  # max value 도 실제 운용 범위에 맞춘다 (raceline 최고 6 m/s -> 7로 여유).
-  # 속도는 4/6 m/s에서 노랑->빨강으로 자동 변색시켜 과속을 눈에 띄게 한다.
+    ver_dist: 118
+    width: 910
   - Class: rviz_2d_overlay_plugins/PieChartOverlay
     Enabled: true
     Name: Speed

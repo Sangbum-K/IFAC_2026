@@ -19,6 +19,11 @@ Ctrl+C 하는 순간 맵이 `map_dir/map_name.{pgm,yaml}`로 저장된다.
   hardware:=false       이미 A가 떠 있을 때
   rviz:=false           화면 없이
   save_on_exit:=false   Ctrl+C 자동 저장을 끄고 /save_map 서비스로만 저장
+  overwrite:=true       이름이 이미 쓰이고 있어도 강행 (기본은 launch 단계에서 거부)
+
+이름이 겹치면 **주행 전에** 막는다: map_dir 은 localization / raceline_tuner /
+build_map 모두가 먼저 뒤지는 폴더라, 기존 맵이나 패키지 맵(particle_filter/maps,
+planning_pkg/maps)과 같은 이름으로 저장하면 그 맵이 에러 없이 조용히 가려진다.
 
 주행 중 중간 저장:
   ros2 service call /save_map std_srvs/srv/Trigger
@@ -66,14 +71,62 @@ def _share(package):
             '했는지 확인하세요 (hardware_ws, localization_ws 포함).' % package)
 
 
+# 이름이 겹치면 '가려지는' 패키지 맵 폴더들. localization / raceline_tuner /
+# build_map 은 모두 map_dir(~/IFAC_ws/maps)을 먼저 뒤지므로, 여기 있는 맵과
+# 같은 이름으로 저장하면 그 맵들이 조용히 안 쓰이게 된다.
+SHADOWED_PACKAGES = (
+    ('particle_filter', 'maps'),    # localization 이 2순위로 찾는 곳
+    ('planning_pkg', 'maps'),       # raceline_tuner / build_map 이 2순위로 찾는 곳
+)
+
+
+def _name_conflicts(map_dir, map_name):
+    """map_name 으로 저장하면 무엇을 덮어쓰거나 가리는지 목록으로 돌려준다.
+
+    주행을 마친 뒤(Ctrl+C 저장 시점)에 알려주면 한 바퀴를 통째로 날리므로
+    반드시 launch 시점에 검사한다. 패키지를 source 안 했으면 그 항목은
+    검사에서 빠질 뿐, 매핑 자체를 막지는 않는다.
+    """
+    conflicts = []
+    existing = os.path.join(map_dir, map_name + '.yaml')
+    if os.path.isfile(existing):
+        conflicts.append('덮어씀:   %s (기존 맵)' % existing)
+    for package, subdir in SHADOWED_PACKAGES:
+        try:
+            path = os.path.join(get_package_share_directory(package), subdir,
+                                map_name + '.yaml')
+        except PackageNotFoundError:
+            continue
+        if os.path.isfile(path):
+            conflicts.append('가려짐:   %s (%s 패키지 맵)' % (path, package))
+    return conflicts
+
+
 def launch_setup(context, *args, **kwargs):
     hardware = _is_true(LaunchConfiguration('hardware').perform(context))
     rviz = _is_true(LaunchConfiguration('rviz').perform(context))
     map_name = LaunchConfiguration('map_name').perform(context)
     map_dir = os.path.expanduser(LaunchConfiguration('map_dir').perform(context))
     save_on_exit = _is_true(LaunchConfiguration('save_on_exit').perform(context))
+    overwrite = _is_true(LaunchConfiguration('overwrite').perform(context))
+
+    conflicts = _name_conflicts(map_dir, map_name)
+    if conflicts and not overwrite:
+        raise RuntimeError(
+            "map_name:='%s' 은 이미 쓰이는 이름입니다:\n"
+            '    %s\n'
+            '  %s 는 다른 폴더보다 먼저 검색되므로, 이 이름으로 저장하면 위 맵이\n'
+            '  에러 없이 조용히 안 쓰이게 됩니다 (주행은 되는데 다른 맵으로 됩니다).\n'
+            '  → 새 이름을 쓰세요 (예: mapp %s_%s)\n'
+            '  → 정말 덮어쓰려면: mapp %s overwrite:=true'
+            % (map_name, '\n    '.join(conflicts), map_dir,
+               map_name, 'v2', map_name))
 
     actions = []
+    if conflicts:
+        actions.append(LogInfo(msg=(
+            '\n[경고] overwrite:=true — 아래를 덮어쓰거나 가립니다:\n    %s\n'
+            % '\n    '.join(conflicts))))
 
     if hardware:
         actions.append(LogInfo(msg='[1/3] 하드웨어 bringup (LiDAR/VESC/joy/mux)...'))
@@ -156,5 +209,8 @@ def generate_launch_description():
                               description='맵 확인용 RViz 실행 여부'),
         DeclareLaunchArgument('save_on_exit', default_value='true',
                               description='Ctrl+C 시 자동 저장 여부'),
+        DeclareLaunchArgument('overwrite', default_value='false',
+                              description='기존 맵/패키지 맵과 이름이 겹쳐도 진행. '
+                                          '겹친 파일은 저장 시 .bak 으로 백업된다'),
         OpaqueFunction(function=launch_setup),
     ])

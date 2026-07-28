@@ -12,4 +12,28 @@ monitor_node:
     # 토픽 (sim 기본값)
     monitor/odom_topic: /ego_racecar/odom
     monitor/ackermann_topic: /drive
-    monitor/obstacle_topic: /perception/obstacles
+
+    monitor/map_frame: map
+
+    # 실제 주행 궤적 (/monitor/driven_path, MarkerArray)
+    #   지나온 자리를 선으로 남기고 점마다 색을 입힌다.
+    #   color_mode: speed(viridis, 시뮬 플롯과 같은 색) | cte | speed_error(초록=계획대로, 빨강=계획보다 느림)
+    monitor/trail/enabled: true
+    monitor/trail/min_dist_m: 0.05      # 이만큼 움직여야 점 추가 (정지 중 누적 방지)
+    monitor/trail/max_points: 20000     # 1랩을 못 돌아도 메모리가 터지지 않게 상한
+    monitor/trail/line_width: 0.06
+    monitor/trail/color_mode: speed
+    monitor/trail/v_min: 0.0
+    monitor/trail/v_max: 0.0            # 0 -> 레이스라인 최대 vx에서 자동 (색 스케일이 계획과 일치)
+    monitor/trail/cte_max: 0.5          # cte 색상/이탈량 사다리의 빨강 기준 [m]
+    monitor/trail/keep_previous_laps: 1 # 직전 랩을 회색 고스트로 남겨 랩 간 비교
+    monitor/trail/publish_rate_hz: 5.0
+
+    # 레이스라인 이탈량 사다리 (/monitor/deviation_markers)
+    monitor/deviation/enabled: true
+    monitor/deviation/stride: 5         # 궤적 N점마다 하나씩 (촘촘하면 화면이 지저분)
+
+    # s 구간별 속도/CTE 기록 — 랩 완료 시 CSV
+    monitor/segment/length_m: 1.0
+    monitor/segment/log_enabled: true
+    monitor/segment/log_dir: ~/monitor_logs

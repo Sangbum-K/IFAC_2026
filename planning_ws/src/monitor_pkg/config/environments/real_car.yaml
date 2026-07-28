@@ -3,9 +3,7 @@
 #   drive: ackermann_mux 출력 /ackermann_cmd (control_node 출력은 그 앞단인
 #          /autonomy/ackermann_cmd). mux 뒤를 봐야 조이스틱 개입까지 포함한
 #          "차에 실제로 나간 명령"이 보이므로 의도적으로 mux 출력을 구독한다.
-#   obstacles: perception_obstacle_bridge 출력 /perception/obstacles_frenet (spliner와 동일 소스)
 monitor_node:
   ros__parameters:
     monitor/odom_topic: /pf/pose/odom
     monitor/ackermann_topic: /ackermann_cmd
-    monitor/obstacle_topic: /perception/obstacles_frenet

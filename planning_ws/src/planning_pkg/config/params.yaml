@@ -15,7 +15,7 @@ global_trajectory_node:
     # SP 추월 라인 -> /global_waypoints/overtaking (H2H lane-change용, 없으면 미발행)
     global_trajectory/overtaking_csv_file: my_track_sp_max6.00ms_margin0.08m_mu0.75.csv
     global_trajectory/publish_rate_hz: 2.0
-    global_trajectory/velocity_scale: 1.0   # 주행 중 ros2 param set으로 0.5~1.4 조정 가능
+    global_trajectory/velocity_scale: 0.6667   # 주행 중 ros2 param set으로 0.5~1.4 조정 가능
 
 frenet_frame_node:
   ros__parameters:

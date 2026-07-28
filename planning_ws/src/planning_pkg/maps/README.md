@@ -23,38 +23,47 @@ numpy 1.x로 컴파일돼 있어서 그대로 두면 `_ARRAY_API not found` /
 
 (같은 이유로 `make_raceline.sh`는 이 기계에서 안 된다 — venv에 pip이 없다.)
 
-### 1. yaml의 image 파일명이 실제 이미지와 같은지 확인
+### 1. 맵 만들기 (SLAM) — `mapp <이름>`
 ```bash
-grep image ~/IFAC_ws/planning_ws/src/planning_pkg/maps/my_track.yaml
+mapp my_track0727     # 조이스틱으로 한 바퀴 -> Ctrl+C
+                      # -> ~/IFAC_ws/maps/my_track0727.{pgm,yaml}
+```
+이미 맵 파일이 있으면 `~/IFAC_ws/maps/` 또는 이 폴더(`planning_pkg/maps/`)에 두고
+yaml의 `image:` 줄이 실제 이미지 파일명과 같은지 확인:
+```bash
+grep image ~/IFAC_ws/maps/my_track0727.yaml
 ```
 
-### 2. 레이스라인 생성
+### 2. 레이스라인 생성 — `mkcsv <이름> [cw|ccw]`
 ```bash
-cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
-PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
+mkcsv my_track0727 ccw    # 기본 CCW. 시계방향 트랙만 cw
 ```
+맵은 `~/IFAC_ws/maps` → `planning_pkg/maps` 순으로 찾는다. 출력은
+`config/global_trajectory/<맵>_iqp_*.csv`(+`_sp_`), `config/centerline/<맵>_centerline.csv`,
+그리고 확인용 `scripts/global_traj_sim/outputs/<맵>_trajectory.png`.
 
-### 3. 빌드
+(alias 없이 직접: `PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track0727 --dir ccw`)
+
+### 3. 빌드 + source
 ```bash
-cd ~/IFAC_ws/planning_ws
-colcon build --packages-select planning_pkg
+cd ~/IFAC_ws && ./build_all.sh
+sa                    # zsh에서 setup.bash는 깨진다 — setup.zsh/sa 를 쓸 것
 ```
+CSV는 심링크가 아니라 **빌드 시 복사**된다. 이 단계를 건너뛰면 런타임 노드가
+CSV를 못 찾아 launch가 멈춘다.
 
-### 4. source
+### 4. RViz 튜너 (선택)
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/IFAC_ws/planning_ws/install/setup.bash
+tune my_track0727     # = ros2 launch planning_pkg raceline_tuner.launch.py map:=my_track0727
 ```
+CSV는 `<맵>_iqp_*.csv` 로 자동 탐색, 배경 맵도 `~/IFAC_ws/maps` 에서 바로 읽으므로
+**맵을 이 폴더로 복사할 필요가 없다.** `v_max`/`mu` 는 CSV 파일명에서, `stride`/`falloff`
+는 트랙 전장에서 자동으로 정해지므로 맵 이름 말고는 넘길 게 없다.
+편집 후 저장했으면 `./build_all.sh` 를 다시.
 
-### 5. RViz 튜너 실행
+### 5. 실차 주행
 ```bash
-ros2 launch planning_pkg raceline_tuner.launch.py \
-    csv:=my_map_iqp_max6.00ms_margin0.15m_mu0.75.csv map:=my_map stride:=10 falloff:=3.0
-```
-
-### 6. 튜너로 편집했으면 다시 빌드
-```bash
-cd ~/IFAC_ws/planning_ws && colcon build --packages-select planning_pkg
+rc my_track0727       # localization 맵 + planner CSV 3종이 모두 이 이름으로 잡힘
 ```
 
 ---
@@ -65,10 +74,14 @@ cd ~/IFAC_ws/planning_ws && colcon build --packages-select planning_pkg
 |------|------|------|
 | `V_MAX` | 6.0 | 최대 속도 [m/s] |
 | `MU` | 0.75 | 노면 마찰 |
-| `SAFE_DIST` | 0.25 | 라인-벽 최소 이격 [m] |
-| `MARGIN` | 0.15 | 벽 여유 [m] |
+| `SAFE_DIST` | 0.40 | 라인-벽 최소 이격 [m] |
+| `MARGIN` | 0.08 | 벽 여유 [m] |
 | `INFIELD_FILL_M` | 0.8 | infield 오목한 곳 메우기 [m] (0=끄기) |
 | `RESOLUTION_OVERRIDE` | None | yaml resolution 덮어쓰기 |
 
 > CSV 파일명은 `<맵>_iqp_max<V_MAX>ms_margin<MARGIN>m_mu<MU>.csv` 규칙.
-> V_MAX/MARGIN/MU를 바꾸면 5번의 `csv:=` 이름도 그에 맞게 바꿀 것.
+> 이름 앞부분(`<맵>_iqp_`)만 맞으면 launch는 glob으로 찾으므로 V_MAX/MARGIN/MU를
+> 바꿔도 `map:=` 는 그대로 동작한다. 다만 **같은 맵에 옛 CSV가 남아 있으면 둘 다
+> 매칭돼 사전순 첫 번째가 잡히므로**(launch가 경고를 찍는다) 옛 파일은 지울 것.
+> `params.yaml` 의 하드코딩 기본값(`rc` 를 맵 이름 없이 실행할 때만 쓰임)은
+> 파일명 전체가 적혀 있어 자동으로 따라가지 않는다.

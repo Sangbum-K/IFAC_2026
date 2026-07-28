@@ -18,6 +18,7 @@ particle_filter/maps/my_map.yaml과 동일한 키 구성을 따른다.
 
 import math
 import os
+import shutil
 
 import numpy as np
 import rclpy
@@ -135,6 +136,19 @@ class MapSaverNode(Node):
         origin_y = info.origin.position.y
         size_x_m = width * info.resolution
         size_y_m = height * info.resolution
+
+        # 같은 이름의 맵이 이미 있으면 한 번 .bak 으로 밀어둔다. 이름 충돌은
+        # mapping.launch.py 가 launch 시점에 막지만 overwrite:=true 로 통과할 수
+        # 있고, 그때 옛 맵이 복구 불가능하게 사라지는 걸 막는 안전망이다.
+        # 백업이 실패해도 저장 자체는 막지 않는다 (한 바퀴 주행이 더 비싸다).
+        for path in (pgm_path, yaml_path):
+            if not os.path.isfile(path):
+                continue
+            try:
+                shutil.copy(path, path + '.bak')
+                self.get_logger().warn('기존 맵 백업: %s.bak' % path)
+            except OSError as e:
+                self.get_logger().warn('기존 맵 백업 실패 (저장은 계속): %s' % e)
 
         try:
             with open(pgm_path, 'wb') as f:
