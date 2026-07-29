@@ -184,6 +184,70 @@ class RacelineTunerNode(Node):
         vn = np.roll(v, -1)
         self.wpts[:, 8] = (vn ** 2 - v ** 2) / (2 * seg)
 
+    def _recompute_velocity_window(self, center_idx):
+        """라인 편집으로 곡률이 바뀐 근방만 속도를 재계산.
+
+        _recompute_velocity()처럼 트랙 전체를 다시 풀면, 다른 코너에서 이미
+        수동으로 튜닝해둔 속도(vel 핸들)가 라인을 아주 조금만 옮겨도 매번
+        자동 계산값으로 리셋돼 버린다. 곡률이 실제로 바뀐 구간
+        (_smooth_xy_window 와 같은 폭)에, 감속이 코너보다 앞에서 시작될 수
+        있는 만큼(최대 제동거리)의 여유를 더한 구간만 다시 풀고, 그 양 끝은
+        기존 속도(수동 튜닝 포함)에 고정한 채 안쪽만 최적화한다.
+        """
+        n = len(self.wpts)
+        edit_half = int(self.window_m / self.ds) + 6      # _smooth_xy_window 와 동일 폭
+        a_lim = max(min(self.a_dec, self.a_acc), 0.5)
+        brake_half = int(self.v_max ** 2 / (2 * a_lim) / self.ds)
+        kf = 5                                             # kappa 최댓값 필터 반경
+        half = edit_half + brake_half + kf
+
+        if 2 * half + 1 >= n:              # 트랙이 작으면 국소화 의미 없음 -> 전체 재계산
+            self._recompute_velocity()
+            return int(self.window_m / self.ds)
+
+        L = 2 * half + 1
+        idxs = np.array([(center_idx + o) % n for o in range(-half, half + 1)])
+        kappa_raw = np.abs(self.wpts[idxs, 6])
+        kappa = np.array([kappa_raw[max(0, i - kf):i + kf + 1].max() for i in range(L)])
+
+        a_lat_max = self.mu * G
+        v = np.minimum(np.sqrt(a_lat_max / np.maximum(kappa, 1e-9)), self.v_max)
+
+        left_pin = float(self.wpts[idxs[0], 7])
+        right_pin = float(self.wpts[idxs[-1], 7])
+        v[0], v[-1] = left_pin, right_pin
+
+        seg = np.maximum(np.hypot(np.diff(self.wpts[idxs, 1]), np.diff(self.wpts[idxs, 2])), 1e-6)
+
+        for _ in range(3):
+            for i in range(L - 1):                          # forward (가속 한계)
+                a_lat = v[i] ** 2 * kappa[i]
+                a_avail = self.a_acc * math.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
+                v[i + 1] = min(v[i + 1], math.sqrt(v[i] ** 2 + 2 * a_avail * seg[i]))
+            v[-1] = right_pin
+            for i in range(L - 2, -1, -1):                  # backward (감속 한계)
+                a_lat = v[i + 1] ** 2 * kappa[i + 1]
+                a_avail = self.a_dec * math.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
+                v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2 * a_avail * seg[i]))
+            v[0] = left_pin
+
+        # 점별 요철 저역통과 (전체 재계산과 동일 방식, 이 구간 내부만)
+        kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0])
+        kernel /= kernel.sum()
+        pad = len(kernel) // 2
+        if L > 2 * pad:
+            v_pad = np.concatenate([np.full(pad, v[0]), v, np.full(pad, v[-1])])
+            v_smooth = np.convolve(v_pad, kernel, mode='valid')
+            v = np.minimum(v, v_smooth)
+            v[0], v[-1] = left_pin, right_pin
+
+        self.wpts[idxs, 7] = v
+        # ax: idxs[-1] 이후는 v가 안 바뀌었으므로 idxs[0..-2] 구간만 갱신하면 충분
+        vn = v[1:]
+        self.wpts[idxs[:-1], 8] = (vn ** 2 - v[:-1] ** 2) / (2 * seg)
+
+        return half
+
     def _falloff_apply(self, center_idx, delta, col_apply):
         """center 주변 window에 코사인 falloff로 delta 적용. col_apply(i, w*delta)."""
         n = len(self.wpts)
@@ -313,10 +377,11 @@ class RacelineTunerNode(Node):
         self.server.insert(im, feedback_callback=self.on_vel_feedback)
         self.menu.apply(self.server, im.name)
 
-    def _refresh_markers_near(self, center_idx):
-        """falloff 창 안의 핸들 위치를 갱신 (드래그 결과 반영)."""
+    def _refresh_markers_near(self, center_idx, win=None):
+        """창 안의 핸들 위치를 갱신 (드래그 결과 반영). win 생략 시 falloff 창 폭."""
         n = len(self.wpts)
-        win = int(self.window_m / self.ds)
+        if win is None:
+            win = int(self.window_m / self.ds)
         for idx in self.anchor_idxs:
             off = (idx - center_idx) % n
             if min(off, n - off) > win and center_idx >= 0:
@@ -378,10 +443,10 @@ class RacelineTunerNode(Node):
         # 라인이 바뀌면 곡률도 바뀌므로 속도를 반드시 같이 재계산한다.
         # (이전에는 여기서 vx_mps 가 그대로 남아, 라인을 안쪽으로 좁혀도 예전
         #  넓은 라인 기준 속도로 진입해 바깥쪽 벽과 충돌하는 문제가 있었다.)
-        # 감속 구간은 코너보다 훨씬 앞에서 시작될 수 있어 드래그 윈도우 밖까지
-        # 영향을 주므로, 국소 갱신이 아니라 전체 핸들을 새로고침한다.
-        self._recompute_velocity()
-        self._refresh_all_markers()
+        # 단, 트랙 전체를 다시 풀면 다른 코너의 수동 속도 튜닝이 매번 사라지므로
+        # 곡률이 바뀐 근방 + 제동거리 여유만 국소적으로 재계산한다.
+        half = self._recompute_velocity_window(idx)
+        self._refresh_markers_near(idx, win=half)
         self._publish_preview()
         self.get_logger().info(
             f'라인 이동: idx {idx}, Δd={delta_d:+.2f} m (윈도우 {self.window_m} m) '
