@@ -7,5 +7,5 @@ control:
     "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
 
     # Real-car speed cap; keep aligned with the planning velocity profile.
-    "vehicle/max_speed_mps": 4.0
+    "vehicle/max_speed_mps": 3.6
     "vehicle/speed_scale": 1.0

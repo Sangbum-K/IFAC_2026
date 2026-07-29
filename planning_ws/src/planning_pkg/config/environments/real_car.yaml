@@ -15,10 +15,9 @@
 # 필요조향의 1.7~2.0배가 나온다. scale = (control cap) / 6.0 으로 계산.
 global_trajectory_node:
   ros__parameters:
-    # 2026-07-27: 6 m/s 세팅. control의 vehicle/max_speed_mps도 6.0이어야 한다
-    # (4.0인 채로 두면 control이 전 구간 clamp + 조향 LUT 과다조회).
-    # 되돌릴 땐 4 m/s = 0.6667. 클램프 범위는 [0.5, 1.4].
-    global_trajectory/velocity_scale: 0.6667
+    # 2026-07-29: 실차 상한 3.6 m/s. 6 m/s raceline 기준 scale = 3.6 / 6.0.
+    # control의 vehicle/max_speed_mps도 3.6으로 맞춘다. 클램프 범위는 [0.5, 1.4].
+    global_trajectory/velocity_scale: 0.6
 
 frenet_frame_node:
   ros__parameters:

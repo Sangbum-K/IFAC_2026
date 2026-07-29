@@ -462,8 +462,8 @@ ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
   자율 명령이 바퀴로 나갑니다(teleop이 침묵 → mux가 자율로 폴스루). 다시 누르면 수동.
 - ⚠️ **비상정지(E-stop)는 배선 안 됨 — 소프트웨어 즉시정지가 없습니다.** 정지 수단은
   (1) 버튼 5로 수동 전환 후 스틱 중립, (2) 물리 kill 스위치/차단기, (3) `Ctrl-C`.
-- 속도 상한 **4.0 m/s** (`control_pkg .../environments/real_car.yaml`의
-  `vehicle/max_speed_mps`). 플래너는 6 m/s raceline에 `velocity_scale: 0.6667`을
+- 속도 상한 **3.6 m/s** (`control_pkg .../environments/real_car.yaml`의
+  `vehicle/max_speed_mps`). 플래너는 6 m/s raceline에 `velocity_scale: 0.6`을
   곱해 같은 상한으로 맞춥니다.
 
 ---
