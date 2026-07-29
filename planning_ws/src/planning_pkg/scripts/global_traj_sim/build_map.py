@@ -86,7 +86,42 @@ MU         = 0.75    # 노면 마찰계수    (실내/접지 낮으면 더 낮�
 #   occupancy 마스크에서 받으면서, 코리도가 2*SAFE_DIST 보다 좁은 구간은
 #   불능이 아니라 '정중앙 고정'으로 처리된다(_solve_qp 의 narrow 분기).
 #   불능 대신 곡률로 대가를 치르는 형태로 바뀐 것이라 위 표가 나온다.
+# 2026-07-28: my_track0728 은 0.40 에서 R=0.86 (한계 0.88) 로 FAIL → 0.32 로 내림.
+#   이 맵의 좌상 헤어핀은 0727 보다 훨씬 조인다 (코리도 폭 0.90 m vs 2.00 m,
+#   중앙선 R 0.30 m vs 0.52 m) — 그래서 통과하는 SAFE_DIST 창이 좁다:
+#     SAFE_DIST  벽여유min  R_min   판정      시뮬 차체침투(우측 인필드 코너)
+#       0.40      0.300     0.86    FAIL      —
+#       0.36      0.275     0.87    FAIL      0.125
+#       0.32      0.275     0.88    PASS      0.150   <- 통과하는 최대값
+#       0.30      0.225     0.92    PASS      0.175
+#       0.28      0.225     1.03    PASS      0.200
+#   R 을 살리려고 내리면 벽여유가 같이 깎이므로 0.32 가 상한이다.
+#   ⚠️ '시뮬 차체침투'는 verify_line 이 보지 않는 값이다(레퍼런스 라인만 검사).
+#   폐루프 시뮬 경로를 마스크에 대고 재면 xy≈(3.2,2.6) 인필드 코너에서 차체가
+#   0.15 m 파고든다. 참고로 my_track0727(0.40)=0.05, my_track(0.40)=0.025 m.
+#   V_MAX 를 6.0→3.0 으로 낮춰도 0.175→0.075 로만 줄어 해소되지 않는다.
+#   → 0728 로 고속주행하기 전에 좌상 헤어핀을 완만/넓게 다시 깔 것.
 SAFE_DIST  = 0.40    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 추적오차 여유
+# 맵마다 최협부/헤어핀이 달라 최적값이 다르다. 여기 없는 맵은 위 SAFE_DIST 를 쓴다.
+# ⚠️ 새 맵을 추가하면 반드시 스윕(0.28~0.45)을 돌려 R 이 통과하는 최대값을 넣을 것.
+SAFE_DIST_BY_MAP = {
+    "my_track0728": 0.32,   # 0.40 이면 R=0.86 FAIL. 위 2026-07-28 표 참조
+    "my_track0729": 0.32,   # 아래 2026-07-29 표 참조 (SP_CURV_W 15 와 세트)
+}
+# 2026-07-29: my_track0729 스윕. IQP 는 R, SP 는 벽여유가 걸리는데 두 제약이
+#   SAFE_DIST 에 반대로 반응해서 기본 SP_CURV_W(2.0)로는 통과하는 값이 없다:
+#     SAFE_DIST  IQP벽여유 IQP_R   SP벽여유  판정
+#       0.45      0.250    0.68    0.075     FAIL (IQP R)
+#       0.40      0.225    0.85    0.025     FAIL (양쪽)
+#       0.36      0.200    0.82    0.000     FAIL (양쪽)
+#       0.34      0.150    0.91   -0.050     FAIL (SP 가 벽 안쪽)
+#       0.32      0.200    0.93   -0.025     FAIL (SP 가 벽 안쪽)
+#       0.28      0.200    0.95   -0.050     FAIL (SP 가 벽 안쪽)
+#   IQP 는 0.32 에서 벽 0.200 / R 0.93 으로 가장 좋은데, SP 가 s≈20.6 m
+#   xy=(-7.5,0.9) 헤어핀에서 코너를 깎아 벽을 0.025~0.075 m 파고든다.
+#   → SP_CURV_W 를 이 맵만 15 로 올려 해결 (0.32 고정, SP 벽여유):
+#     SP_CURV_W  2.0=-0.025  4.0=0.100  6.0=0.150  15=0.175  25=0.300
+#   최종 0.32 + SP_CURV_W 15 → IQP 벽 0.200/R 0.93, SP 벽 0.175/R 0.99 PASS.
 # 소형 트랙(my_track: 실폭 median 1.2 m, 최대 2.15 m)은 벽 여유를 크게 빼면
 # 회피용 가용 corridor가 0으로 붕괴한다. MARGIN은 주행선을 안 옮기고 CSV의
 # d_left/d_right 보고값만 줄이므로(주행 위험 0) 0.15→0.08로 낮춰 회피 여유 확보.
@@ -100,6 +135,12 @@ MAKE_SP    = True    # iqp일 때 SP 추월 라인도 함께 생성
 # 0.79, my_track4 0.59) 이 한계를 넘고 있었는데 아무도 안 봤다.
 # 0이면 예전(순수 최단거리) 동작. 올릴수록 부드럽고 길어진다.
 SP_CURV_W  = 2.0
+# 좁은 헤어핀에서 SP 가 코너를 깎아 벽을 파고드는 맵만 여기서 올린다.
+# (SAFE_DIST 를 올리면 SP 벽여유는 살지만 IQP 의 R 이 같이 죽어서 못 쓴다 —
+#  두 제약이 SAFE_DIST 에 반대로 반응하므로 SP 는 곡률 가중치로 따로 잡는다.)
+SP_CURV_W_BY_MAP = {
+    "my_track0729": 15.0,   # 2.0 이면 s≈20.6 m 헤어핀에서 벽여유 -0.025 m
+}
 # ⚠️ RACELINE="center"(원시 중앙선)는 이 트랙 규모에선 쓰지 말 것.
 # medial-axis 중앙선은 헤어핀에서 반경이 레이스라인보다 작아져 R이 0.3~0.4 m
 # 까지 떨어진다 (my_track 0.39 / my_track0727 0.31, 실차 한계 0.88 m).
@@ -951,6 +992,17 @@ def main():
     args = ap.parse_args()
     m = args.map
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    safe_dist = SAFE_DIST_BY_MAP.get(m, SAFE_DIST)
+    if safe_dist != SAFE_DIST:
+        print(f"      [cfg] SAFE_DIST {safe_dist:.2f} m "
+              f"(이 맵 전용 오버라이드, 기본값 {SAFE_DIST:.2f})")
+    # SP_CURV_W 는 _solve_qp 가 모듈 전역으로 읽으므로 여기서 갈아끼운다.
+    # 진입점이 main() 하나뿐이라 이 방식이 안전하다.
+    global SP_CURV_W
+    if m in SP_CURV_W_BY_MAP:
+        SP_CURV_W = SP_CURV_W_BY_MAP[m]
+        print(f"      [cfg] SP_CURV_W {SP_CURV_W:.1f} "
+              f"(이 맵 전용 오버라이드, 기본값 2.0)")
 
     # 1) 트랙 추출 (+ 실측 크기 스케일 보정) --------------------------------
     print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
@@ -971,11 +1023,13 @@ def main():
     # 2) 레이스라인 + 속도 프로파일 ----------------------------------------
     if RACELINE == "iqp":
         print("[2/4] IQP 최소곡률 라인 + 속도 프로파일 ...")
-        geo = roll_to_start(optimize_raceline_iqp(center, grid),
+        geo = roll_to_start(optimize_raceline_iqp(center, grid,
+                                                  safe_dist_m=safe_dist),
                             orientation=orientation)
     elif RACELINE == "sp":
         print("[2/4] SP 최단거리 라인 + 속도 프로파일 ...")
         geo = roll_to_start(optimize_raceline_iqp(center, grid,
+                                                  safe_dist_m=safe_dist,
                                                   objective="length"),
                             orientation=orientation)
     else:
@@ -1000,6 +1054,7 @@ def main():
     if RACELINE == "iqp" and MAKE_SP:
         print("      SP 추월 라인 생성 ...")
         geo_sp = roll_to_start(optimize_raceline_iqp(center, grid,
+                                                     safe_dist_m=safe_dist,
                                                      objective="length"),
                                orientation=orientation)
         traj_sp = build_trajectory(geo_sp)
@@ -1022,7 +1077,7 @@ def main():
         print("\n" + "=" * 72)
         print("  검증 실패 — CSV를 쓰지 않았습니다. 이 라인으로 주행하면 안 됩니다.")
         print("  [벽여유] 위반이면 SAFE_DIST 를 올린다 (현재 %.2f m). 올려도"
-              % SAFE_DIST)
+              % safe_dist)
         print("           안 늘면 트랙 최협부가 실제로 차폭+여유보다 좁은 것 →")
         print("           맵을 다시 따거나 코스를 넓혀야 한다.")
         print("  [R] 위반이면 SAFE_DIST 를 **내린다**. 값이 클수록 좁은 구간에서")
@@ -1041,13 +1096,13 @@ def main():
 
     for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
         write_csv(traj, dest, header_note=f"build_map ({m}, dir={orientation.upper()}, "
-                                          f"safe_dist={SAFE_DIST:.2f}m)")
+                                          f"safe_dist={safe_dist:.2f}m)")
         print(f"      wrote {dest}")
     if traj_sp is not None:
         for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
             write_csv(traj_sp, dest,
                       header_note=f"build_map ({m}, SP overtake, "
-                                  f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)")
+                                  f"dir={orientation.upper()}, safe_dist={safe_dist:.2f}m)")
     for dest in (OUT_DIR / f"{m}_walls.csv", CENTERLINE_DIR / f"{m}_walls.csv"):
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         np.savetxt(dest, walls, delimiter="; ", fmt="%.7f",
