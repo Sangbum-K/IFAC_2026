@@ -168,6 +168,17 @@ class RacelineTunerNode(Node):
                 a_lat = v[j] ** 2 * kappa[j]
                 a_avail = self.a_dec * math.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
                 v[i] = min(v[i], math.sqrt(v[j] ** 2 + 2 * a_avail * seg[i]))
+
+        # 미세 곡률 노이즈로 생기는 점별 속도 요철을 제거해 가감속을 더 부드럽게
+        # 만든다. 저역통과 결과가 마찰한계(v)를 절대 넘지 못하도록 다시 최솟값을
+        # 취하므로 최고속도(직선 구간, kappa≈0 -> v_max)는 그대로 유지된다.
+        kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0])
+        kernel /= kernel.sum()
+        pad = len(kernel) // 2
+        v_padded = np.concatenate([v[-pad:], v, v[:pad]])
+        v_smooth = np.convolve(v_padded, kernel, mode='valid')
+        v = np.minimum(v, v_smooth)
+
         self.wpts[:, 7] = v
         # ax 프로파일도 갱신
         vn = np.roll(v, -1)
@@ -364,9 +375,17 @@ class RacelineTunerNode(Node):
         self._falloff_apply(idx, delta_d, apply)
         self._smooth_xy_window(idx)      # 점별 이동으로 생긴 요철 제거 (찌그러짐 방지)
         self._recompute_geometry()
-        self._refresh_markers_near(idx)
+        # 라인이 바뀌면 곡률도 바뀌므로 속도를 반드시 같이 재계산한다.
+        # (이전에는 여기서 vx_mps 가 그대로 남아, 라인을 안쪽으로 좁혀도 예전
+        #  넓은 라인 기준 속도로 진입해 바깥쪽 벽과 충돌하는 문제가 있었다.)
+        # 감속 구간은 코너보다 훨씬 앞에서 시작될 수 있어 드래그 윈도우 밖까지
+        # 영향을 주므로, 국소 갱신이 아니라 전체 핸들을 새로고침한다.
+        self._recompute_velocity()
+        self._refresh_all_markers()
         self._publish_preview()
-        self.get_logger().info(f'라인 이동: idx {idx}, Δd={delta_d:+.2f} m (윈도우 {self.window_m} m)')
+        self.get_logger().info(
+            f'라인 이동: idx {idx}, Δd={delta_d:+.2f} m (윈도우 {self.window_m} m) '
+            f'-> 속도 자동 재계산 (min {self.wpts[:,7].min():.1f} / max {self.wpts[:,7].max():.1f} m/s)')
 
     def on_vel_feedback(self, fb: InteractiveMarkerFeedback):
         if fb.event_type != InteractiveMarkerFeedback.MOUSE_UP:
