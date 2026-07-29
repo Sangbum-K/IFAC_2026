@@ -11,3 +11,12 @@ ackermann_mux:
         topic   : teleop
         timeout : 0.2
         priority: 100
+      estop:
+        # joy_toggle_teleop publishes continuous zero commands here while
+        # estopped, so this always wins over joystick/navigation. Not a
+        # `locks` entry on purpose: a lock only blocks lower-priority topics,
+        # it doesn't make the mux emit a zero command itself, which would
+        # leave the last real command latched downstream instead of stopping.
+        topic   : /estop_cmd
+        timeout : 0.2
+        priority: 200

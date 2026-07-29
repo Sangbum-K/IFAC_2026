@@ -11,6 +11,12 @@ joy_toggle_teleop:
     teleop_topic: teleop
     # Press once to switch manual <-> autonomous (edge triggered, no hold).
     toggle_button: 5
+    # Press once to stop, from either mode; press again to release (always
+    # back into manual, never straight into autonomous). Highest priority in
+    # mux.yaml, and ignored buttons==5 while active.
+    estop_button: 4
+    estop_topic: /estop_cmd
+    estop_status_topic: /safety/emergency_stop
     speed_axis: 1
     steering_axis: 3
     max_speed: 1.5
