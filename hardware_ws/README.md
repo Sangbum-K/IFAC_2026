@@ -45,17 +45,33 @@ ros2 launch f1tenth_stack bringup_launch.py
 
 실행되는 노드:
 
-- `joy` / `joy_teleop` — 조이스틱 입력 → `/teleop`
+- `joy` / `joy_toggle_teleop` — 조이스틱 입력 → `/teleop` + `/estop_cmd` + `/safety/emergency_stop`
+  (upstream `joy_teleop`을 안 쓰고 자체 노드로 교체 — 데드맨 방식이 아니라 버튼 한 번으로
+  전환되는 토글/e-stop 방식이 필요해서)
 - `vesc_driver_node` — VESC 시리얼 통신
 - `ackermann_to_vesc_node` — Ackermann 명령 → VESC
 - `vesc_to_odom_node` — VESC 속도 + IMU 상대 yaw 기반 `/odom` + `odom→base_link` TF
 - `urg_node` — 라이다 → `/scan`
-- `ackermann_mux` — teleop/navigation 먹스 → `ackermann_drive`
+- `ackermann_mux` — teleop/estop/navigation 먹스 → `ackermann_cmd`
 - `static_baselink_to_laser` — `base_link→laser` static TF (0.27, 0, 0.11)
 
 > `throttle_interpolator`는 원본과 동일하게 정의만 되어 있고 기본 비활성(주석)입니다.
 
-조작: **LB(버튼4) = teleop 데드맨**, **RB(버튼5) = navigation 데드맨**.
+#### 조이스틱 조작 (버튼은 전부 edge-triggered — 누르고 있을 필요 없음, 한 번씩만 누르면 됨)
+
+| 버튼 | 기능 |
+|---|---|
+| **4 (LB)** | **E-STOP 토글.** MANUAL/AUTONOMOUS 어느 모드에서든 누르면 즉시 정지(최우선). 정지 중 다시 누르면 해제 — **항상 MANUAL로만 복귀**(AUTONOMOUS로 바로 안 돌아감) |
+| **5 (RB)** | MANUAL ↔ AUTONOMOUS 토글. **E-STOP 중에는 완전히 무시됨** |
+| Axis 1 / Axis 3 | 속도 / 조향 (MANUAL일 때만 반영) |
+
+**정지 해제 후 다시 자율주행 하려면 버튼4(해제 → MANUAL) → 버튼5(→ AUTONOMOUS) 순서로 두 번 눌러야 합니다.** (해제하자마자 자동으로 자율주행이 재개되지 않음 — 안전을 위한 의도된 동작)
+
+동작 원리 (`f1tenth_stack/joy_toggle_teleop.py`):
+
+- **MANUAL**: 조이스틱 축 값을 `teleop`에 계속 발행 (mux priority 100)
+- **AUTONOMOUS**: `teleop`에 침묵 → mux가 `/autonomy/ackermann_cmd`(control_pkg 출력, priority 10)로 자동 전환
+- **ESTOP**: `/estop_cmd`에 speed=0/steer=0을 30Hz로 끊임없이 발행 (mux priority 200, 항상 최우선) — mux의 `locks` 기능 대신 실제 0-명령 topic을 쓴 이유는, lock은 낮은 우선순위 topic을 막기만 할 뿐 스스로 0을 쏘지 않아서 mux가 마지막 주행 명령을 그대로 흘려보낼 위험이 있기 때문. 동시에 `/safety/emergency_stop`(std_msgs/Bool)도 발행되어 `control_pkg`·`recovery_supervisor_node`가 각자 자율주행 출력을 0으로 만드는 **이중 안전장치** 역할을 함
 
 ### Terminal 2 — SLAM 매핑 (지도 생성 시)
 
@@ -85,8 +101,8 @@ rviz2
 
 `src/f1tenth_stack/config/`:
 
-- `joy_teleop.yaml` — 조이스틱 축/버튼·데드맨 매핑
-- `mux.yaml` — teleop/navigation 우선순위
+- `joy_teleop.yaml` — 조이스틱 축/버튼 매핑 (`toggle_button: 5`, `estop_button: 4`)
+- `mux.yaml` — teleop(100)/estop(200)/navigation(10) 우선순위
 - `vesc.yaml` — VESC 게인·포트·wheelbase·IMU yaw odometry 설정
 - `sensors.yaml` — 라이다 IP/포트 등
 - `f1tenth_online_async.yaml` — slam_toolbox 매핑 파라미터
