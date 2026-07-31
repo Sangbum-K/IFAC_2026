@@ -14,6 +14,7 @@ import math
 import os
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -26,7 +27,7 @@ from visualization_msgs.msg import MarkerArray
 from f1tenth_planning_msgs.msg import WpntArray
 
 MAP = 'my_track'
-GT = ('/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory')
+GT = str(Path(__file__).resolve().parents[2] / 'config' / 'global_trajectory')
 csvs = sorted(glob.glob(os.path.join(GT, f'{MAP}_iqp_*.csv')))
 if not csvs:
     print(f'FAIL: raceline CSV 없음 ({MAP}_iqp_*.csv)', flush=True)

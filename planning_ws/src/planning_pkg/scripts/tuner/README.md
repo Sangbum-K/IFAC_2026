@@ -44,7 +44,7 @@ source ~/IFAC_ws/planning_ws/install/setup.zsh
 # 1) 튜너 단독 — 맵 + 튜너 + RViz (gym 불필요). 인자 없이 = 대회맵 my_track
 ros2 launch planning_pkg raceline_tuner.launch.py
 
-# 다른 맵도 map:= 하나면 끝. CSV·v_max·mu·stride·falloff 전부 자동으로 정해진다
+# 다른 맵도 map:= 하나면 끝. CSV·v_max·margin·mu·stride·falloff가 자동으로 정해진다
 ros2 launch planning_pkg raceline_tuner.launch.py map:=Spielberg_map
 
 # 단축어 (~/.zshrc, mapp/mkcsv 와 같은 자리). sa 로 source 한 뒤:
@@ -57,9 +57,9 @@ tune --help                       # 사용법
 ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
 ```
 
-`sim_race.launch.py tuner:=true` 는 `map`/`suffix` 로 정해진 **iqp CSV**를
-자동으로 물고 들어가지만, stride/falloff/v_max/mu 는 **노드 기본값
-(25 / 8.0 m / 12.0 / 0.85) 고정**이다. 편집이 목적이면 단독 실행 쪽을 쓸 것.
+`sim_race.launch.py tuner:=true` 도 파일명에서 v_max/margin/mu를 읽어 넘긴다.
+다만 stride/falloff는 노드 기본값(25 / 8.0 m)이므로 세밀한 편집은 단독
+launch가 편하다.
 
 ### launch 인자 — **`map:=` 말고는 넘길 게 없다**
 
@@ -70,22 +70,24 @@ ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
 | `map` | `my_track` | 배경 맵 (`<이름>.yaml`, 확장자 제외). `~/IFAC_ws/maps` → `planning_pkg/maps` 순으로 탐색 |
 | `csv` | `''` (자동) | 비우면 `<map>_iqp_*.csv` 를 glob으로 찾는다. sp 라인 편집 시엔 직접 지정 |
 | `v_max` | `''` (자동) | **CSV 파일명의 `max<...>ms`** — 그 라인을 뽑을 때 쓴 값이므로 항상 정확하다 |
+| `corridor_margin` | `''` (자동) | **CSV 파일명의 `margin<...>m`** — map raycast 실벽 거리에서 빼서 저장할 reserve |
 | `mu` | `''` (자동) | **CSV 파일명의 `mu<...>`** |
 | `stride` | `''` (자동) | **전장** → 핸들 간격 1.0~2.5 m (핸들 ~30개). 29.3 m → `10`, 339 m → `25` |
 | `falloff` | `''` (자동) | **전장의 10%**, 3~8 m 클램프. 29.3 m → `3.0`, 339 m → `8.0` |
-| `min_wall` | `''` (0.35) | 라인–벽 최소 여유 [m]. 유도할 근거가 없어 노드 기본값 |
+| `min_wall` | `''` (0.20) | margin 차감 뒤 저장되는 가용 corridor의 최소 여유 [m] |
 
 띄울 때 터미널에 실제로 쓰인 값이 찍힌다:
 
 ```
 [raceline_tuner] map=my_track0727 (…/maps/my_track0727.yaml)  csv=my_track0727_iqp_max6.00ms_margin0.08m_mu0.75.csv
 [raceline_tuner] 전장 30.5 m -> stride 10 wpt (1.0 m), falloff 3.05 m
-[raceline_tuner] v_max=6.0 m/s  mu=0.75  (파일명에서 자동)
+[raceline_tuner] v_max=6.0 m/s  margin=0.08 m  mu=0.75  (파일명에서 자동)
 ```
 
-파일명이 `_max…ms_…_mu….csv` 꼴이 아니면(직접 만든 CSV 등) v_max/mu를 못 읽고
-경고를 띄운 뒤 노드 기본값(12.0 / 0.85)으로 뜬다. 라인 편집에는 영향이 없고
-**"속도 재계산"에만** 쓰이므로, 그 메뉴를 쓸 거라면 `v_max:=` / `mu:=` 를 직접 넘길 것.
+파일명이 `_max…ms_margin…m_mu….csv` 꼴이 아니면(직접 만든 CSV 등)
+v_max/margin/mu를 못 읽는다. v_max/mu는 속도 재계산에, margin은 저장되는
+좌우 corridor에 직접 영향을 주므로 필요하면 세 값을 명시한다. margin을
+생략하면 보수적인 0.15 m 기본값을 쓴다.
 
 맵/CSV가 없으면 launch가 **가능한 맵 목록과 함께 즉시 에러**를 낸다 (노드가
 조용히 죽지 않음). 현재 리포에 있는 조합:
@@ -117,12 +119,12 @@ ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
    launch가 전장의 10%(3~8 m 클램프)로 잡으므로 my_track은 3.0,
    Spielberg(339 m)는 8.0이 자동으로 나온다.
 
-3. **`min_wall` 0.35 m 가 좁은 트랙에선 빡빡하다.**
-   my_track의 좌우 폭 합은 0.85~1.46 m(평균 1.09 m). 양쪽 0.35 m를 빼면
-   **가장 좁은 구간에 남는 여유가 0.15 m**뿐이라, 거기선 드래그가 아예
-   안 먹는 것처럼 보인다. 게다가 CSV의 `d_left/d_right` 는 이미 벽에서
-   margin 0.08 m 를 뺀 값이라 **실제 벽까지는 0.43 m** 확보된다.
-   차폭 30 cm 기준이면 `min_wall:=0.25` 정도까지는 안전하다.
+3. **`min_wall`은 margin을 뺀 뒤의 가용 corridor 기준이다.**
+   기본 0.20 m와 my_track의 margin 0.08 m를 합치면 실제 center-to-wall은
+   최소 0.28 m다. 차 반폭 0.15 m 및 recovery의 0.25 m 정지 계약보다
+   보수적이면서, 생성된 원본 my_track(저장 d 최소 약 0.28 m)을 수정하지
+   않고 다시 저장할 수 있다. 이 값을 차 반폭 0.15 m 아래로 낮추면 안 되며,
+   최종 직사각 footprint/폐루프 gate는 값과 무관하게 항상 수행된다.
 
 4. **드래그는 MOUSE_UP에서만 반영된다.** 끌고 있는 동안 라인이 안 움직여도 정상.
    놓는 순간 falloff 적용 + 스무딩 + `s/psi/kappa` 재계산이 한 번에 돈다.
@@ -133,6 +135,19 @@ ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
 
 RViz에서 아무 핸들이나 **우클릭 → CSV 저장**. 그다음 리포 루트에서
 `./build_all.sh` (HOW_TO_RUN 1장과 동일) 하면 **그대로 주행에 반영된다.**
+
+저장은 다음 검사를 모두 통과할 때만 원자적으로 반영된다.
+
+- 현재 xy에서 `s/psi/kappa`를 다시 계산하고, 최신 OccupancyGrid에 좌우
+  normal ray를 cell-by-cell로 쏴 `d_right/d_left`를 완전히 재작성한다.
+  unknown/occupied/map 밖은 모두 벽이며, 파일명의 corridor margin도 다시 뺀다.
+- 모든 waypoint가 `min_wall`을 만족하고 차량의 직사각 footprint 전체가
+  free인지 검사한다.
+- 마찰원·조향각·가감속·끝→시작 ax 일관성을 검사한다.
+- `build_map.py`가 선택한 실제 배포 프로파일(`cpp_real_car`,
+  `python_sim_tracker`)로 1 lap 폐루프 추종을 실행해 동적 footprint,
+  조향 rate, 타이어 요구량까지 통과해야 한다. 모델/맵을 못 읽거나 timeout이면
+  기존 CSV를 그대로 보존하고 저장을 거부한다.
 
 경로를 따라가면:
 
@@ -171,10 +186,9 @@ RViz에서 아무 핸들이나 **우클릭 → CSV 저장**. 그다음 리포 �
 
 백업 주의:
 
-- 원본은 첫 저장 때 한 번 `*.bak` 으로 백업하고 그 뒤엔 덮어쓴다.
-  **여러 번 저장해도 `.bak`은 그 세션의 최초 상태 하나뿐**이고, 튜너를 다시 켜고
-  저장하면 그 `.bak`마저 덮어써진다. 중간 상태를 남기려면 직접 `cp` 하거나
-  `tuner/output_csv` 로 다른 파일에 쓸 것.
+- 원본은 세션의 첫 저장 때 백업한다. 기존 `.bak`을 덮어쓰지 않고
+  `.bak.1`, `.bak.2`, …의 첫 빈 이름을 원자적으로 선택한다. 같은 세션에서
+  여러 번 저장하면 그 세션 최초 상태 백업 하나만 생긴다.
 - `.bak` 은 `*.csv` 로 끝나지 않으므로 launch의 glob(`*_iqp_*.csv`)에 걸리지 않는다.
 
 ---
@@ -278,15 +292,16 @@ my_track 기준 실측 (요구 마찰 = `√(a_lat² + a_x²)/g`, mu 0.75):
 | `tuner/output_csv` | `''` | — (launch 편집 필요) | 비면 입력 파일에 덮어씀. 지정하면 그쪽에 저장(`.bak` 안 만듦) |
 | `tuner/handle_stride` | 25 | `stride:` (전장에서 자동) | 핸들 간격 [wpt] |
 | `tuner/falloff_window_m` | 8.0 | `falloff:` (전장에서 자동) | 드래그 영향 반경 [m] |
-| `tuner/min_wall_dist_m` | 0.35 | `min_wall:` (노드 기본) | 라인–벽 최소 여유 [m] |
+| `tuner/min_wall_dist_m` | 0.20 | `min_wall:` (노드 기본) | margin 차감 뒤 저장되는 좌우 가용 corridor 최소 여유 [m] |
+| `tuner/corridor_margin_m` | 0.15 | `corridor_margin:` (파일명에서 자동) | map raycast 실벽 거리에서 뺄 reserve [m] |
 | `tuner/v_max_mps` | 12.0 | `v_max:` (파일명에서 자동) | 속도 재계산 상한 [m/s] |
 | `tuner/mu` | 0.85 | `mu:` (파일명에서 자동) | 마찰계수 |
 | `tuner/a_acc_max` | 5.5 | — (launch 편집 필요) | 최대 가속 [m/s²] |
 | `tuner/a_dec_max` | 7.0 | — (launch 편집 필요) | 최대 감속 [m/s²] |
 | `tuner/vel_handle_scale` | 0.3 | — (launch 편집 필요) | 속도 핸들 높이 = v × scale [m] |
 
-`sim_race.launch.py tuner:=true` 로 띄우면 CSV 경로만 넘기므로 **나머지는 전부
-노드 기본값**(25 / 8.0 / 0.35 / 12.0 / 0.85)이라는 점에 주의.
+`sim_race.launch.py tuner:=true` 는 CSV 경로와 파일명의
+v_max/corridor_margin/mu를 넘기며, stride/falloff/min_wall은 노드 기본값이다.
 
 ---
 
@@ -297,7 +312,8 @@ my_track 기준 실측 (요구 마찰 = `√(a_lat² + a_x²)/g`, mu 0.75):
 | `raceline CSV가 없습니다` / `가능한 맵: …` | launch가 CSV를 못 찾은 것. `map:=` 이름 확인, 또는 `csv:=` 직접 지정 |
 | `맵이 없습니다: ….yaml` | 에러에 찾아본 폴더와 가능한 맵 목록이 찍힌다. `~/IFAC_ws/maps` 에도 `src/planning_pkg/maps/` 에도 없거나, 후자에 넣고 `colcon build` 를 안 한 것 (맵은 복사됨) |
 | `CSV 9열 아님` | 센터라인/벽 CSV를 넘긴 것. `config/global_trajectory/` 의 `_iqp_`/`_sp_` 파일이어야 함 |
-| 핸들은 보이는데 라인이 안 움직임 | 벽 여유 클램프에 걸린 것. `min_wall:=0.25` 로 낮춰 볼 것 (위 §3) |
+| 핸들은 보이는데 라인이 안 움직임 | 최신 map raycast의 벽 여유 클램프에 걸린 것. 로그의 해당 s와 map 정합을 확인할 것. `min_wall`을 차 반폭 0.15 m 아래로 낮추지 말 것 |
 | "속도 재계산" 눌렀더니 속도가 확 바뀜 | `v_max:` / `mu:` 가 그 라인 생성값과 다름. 되돌리려면 우클릭 → 실행취소 |
+| `CSV 저장`이 거부됨 | 로그의 최초 실패를 확인. map 미수신, min_wall/footprint 침범, 끝→시작 ax 불일치, 또는 배포 제어기 폐루프 추종 실패면 fail-closed로 기존 파일을 보존한다 |
 | 미리보기 라인이 사라짐 | 2초마다 재발행하므로 잠깐 기다리면 복구됨 (RViz 재시작 대비) |
 | 저장했는데 주행이 그대로 | `./build_all.sh` 를 안 했거나, `tuner/output_csv` 로 다른 파일에 저장해 `params.yaml` 과 어긋남. 주행 로그의 `Loading trajectory from:` 경로 확인 |

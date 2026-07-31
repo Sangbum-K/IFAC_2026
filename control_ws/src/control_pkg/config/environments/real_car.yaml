@@ -4,6 +4,7 @@ control:
     odom_topic: /pf/pose/odom
     ackermann_topic: /autonomy/ackermann_cmd
     autonomous_on_start: true
+    "recovery/require_supervisor": true
     "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
 
     # Real-car speed cap; keep aligned with the planning velocity profile.

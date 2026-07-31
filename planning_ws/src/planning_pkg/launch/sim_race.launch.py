@@ -3,14 +3,14 @@
 f1tenth_gym_ros 시뮬레이터(2-agent) + planning 스택 + pure pursuit 컨트롤러 +
 Pitwall 시뮬 노드들 + RViz를 한 번에 실행한다.
 
-  ros2 launch planning_pkg sim_race.launch.py                    # Spielberg (기본)
+  ros2 launch planning_pkg sim_race.launch.py                    # my_track (기본)
   ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
   ros2 launch planning_pkg sim_race.launch.py map:=my_track      # 실차 트랙 (suffix 자동)
   ros2 launch planning_pkg sim_race.launch.py rviz:=false
 
 맵 추가 방법: maps/에 <맵>_map.{png,yaml}을 넣고
-scripts/global_traj_sim/step4_main.py --map <맵>_map --raceline iqp \
-    --safe-dist 0.5 --v-max 15 로 raceline을 생성한 뒤 colcon build.
+scripts/global_traj_sim/build_map.py <맵>_map 으로 raceline을 생성한 뒤
+colcon build. 속도/마찰/여유는 build_map.py 상단 설정 블록에서 지정한다.
 시작 포즈는 raceline CSV 첫 행에서 자동으로 읽고, 상대 주차 위치만
 아래 PARK_POSES에 추가하면 된다 (레이스라인에서 30m 이상 떨어진 맵 구석).
 
@@ -33,6 +33,8 @@ RViz 사용법 (unicorn 튜토리얼과 동일):
 
 import glob
 import os
+import re
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -54,6 +56,11 @@ PARK_POSES = {
     'my_track': (-12.0, 8.5),
 }
 
+_CSV_PARAM_RE = re.compile(
+    r'_max([0-9]+(?:\.[0-9]+)?)ms_.*?'
+    r'margin([0-9]+(?:\.[0-9]+)?)m_mu'
+    r'([0-9]+(?:\.[0-9]+)?)\.csv$')
+
 
 def _read_start_pose(csv_path):
     """raceline CSV 첫 행에서 ego 시작 포즈 (x, y, psi)를 읽는다."""
@@ -67,6 +74,26 @@ def _read_start_pose(csv_path):
     raise RuntimeError(f'raceline CSV가 비어 있음: {csv_path}')
 
 
+def _resolve_gym_map_image(map_yaml):
+    """nav2 YAML의 image 필드를 따라 gym의 map_path/ext를 정확히 맞춘다."""
+    with open(map_yaml, encoding='utf-8') as handle:
+        metadata = yaml.safe_load(handle)
+    image = metadata.get('image') if isinstance(metadata, dict) else None
+    if not isinstance(image, str) or not image.strip():
+        raise RuntimeError(f'맵 YAML에 유효한 image 항목이 없습니다: {map_yaml}')
+    image_path = os.path.expanduser(image.strip())
+    if not os.path.isabs(image_path):
+        image_path = os.path.join(os.path.dirname(map_yaml), image_path)
+    image_path = os.path.abspath(image_path)
+    image_stem, image_ext = os.path.splitext(image_path)
+    if image_ext.lower() not in ('.png', '.pgm'):
+        raise RuntimeError(
+            f'gym이 지원하는 map image 확장자는 png/pgm입니다: {image_path}')
+    if not os.path.isfile(image_path):
+        raise RuntimeError(f'맵 YAML이 가리키는 image가 없습니다: {image_path}')
+    return image_stem, image_ext
+
+
 def launch_setup(context, *args, **kwargs):
     planning_share = get_package_share_directory('planning_pkg')
     gym_share = get_package_share_directory('f1tenth_gym_ros')
@@ -76,8 +103,10 @@ def launch_setup(context, *args, **kwargs):
 
     map_name = LaunchConfiguration('map').perform(context)
     map_stem = os.path.join(planning_share, 'maps', map_name)
-    if not os.path.exists(map_stem + '.yaml'):
-        raise RuntimeError(f'맵 없음: {map_stem}.yaml (maps/ 에 추가 필요)')
+    map_yaml = map_stem + '.yaml'
+    if not os.path.exists(map_yaml):
+        raise RuntimeError(f'맵 없음: {map_yaml} (maps/ 에 추가 필요)')
+    gym_map_stem, gym_map_ext = _resolve_gym_map_image(map_yaml)
 
     gt_dir = os.path.join(planning_share, 'config', 'global_trajectory')
     suffix = LaunchConfiguration('suffix').perform(context)
@@ -89,14 +118,29 @@ def launch_setup(context, *args, **kwargs):
         if not iqp_glob:
             raise RuntimeError(
                 f'raceline 없음: {gt_dir}/{map_name}_iqp_*.csv '
-                '(step4_main.py로 생성 후 colcon build 필요)')
+                '(build_map.py로 생성 후 colcon build 필요)')
+        if len(iqp_glob) > 1:
+            raise RuntimeError(
+                f'raceline이 여러 개라 임의 선택하지 않습니다: '
+                f'{", ".join(os.path.basename(p) for p in iqp_glob)} '
+                'suffix:=<정확한 생성 suffix>를 지정하세요')
         traj_csv = os.path.basename(iqp_glob[0])
         suffix = traj_csv[len(f'{map_name}_iqp_'):-len('.csv')]
     else:
         traj_csv = f'{map_name}_iqp_{suffix}.csv'
-    ot_csv = f'{map_name}_sp_{suffix}.csv'
+    expected_ot_csv = f'{map_name}_sp_{suffix}.csv'
+    ot_csv = LaunchConfiguration('overtaking_csv_file').perform(context).strip()
+    if ot_csv:
+        if ot_csv != expected_ot_csv:
+            raise RuntimeError(
+                f'SP는 메인과 같은 map/suffix여야 합니다. 기대값: {expected_ot_csv}, '
+                f'입력값: {ot_csv}')
+        if not os.path.isfile(os.path.join(gt_dir, ot_csv)):
+            raise RuntimeError(f'명시한 SP CSV가 없습니다: {os.path.join(gt_dir, ot_csv)}')
     center_csv = f'{map_name}_centerline.csv'
     traj_csv_path = os.path.join(gt_dir, traj_csv)
+    if not os.path.isfile(traj_csv_path):
+        raise RuntimeError(f'raceline CSV가 없습니다: {traj_csv_path}')
     sx, sy, stheta = _read_start_pose(traj_csv_path)
     # 맵이 PARK_POSES에 없으면 시작점에서 멀찍이 떨어진 곳으로 폴백(KeyError 방지)
     park_x, park_y = PARK_POSES.get(map_name, (sx - 40.0, sy - 40.0))
@@ -105,8 +149,8 @@ def launch_setup(context, *args, **kwargs):
     # 상대(agent 2)는 주차장(레이스라인에서 30m+, ego LiDAR 밖)에서 시작 —
     # RViz "2D Goal Pose"로 트랙에 텔레포트하면 스폰된다.
     gym_overrides = {
-        'map_path': map_stem,
-        'map_img_ext': '.png',
+        'map_path': gym_map_stem,
+        'map_img_ext': gym_map_ext,
         'num_agent': 2,
         'sx': sx,
         'sy': sy,
@@ -125,7 +169,7 @@ def launch_setup(context, *args, **kwargs):
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
-        parameters=[{'yaml_filename': map_stem + '.yaml'},
+        parameters=[{'yaml_filename': map_yaml},
                     {'topic': 'map'},
                     {'frame_id': 'map'},
                     {'use_sim_time': True}],
@@ -162,6 +206,14 @@ def launch_setup(context, *args, **kwargs):
     #   -> perception_obstacle_bridge(-> /perception/obstacles_frenet) -> spliner.
     #   detector/control은 integration_pkg stack.launch.py가 별도로 띄운다.
     perception_mode = LaunchConfiguration('perception').perform(context)
+    if perception_mode not in ('ground_truth', 'lidar'):
+        raise RuntimeError(
+            f'perception:={perception_mode!r} 는 ground_truth | lidar 중 하나여야 합니다')
+    for bool_arg in ('rviz', 'tracker', 'tuner'):
+        value = LaunchConfiguration(bool_arg).perform(context).strip().lower()
+        if value not in ('true', 'false'):
+            raise RuntimeError(
+                f'{bool_arg}:={value!r} 는 true 또는 false여야 합니다')
     lidar_perception = (perception_mode == 'lidar')
 
     stack_args = {
@@ -217,13 +269,21 @@ def launch_setup(context, *args, **kwargs):
     )
     # 레이스라인 튜너 (tuner:=true 로 시뮬과 함께 실행 — 같은 RViz에서
     # 보라 핸들 드래그로 라인/속도 편집. 소스 CSV를 편집하므로 저장 후 재빌드)
+    tuner_params = {'tuner/raceline_csv': os.path.expanduser(
+        '~/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory/'
+        + traj_csv)}
+    csv_params = _CSV_PARAM_RE.search(traj_csv)
+    if csv_params:
+        tuner_params.update({
+            'tuner/v_max_mps': float(csv_params.group(1)),
+            'tuner/corridor_margin_m': float(csv_params.group(2)),
+            'tuner/mu': float(csv_params.group(3)),
+        })
     tuner_node = Node(
         package='planning_pkg',
         executable='raceline_tuner_node.py',
         name='raceline_tuner_node',
-        parameters=[{'tuner/raceline_csv': os.path.expanduser(
-            '~/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory/'
-            + traj_csv)}],
+        parameters=[tuner_params],
         output='screen',
         condition=IfCondition(LaunchConfiguration('tuner')),
     )
@@ -264,7 +324,7 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('map', default_value='Spielberg_map',
+        DeclareLaunchArgument('map', default_value='my_track',
                               description='맵 이름 (maps/<이름>.yaml, ' +
                                           ', '.join(PARK_POSES)),
         DeclareLaunchArgument('suffix', default_value='',
@@ -272,6 +332,10 @@ def generate_launch_description():
                                           '비워두면 맵의 iqp CSV에서 자동 추론 '
                                           '(예: my_track=max6.00ms_margin0.15m_mu0.75). '
                                           '한 맵에 여러 raceline이 있을 때만 지정.'),
+        DeclareLaunchArgument(
+            'overtaking_csv_file', default_value='',
+            description='검증 완료한 SP CSV의 정확한 파일명. 기본 빈 값으로 '
+                        'SP 자동 활성화를 금지하며, 메인과 같은 map/suffix만 허용.'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='RViz 실행 여부'),
         DeclareLaunchArgument('tracker', default_value='true',

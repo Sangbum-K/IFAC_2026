@@ -30,6 +30,12 @@ RESOLUTION_OVERRIDE 로만 덮어쓴다.
 """
 
 import argparse
+import hashlib
+import io
+import json
+import os
+import tempfile
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -99,7 +105,9 @@ MAKE_SP    = True    # iqp일 때 SP 추월 라인도 함께 생성
 # 꺾어도 못 따라간다 — 지금까지 만든 SP CSV가 전부(Spielberg 0.53, my_track
 # 0.79, my_track4 0.59) 이 한계를 넘고 있었는데 아무도 안 봤다.
 # 0이면 예전(순수 최단거리) 동작. 올릴수록 부드럽고 길어진다.
-SP_CURV_W  = 2.0
+# my_track fresh generation 실측: w=4 -> R_min 0.834 m(FAIL),
+# w=12 -> R_min 1.020 m(PASS, 실차 한계 0.878 m).
+SP_CURV_W  = 12.0
 # ⚠️ RACELINE="center"(원시 중앙선)는 이 트랙 규모에선 쓰지 말 것.
 # medial-axis 중앙선은 헤어핀에서 반경이 레이스라인보다 작아져 R이 0.3~0.4 m
 # 까지 떨어진다 (my_track 0.39 / my_track0727 0.31, 실차 한계 0.88 m).
@@ -113,7 +121,7 @@ SP_CURV_W  = 2.0
 # 어느 단계도 결과를 실제 occupancy 마스크에 대고 확인하지 않았다.
 # 이제 마지막에 반드시 검사하고, 실패하면 CSV를 만들지 않는다.
 CAR_HALF_WIDTH = 0.15    # 실차 전폭 0.30 m의 절반. 라인-벽 여유가 이 미만이면 접촉
-VERIFY_STRICT  = True    # False로 두면 경고만 하고 CSV를 쓴다 (권장하지 않음)
+CAR_HALF_LENGTH = 0.275  # 실차 전장 약 0.55 m의 절반
 
 # --- 차량/컨트롤러 파라미터 (실차 실측값, 트랙 크기와 무관) ------------------
 # ⚠️ 이 두 값은 출력 CSV(라인 형상·속도 프로파일)에 영향이 없다. 레이스라인은
@@ -126,7 +134,62 @@ MAX_STEER  = 0.36    # [rad] (20.7°) 실차 검증 조향 한계. TUNING_STATUS
                      # (순정 링키지 명목 24°=0.4189가 아니라 실측 포화 한계값)
 A_ACC_MAX  = 5.5     # 최대 가속 [m/s²]
 A_DEC_MAX  = 7.0     # 최대 제동 [m/s²]
-N_LOCAL_WP = 80      # 로컬 윈도우 웨이포인트 수 (local_trajectory_node와 동일)
+MAX_STEER_RATE = 2.0 # [rad/s] control 기본 steering-rate limit
+N_LOCAL_WP = 130     # 로컬 윈도우 웨이포인트 수 (local_trajectory_node와 동일)
+
+# 폐루프 검증은 이름 없는 "비슷한 pure pursuit" 설정으로 돌리면 안 된다.
+# 아래 목록에 선택된 배포 프로파일을 **모두** 통과해야 CSV를 쓴다. 값은 각각
+# planning/config와 control/config의 현재 활성 설정을 명시적으로 복제한다.
+# 프로파일을 바꿀 때 런타임 YAML과 이 블록을 한 변경으로 맞출 것.
+SIM_CONTROLLER_PROFILES = (
+    "cpp_real_car",
+    "python_sim_tracker",
+)
+CONTROLLER_PROFILE_LIBRARY = {
+    # planning environments/real_car.yaml velocity_scale=0.60 +
+    # control environments/real_car.yaml speed_scale=1.0, max_speed=3.6.
+    # C++ MAP/L1의 실제 NUC6 steering LUT도 그대로 사용한다.
+    "cpp_real_car": {
+        "kind": "cpp_map_l1",
+        "planner_speed_scale": 0.60,
+        "controller_speed_scale": 1.0,
+        "max_speed_mps": 3.6,
+        "lookahead_gain": 0.47,
+        "lookahead_offset": -0.2,
+        "lookahead_min_m": 0.5,
+        "lookahead_max_m": 8.0,
+        "wheelbase_m": WHEELBASE,
+        "max_steer_rad": MAX_STEER,
+        "max_steer_rate_radps": MAX_STEER_RATE,
+        "max_accel_mps2": A_ACC_MAX,
+        "max_decel_mps2": A_DEC_MAX,
+        "control_rate_hz": 40.0,
+        "num_local_waypoints": N_LOCAL_WP,
+        "steering_lut": (
+            "control_ws/src/control_pkg/config/steering_lookup/"
+            "NUC6_glc_pacejka_lookup_table.csv"),
+    },
+    # planner params velocity_scale=0.6667 + waypoint_tracker speed_scale=0.30.
+    # Python tracker의 lookahead=clip(0.5*v, 0.6, 1.2)를 그대로 사용한다.
+    "python_sim_tracker": {
+        "kind": "python_pure_pursuit",
+        "planner_speed_scale": 0.6667,
+        "controller_speed_scale": 0.30,
+        "max_speed_mps": V_MAX,
+        "lookahead_gain": 0.5,
+        "lookahead_offset": 0.0,
+        "lookahead_min_m": 0.6,
+        "lookahead_max_m": 1.2,
+        "wheelbase_m": WHEELBASE,
+        "max_steer_rad": MAX_STEER,
+        "max_steer_rate_radps": MAX_STEER_RATE,
+        "max_accel_mps2": A_ACC_MAX,
+        "max_decel_mps2": A_DEC_MAX,
+        "control_rate_hz": 40.0,
+        "num_local_waypoints": N_LOCAL_WP,
+        "steering_lut": None,
+    },
+}
 
 # --- 이산화 간격 -------------------------------------------------------------
 DS_OUT     = 0.1     # 출력 웨이포인트 간격 [m]
@@ -139,10 +202,11 @@ HERE = Path(__file__).resolve().parent
 PKG_ROOT = next((p for p in HERE.parents if p.name == "planning_pkg"),
                 HERE.parent.parent)
 # 맵을 찾을 폴더 (앞에서부터 순서대로 — 먼저 있는 걸 쓴다):
-#   1) ~/IFAC_ws/maps        — mapping.launch.py 가 저장하는 워크스페이스 공용 폴더.
+#   1) <workspace>/maps      — mapping.launch.py 가 저장하는 워크스페이스 공용 폴더.
 #      여기서 먼저 찾으므로 매핑 직후 복사 없이 바로 build_map 을 돌릴 수 있다.
 #   2) planning_pkg/maps     — 패키지에 함께 두는 맵 (기존 동작).
-MAPS_SEARCH_DIRS = [Path.home() / "IFAC_ws" / "maps", PKG_ROOT / "maps"]
+WORKSPACE_ROOT = PKG_ROOT.parents[2]
+MAPS_SEARCH_DIRS = [WORKSPACE_ROOT / "maps", PKG_ROOT / "maps"]
 CSV_DIR = PKG_ROOT / "config" / "global_trajectory"
 CENTERLINE_DIR = PKG_ROOT / "config" / "centerline"
 OUT_DIR = HERE / "outputs"
@@ -183,14 +247,18 @@ def _px_to_world(rc, resolution, origin, H):
 
     map_server(nav2 map_io) 셀 중심 규약과 맞춘다: yaml origin은 이미지 좌하단
     코너의 pose이고, 이미지 row는 위에서부터라 grid row = H-1-row.
-        x = origin_x + (col + 0.5) * res
-        y = origin_y + (H - row - 0.5) * res
+        [x, y] = origin_xy + R(origin_yaw) *
+                 [(col + 0.5) * res, (H - row - 0.5) * res]
     0.5 셀을 빼먹으면 트랙 모델 전체가 PF가 정합하는 occupancy grid 대비
     (-res/2, +res/2) 만큼 대각선으로 밀린다(0.05 m/px에서 3.5 cm).
     """
     rc = np.atleast_2d(rc)
-    x = origin[0] + (rc[:, 1] + 0.5) * resolution
-    y = origin[1] + (H - rc[:, 0] - 0.5) * resolution
+    local_x = (rc[:, 1] + 0.5) * resolution
+    local_y = (H - rc[:, 0] - 0.5) * resolution
+    yaw = float(origin[2])
+    c, s = np.cos(yaw), np.sin(yaw)
+    x = origin[0] + c * local_x - s * local_y
+    y = origin[1] + s * local_x + c * local_y
     return np.column_stack([x, y])
 
 
@@ -207,17 +275,34 @@ class Grid:
     코리도 쪽으로 되끌어낸다 — 즉 최적화가 스스로 복구한다.
     """
 
-    def __init__(self, ring, resolution, origin, H):
-        self.ring = ring
+    def __init__(self, ring, resolution, origin, H, skeleton_ring=None):
+        # ring은 원본 occupancy에서 추출한 안전 기준이며 절대 정리하지 않는다.
+        # skeleton_ring만 골격 안정화를 위해 작은 섬/오목부를 정리할 수 있다.
+        self.ring = np.asarray(ring, dtype=bool)
+        self.skeleton_ring = (
+            self.ring if skeleton_ring is None
+            else np.asarray(skeleton_ring, dtype=bool))
+        if self.skeleton_ring.shape != self.ring.shape:
+            raise ValueError("raw/skeleton occupancy masks have different shapes")
         self.res = resolution
         self.origin = np.asarray(origin, dtype=float)
+        if self.origin.shape != (3,) or not np.isfinite(self.origin).all():
+            raise ValueError("grid origin must be finite [x, y, yaw]")
+        if not np.isfinite(self.res) or self.res <= 0.0:
+            raise ValueError("grid resolution must be positive and finite")
         self.H = H
 
     def is_free(self, xy):
         """월드 좌표 (N,2) → 그 셀이 주행 가능한가 (bool N). _px_to_world의 역."""
         xy = np.atleast_2d(xy)
-        col = (xy[:, 0] - self.origin[0]) / self.res - 0.5
-        row = self.H - 0.5 - (xy[:, 1] - self.origin[1]) / self.res
+        dx = xy[:, 0] - self.origin[0]
+        dy = xy[:, 1] - self.origin[1]
+        yaw = float(self.origin[2])
+        c, s = np.cos(yaw), np.sin(yaw)
+        local_x = c * dx + s * dy
+        local_y = -s * dx + c * dy
+        col = local_x / self.res - 0.5
+        row = self.H - 0.5 - local_y / self.res
         ri = np.round(row).astype(int)
         ci = np.round(col).astype(int)
         ok = ((ri >= 0) & (ri < self.ring.shape[0])
@@ -400,7 +485,7 @@ def load_track(map_name):
 
     크기(resolution/origin)는 SLAM이 만든 yaml 값을 그대로 사용한다.
     추출된 트랙 크기가 EXPECTED_SIZE_M 참고범위를 크게 벗어나면 경고만 낸다.
-    반환: (outer, inner) 월드 좌표 경계 폴리라인, resolution, origin.
+    반환: 경계, resolution, [x,y,yaw], raw/skeleton 마스크, 이미지 높이.
     """
     yaml_path = _find_map_yaml(map_name)
     with open(yaml_path) as f:
@@ -414,7 +499,12 @@ def load_track(map_name):
     H = img.shape[0]
     resolution = (float(RESOLUTION_OVERRIDE) if RESOLUTION_OVERRIDE is not None
                   else float(meta["resolution"]))
-    origin = np.array(meta["origin"][:2], dtype=float)
+    origin_values = meta.get("origin")
+    if not isinstance(origin_values, (list, tuple)) or len(origin_values) < 3:
+        raise ValueError("map YAML origin must contain [x, y, yaw]")
+    origin = np.array(origin_values[:3], dtype=float)
+    if not np.isfinite(origin).all():
+        raise ValueError("map YAML origin contains NaN/Inf")
 
     # --- 링(가운데 구멍 뚫린 free 영역 = 트랙) 검출 ---------------------------
     labels, n = ndimage.label(free_mask)
@@ -433,16 +523,21 @@ def load_track(map_name):
     if ring is None:
         raise RuntimeError("닫힌 고리(트랙) 모양의 free 영역을 못 찾음. "
                            "실내 corridor 맵이거나 트랙이 안 닫힘.")
+    # 원본 occupancy component는 corridor/footprint의 불변 안전 기준이다.
+    # 아래 정리는 medial-axis 추출용 사본에만 적용한다. 실제 작은 기둥/장애물을
+    # 지운 마스크로 최종 검증하는 오류를 막는다.
+    raw_ring = ring.copy()
+    skeleton_ring = ring.copy()
 
     # --- 자동 정리: infield 오목한 주머니 메우기 (중앙선 자기교차 방지) -------
     if INFIELD_FILL_M > 0:
         close_it = max(1, int(round(INFIELD_FILL_M / resolution)))
-        filled = ndimage.binary_fill_holes(ring)
-        infield = filled & ~ring
+        filled = ndimage.binary_fill_holes(skeleton_ring)
+        infield = filled & ~skeleton_ring
         infield_c = ndimage.binary_closing(
             infield, structure=np.ones((3, 3)), iterations=close_it)
         infield_c = ndimage.binary_fill_holes(infield_c) & filled
-        ring = filled & ~infield_c
+        skeleton_ring = filled & ~infield_c
         filled_new_holes = int((infield_c & ~infield).sum())
         if filled_new_holes > 0:
             print(f"      infield 정리: 오목한 곳 {filled_new_holes} px "
@@ -452,13 +547,14 @@ def load_track(map_name):
     # (몇 px짜리 free 웅덩이가 medial-axis 골격에 가짜 가지를 만든다)
     if MIN_ISLAND_M2 > 0:
         min_px = int(round(MIN_ISLAND_M2 / (resolution * resolution)))
-        holes = ndimage.binary_fill_holes(ring) & ~ring
+        holes = (
+            ndimage.binary_fill_holes(skeleton_ring) & ~skeleton_ring)
         hl, hn = ndimage.label(holes)
         n_speckle = 0
         for lab in range(1, hn + 1):
             m = hl == lab
             if m.sum() < min_px:
-                ring[m] = True
+                skeleton_ring[m] = True
                 n_speckle += 1
         if n_speckle > 0:
             print(f"      스페클 제거: 작은 구멍 {n_speckle}개 메움 "
@@ -466,7 +562,7 @@ def load_track(map_name):
 
     # --- 참고용 크기 확인 (스케일은 안 바꿈, 정상 범위인지 경고만) ----------
     # 트랙이 기울어져 있을 수 있으므로 PCA(주축)로 긴 변/짧은 변 실측.
-    rows, cols = np.nonzero(ring)
+    rows, cols = np.nonzero(raw_ring)
     pts_px = np.column_stack([cols, rows]).astype(float)
     _, _, Vt = np.linalg.svd(pts_px - pts_px.mean(axis=0), full_matrices=False)
     proj = (pts_px - pts_px.mean(axis=0)) @ Vt.T
@@ -484,7 +580,7 @@ def load_track(map_name):
 
     # --- 링 경계선을 contour로 뽑아 월드 좌표 폴리라인 2개(outer/inner) ------
     fig = plt.figure()
-    cs = plt.contour(ring.astype(float), levels=[0.5])
+    cs = plt.contour(raw_ring.astype(float), levels=[0.5])
     segs = []
     for path in _contour_paths(cs):
         for poly in path.to_polygons(closed_only=False):
@@ -495,8 +591,10 @@ def load_track(map_name):
         raise RuntimeError(f"트랙 경계 2개를 기대했는데 {len(segs)}개만 검출됨")
     polys = [px_to_world(np.column_stack([s[:, 1], s[:, 0]])) for s in segs]
     polys.sort(key=lambda p: abs(_signed_area(p)), reverse=True)
-    # outer, inner, resolution, origin, 트랙 마스크(ring), 이미지 높이(H)
-    return polys[0], polys[1], resolution, origin, ring, H
+    # raw_ring은 모든 안전 판정, skeleton_ring은 중앙선 추출에만 사용한다.
+    return (
+        polys[0], polys[1], resolution, origin,
+        raw_ring, skeleton_ring, H)
 
 
 def extract_centerline(grid, smooth=3.0, ds=DS_OUT):
@@ -507,7 +605,8 @@ def extract_centerline(grid, smooth=3.0, ds=DS_OUT):
     medial-axis는 항상 코리도 한가운데를 지나 게이트에서도 안 튄다.
     폭(d_left/d_right)만 물리 경계(outer/inner)에서 부호 있는 거리로 계산한다.
     """
-    loop_rc = _order_loop(_medial_axis_loop(grid.ring))      # (row, col) 순서
+    loop_rc = _order_loop(
+        _medial_axis_loop(grid.skeleton_ring))      # (row, col) 순서
     loop_xy = _px_to_world(loop_rc, grid.res, grid.origin, grid.H)
     # 픽셀 계단 노이즈를 지운 뒤 주기 스플라인
     loop_r = _resample_closed(loop_xy, max(len(loop_xy), 800))
@@ -628,32 +727,136 @@ def optimize_raceline_iqp(center, grid, safe_dist_m=SAFE_DIST,
             "kappa": geo["kappa"], "d_left": d_left, "d_right": d_right}
 
 
-def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max, n_iters=3):
-    kappa = np.abs(kappa)
+def _max_segment_endpoint_speed(base_speed, base_kappa, candidate_kappa,
+                                ds, longitudinal_limit, tire_limit,
+                                current_high):
+    """한 segment의 낮은 속도 endpoint를 고정하고 안전한 높은 속도를 찾는다.
+
+    구간 종가속도와 양 endpoint 중 더 큰 횡가속도를 동시에 friction circle에
+    넣는다. candidate가 base와 같으면 ax=0이고 두 점 모두 pointwise lateral
+    cap 아래이므로 항상 feasible하다.
+    """
+    base_sq = base_speed ** 2
+
+    def feasible(candidate):
+        candidate_sq = candidate ** 2
+        longitudinal = (candidate_sq - base_sq) / (2.0 * ds)
+        lateral = max(
+            base_sq * base_kappa,
+            candidate_sq * candidate_kappa)
+        return (
+            longitudinal <= longitudinal_limit + 1e-12 and
+            np.hypot(longitudinal, lateral) <= tire_limit + 1e-12)
+
+    if feasible(current_high):
+        return current_high
+    lo, hi = base_speed, current_high
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if feasible(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
+                     segment_ds=None, max_iterations=500):
+    """폐루프 속도를 pointwise + segmentwise 합성 타이어 한계에 투영한다.
+
+    각 segment는 양끝 중 더 큰 횡가속도를 사용한다. 한 endpoint만 보던 기존
+    forward/backward pass는 곡률이 급증하는 지점 직전의 ax를 과대 허용해,
+    최종 CSV에서 hypot(v²*kappa, ax)가 mu*g를 넘길 수 있었다.
+    """
+    values = (v_max, mu, a_acc_max, a_dec_max)
+    if not all(np.isfinite(value) and value > 0.0 for value in values):
+        raise ValueError("velocity profile limits must be positive and finite")
+    kappa = np.abs(np.asarray(kappa, dtype=float))
+    s = np.asarray(s, dtype=float)
     n = len(s)
-    ds = np.diff(s, append=s[-1] + (s[-1] - s[-2]))
-    a_lat_max = mu * G
+    if n < 3 or len(kappa) != n or not np.isfinite(s).all() or \
+            not np.isfinite(kappa).all():
+        raise ValueError("velocity profile input is malformed")
+    if segment_ds is None:
+        nominal_last = s[-1] - s[-2]
+        segment_ds = np.diff(s, append=s[-1] + nominal_last)
+    segment_ds = np.asarray(segment_ds, dtype=float)
+    if len(segment_ds) != n or not np.isfinite(segment_ds).all() or \
+            np.any(segment_ds <= 1e-6):
+        raise ValueError("closed-loop segment lengths must be positive and finite")
+
+    tire_limit = mu * G
+    # CSV 7-decimal 양자화가 저장 후 한계 초과로 뒤집히지 않게 projection만
+    # 10 ppm 안쪽에서 수행한다. 검증 한계 자체는 낮추거나 완화하지 않는다.
+    projection_limit = tire_limit * (1.0 - 1e-5)
     with np.errstate(divide="ignore"):
-        v = np.minimum(np.sqrt(a_lat_max / np.maximum(kappa, 1e-9)), v_max)
-    for _ in range(n_iters):
+        lateral_cap = np.sqrt(
+            projection_limit / np.maximum(kappa, 1e-12))
+    v = np.minimum(lateral_cap, v_max)
+
+    # 모든 update는 속도를 낮추기만 한다. 인접 구간을 다시 악화시킬 수 있으므로
+    # 폐루프 전체를 반복하고, 마지막에는 독립적으로 재계산해 fail-closed 한다.
+    for _ in range(max_iterations):
+        max_reduction = 0.0
         for i in range(n):
             j = (i + 1) % n
-            a_lat = v[i] ** 2 * kappa[i]
-            a_avail = a_acc_max * np.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
-            v[j] = min(v[j], np.sqrt(v[i] ** 2 + 2.0 * a_avail * ds[i]))
-        for i in range(n - 1, -1, -1):
-            j = (i + 1) % n
-            a_lat = v[j] ** 2 * kappa[j]
-            a_avail = a_dec_max * np.sqrt(max(0.0, 1.0 - (a_lat / a_lat_max) ** 2))
-            v[i] = min(v[i], np.sqrt(v[j] ** 2 + 2.0 * a_avail * ds[i]))
+            if v[j] >= v[i]:
+                safe = _max_segment_endpoint_speed(
+                    v[i], kappa[i], kappa[j], segment_ds[i],
+                    a_acc_max, projection_limit, v[j])
+                max_reduction = max(max_reduction, v[j] - safe)
+                v[j] = safe
+            else:
+                safe = _max_segment_endpoint_speed(
+                    v[j], kappa[j], kappa[i], segment_ds[i],
+                    a_dec_max, projection_limit, v[i])
+                max_reduction = max(max_reduction, v[i] - safe)
+                v[i] = safe
+        if max_reduction < 1e-10:
+            break
+    else:
+        raise RuntimeError("velocity profile projection did not converge")
+
+    next_v = np.roll(v, -1)
+    ax = (next_v ** 2 - v ** 2) / (2.0 * segment_ds)
+    worst_lateral = np.maximum(
+        v ** 2 * kappa,
+        next_v ** 2 * np.roll(kappa, -1))
+    combined = np.hypot(worst_lateral, ax)
+    accel_bad = (ax > a_acc_max + 1e-8)
+    decel_bad = (ax < -a_dec_max - 1e-8)
+    tire_bad = combined > tire_limit + 1e-8
+    if np.any(accel_bad | decel_bad | tire_bad):
+        bad = np.flatnonzero(accel_bad | decel_bad | tire_bad)
+        raise RuntimeError(
+            "velocity profile final projection failed at segments "
+            f"{bad[:8].tolist()}: combined max={combined[bad].max():.6f}, "
+            f"limit={tire_limit:.6f}")
     return v
 
 
 def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
     s, kappa = geo["s"], geo["kappa"]
-    v = velocity_profile(s, kappa, v_max, mu, A_ACC_MAX, A_DEC_MAX)
-    ds = np.diff(s, append=s[-1] + (s[-1] - s[-2]))
+    xy = np.asarray(geo["xy"], dtype=float)
+    ds = np.hypot(
+        np.roll(xy[:, 0], -1) - xy[:, 0],
+        np.roll(xy[:, 1], -1) - xy[:, 1])
+    v = velocity_profile(
+        s, kappa, v_max, mu, A_ACC_MAX, A_DEC_MAX,
+        segment_ds=ds)
     ax = (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds)
+    # 실제 CSV 정밀도까지 양자화한 값도 다시 검사한다. 메모리 float가 PASS해도
+    # 저장/재로드 후 FAIL하는 generation을 commit하지 않는다.
+    csv_v = np.round(v, 7)
+    csv_kappa = np.round(kappa, 7)
+    csv_ax = np.round(ax, 7)
+    csv_combined = np.hypot(csv_v ** 2 * np.abs(csv_kappa), csv_ax)
+    if np.any(csv_combined > mu * G + 1e-9):
+        bad = np.flatnonzero(csv_combined > mu * G + 1e-9)
+        raise RuntimeError(
+            "serialized velocity profile exceeds tire budget at "
+            f"{bad[:8].tolist()}: max={csv_combined[bad].max():.9f}, "
+            f"limit={mu * G:.9f}")
     return {"s": s, "xy": geo["xy"],
             "d_right": np.maximum(geo["d_right"] - margin, 0.0),
             "d_left": np.maximum(geo["d_left"] - margin, 0.0),
@@ -722,8 +925,29 @@ def roll_to_start(traj, start_xy=(0.0, 0.0), orientation=None):
     return out
 
 
-def verify_line(name, traj, grid, half_width=CAR_HALF_WIDTH,
-                curvature_strict=True):
+def footprint_free(grid, xy, psi, half_length=CAR_HALF_LENGTH,
+                   half_width=CAR_HALF_WIDTH):
+    """각 pose의 차량 직사각형 전체가 free-space 안인지 검사한다.
+
+    중심점/법선 거리만 보면 코너에서 앞·뒤 모서리가 벽을 자르는 문제를 놓친다.
+    occupancy 해상도의 절반 간격으로 footprint 내부를 채워 검사한다.
+    """
+    xy = np.atleast_2d(xy)
+    psi = np.atleast_1d(psi)
+    step = max(0.5 * grid.res, 0.01)
+    lon = np.arange(-half_length, half_length + 0.5 * step, step)
+    lat = np.arange(-half_width, half_width + 0.5 * step, step)
+    ok = np.ones(len(xy), dtype=bool)
+    c, s = np.cos(psi), np.sin(psi)
+    for dl in lon:
+        for dd in lat:
+            pts = xy + np.column_stack([dl * c - dd * s,
+                                        dl * s + dd * c])
+            ok &= grid.is_free(pts)
+    return ok
+
+
+def verify_line(name, traj, grid, half_width=CAR_HALF_WIDTH):
     """최종 라인이 실제로 주행 가능한지 occupancy 마스크에 대고 검사.
 
     ⚠️ 이 검사는 생략하면 안 된다. 2026-07-27 이전에는 어느 단계도 결과를
@@ -735,21 +959,54 @@ def verify_line(name, traj, grid, half_width=CAR_HALF_WIDTH,
       2. 요구 회전반경 >= 실차 최소 회전반경 — 못 지키면 조향이 포화해
          라인을 아예 못 따라간다 (핸들을 끝까지 꺾어도 모자람).
 
-    curvature_strict=False 는 SP 추월 라인 전용이다. SP는 최단거리라 코너를
-    깎아 R이 떨어지는데(SP_CURV_W로 완화해도 남는다), spliner는 SP 차선을
-    ot_max_kappa(0.4 = R>=2.5 m) 로 걸러낸 추월 섹터 안에서만 탄다. 실제로
-    my_track0727의 SP R 위반 8점은 전부 |kappa| 0.51~0.87 구간, 즉 섹터에서
-    배제되는 코너였다. 여기서 SP를 하드 실패시키면 곡률을 맞추려다 SP가
-    IQP와 겹쳐버려(간격 0.04 m) 추월 차선 자체가 사라진다.
     반환: (ok, 진단 문자열 리스트)
     """
+    required = ("s", "xy", "d_right", "d_left", "psi", "kappa", "vx", "ax")
+    if any(k not in traj for k in required):
+        return False, [f"      {name}: [FAIL] 필수 trajectory 필드 누락"]
+    n = len(traj["s"])
+    if n < 8 or any(len(traj[k]) != n for k in required if k != "xy") or \
+            len(traj["xy"]) != n:
+        return False, [f"      {name}: [FAIL] waypoint 길이 불일치 또는 8점 미만"]
+    flat = np.column_stack([
+        traj["s"], traj["xy"], traj["d_right"], traj["d_left"], traj["psi"],
+        traj["kappa"], traj["vx"], traj["ax"]])
+    if not np.isfinite(flat).all():
+        return False, [f"      {name}: [FAIL] NaN/Inf 포함"]
+    ds = np.diff(traj["s"])
+    if np.any(ds <= 1e-5):
+        return False, [f"      {name}: [FAIL] s가 단조 증가하지 않음"]
+    if ds.max() > ds.min() * 1.25:
+        return False, [f"      {name}: [FAIL] waypoint 간격 불균일 "
+                       f"({ds.min():.3f}~{ds.max():.3f}m)"]
+    geometric_ds = np.hypot(*np.diff(traj["xy"], axis=0).T)
+    if np.any(geometric_ds <= 1e-5) or \
+            np.any(np.abs(geometric_ds - ds) > np.maximum(0.02, 0.20 * ds)):
+        return False, [f"      {name}: [FAIL] s/Cartesian 간격 불일치"]
+    closure = float(np.linalg.norm(traj["xy"][0] - traj["xy"][-1]))
+    if closure > ds.max() * 2.5:
+        return False, [f"      {name}: [FAIL] 폐루프 불연속 {closure:.3f}m"]
+    if np.any(traj["d_right"] < 0.0) or np.any(traj["d_left"] < 0.0) or \
+            np.any(traj["vx"] < 0.0):
+        return False, [f"      {name}: [FAIL] 음수 폭/속도 포함"]
+    numeric_ax = (
+        traj["vx"][1:] ** 2 - traj["vx"][:-1] ** 2) / (2.0 * ds)
+    if np.max(np.abs(numeric_ax - traj["ax"][:-1])) > 0.5:
+        return False, [f"      {name}: [FAIL] ax 열과 속도 프로파일 불일치"]
+
     clear = grid.clearance(traj["xy"], traj["psi"])
     r_min_car = WHEELBASE / np.tan(MAX_STEER)
     kappa = np.abs(traj["kappa"])
     r_line = 1.0 / np.maximum(kappa, 1e-9)
+    lat_acc = traj["vx"] ** 2 * kappa
 
     tight = np.flatnonzero(clear < half_width)
     sharp = np.flatnonzero(r_line < r_min_car)
+    combined_acc = np.hypot(lat_acc, traj["ax"])
+    friction = np.flatnonzero(combined_acc > MU * G * (1.0 + 1e-6))
+    footprint_bad = np.flatnonzero(
+        ~footprint_free(grid, traj["xy"], traj["psi"],
+                        half_width=half_width))
     msgs = [f"      {name}: 벽여유 min {clear.min():.3f} m "
             f"(기준 {half_width:.2f}) · R_min {r_line.min():.2f} m "
             f"(실차 한계 {r_min_car:.2f})"]
@@ -764,76 +1021,527 @@ def verify_line(name, traj, grid, half_width=CAR_HALF_WIDTH,
                     f"s={traj['s'][g[0]]:.1f}~{traj['s'][g[-1]]:.1f} m "
                     f"xy=({traj['xy'][g[0], 0]:.2f},{traj['xy'][g[0], 1]:.2f})"
                     f" — {len(g)}점")
-    lvl = "FAIL" if curvature_strict else "warn"
+    for g in spans(footprint_bad)[:5]:
+        msgs.append(f"        [FAIL] 차량 footprint 벽 침범 @ "
+                    f"s={traj['s'][g[0]]:.1f}~{traj['s'][g[-1]]:.1f} m "
+                    f"— {len(g)}점")
     for g in spans(sharp)[:5]:
-        msgs.append(f"        [{lvl}] R={r_line[g].min():.2f} m @ "
+        msgs.append(f"        [FAIL] R={r_line[g].min():.2f} m @ "
                     f"s={traj['s'][g[0]]:.1f}~{traj['s'][g[-1]]:.1f} m "
                     f"xy=({traj['xy'][g[0], 0]:.2f},{traj['xy'][g[0], 1]:.2f})"
                     f" — 조향 포화, {len(g)}점")
-    if len(sharp) and not curvature_strict:
-        msgs.append("        ↑ SP는 추월 섹터(ot_max_kappa) 안에서만 타므로 "
-                    "코너의 R 위반은 실주행에 안 쓰인다. 다만 위 구간이 "
-                    "직선부라면 SP_CURV_W 를 올릴 것.")
-    return len(tight) == 0 and (len(sharp) == 0 or not curvature_strict), msgs
+    for g in spans(friction)[:5]:
+        msgs.append(f"        [FAIL] 합성 타이어 가속도 "
+                    f"{combined_acc[g].max():.2f} m/s² > mu*g={MU * G:.2f} @ "
+                    f"s={traj['s'][g[0]]:.1f}~{traj['s'][g[-1]]:.1f} m")
+    return (len(tight) == 0 and len(footprint_bad) == 0 and
+            len(sharp) == 0 and len(friction) == 0), msgs
 
 
-def write_csv(traj, path, header_note=""):
+def _trajectory_csv_bytes(traj, header_note="", generation_id=""):
     cols = np.column_stack([
         traj["s"], traj["xy"][:, 0], traj["xy"][:, 1],
         traj["d_right"], traj["d_left"], traj["psi"],
         traj["kappa"], traj["vx"], traj["ax"]])
+    stream = io.StringIO()
+    if generation_id:
+        stream.write(f"# generation_id={generation_id}\n")
+    if header_note:
+        stream.write(f"# {header_note}\n")
+    stream.write(
+        "# s_m; x_m; y_m; d_right; d_left; psi_rad; kappa_radpm; "
+        "vx_mps; ax_mps2\n")
+    for row in cols:
+        stream.write("; ".join(f"{value:.7f}" for value in row) + "\n")
+    return stream.getvalue().encode("utf-8")
+
+
+def write_csv(traj, path, header_note="", generation_id=""):
+    """호환용 단일 파일 writer. 실제 생성 승격은 commit_generation_set 사용."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        if header_note:
-            f.write(f"# {header_note}\n")
-        f.write("# s_m; x_m; y_m; d_right; d_left; psi_rad; kappa_radpm; "
-                "vx_mps; ax_mps2\n")
-        for row in cols:
-            f.write("; ".join(f"{v:.7f}" for v in row) + "\n")
+    with open(path, "wb") as file:
+        file.write(_trajectory_csv_bytes(
+            traj, header_note, generation_id=generation_id))
+
+
+def _savetxt_bytes(data, **kwargs):
+    stream = io.StringIO()
+    np.savetxt(stream, data, **kwargs)
+    return stream.getvalue().encode("utf-8")
+
+
+def _stage_bytes(path, payload, generation_id):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.{generation_id}.", suffix=".stage",
+        dir=path.parent)
+    with os.fdopen(fd, "wb") as file:
+        file.write(payload)
+        file.flush()
+        os.fsync(file.fileno())
+    return Path(tmp_name)
+
+
+def _fsync_directory(path):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(Path(path), flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _manifest_path(path):
+    path = Path(path)
+    try:
+        return str(path.relative_to(WORKSPACE_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def commit_generation_set(map_name, main_name, main_traj, center, walls,
+                          orientation, sp_name=None, sp_traj=None,
+                          sp_disabled_reason=""):
+    """검증 완료된 생성 세트를 stage/fsync 후 순서 있게 승격한다.
+
+    SP -> center/walls -> main 순으로 승격하고 각 단계 디렉터리를 fsync한다.
+    runtime main CSV가 마지막 data commit point다. manifest/hash marker는 그 뒤에
+    승격한다. SP가 없으면 같은 suffix의 기존 SP를 먼저 숨긴 후 commit 성공 시
+    제거하므로 MAKE_SP=false/검증 실패가 stale SP를 남기지 않는다.
+
+    여러 파일 rename은 하나의 원자 연산이 아니다. 따라서 자동 SP 선택은 꺼진
+    상태를 전제로 하며, 명시적 main+SP 소비자는 양 CSV의 generation_id
+    일치와 manifest hash를 확인해 전원 상실 중간 pair를 거부해야 한다.
+    """
+    # 매 실행마다 고유하며 모든 stage write 전에 확정한다. main/SP 헤더와
+    # manifest가 이 ID를 공유해 런타임이 mixed generation을 거부할 수 있다.
+    generation_id = uuid.uuid4().hex
+    main_note = (
+        f"build_map ({map_name}, dir={orientation.upper()}, "
+        f"safe_dist={SAFE_DIST:.2f}m)")
+    main_bytes = _trajectory_csv_bytes(
+        main_traj, main_note, generation_id=generation_id)
+    sp_bytes = None
+    if sp_traj is not None:
+        if not sp_name:
+            raise ValueError("SP trajectory에 대응하는 파일명이 없음")
+        sp_bytes = _trajectory_csv_bytes(
+            sp_traj,
+            f"build_map ({map_name}, SP overtake, "
+            f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)",
+            generation_id=generation_id)
+    elif sp_name and not sp_disabled_reason:
+        sp_disabled_reason = "SP not generated"
+
+    walls_bytes = _savetxt_bytes(
+        walls, delimiter="; ", fmt="%.7f",
+        header="x_m; y_m; wall_id(0=outer,1=inner)")
+    center_bytes = _savetxt_bytes(
+        center["xy"], delimiter="; ", fmt="%.7f",
+        header="x_m; y_m")
+    digest = hashlib.sha256()
+    for payload in (main_bytes, sp_bytes or b"SP_DISABLED",
+                    walls_bytes, center_bytes):
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    content_sha256 = digest.hexdigest()
+
+    main_paths = [
+        OUT_DIR / main_name,
+        CSV_DIR / main_name,
+    ]
+    expected_sp_paths = (
+        [OUT_DIR / sp_name, CSV_DIR / sp_name] if sp_name else [])
+    sp_payloads = (
+        [(path, sp_bytes, f"sp_{index}")
+         for index, path in enumerate(expected_sp_paths)]
+        if sp_bytes is not None else [])
+    auxiliary_payloads = [
+        (OUT_DIR / f"{map_name}_walls.csv", walls_bytes, "walls_output"),
+        (CENTERLINE_DIR / f"{map_name}_walls.csv",
+         walls_bytes, "walls_runtime"),
+        (OUT_DIR / f"{map_name}_centerline.csv",
+         center_bytes, "centerline_output"),
+        (CENTERLINE_DIR / f"{map_name}_centerline.csv",
+         center_bytes, "centerline_runtime"),
+    ]
+    main_payloads = [
+        (main_paths[0], main_bytes, "main_output"),
+        (main_paths[1], main_bytes, "main_runtime"),
+    ]
+    data_payloads = sp_payloads + auxiliary_payloads + main_payloads
+    file_records = [{
+        "role": role,
+        "path": _manifest_path(path),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+    } for path, payload, role in data_payloads]
+    manifest = {
+        "schema_version": 1,
+        "generation_id": generation_id,
+        "generation_content_sha256": content_sha256,
+        "map": map_name,
+        "main": main_name,
+        "sp": sp_name if sp_bytes is not None else None,
+        "sp_expected": sp_name,
+        "sp_enabled": sp_bytes is not None,
+        "sp_disabled_reason": (
+            "" if sp_bytes is not None else sp_disabled_reason),
+        "files": file_records,
+    }
+    manifest_bytes = (
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    manifest_name = f"{map_name}_generation_manifest.json"
+    manifest_payloads = [
+        (OUT_DIR / manifest_name, manifest_bytes, "manifest_output"),
+        (CSV_DIR / manifest_name, manifest_bytes, "manifest_runtime"),
+    ]
+
+    staged = {}
+    backups = {}
+    promoted = []
+    data_committed = False
+    touched_dirs = set()
+
+    def stage_group(payloads):
+        for path, payload, _ in payloads:
+            staged[path] = _stage_bytes(path, payload, generation_id)
+            touched_dirs.add(path.parent)
+
+    def backup_existing(path):
+        if path.exists():
+            backup = path.with_name(
+                f".{path.name}.{generation_id}.previous")
+            os.replace(path, backup)
+            backups[path] = backup
+
+    def promote_group(payloads):
+        for path, _, _ in payloads:
+            backup_existing(path)
+            tmp = staged[path]
+            os.replace(tmp, path)
+            del staged[path]
+            promoted.append(path)
+        for directory in {path.parent for path, _, _ in payloads}:
+            _fsync_directory(directory)
+
+    try:
+        # 모든 payload를 먼저 완전히 기록+fsync한다. 이 전에는 기존 세트 불변.
+        stage_group(data_payloads)
+        stage_group(manifest_payloads)
+        for directory in touched_dirs:
+            _fsync_directory(directory)
+
+        # SP disabled도 transaction의 일부다. 같은 suffix stale SP를 숨긴 뒤
+        # directory fsync하여 main commit보다 먼저 영속화한다.
+        if sp_bytes is None:
+            for path in expected_sp_paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                touched_dirs.add(path.parent)
+                backup_existing(path)
+            for directory in {path.parent for path in expected_sp_paths}:
+                _fsync_directory(directory)
+        elif sp_payloads:
+            promote_group(sp_payloads)
+
+        promote_group(auxiliary_payloads)
+        # output 복사본 먼저, 런타임이 읽는 main CSV를 data commit point로 마지막.
+        promote_group(main_payloads[:1])
+        promote_group(main_payloads[1:])
+        data_committed = True
+
+        # Hash manifest는 data가 모두 영속화된 뒤 commit marker로 승격한다.
+        promote_group(manifest_payloads)
+
+        # 성공한 세트의 이전/비활성 SP는 glob에 잡히지 않는 hidden backup에서 제거.
+        for backup in backups.values():
+            if backup.exists():
+                backup.unlink()
+        for directory in touched_dirs:
+            _fsync_directory(directory)
+    except Exception:
+        if not data_committed:
+            # 정상 예외에서는 기존 세트를 복구한다. 전원 상실 중간 상태는
+            # main-last + manifest로 탐지하며 자동 SP 선택이 꺼져 있어야 안전하다.
+            for path in reversed(promoted):
+                if path.exists():
+                    path.unlink()
+            for path, backup in backups.items():
+                if backup.exists():
+                    os.replace(backup, path)
+            for directory in touched_dirs:
+                _fsync_directory(directory)
+        raise
+    finally:
+        for tmp in staged.values():
+            if tmp.exists():
+                tmp.unlink()
+
+    for path, _, role in data_payloads:
+        print(f"      committed [{role}] {path}")
+    if sp_bytes is None and expected_sp_paths:
+        print(f"      SP disabled before main commit: {sp_disabled_reason}")
+    print(f"      generation manifest {generation_id}: "
+          f"{CSV_DIR / manifest_name}")
+    return manifest
 
 
 # ============================================================ 3. 시뮬레이션
+_PROFILE_NUMERIC_FIELDS = (
+    "planner_speed_scale", "controller_speed_scale", "max_speed_mps",
+    "lookahead_gain", "lookahead_offset", "lookahead_min_m",
+    "lookahead_max_m", "wheelbase_m", "max_steer_rad",
+    "max_steer_rate_radps", "max_accel_mps2", "max_decel_mps2",
+    "control_rate_hz", "num_local_waypoints",
+)
+
+
+def controller_profile(name):
+    """이름으로 선택한 배포 프로파일을 검증해 사본으로 반환한다."""
+    if not isinstance(name, str) or name not in CONTROLLER_PROFILE_LIBRARY:
+        raise ValueError(f"알 수 없는 controller profile: {name!r}")
+    profile = dict(CONTROLLER_PROFILE_LIBRARY[name])
+    profile["name"] = name
+    if profile.get("kind") not in ("cpp_map_l1", "python_pure_pursuit"):
+        raise ValueError(f"{name}: 지원하지 않는 controller kind")
+    for field in _PROFILE_NUMERIC_FIELDS:
+        value = profile.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                not np.isfinite(value):
+            raise ValueError(f"{name}: {field}가 유한 숫자가 아님")
+    if not (0.0 < profile["planner_speed_scale"] <= 1.0) or \
+            not (0.0 < profile["controller_speed_scale"] <= 1.0):
+        raise ValueError(f"{name}: speed scale은 (0, 1]이어야 함")
+    positive = (
+        "max_speed_mps", "lookahead_min_m", "lookahead_max_m",
+        "wheelbase_m", "max_steer_rad", "max_steer_rate_radps",
+        "max_accel_mps2", "max_decel_mps2", "control_rate_hz",
+    )
+    if any(profile[field] <= 0.0 for field in positive):
+        raise ValueError(f"{name}: 차량/제어 한계는 양수여야 함")
+    if profile["lookahead_max_m"] < profile["lookahead_min_m"]:
+        raise ValueError(f"{name}: lookahead min/max가 뒤집힘")
+    if profile["max_steer_rad"] >= 0.5 * np.pi:
+        raise ValueError(f"{name}: max steer가 자전거 모델 범위를 벗어남")
+    n_local = profile["num_local_waypoints"]
+    if int(n_local) != n_local or n_local < 2:
+        raise ValueError(f"{name}: num_local_waypoints는 2 이상의 정수여야 함")
+    profile["num_local_waypoints"] = int(n_local)
+    lut = profile.get("steering_lut")
+    if profile["kind"] == "cpp_map_l1" and \
+            (not isinstance(lut, str) or not lut):
+        raise ValueError(f"{name}: C++ MAP/L1 steering LUT가 지정되지 않음")
+    if profile["kind"] == "python_pure_pursuit" and lut is not None:
+        raise ValueError(f"{name}: Python pure pursuit에 LUT를 지정할 수 없음")
+    return profile
+
+
+def selected_controller_profiles():
+    """빈/중복/오타 선택을 허용하지 않고, 선택된 모든 프로파일을 반환한다."""
+    names = tuple(SIM_CONTROLLER_PROFILES)
+    if not names:
+        raise ValueError("SIM_CONTROLLER_PROFILES가 비어 있음 — 검증 없이 저장 금지")
+    if len(names) != len(set(names)):
+        raise ValueError("SIM_CONTROLLER_PROFILES에 중복 이름이 있음")
+    return tuple(controller_profile(name) for name in names)
+
+
+def _load_steering_lut(relative_path):
+    """control_node.cpp와 같은 CSV 계약으로 LUT를 읽고, 이상하면 즉시 실패한다."""
+    path = (WORKSPACE_ROOT / relative_path).resolve()
+    try:
+        path.relative_to(WORKSPACE_ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError(f"steering LUT가 workspace 밖을 가리킴: {path}") from exc
+    if not path.is_file():
+        raise FileNotFoundError(f"배포 steering LUT 없음: {path}")
+    try:
+        table = np.loadtxt(path, delimiter=",")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"steering LUT 파싱 실패: {path}: {exc}") from exc
+    if table.ndim != 2 or table.shape[0] < 2 or table.shape[1] < 2:
+        raise ValueError(f"steering LUT 크기 오류: {path}")
+    if not np.isfinite(table[0, 1:]).all() or \
+            not np.isfinite(table[1:, 0]).all():
+        raise ValueError(f"steering LUT 축에 NaN/Inf 포함: {path}")
+    if np.any(np.sum(np.isfinite(table[1:, 1:]), axis=0) == 0):
+        raise ValueError(f"steering LUT에 유효 가속도 행이 없는 속도 열 포함: {path}")
+    return table
+
+
+def _lookup_steer_angle(table, acceleration, velocity):
+    """control_node.cpp LookupSteerAngle::lookup_steer_angle의 동일 보간."""
+    sign = 1.0 if acceleration > 0.0 else -1.0
+    acceleration = abs(float(acceleration))
+    velocity_column = int(
+        np.argmin(np.abs(table[0, 1:] - velocity))) + 1
+    finite_rows = np.flatnonzero(
+        np.isfinite(table[1:, velocity_column]) &
+        np.isfinite(table[1:, 0])) + 1
+    if len(finite_rows) == 0:
+        raise ValueError("steering LUT 선택 열에 유효 행이 없음")
+    closest_position = int(np.argmin(
+        np.abs(table[finite_rows, velocity_column] - acceleration)))
+    if closest_position == 0:
+        return 0.0
+    if closest_position + 1 >= len(finite_rows):
+        second_position = closest_position
+    else:
+        before = closest_position - 1
+        after = closest_position + 1
+        before_error = abs(
+            table[finite_rows[before], velocity_column] - acceleration)
+        after_error = abs(
+            table[finite_rows[after], velocity_column] - acceleration)
+        second_position = before if before_error <= after_error else after
+    first_row = finite_rows[closest_position]
+    second_row = finite_rows[second_position]
+    steering_angle = float(table[first_row, 0])
+    if first_row != second_row:
+        first_accel = table[first_row, velocity_column]
+        second_accel = table[second_row, velocity_column]
+        if abs(second_accel - first_accel) > 1e-9:
+            ratio = np.clip(
+                (acceleration - first_accel) / (second_accel - first_accel),
+                0.0, 1.0)
+            steering_angle += ratio * (
+                table[second_row, 0] - table[first_row, 0])
+    return float(steering_angle * sign)
+
+
+def _lookup_lateral_accel(table, steering_angle, velocity):
+    """같은 실측 LUT를 정방향(steer, velocity -> lateral accel)으로 보간한다.
+
+    C++ 제어기의 inverse LUT로 명령을 만든 뒤 plant를 이상적인
+    v²*tan(delta)/L로 적분하면 NUC6 실측 응답보다 낙관적이다. 속도 열 선택은
+    control_node와 같이 nearest-column이고, 조향축 사이만 선형 보간한다.
+    """
+    sign = 1.0 if steering_angle > 0.0 else -1.0
+    steering = abs(float(steering_angle))
+    velocity_abs = abs(float(velocity))
+    velocity_column = int(
+        np.argmin(np.abs(table[0, 1:] - velocity_abs))) + 1
+    finite_rows = np.flatnonzero(
+        np.isfinite(table[1:, velocity_column]) &
+        np.isfinite(table[1:, 0])) + 1
+    if len(finite_rows) == 0:
+        raise ValueError("steering LUT selected column has no finite rows")
+    steer_axis = table[finite_rows, 0]
+    accel_axis = table[finite_rows, velocity_column]
+    order = np.argsort(steer_axis)
+    steer_axis = steer_axis[order]
+    accel_axis = accel_axis[order]
+    lateral = float(np.interp(
+        steering, steer_axis, accel_axis,
+        left=accel_axis[0], right=accel_axis[-1]))
+    # LUT의 최저 속도(0.5 m/s) 아래를 그대로 clamp하면 정지 상태에서도
+    # 횡가속이 생긴다. bicycle 저속 극한에 맞춰 v²로 보수적으로 축소한다.
+    minimum_table_speed = float(np.min(table[0, 1:]))
+    if velocity_abs < minimum_table_speed and minimum_table_speed > 0.0:
+        lateral *= (velocity_abs / minimum_table_speed) ** 2
+    return lateral * sign
+
+
 class PurePursuitSim:
-    def __init__(self, traj, wheelbase=WHEELBASE, max_steer=MAX_STEER,
-                 m_l1=0.3, q_l1=0.4, t_clip_min=0.8, t_clip_max=5.0,
-                 a_acc_max=A_ACC_MAX, a_dec_max=A_DEC_MAX,
-                 num_local_waypoints=N_LOCAL_WP, dt=0.01):
+    """선택한 실제 컨트롤러 계약 + friction-circle 차량 모델.
+
+    profile_name을 필수로 받아 예전의 이름 없는 generic 설정으로 PASS가
+    나오는 것을 막는다. 제어기가 타이어 예산을 넘는 명령을 요구하면 모델은
+    물리 한계로 포화해 적분하되, verify_simulation은 그 요구 자체를 FAIL한다.
+    """
+
+    def __init__(self, traj, profile_name, mu=MU):
+        self.profile = controller_profile(profile_name)
         self.traj = traj
-        self.xy = traj["xy"]
-        self.vx_ref = traj["vx"]
-        self.s_ref = traj["s"]
+        self.xy = np.asarray(traj["xy"], dtype=float)
+        raw_vx = np.asarray(traj["vx"], dtype=float)
+        self.vx_guidance_ref = (
+            raw_vx * self.profile["planner_speed_scale"])
+        self.vx_ref = np.minimum(
+            self.vx_guidance_ref * self.profile["controller_speed_scale"],
+            self.profile["max_speed_mps"])
+        self.s_ref = np.asarray(traj["s"], dtype=float)
         self.n = len(self.xy)
-        self.track_len = traj["s"][-1] + np.hypot(*(self.xy[0] - self.xy[-1]))
+        self.track_len = (
+            self.s_ref[-1] + np.hypot(*(self.xy[0] - self.xy[-1])))
         self.tree = cKDTree(self.xy)
-        self.L = wheelbase
-        self.max_steer = max_steer
-        self.m_l1, self.q_l1 = m_l1, q_l1
-        self.t_clip = (t_clip_min, t_clip_max)
-        self.a_acc_max, self.a_dec_max = a_acc_max, a_dec_max
-        self.n_local = num_local_waypoints
-        self.dt = dt
+        self.L = self.profile["wheelbase_m"]
+        self.max_steer = self.profile["max_steer_rad"]
+        self.max_steer_rate = self.profile["max_steer_rate_radps"]
+        self.lookahead_gain = self.profile["lookahead_gain"]
+        self.lookahead_offset = self.profile["lookahead_offset"]
+        self.lookahead_clip = (
+            self.profile["lookahead_min_m"],
+            self.profile["lookahead_max_m"])
+        self.a_acc_max = self.profile["max_accel_mps2"]
+        self.a_dec_max = self.profile["max_decel_mps2"]
+        self.n_local = min(self.profile["num_local_waypoints"], self.n)
+        self.dt = 1.0 / self.profile["control_rate_hz"]
+        if not np.isfinite(mu) or mu <= 0.0:
+            raise ValueError("시뮬레이션 mu는 양의 유한값이어야 함")
+        self.tire_limit = float(mu * G)
+        self.steering_lut = None
+        if self.profile["kind"] == "cpp_map_l1":
+            self.steering_lut = _load_steering_lut(
+                self.profile["steering_lut"])
 
     def local_window(self, idx):
         return (idx + np.arange(self.n_local)) % self.n
 
-    def lookahead_point(self, pos, idx, l1):
+    def lookahead_point(self, pos, idx, lookahead):
         win = self.local_window(idx)
+        if self.profile["kind"] == "cpp_map_l1":
+            # control_node waypoint_at_distance_before_car(): local vector의
+            # 실제 segment 길이를 누적하며, 마지막 점 뒤로 wrap하지 않는다.
+            segments = np.hypot(*np.diff(self.xy[win], axis=0).T)
+            reached = np.nonzero(np.cumsum(segments) >= lookahead)[0]
+            j = win[reached[0] + 1] if len(reached) else win[-1]
+            return self.xy[j], j
+        # waypoint_tracker_node.py: 차량에서 Euclidean lookahead 이상인 첫 점.
         d = np.hypot(*(self.xy[win] - pos).T)
-        ahead = np.nonzero(d >= l1)[0]
+        ahead = np.nonzero(d >= lookahead)[0]
         j = win[ahead[0]] if len(ahead) else win[-1]
         return self.xy[j], j
+
+    def _steering_target(self, alpha, target_distance, lookahead,
+                         guidance_speed):
+        if self.profile["kind"] == "cpp_map_l1":
+            lateral_accel = (
+                2.0 * guidance_speed ** 2 / max(lookahead, 1e-3) *
+                np.sin(alpha))
+            return _lookup_steer_angle(
+                self.steering_lut, lateral_accel, guidance_speed)
+        return np.arctan2(
+            2.0 * self.L * np.sin(alpha), target_distance)
+
+    def _speed_target(self, pos, theta, speed, target_idx):
+        if self.profile["kind"] == "cpp_map_l1":
+            # control params map/speed_lookahead=0.25 s.
+            query = pos + speed * 0.25 * np.array(
+                [np.cos(theta), np.sin(theta)])
+            _, speed_idx = self.tree.query(query)
+        else:
+            # waypoint_tracker_node.py는 lookahead target waypoint의 vx 사용.
+            speed_idx = target_idx
+        return float(self.vx_ref[int(speed_idx)])
 
     def run(self, n_laps=1, max_time=300.0):
         pos = self.xy[0].copy()
         theta = float(self.traj["psi"][0])
-        v = 0.5
-        s_travel = 0.0
+        v = 0.0
         prev_s = 0.0
-        log = {k: [] for k in ("t", "x", "y", "v", "v_ref", "s", "d_err", "steer")}
+        fields = (
+            "t", "x", "y", "theta", "v", "v_ref", "s", "d_err", "steer",
+            "a_long_cmd", "a_lat_cmd", "a_long", "a_lat",
+            "combined_demand", "combined_accel", "tire_saturated")
+        log = {key: [] for key in fields}
         t = 0.0
         laps_done = 0
+        steer = 0.0
         while t < max_time:
             _, idx = self.tree.query(pos)
+            idx = int(idx)
             s_now = self.s_ref[idx]
             if prev_s > 0.8 * self.track_len and s_now < 0.2 * self.track_len:
                 laps_done += 1
@@ -844,36 +1552,219 @@ class PurePursuitSim:
                               np.sin(self.traj["psi"][idx])])
             e_vec = pos - self.xy[idx]
             d_err = t_hat[0] * e_vec[1] - t_hat[1] * e_vec[0]
-            l1 = np.clip(self.m_l1 * v + self.q_l1, *self.t_clip)
-            target, j = self.lookahead_point(pos, idx, l1)
+            lookahead_min = self.lookahead_clip[0]
+            if self.profile["kind"] == "cpp_map_l1":
+                # calc_l1_point()의 lateral-error dependent lower bound.
+                lookahead_min = min(max(
+                    lookahead_min, np.sqrt(2.0) * abs(d_err)),
+                    self.lookahead_clip[1])
+            lookahead = np.clip(
+                self.lookahead_gain * abs(v) + self.lookahead_offset,
+                lookahead_min, self.lookahead_clip[1])
+            target, target_idx = self.lookahead_point(pos, idx, lookahead)
             dx, dy = target - pos
             alpha = np.arctan2(dy, dx) - theta
             alpha = np.arctan2(np.sin(alpha), np.cos(alpha))
-            ld = max(np.hypot(dx, dy), 1e-3)
-            steer = np.clip(np.arctan2(2.0 * self.L * np.sin(alpha), ld),
-                            -self.max_steer, self.max_steer)
-            v_cmd = self.vx_ref[j]
-            dv = np.clip(v_cmd - v, -self.a_dec_max * self.dt,
-                         self.a_acc_max * self.dt)
-            v = max(v + dv, 0.0)
-            theta += v / self.L * np.tan(steer) * self.dt
-            pos = pos + v * self.dt * np.array([np.cos(theta), np.sin(theta)])
+            target_distance = max(np.hypot(dx, dy), 1e-3)
+            steer_target = np.clip(
+                self._steering_target(
+                    alpha, target_distance, lookahead,
+                    self.vx_guidance_ref[idx]),
+                -self.max_steer, self.max_steer)
+            steer += np.clip(
+                steer_target - steer,
+                -self.max_steer_rate * self.dt,
+                self.max_steer_rate * self.dt)
+
+            v_cmd = self._speed_target(
+                pos, theta, v, int(target_idx))
+            a_long_cmd = float(np.clip(
+                (v_cmd - v) / self.dt, -self.a_dec_max, self.a_acc_max))
+            if self.profile["kind"] == "cpp_map_l1":
+                # NUC6의 measured forward response로 plant를 적분한다.
+                # inverse LUT command + ideal bicycle plant 조합은 실차
+                # understeer를 숨겨 footprint PASS를 낙관적으로 만든다.
+                a_lat_cmd = _lookup_lateral_accel(
+                    self.steering_lut, steer, v)
+            else:
+                a_lat_cmd = float(v ** 2 * np.tan(steer) / self.L)
+            combined_demand = float(np.hypot(a_long_cmd, a_lat_cmd))
+
+            # Lateral demand gets priority because steering has already been
+            # applied. Remaining friction-circle capacity alone may be used
+            # for drive/brake. This guarantees the integrated vehicle never
+            # receives impossible simultaneous ideal lateral+longitudinal accel.
+            a_lat = float(np.clip(
+                a_lat_cmd, -self.tire_limit, self.tire_limit))
+            a_long_available = float(np.sqrt(max(
+                self.tire_limit ** 2 - a_lat ** 2, 0.0)))
+            a_long = float(np.clip(
+                a_long_cmd, -a_long_available, a_long_available))
+            combined_accel = float(np.hypot(a_long, a_lat))
+            tire_saturated = combined_demand > self.tire_limit * (1.0 + 1e-9)
+
+            v_next = max(v + a_long * self.dt, 0.0)
+            yaw_rate = a_lat / v if v > 1e-6 else 0.0
+            theta += yaw_rate * self.dt
+            v_mean = 0.5 * (v + v_next)
+            pos = pos + v_mean * self.dt * np.array(
+                [np.cos(theta), np.sin(theta)])
+            v = v_next
             t += self.dt
-            s_travel += v * self.dt
+
             log["t"].append(t)
             log["x"].append(pos[0]); log["y"].append(pos[1])
-            log["v"].append(v); log["v_ref"].append(self.vx_ref[idx])
+            log["theta"].append(theta)
+            log["v"].append(v); log["v_ref"].append(v_cmd)
             log["s"].append(s_now + laps_done * self.track_len)
             log["d_err"].append(d_err); log["steer"].append(steer)
-        return {k: np.asarray(v) for k, v in log.items()} | {
-            "laps": laps_done, "track_len": self.track_len}
+            log["a_long_cmd"].append(a_long_cmd)
+            log["a_lat_cmd"].append(a_lat_cmd)
+            log["a_long"].append(a_long)
+            log["a_lat"].append(a_lat)
+            log["combined_demand"].append(combined_demand)
+            log["combined_accel"].append(combined_accel)
+            log["tire_saturated"].append(float(tire_saturated))
+        return {key: np.asarray(value) for key, value in log.items()} | {
+            "laps": laps_done,
+            "track_len": self.track_len,
+            "profile_name": self.profile["name"],
+            "tire_limit": self.tire_limit,
+        }
+
+
+def verify_simulation(name, log, grid, requested_laps, profile_name):
+    """배포 프로파일 폐루프/footprint/합성 타이어 예산을 fail-closed 검사."""
+    profile = controller_profile(profile_name)
+    msgs = []
+    fields = (
+        "t", "x", "y", "theta", "v", "v_ref", "s", "d_err", "steer",
+        "a_long_cmd", "a_lat_cmd", "a_long", "a_lat",
+        "combined_demand", "combined_accel", "tire_saturated")
+    lengths = [len(log.get(key, ())) for key in fields]
+    if not lengths or min(lengths) == 0 or len(set(lengths)) != 1:
+        return False, [f"      {name}/{profile_name}: [FAIL] "
+                       "시뮬레이션 로그가 비었거나 길이가 다름"]
+    data = np.column_stack([log[key] for key in fields])
+    if not np.isfinite(data).all():
+        return False, [f"      {name}/{profile_name}: [FAIL] "
+                       "시뮬레이션 로그에 NaN/Inf 포함"]
+    prefix = f"      {name}/{profile_name}"
+    if log.get("profile_name") != profile_name:
+        msgs.append(f"{prefix}: [FAIL] 로그/profile 이름 불일치")
+    tire_limit = float(log.get("tire_limit", np.nan))
+    if not np.isfinite(tire_limit) or tire_limit <= 0.0 or \
+            abs(tire_limit - MU * G) > 1e-9:
+        msgs.append(f"{prefix}: [FAIL] tire limit metadata 불일치")
+        tire_limit = MU * G
+    if int(log.get("laps", 0)) < requested_laps:
+        msgs.append(f"{prefix}: [FAIL] {requested_laps}랩 중 "
+                    f"{int(log.get('laps', 0))}랩만 완료 "
+                    "(timeout/진행방향 오류)")
+
+    dt = np.diff(log["t"])
+    if len(dt) and (np.any(dt <= 0.0) or not np.isfinite(dt).all()):
+        msgs.append(f"{prefix}: [FAIL] 로그 시간이 단조 증가하지 않음")
+    pose_xy = np.column_stack([log["x"], log["y"]])
+    footprint_bad = np.flatnonzero(
+        ~footprint_free(grid, pose_xy, log["theta"]))
+    if len(footprint_bad):
+        first = int(footprint_bad[0])
+        msgs.append(f"{prefix}: [FAIL] 폐루프 주행 footprint가 벽 침범 "
+                    f"({len(footprint_bad)} step, 최초 "
+                    f"t={log['t'][first]:.2f}s, "
+                    f"xy=({log['x'][first]:.2f},{log['y'][first]:.2f}))")
+
+    steer_bad = np.flatnonzero(
+        np.abs(log["steer"]) > profile["max_steer_rad"] + 1e-6)
+    if len(steer_bad):
+        msgs.append(f"{prefix}: [FAIL] 조향각 한계 초과 "
+                    f"{np.abs(log['steer'][steer_bad]).max():.3f} rad")
+    if len(log["steer"]) > 1 and len(dt):
+        rates = np.abs(np.diff(log["steer"]) / dt)
+        if np.any(rates > profile["max_steer_rate_radps"] * 1.001):
+            msgs.append(f"{prefix}: [FAIL] 조향 속도 한계 초과 "
+                        f"{rates.max():.2f} rad/s")
+    if np.any(log["v"] < -1e-6) or \
+            np.any(log["v"] > profile["max_speed_mps"] + 1e-6):
+        msgs.append(f"{prefix}: [FAIL] 전진 속도/프로파일 cap 위반")
+
+    reconstructed_demand = np.hypot(
+        log["a_long_cmd"], log["a_lat_cmd"])
+    reconstructed_actual = np.hypot(log["a_long"], log["a_lat"])
+    if not np.allclose(
+            reconstructed_demand, log["combined_demand"],
+            rtol=1e-9, atol=1e-9) or not np.allclose(
+                reconstructed_actual, log["combined_accel"],
+                rtol=1e-9, atol=1e-9):
+        msgs.append(f"{prefix}: [FAIL] 합성 가속도 로그 산술 불일치")
+    demand_bad = np.flatnonzero(
+        log["combined_demand"] > tire_limit * (1.0 + 1e-9))
+    saturation_mask = log["tire_saturated"] > 0.5
+    if not np.array_equal(
+            saturation_mask,
+            log["combined_demand"] > tire_limit * (1.0 + 1e-9)):
+        msgs.append(f"{prefix}: [FAIL] tire saturation 로그/요구량 불일치")
+    if len(demand_bad):
+        first = int(demand_bad[0])
+        msgs.append(
+            f"{prefix}: [FAIL] 제어 요구 합성가속도 "
+            f"{log['combined_demand'][demand_bad].max():.2f} m/s² > "
+            f"mu*g={tire_limit:.2f} ({len(demand_bad)} step, 최초 "
+            f"t={log['t'][first]:.2f}s, s={log['s'][first]:.2f}m) — "
+            "물리 모델은 포화했지만 이 프로파일은 승인하지 않음")
+    actual_bad = np.flatnonzero(
+        log["combined_accel"] > tire_limit * (1.0 + 1e-9))
+    if len(actual_bad):
+        msgs.append(
+            f"{prefix}: [FAIL] friction-circle 적용 후 합성가속도도 "
+            f"{log['combined_accel'][actual_bad].max():.6f} m/s²로 한계 초과")
+    cmd_accel_bad = (
+        (log["a_long_cmd"] > profile["max_accel_mps2"] + 1e-9) |
+        (log["a_long_cmd"] < -profile["max_decel_mps2"] - 1e-9))
+    if np.any(cmd_accel_bad):
+        msgs.append(f"{prefix}: [FAIL] 종가속/제동 명령 cap 위반")
+
+    if not msgs:
+        effective_scale = (
+            profile["planner_speed_scale"] *
+            profile["controller_speed_scale"])
+        msgs.append(
+            f"{prefix}: PASS · {requested_laps}랩 · profile speed scale "
+            f"{effective_scale:.4f} · footprint 충돌 0 · "
+            f"|lat err|max {np.abs(log['d_err']).max():.3f} m · "
+            f"합성 요구/실제 max {log['combined_demand'].max():.2f}/"
+            f"{log['combined_accel'].max():.2f} <= {tire_limit:.2f} m/s²")
+    return not any("[FAIL]" in msg for msg in msgs), msgs
+
+
+def simulate_controller_profiles(name, traj, grid, requested_laps, profiles):
+    """선택된 모든 배포 프로파일을 실행하고 하나라도 실패하면 전체 실패."""
+    all_ok = True
+    messages = []
+    primary_log = None
+    first_failed_log = None
+    for profile in profiles:
+        log = PurePursuitSim(traj, profile["name"]).run(
+            n_laps=requested_laps)
+        ok, profile_messages = verify_simulation(
+            name, log, grid, requested_laps, profile["name"])
+        if primary_log is None:
+            primary_log = log
+        if not ok and first_failed_log is None:
+            first_failed_log = log
+        all_ok = all_ok and ok
+        messages.extend(profile_messages)
+    return all_ok, messages, primary_log, first_failed_log
 
 
 # ============================================================ 4. 오케스트레이션
 def _save_plots(m, traj, center, outer, inner, orientation, start_heading,
                 grid=None, log=None, suffix=""):
     """궤적/추종 그림 저장. 검증 실패 시에도 (log 없이) 진단용으로 부른다."""
-    lap_time = (log["t"][-1] / max(log["laps"], 1)) if log else float("nan")
+    has_log = log is not None and len(log.get("t", ())) > 0
+    lap_time = (log["t"][-1] / max(log["laps"], 1)
+                if has_log else float("nan"))
     fig, ax = plt.subplots(figsize=(11, 8))
     ax.plot(*outer.T, "k-", lw=1); ax.plot(*inner.T, "k-", lw=1)
     if RACELINE == "iqp":
@@ -881,7 +1772,7 @@ def _save_plots(m, traj, center, outer, inner, orientation, start_heading,
                 lw=0.8, alpha=0.7, label="centerline")
     pts = ax.scatter(traj["xy"][:, 0], traj["xy"][:, 1], c=traj["vx"],
                      cmap="viridis", s=4, label=f"{RACELINE} raceline (vx)")
-    if log is not None:
+    if has_log:
         ax.plot(log["x"], log["y"], "r-", lw=0.8, alpha=0.8, label="driven path")
     # 검증 위반 지점을 빨간 X 로 — 실패 그림에서 어디가 문제인지 바로 보이게
     if grid is not None:
@@ -910,7 +1801,7 @@ def _save_plots(m, traj, center, outer, inner, orientation, start_heading,
     ax.set_aspect("equal"); ax.legend(loc="upper right")
     # 제목은 ASCII로 — 이 기계 matplotlib 기본 폰트에 한글 글리프가 없어서
     # 한글을 쓰면 전부 두부(tofu)로 깨진다.
-    head = (f"global trajectory & lap ({lap_time:.2f} s/lap)" if log
+    head = (f"global trajectory & lap ({lap_time:.2f} s/lap)" if has_log
             else "VERIFICATION FAILED -- no CSV written")
     ax.set_title(f"{m}: {head}\n"
                  f"travel dir {orientation.upper()}, start heading "
@@ -920,7 +1811,7 @@ def _save_plots(m, traj, center, outer, inner, orientation, start_heading,
     fig.tight_layout()
     fig.savefig(OUT_DIR / f"{m}_trajectory{suffix}.png", dpi=150)
     plt.close(fig)
-    if log is None:
+    if not has_log:
         return
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
@@ -950,12 +1841,18 @@ def main():
                          "있었을 때만 맞으므로 권장하지 않는다.")
     args = ap.parse_args()
     m = args.map
+    profiles = selected_controller_profiles()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print("폐루프 필수 배포 프로파일: " +
+          ", ".join(profile["name"] for profile in profiles))
 
     # 1) 트랙 추출 (+ 실측 크기 스케일 보정) --------------------------------
     print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
-    outer, inner, resolution, origin, ring, H = load_track(m)
-    grid = Grid(ring, resolution, origin, H)
+    outer, inner, resolution, origin, raw_ring, skeleton_ring, H = \
+        load_track(m)
+    grid = Grid(
+        raw_ring, resolution, origin, H,
+        skeleton_ring=skeleton_ring)
     center = extract_centerline(grid)
     # 방향은 여기서 '한 번만' 정하고 레이스라인에도 그대로 넘긴다. 각자 판정하면
     # 시작점 부근이 map +x 에 수직일 때 센터라인과 레이스라인이 역방향이 된다.
@@ -996,75 +1893,112 @@ def main():
     tag = {"iqp": "iqp_", "sp": "sp_", "center": "center_"}.get(RACELINE, "")
     csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
 
-    traj_sp = sp_name = None
-    if RACELINE == "iqp" and MAKE_SP:
-        print("      SP 추월 라인 생성 ...")
-        geo_sp = roll_to_start(optimize_raceline_iqp(center, grid,
-                                                     objective="length"),
-                               orientation=orientation)
-        traj_sp = build_trajectory(geo_sp)
-        sp_name = f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
-        print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
-              f"SP {traj_sp['s'][-1]:.1f} m")
+    traj_sp = None
+    sp_name = (
+        f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
+        if RACELINE == "iqp" else None)
+    sp_disabled_reason = ""
+    if RACELINE == "iqp":
+        if MAKE_SP:
+            print("      SP 추월 라인 생성 ...")
+            try:
+                geo_sp = roll_to_start(
+                    optimize_raceline_iqp(
+                        center, grid, objective="length"),
+                    orientation=orientation)
+                traj_sp = build_trajectory(geo_sp)
+                print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
+                      f"SP {traj_sp['s'][-1]:.1f} m")
+            except Exception as exc:
+                sp_disabled_reason = (
+                    f"SP generation failed: {type(exc).__name__}: {exc}")
+                print("      [SP DISABLED] SP 생성/속도 투영 실패 — "
+                      "안전한 메인 생성은 계속합니다.")
+                traj_sp = None
+        else:
+            sp_disabled_reason = "MAKE_SP=false"
 
     # 2b) 검증 — 통과 못 하면 CSV를 만들지 않는다 ---------------------------
     # 라인을 실제 occupancy 마스크에 대고 확인하는 유일한 지점. 여기서 막지
     # 않으면 벽을 관통하는 CSV가 그대로 실차로 나간다 (2026-07-27 사고).
     print("      검증: 벽 여유 / 조향 한계 ...")
     ok, msgs = verify_line(RACELINE.upper(), traj, grid)
-    if traj_sp is not None:
-        ok_sp, msgs_sp = verify_line("SP  ", traj_sp, grid,
-                                     curvature_strict=False)
-        ok, msgs = ok and ok_sp, msgs + msgs_sp
     for line in msgs:
         print(line)
     if not ok:
         print("\n" + "=" * 72)
-        print("  검증 실패 — CSV를 쓰지 않았습니다. 이 라인으로 주행하면 안 됩니다.")
-        print("  [벽여유] 위반이면 SAFE_DIST 를 올린다 (현재 %.2f m). 올려도"
-              % SAFE_DIST)
-        print("           안 늘면 트랙 최협부가 실제로 차폭+여유보다 좁은 것 →")
-        print("           맵을 다시 따거나 코스를 넓혀야 한다.")
-        print("  [R] 위반이면 SAFE_DIST 를 **내린다**. 값이 클수록 좁은 구간에서")
-        print("      라인이 중앙으로 밀려 코너 반경이 같이 줄기 때문이다 —")
-        print("      올리는 건 역효과다. 내려도 R<%.2f m 이면 코스 자체가 실차"
-              % (WHEELBASE / np.tan(MAX_STEER)))
-        print("      조향 한계를 넘는 것이라 헤어핀을 완만하게 다시 깔아야 한다.")
-        print("      (V_MAX/MU 를 만져도 R 은 안 바뀐다 — 기하 문제다)")
-        print("  위반 지점은 빨간 X 로 표시했습니다 → "
-              "outputs/%s_trajectory_FAILED.png" % m)
+        print("  메인 라인 검증 실패 — 어떤 생성 파일도 승격하지 않습니다.")
+        print("  벽여유/실차 조향 한계/합성 타이어 예산을 먼저 해결해야 합니다.")
+        print("  위반 지점은 outputs/%s_trajectory_FAILED.png 에 표시합니다." % m)
         print("=" * 72 + "\n")
-        if VERIFY_STRICT:
-            _save_plots(m, traj, center, outer, inner, orientation,
-                        start_heading, grid=grid, suffix="_FAILED")
-            raise SystemExit(1)
+        _save_plots(m, traj, center, outer, inner, orientation,
+                    start_heading, grid=grid, suffix="_FAILED")
+        raise SystemExit(1)
 
-    for dest in (OUT_DIR / csv_name, CSV_DIR / csv_name):
-        write_csv(traj, dest, header_note=f"build_map ({m}, dir={orientation.upper()}, "
-                                          f"safe_dist={SAFE_DIST:.2f}m)")
-        print(f"      wrote {dest}")
     if traj_sp is not None:
-        for dest in (OUT_DIR / sp_name, CSV_DIR / sp_name):
-            write_csv(traj_sp, dest,
-                      header_note=f"build_map ({m}, SP overtake, "
-                                  f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)")
-    for dest in (OUT_DIR / f"{m}_walls.csv", CENTERLINE_DIR / f"{m}_walls.csv"):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(dest, walls, delimiter="; ", fmt="%.7f",
-                   header="x_m; y_m; wall_id(0=outer,1=inner)")
-    for dest in (OUT_DIR / f"{m}_centerline.csv",
-                 CENTERLINE_DIR / f"{m}_centerline.csv"):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(dest, center["xy"], delimiter="; ", fmt="%.7f",
-                   header="x_m; y_m")
+        try:
+            ok_sp, msgs_sp = verify_line("SP  ", traj_sp, grid)
+        except Exception as exc:
+            ok_sp = False
+            msgs_sp = [
+                f"      SP: [FAIL] static validation exception "
+                f"{type(exc).__name__}: {exc}"]
+        for line in msgs_sp:
+            print(line)
+        if not ok_sp:
+            failed = [line.strip() for line in msgs_sp if "[FAIL]" in line]
+            sp_disabled_reason = (
+                "SP static validation failed: " +
+                (" | ".join(failed[:3]) if failed else "unknown violation"))
+            print("      [SP DISABLED] 안전 SP를 만들지 못해 메인만 commit합니다. "
+                  "동일 suffix의 기존 SP는 main보다 먼저 비활성화합니다.")
+            traj_sp = None
 
     # 3) 폐루프 시뮬 --------------------------------------------------------
-    print(f"[3/4] {LAPS}랩 시뮬 (pure pursuit + 자전거 모델) ...")
-    log = PurePursuitSim(traj).run(n_laps=LAPS)
+    print(f"[3/4] {LAPS}랩 시뮬 (선택된 배포 제어기 + friction circle) ...")
+    sim_ok, sim_msgs, log, failed_log = simulate_controller_profiles(
+        RACELINE.upper(), traj, grid, LAPS, profiles)
+    for line in sim_msgs:
+        print(line)
+    if not sim_ok:
+        print("\n  메인 폐루프 검증 실패 — 기존 생성 세트를 보존합니다.")
+        _save_plots(m, traj, center, outer, inner, orientation,
+                    start_heading, grid=grid, log=failed_log or log,
+                    suffix="_FAILED")
+        raise SystemExit(1)
+
+    if traj_sp is not None:
+        try:
+            sp_sim_ok, sp_sim_msgs, _, _ = simulate_controller_profiles(
+                "SP  ", traj_sp, grid, LAPS, profiles)
+        except Exception as exc:
+            sp_sim_ok = False
+            sp_sim_msgs = [
+                f"      SP: [FAIL] closed-loop exception "
+                f"{type(exc).__name__}: {exc}"]
+        for line in sp_sim_msgs:
+            print(line)
+        if not sp_sim_ok:
+            failed = [
+                line.strip() for line in sp_sim_msgs if "[FAIL]" in line]
+            sp_disabled_reason = (
+                "SP closed-loop validation failed: " +
+                (" | ".join(failed[:3]) if failed else "unknown violation"))
+            print("      [SP DISABLED] 폐루프 검증 실패 — 메인만 commit하고 "
+                  "동일 suffix의 기존 SP를 main보다 먼저 비활성화합니다.")
+            traj_sp = None
+
     lap_time = log["t"][-1] / max(log["laps"], 1)
-    print(f"      lap time {lap_time:.2f} s, v_mean {log['v'].mean():.2f}, "
+    print(f"      [{log['profile_name']}] lap time {lap_time:.2f} s, "
+          f"v_mean {log['v'].mean():.2f}, "
           f"v_max {log['v'].max():.2f} m/s, |lat err| max "
           f"{np.abs(log['d_err']).max():.3f} m")
+
+    # 모든 검증 뒤에만 세트 전체를 stage+fsync하고 SP -> main 순으로 commit.
+    commit_generation_set(
+        m, csv_name, traj, center, walls, orientation,
+        sp_name=sp_name, sp_traj=traj_sp,
+        sp_disabled_reason=sp_disabled_reason)
 
     # 4) 플롯 ---------------------------------------------------------------
     print("[4/4] 플롯 저장 ...")

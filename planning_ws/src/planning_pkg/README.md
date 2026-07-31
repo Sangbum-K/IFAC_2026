@@ -58,7 +58,7 @@ unicorn 튜토리얼(basic-simulator-usage)의 `race.launch sim:=true`에 대응
 
 source ~/sim_ws/install/setup.bash                  # f1tenth_gym_ros (필수)
 source ~/IFAC_ws/planning_ws/install/setup.bash
-ros2 launch planning_pkg sim_race.launch.py                    # Spielberg (기본)
+ros2 launch planning_pkg sim_race.launch.py                    # my_track (기본)
 ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
 ```
 
@@ -68,14 +68,17 @@ ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (�
 
 **맵 전환/추가** (`map:=` 인자): 맵별 raceline CSV·centerline·시작 포즈(CSV
 첫 행에서 자동)·주차 위치를 launch가 알아서 맞춘다. 새 맵 추가는
-`maps/<맵>_map.{png,yaml}` 넣고 → `step4_main.py --map <맵>_map --raceline iqp
---safe-dist 0.5 --v-max 15` → launch의 `PARK_POSES`에 주차 좌표 한 줄 →
-colcon build. f1tenth_racetracks(github.com/f1tenth/f1tenth_racetracks)의
+`maps/<맵>_map.{png,yaml}` 넣고 → `build_map.py <맵>_map` 실행(속도·마찰·
+여유는 파일 상단 설정 블록) → launch의 `PARK_POSES`에 주차 좌표 한 줄 →
+colcon build. 생성기는 기하·차체 footprint·조향 속도·폐루프 랩 검증을 모두
+통과해야 CSV를 원자적으로 저장한다. f1tenth_racetracks의
 맵을 그대로 쓸 수 있다 (Budapest가 그 예).
 
-**속도 프로파일**: raceline은 `--v-max 15`로 생성 — v7 시절엔 트랙 91%가
-캡에 붙어 속도가 일정했지만, 지금은 마찰(mu 0.85)·가속 한계가 프로파일을
-결정해 구간별로 3.7~15 m/s(시뮬 실속 1.9~7.5)로 변한다.
+**속도 프로파일**: CSV 파일명의 `max...ms`는 생성 상한이고 실제 명령은
+마찰원·가감속 제한으로 만든 CSV 속도에 environment의 `velocity_scale`과
+control의 하드 속도 상한을 다시 적용한다. 스케일을 1보다 크게 올려 생성
+검증을 우회할 수 없으며, 더 높은 속도가 필요하면 해당 마찰계수와 차량
+모델로 CSV를 다시 생성하고 폐루프 검증을 통과시켜야 한다.
 
 RViz에서 (unicorn pitwall-panel-usage 튜토리얼과 동일):
 
@@ -92,7 +95,7 @@ RViz에서 (unicorn pitwall-panel-usage 튜토리얼과 동일):
 
 | 노드 | 역할 |
 |---|---|
-| `waypoint_tracker_node.py` | `/local_waypoints` pure pursuit → `/drive`. **speed_scale 0.5 기본** (7 m/s 전속은 스핀아웃, 0.5에서 횡편차 ±6 cm 검증). **벽 충돌 복구 내장** (스턱 감지 → 후진 → 재개). **ego 모드 먹스**: `/sim/ego_mode`("autonomous"/"manual") 또는 `/joy` LB=manual·RB=autonomous. manual이면 정지 1회 발행 후 침묵 → gym kb_teleop(`/cmd_vel`)이 조종. control 팀 컨트롤러로 대체 예정. |
+| `waypoint_tracker_node.py` | `/local_waypoints` pure pursuit → `/drive`. 기본 `speed_scale=0.30`; waypoint·odom 원본 timestamp와 recovery state/target paired lease가 신선할 때만 주행한다. 후진은 기본 금지이고 스턱 시 STOP-only다. **ego 모드 먹스**: `/sim/ego_mode`("autonomous"/"manual") 또는 `/joy` LB=manual·RB=autonomous. manual 진입도 연속 0 명령을 발행한다. |
 | `virtual_obstacle_node.py` | `/clicked_point` → Frenet 변환 → `/perception/obstacles` 10 Hz 상시 발행. `/sim/clear_obstacles`로 전체 삭제. perception 주입 모드 게이팅(아래). perception 팀 노드로 대체 예정. |
 | `opponent_driver_node.py` | gym 2번째 차량 조종. 모드 `/sim/opp_mode`: **path**(레이스라인 pure pursuit, 기본) / **ftg**(`/opp_scan` follow-the-gap) / **manual**(`/opp_cmd_vel` Twist — `teleop_twist_keyboard --ros-args -r cmd_vel:=/opp_cmd_vel`). `/sim/opp_speed_delta`(±0.5 m/s 상한 조절), `/sim/remove_opponent`(주차), `/sim/opp_lidar_enable`(false면 FTG 정지). ground-truth 관측을 `/perception/opponent`로 발행 (tracking_merge 모드일 때). |
 Perception Injection (`/sim/perception_mode`, 패널 콤보박스 —
@@ -117,9 +120,10 @@ virtual_obstacle_node에 내장):
 raceline CSV의 좌우 벽 여유에서 **추월 가능 섹터를 자동 산출**하고
 (`clearance >= ot_min_clearance`, `ot_sector_min_len_m` 이상 연속 구간),
 
-- **섹터 안**: 공격 모드로 회피 시도 — 트랙 경계 마진 완화
-  (`ot_bound_mindist` 0.1, 평소 0.2) + 회피 궤적 속도 부스트
-  (`ot_speed_scale` 1.1, raceline vmax 캡)
+- **섹터 안**: 경계·차체 footprint·조향·마찰원·가감속·jerk 검사를 모두
+  통과한 회피만 발행한다. 기본 `ot_bound_mindist=0.20`,
+  `ot_speed_scale=1.0`으로 경계 여유를 줄이거나 검증된 속도 프로파일을
+  런타임에서 부스트하지 않는다.
 - **섹터 밖**: 회피 자체를 시도하지 않고 **TRAILING**으로 따라붙어
   다음 섹터에서 승부
 
@@ -131,11 +135,11 @@ rclcpp 타입 오류로 노드가 죽는다). 섹터 진입/산출은 pitwall �
 > `spliner/evasion_dist`는 0.65가 이 raceline(safe-dist 0.5)의 실질 최대다.
 > 0.7 이상이면 한쪽 벽 여유(~1.05 m)를 넘어 트랙경계 abort로 회피가 무산된다.
 > TRAILING 폴백: raceline을 유지한 채 장애물 뒤 `trailing_gap_m`(1.5 m)에서
-> 장애물 속도(정적이면 0)까지 `trailing_decel`(3 m/s²)로 감속 — 정면
+> 장애물 속도(정적이면 0)까지 `trailing_decel`(2.5 m/s²)로 감속 — 정면
 > 돌진/관통 방지 (ForzaETH 상태머신의 TRAILING 대응, 실차에서도 동일).
 >
 > **주의 (시뮬↔실차 스케일)**: `spliner/cmd_speed_scale`은 컨트롤러의 wpnt
-> 속도 스케일(`tracker/speed_scale`)과 반드시 일치해야 한다 (sim 0.5, 실차
+> 속도 스케일(`tracker/speed_scale`)과 반드시 일치해야 한다 (sim 0.30, 실차
 > 1.0). 불일치하면 동적 상대 trailing에서 상대보다 느리게 명령돼 격차가
 > 벌어진다 (시뮬 실측: 8 m 표류). `spliner/lookahead_m`도 접근 속도에 맞출
 > 것 — gym 제동은 속도비례라 실속 7.5 m/s에선 10 m 감지로는 못 멈춘다 (15 m로 상향).
@@ -194,9 +198,9 @@ colcon 빌드 대상이 아니다. numpy/scipy/matplotlib가 필요하며 `.venv
 # raceline 생성. 결과 CSV가 config/ 아래로 저장된다.
 #  - 메인 주행 라인(IQP 최소곡률) + 추월 라인(SP 최단거리) 두 CSV가 함께 생성됨
 #    (UNICORN이 IQP/SP를 둘 다 저장해 lane-change에 SP를 쓰는 것과 같은 구조)
-#  - --safe-dist: 벽과 확보할 거리. 0.5 권장 (0.3은 코너 클리핑 위험)
-python scripts/global_traj_sim/step4_main.py --map Spielberg_map --raceline iqp --safe-dist 0.5
-# 대회 맵을 쓸 때: --maps-dir <조직위 맵 폴더> --map <맵이름>
+#  - 속도/마찰/벽 여유는 build_map.py 상단 설정 블록에서 지정
+python scripts/global_traj_sim/build_map.py Spielberg_map
+# 대회 맵은 <workspace>/maps 또는 planning_pkg/maps에 yaml+image를 둔다
 # 생성 후 colcon build로 install에 복사해야 런타임 노드가 새 CSV를 읽는다
 ```
 
@@ -307,40 +311,31 @@ ForzaETH(대회 다수 우승, IROS 2024) 기준 레이스 평균 ~5 m/s (35m �
 현실적 경쟁 구도로, 추월엔 수십 초~수 분 걸린다 (테스트는 결정성을 위해
 opp cap을 1.2로 낮춰 실행).
 
-### 복구 감독 (recovery_supervisor_node, mina Task 4 병합)
+### 복구 감독 (recovery_supervisor_node)
 
 벽 충돌/진행불능(stuck) 판정 상태머신. Planning은 판정+요청만 하고 실행은
 control_node 책임: `/planner/recovery/state`(String),
 `/planner/recovery/target_speed`(Float64; DRIVING=NaN, 정지=0.0, 후진=음수).
 STOP은 래치 — `/planner/recovery/reset`(Bool true)로만 해제.
 E-stop(`/safety/emergency_stop`)과 odom/perception/local_waypoints 두절은
-항상 최우선 STOP.
+항상 최우선 STOP이다.
 
-> ⚠️ **현재 이 노드의 출력은 어디에도 연결돼 있지 않다 (2026-07-27 확인).**
-> `control_node`(control_ws, 타 팀 관리)는 `/local_waypoints`·odom·frenet·
-> imu·estop만 구독하므로, 여기서 내리는 정지/후진/복구 판정은 전부 계산만
-> 되고 차량 거동에는 영향이 없다. 실차에서 실제로 쓰려면 control 쪽에서
-> `/planner/recovery/target_speed`를 구독해야 한다:
-> - `NaN`이면 override 없음 (그대로 주행)
-> - 그 외 값은 control 자체 리밋을 다시 적용한 뒤 채택
-> - **후진(RECOVER_REVERSE)은 음수 속도**다. control이 speed를 `[0, max]`로
->   clamp하는 한 전달되지 않으므로, 음수를 받는 경로가 함께 필요하다.
->
-> 배선 전까지 이 노드는 진단/RViz 표시용 모니터로만 유효하다.
+`planner_stack.launch.py`는 기본 `recovery:=true`로 감독기를 기동한다.
+실차·race·sim control 환경과 sim tracker는 state/target 두 토픽을 하나의
+짧은 paired lease로 소비한다. 한쪽 누락, timestamp stale/skew, 알 수 없는
+상태, state와 target 불일치 중 하나라도 있으면 즉시 0 명령이다.
 
-- **sim에서도 판정 모니터로만 동작** (waypoint_tracker는 자체 후진 복구 사용,
-  이 토픽을 소비하지 않음). yaw 소스는 launch가 `/ego_racecar/odom`으로 override.
-- **perception 미기동 상태는 "두절"로 보지 않는다** — stamp 기본값(0) 때문에
-  부팅 첫 사이클에 stale 판정이 나면 STOP으로 래치돼 버리기 때문. 대신 그
-  상태에서는 후방을 확인할 근거가 없으므로 `IsRearSafe()`가 후진을 거부한다.
-- 경계 위반은 `boundary_persist_sec`(0.2s) 이상 지속돼야 COLLISION_STOP —
-  코너 순간 스파이크(벽 여유 ~0.3m + 추적오차 ~0.2m) 오탐 방지 (통합 시 추가).
-- **주의**: `boundary_stop_margin_m`은 반드시 섹터 공격 모드의
-  `ot_bound_mindist`(0.1)보다 작아야 한다. 크면 공격 추월 중 정상 주행이
-  COLLISION_STOP으로 판정된다 (sim 검증값 0.05; real_car.yaml의 0.20은
-  TODO로 팀 논의 필요).
-- 실차 보수 파라미터: `config/environments/real_car.yaml`
-  (params.yaml 다음 순서로 로드; **cmd_speed_scale 1.0 포함** — 필수).
+- 부팅 중에는 모든 입력의 receipt와 원본 timestamp가 신선하고 차량이 실제로
+  정지한 상태가 dwell 동안 유지될 때까지 `WAITING_FOR_INPUTS`에서 0을 발행한다.
+- 주행 준비 후 입력이 끊기거나 비정상이면 `STOP`으로 래치하며 자동 재개하지
+  않는다.
+- 현재 차체 직사각 footprint와 속도 기반 반응거리+제동거리 전체의 경계를
+  검사한다. local horizon이 짧아 제동거리까지 증명할 수 없어도 정지한다.
+- 후진은 Planning·Control 양쪽 opt-in과 명시적인 후방 sensor coverage가 모두
+  필요하다. 기본 설정은 `allow_reverse=false`, `rear_coverage_confirmed=false`
+  이므로 stuck/collision은 STOP-only다.
+- Spliner 경계 요구값과 recovery 요구값은 모두 차량 반폭과 추적 여유를 포함해
+  계산한다. 어느 한쪽의 margin을 줄여 다른 쪽을 우회하면 안 된다.
 
 ### Predictive Spliner (동적 상대 추월, arXiv:2410.04868)
 
@@ -410,9 +405,10 @@ ros2 launch planning_pkg raceline_tuner.launch.py \
    step8(frenet) 플래너와 spliner 방식을 시뮬레이션으로 비교. unicorn 스택의
    sqp_planner / lane_change_planner도 참고 후보.
 4. **H2H 상태머신** — BehaviorState 메시지는 정의만 있고 발행 노드가 없다.
-   unicorn `state_machine` 참고해 추월 허용 구간/쿨다운 로직 추가.
-   추월 차선용 SP 라인 CSV(`{맵}_sp_*.csv`)는 이미 생성되므로, unicorn
-   `lane_change_planner`처럼 추월 시 SP 라인으로 갈아타는 방식으로 확장 가능.
+   Spliner의 섹터·trailing·SP 전환은 구현돼 있지만, 독립적인 경기 규칙
+   상태머신과 쿨다운은 추가 통합 항목이다. SP는 자동 활성화하지 않으며 메인과
+   동일한 map/suffix로 생성·검증된 파일을 명시적으로 지정하고
+   `sp_lane_change=true`로 opt-in해야 한다.
 
 원본 개발 이력은 리포 최상위 `planning_ws/global_traj_sim/`에 남아 있다
 (이 패키지의 `scripts/`가 그 이식본).

@@ -34,26 +34,42 @@ PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
 ### 옵션은 없다 — 상수를 고친다
 
 `build_map.py` 상단 `설정` 블록에 전부 모여 있다 (`V_MAX` 6.0, `MU` 0.75,
-`SAFE_DIST` 0.25, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP` True,
-`INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …). 표와 의미는 maps/README.md 참고.
+`SAFE_DIST` 0.40, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP` True,
+`SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
+표와 의미는 maps/README.md 참고.
 
-> **실차 첫 주행 팁:** 보수적으로 시작 → `V_MAX 5.0 / MU 0.6 / SAFE_DIST 0.35`.
+> **실차 첫 주행 팁:** 보수적으로 시작 → `V_MAX 5.0 / MU 0.6 / SAFE_DIST 0.40`.
 > 잘 돌면 V_MAX 올리고 MU·SAFE_DIST 조여가며 반복.
 
 > `WHEELBASE`/`MAX_STEER`는 출력 CSV에 영향이 **없다** — 폐루프 시뮬에서
 > "실차 조향 한계로 이 라인을 따라갈 수 있나"(lat err)를 보는 데만 쓰이므로
 > 반드시 실차 실측값(현재 0.33 m / 0.36 rad)으로 둘 것.
+> 폐루프 검증은 `SIM_CONTROLLER_PROFILES`에 선택한 배포 프로파일을 모두
+> 실행한다. 기본값은 실제 NUC6 LUT를 쓰는 C++ real-car MAP/L1과 Python
+> simulation tracker이며, 한 프로파일이라도 footprint·조향·합성 타이어
+> 가속도 한계를 넘으면 기존 CSV를 보존하고 새 CSV는 쓰지 않는다.
 
 ### 끝나면
 
 - 그림 : `outputs/<맵>_trajectory.png` — 라인/속도/시뮬 궤적 눈으로 확인
 - CSV  : `outputs/` + `config/global_trajectory/` 두 곳에 저장 (후자를 튜너·런타임이 읽음)
 - 회피 계층용 : `config/centerline/<맵>_centerline.csv`, `_walls.csv`
+- 세트 표식 : `<맵>_generation_manifest.json` — main/SP/centerline/walls SHA-256
 
-### `make_raceline.sh` 는 이 기계에서 쓰지 말 것
+모든 파일을 먼저 stage+`fsync`한 뒤 SP, 보조 파일, main 순서로 승격하며
+런타임 main CSV가 데이터 commit point다. 매니페스트는 그 뒤에 기록된다.
+SP가 검증에 실패하거나 `MAKE_SP=False`이면 안전한 main은 계속 생성하되,
+같은 suffix의 기존 SP는 commit 전에 숨겨 stale 추월선이 남지 않게 한다.
+단, 여러 파일 rename 자체는 하나의 원자 연산이 아니다. 자동 SP 선택을 끈
+현재 안전 기본값에서는 중간 상태가 SP를 활성화하지 않지만, SP 파일을
+명시적으로 연결하는 런타임은 두 CSV 헤더의 `generation_id` 존재/일치와
+매니페스트 SHA-256을 확인해 전원상실 중간 pair를 거부한다.
 
-`PYTHONNOUSERSITE`를 안 붙이는 데다 구 파이프라인 `step4_main.py`를 부르고,
-`.venv`가 `--without-pip`으로 만들어져 있어 자동 설치 단계도 의도대로 안 돈다.
+### `make_raceline.sh`
+
+워크스페이스 위치를 자동으로 찾고 `PYTHONNOUSERSITE=1`로 `build_map.py`를
+호출한다. `./make_raceline.sh <맵이름> [--dir cw|ccw|auto]`로 사용할 수 있다.
+네트워크가 막힌 환경에서는 의존성을 미리 준비해야 한다.
 
 다음 단계(튜너 편집 → 빌드 반영)는 [`../tuner/README.md`](../tuner/README.md) 참고.
 런타임에 반영하려면 CSV 생성 후:
@@ -72,12 +88,11 @@ cd ~/IFAC_ws/planning_ws && colcon build --packages-select planning_pkg && sourc
 cd <workspace root>          # IFAC_ws-main
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # + scikit-image (build_map.py용)
-.venv/bin/python planning_ws/global_traj_sim/step4_main.py --map Spielberg_map
+.venv/bin/python planning_ws/src/planning_pkg/scripts/global_traj_sim/build_map.py Spielberg_map
 ```
 
-옵션: `--v-max 7.0 --mu 0.85 --margin 0.15 --laps 1 --out <dir>`
-
-`step4_main.py`의 중앙선 추출은 안·바깥 경계 **중점** 방식이라, 인필드가
+구형 `step4_main.py`는 검증 전에 결과를 저장하므로 기본 실행이 차단돼 있다.
+그 구현의 중앙선 추출은 안·바깥 경계 **중점** 방식이라, 인필드가
 아웃필드 벽까지 뻗는 '게이트'에서 중점이 한쪽 벽으로 붕괴해 곡률이 튄다
 (R~0.3 m 스파이크). `build_map.py`는 이걸 medial-axis(골격)로 바꿔 해결했다 —
 소형 실내 트랙에서 두 결과가 다르면 이 차이 때문이다.
@@ -123,13 +138,18 @@ levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 �
 | **맵 → CSV 전체 (실사용)** | **`build_map.py`** | (오프라인 raceline 생성) |
 | 맵 → centerline 추출 | `step1_track.py` | (오프라인 raceline 생성 단계) |
 | 속도 프로파일 + CSV | `step2_global_trajectory.py` | `global_trajectory_node` 입력 생성 |
-| 로컬 윈도우(80 wpt) + pure pursuit + 차량 모델 | `step3_simulate.py` | `local_trajectory_node` + `crazy_controller` + f1tenth sim |
+| 로컬 윈도우(130 wpt) + 배포 제어기 + 차량 모델 | `build_map.py` | `local_trajectory_node` + C++ `control_node` / Python tracker |
 
-컨트롤러/차량 파라미터는 `crazy_controller` 설정을 따름:
-L1 = clip(0.3·v + q_l1, t_clip_min, t_clip_max). wheelbase는 `build_map.py`가
-실차 실측 **0.33 m**, 조향 한계 0.36 rad(20.7°)을 쓴다 (`TUNING_STATUS.md` 기준).
-속도 프로파일은 friction-circle 기반 forward-backward pass (mu·g 횡가속 한계,
-가속 5.5 / 제동 7.0 m/s²).
+`build_map.py`의 `CONTROLLER_PROFILE_LIBRARY`가 배포 파라미터를 명시한다.
+C++ 프로파일은 MAP/L1 lookahead와 실제 NUC6 steering LUT를 명령 역변환과
+plant 정방향 응답 양쪽에 사용한다. Python 프로파일은
+`clip(0.5·v, 0.6, 1.2)` pure pursuit를 사용한다. 속도 프로파일은 각 구간
+양끝 중 더 큰 횡가속도와 종가속도를 합쳐 `mu·g` 안으로 반복 투영하고,
+폐루프 모델도 같은 friction circle을 적용한다. 포화가 한 번이라도 필요했던
+제어 요구는 물리적으로 따라갈 수 없는 것으로 fail-closed 처리한다.
+맵 좌표 변환은 YAML `origin: [x, y, yaw]` 회전을 포함한다. 작은 섬/오목부
+정리는 중앙선 골격용 사본에만 적용하며, corridor와 최종 차량 footprint는
+기둥·고정 장애물을 보존한 원본 occupancy 마스크로 검사한다.
 
 ---
 

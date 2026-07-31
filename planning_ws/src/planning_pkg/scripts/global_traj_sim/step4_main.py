@@ -13,6 +13,7 @@ Usage (planning_pkg 안에서 .venv python으로):
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,9 @@ PLANNER_CENTERLINE_DIR = PKG_ROOT / "config" / "centerline"  # centerline/walls 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--allow-unsafe-legacy", action="store_true",
+        help="검증 전 CSV를 쓰는 구 파이프라인을 명시적으로 허용 (비권장)")
     ap.add_argument("--map", default="Spielberg_map")
     ap.add_argument("--maps-dir", default=str(MAPS_DIR),
                     help="맵 yaml/png 폴더 (대회 맵 폴더로 교체 가능)")
@@ -52,6 +56,12 @@ def main():
     ap.add_argument("--laps", type=int, default=1)
     ap.add_argument("--out", default=str(HERE / "outputs"))
     args = ap.parse_args()
+    if not args.allow_unsafe_legacy:
+        raise SystemExit(
+            "step4_main.py는 검증 전에 CSV를 저장하는 구형 도구라 비활성화됐습니다.\n"
+            "안전 게이트가 포함된 build_map.py를 사용하세요:\n"
+            f"  python {HERE / 'build_map.py'} {args.map}\n"
+            "정말 구형 결과 재현이 필요할 때만 --allow-unsafe-legacy를 추가하세요.")
     maps_dir = Path(args.maps_dir)
 
     out_dir = Path(args.out)

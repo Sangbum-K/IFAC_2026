@@ -9,7 +9,7 @@ csv를 안 주면 map 이름으로 config/global_trajectory/<맵>_iqp_*.csv를 g
 (planner_stack.launch.py와 같은 규칙). sp 라인을 편집하려면 csv:=<맵>_sp_*.csv로 직접 지정.
 
 map:= 하나면 나머지는 전부 CSV에서 유도되므로 손으로 맞출 필요가 없다:
-  v_max / mu     <- 파일명 (<맵>_iqp_max6.00ms_margin0.08m_mu0.75.csv)
+  v_max/margin/mu <- 파일명 (<맵>_iqp_max6.00ms_margin0.08m_mu0.75.csv)
   stride/falloff <- 트랙 전장 (마지막 행의 s_m)
 셋 다 명시하면 명시값이 이긴다. v_max/mu를 잘못 주면 "속도 재계산"이 엉뚱한
 프로파일을 만들기 때문에(README ⚠️ 1) 자동 유도가 기본이다.
@@ -54,21 +54,29 @@ def _resolve_csv(map_name):
             '  가능한 맵: %s\n'
             '  (csv:=<파일명>.csv 로 직접 지정할 수도 있습니다)'
             % (map_name, map_name, SRC_CONFIG, ', '.join(available) or '(없음)'))
+    if len(found) > 1:
+        raise RuntimeError(
+            'map:=%s 에 raceline이 여러 개라 임의 선택하지 않습니다: %s\n'
+            '  csv:=<정확한 파일명>.csv 를 지정하세요.'
+            % (map_name, ', '.join(os.path.basename(path) for path in found)))
     return os.path.basename(found[0])
 
 
 # mkcsv(build_map.py)가 파일명에 생성 파라미터를 그대로 박아 둔다:
 #   <맵>_iqp_max6.00ms_margin0.08m_mu0.75.csv
 # 그래서 "속도 재계산"이 써야 할 v_max/mu를 사람이 다시 입력할 필요가 없다.
-_CSV_PARAM_RE = re.compile(r'_max([0-9.]+)ms_.*_mu([0-9.]+)\.csv$')
+_NUMBER = r'([0-9]+(?:\.[0-9]+)?)'
+_CSV_PARAM_RE = re.compile(
+    r'_max' + _NUMBER + r'ms_.*?margin' + _NUMBER +
+    r'm_mu' + _NUMBER + r'\.csv$')
 
 
 def _parse_csv_params(csv_name):
-    """CSV 파일명 -> (v_max, mu). 인코딩돼 있지 않으면 (None, None)."""
+    """CSV 파일명 -> (v_max, corridor_margin, mu)."""
     match = _CSV_PARAM_RE.search(csv_name)
     if not match:
-        return None, None
-    return float(match.group(1)), float(match.group(2))
+        return None, None, None
+    return tuple(float(match.group(index)) for index in (1, 2, 3))
 
 
 def _track_length(csv_path):
@@ -143,7 +151,7 @@ def launch_setup(context, *args, **kwargs):
         raw = LaunchConfiguration(name).perform(context).strip()
         return float(raw) if raw else None
 
-    csv_v_max, csv_mu = _parse_csv_params(csv_name)
+    csv_v_max, csv_margin, csv_mu = _parse_csv_params(csv_name)
     v_max = _explicit('v_max') or csv_v_max
     mu = _explicit('mu') or csv_mu
     if v_max is not None:
@@ -155,6 +163,14 @@ def launch_setup(context, *args, **kwargs):
         # "속도 재계산" 메뉴에만 쓰이므로 띄우는 것 자체는 막지 않는다.
         print('[raceline_tuner] ⚠ 파일명에서 v_max/mu를 못 읽었습니다: %s\n'
               '   "속도 재계산"을 쓸 거라면 v_max:= / mu:= 를 직접 넘기세요.' % csv_name)
+    explicit_margin = _explicit('corridor_margin')
+    corridor_margin = (
+        explicit_margin if explicit_margin is not None else csv_margin)
+    if corridor_margin is not None:
+        tuner_params['tuner/corridor_margin_m'] = corridor_margin
+    else:
+        print('[raceline_tuner] ⚠ 파일명에서 corridor margin을 못 읽어 '
+              '보수적 노드 기본값 0.15 m를 씁니다')
 
     length_m = _track_length(csv_path)
     stride_raw = LaunchConfiguration('stride').perform(context).strip()
@@ -175,8 +191,9 @@ def launch_setup(context, *args, **kwargs):
     min_wall = _explicit('min_wall')
     if min_wall is not None:
         tuner_params['tuner/min_wall_dist_m'] = min_wall
-    print('[raceline_tuner] v_max=%s m/s  mu=%s  (%s)'
-          % (v_max, mu, '파일명에서 자동' if _explicit('v_max') is None else '인자로 지정'))
+    print('[raceline_tuner] v_max=%s m/s  margin=%s m  mu=%s  (%s)'
+          % (v_max, corridor_margin, mu,
+             '파일명에서 자동' if _explicit('v_max') is None else '인자로 지정'))
 
     map_server_node = Node(
         package='nav2_map_server',
@@ -245,7 +262,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'min_wall',
             default_value='',
-            description='라인-벽 최소 여유 [m]. 비우면 노드 기본값 0.35. CSV의 '
-                        'd_left/d_right는 이미 margin 0.08 m를 뺀 값이므로 실제 여유는 +0.08 m'),
+            description='저장되는 d_left/d_right의 최소 여유 [m]. 비우면 0.20. '
+                        '실제 벽 거리는 여기에 corridor_margin이 더해진다'),
+        DeclareLaunchArgument(
+            'corridor_margin',
+            default_value='',
+            description='map raycast 벽 거리에서 뺄 reserve [m]. 비우면 CSV '
+                        '파일명의 margin<...>m에서 읽고, 없으면 보수적 기본 0.15'),
         OpaqueFunction(function=launch_setup),
     ])

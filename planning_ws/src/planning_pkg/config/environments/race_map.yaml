@@ -3,15 +3,16 @@
 #          trajectory_csv_file:=<당일맵>_iqp_*.csv overtaking_csv_file:=<당일맵>_sp_*.csv \
 #          centerline_csv_file:=<당일맵>_centerline.csv
 # 당일 맵 raceline 생성: slam 맵(png+yaml)을 maps/에 넣고
-#   python3 scripts/global_traj_sim/step4_main.py --map <당일맵> --raceline iqp --safe-dist 0.5
+#   python3 scripts/global_traj_sim/build_map.py <당일맵>
+# (속도/마찰/여유는 build_map.py 상단 설정 블록에서 변경)
 # 후 colcon build (install에 CSV 복사).
 # velocity_scale은 control의 vehicle/max_speed_mps와 짝을 맞출 것 (근거는
 # real_car.yaml의 동일 블록 참조). scale = (control cap) / (raceline v-max).
 global_trajectory_node:
   ros__parameters:
-    # control max_speed_mps 4.0 + raceline v-max 6.0 기준. 당일 맵 raceline의
-    # v-max가 6이 아니면 다시 계산할 것. 클램프 범위는 [0.5, 1.4].
-    global_trajectory/velocity_scale: 0.6667
+    # 현재 control race_map cap 1.0 m/s와 정합. 고속 승격 시 두 workspace를
+    # 원자적으로 바꾸고 실제 속도 회귀시험을 통과시킬 것.
+    global_trajectory/velocity_scale: 0.1666
 
 frenet_frame_node:
   ros__parameters:
@@ -22,11 +23,30 @@ perception_obstacle_bridge_node:
     bridge/input_topic: /perception/obstacles
     bridge/output_topic: /perception/obstacles_frenet
     bridge/target_frame: map
-    bridge/min_confidence: 0.0
+    bridge/min_confidence: 0.0       # detector가 확정한 저신뢰/coasting 트랙도 보존
     bridge/wall_margin_m: 0.10
     bridge/vel_lpf_alpha: 0.3
     bridge/track_forget_sec: 2.0
-    bridge/tf_timeout_sec: 0.1
+    bridge/tf_timeout_sec: 0.05
+    bridge/tf_allow_latest_fallback: false
+    bridge/tf_max_age_sec: 0.05
+    bridge/max_source_age_sec: 0.20
+    bridge/source_future_tolerance_sec: 0.05
+    bridge/require_source_stamp: true
+    bridge/projection_window_wpnts: 80
+    bridge/projection_reacquire_distance_m: 1.5
+    bridge/max_abs_vs_mps: 10.0
+    bridge/max_abs_vd_mps: 4.0
+    # 맵 벽거리 필터: frenet d-경계 필터가 코너에서 놓치는 벽 위 유령
+    # (실측 d=-0.85, 경계 1.32 통과, 4434점 전부 벽) 을 /map EDT 실거리로
+    # 차단. 유령은 벽에서 0~0.1m, 진짜 콘은 최소 반폭 이상 떨어져 분리 명확.
+    # ⚠️ true로 켜기 전에 PF 수렴 상태에서 정지 장애물 map 좌표 산포를 잴 것 —
+    #    wall_dist_min < PF 오차면 유령이 새고, 크면 벽 근처 진짜를 버린다.
+    #    활성화 후 map/거리변환이 준비되지 않으면 frame 전체를 거부한다.
+    bridge/use_map_filter: false
+    bridge/wall_dist_min_m: 0.20
+    bridge/map_topic: /map
+    bridge/map_timeout_sec: 5.0
 
 # (제거) pose_odom_bridge_node: /pf/pose/odom은 localization particle_filter가 직접 발행.
 # 당일 맵 사용 시 particle_filter/config/localize.yaml의 map_server.map도 당일 맵으로 교체할 것.
@@ -34,7 +54,11 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet
-    spliner/lookahead_m: 8.0
+    # perception range_max(12.0)와 정합 — 8.0이면 12m에서 보이는 장애물을
+    # 8m까지 버려 고속(5~6 m/s) 조기 레인스위치·감속 예산을 스스로 깎는다
+    # (근거 수치는 real_car.yaml 동일 항목 주석 참조)
+    spliner/lookahead_m: 12.0
+    spliner/loop_rate_hz: 30.0          # 6 m/s에서 재계획 간 이동 0.30 -> 0.20 m
     # 대회 맵 = my_track(실폭 median 1.25 m, min 1.0 m). 예전 대형 트랙 값 0.75는
     # 벽 클램프로 회피가 상시 abort → 소형 트랙 값 0.35로 정렬 (real_car.yaml과 동일).
     # 당일 맵이 확연히 넓으면 0.5~0.75로 다시 올릴 것.
@@ -42,19 +66,24 @@ spliner_node:
     spliner/inside_speed_scale: 0.7
     # 좁은 코리도(폭~1.25 m)에서 0.20은 유효 회피경로를 과도히 배제 → 0.15로 정렬.
     spliner/path_check_margin: 0.15
+    spliner/boundary_tracking_margin_m: 0.10
     spliner/cmd_speed_scale: 1.0
+
+opponent_predictor_node:
+  ros__parameters:
+    predictor/obstacle_topic: /perception/obstacles_frenet
 
 recovery_supervisor_node:
   ros__parameters:
     recovery/obstacle_topic: /perception/obstacles_frenet
     recovery/stuck_timeout_sec: 1.5
-    # my_track: 섹터 공격 모드가 벽 0.15 m(ot_bound_mindist)까지 접근하므로 정지
-    # 판정은 반드시 그보다 작아야(안 그럼 회피 중 오탐 COLLISION_STOP) → 0.10.
-    # 예전 값 0.20은 0.15 위반 → 회피 시작하자마자 래치 정지가 걸렸음.
+    # 차량 반폭 0.15 + 추가여유 0.10 = center-to-wall 최소 0.25m.
     recovery/boundary_stop_margin_m: 0.10
-    recovery/boundary_persist_sec: 0.2
+    recovery/boundary_persist_sec: 0.10
     recovery/rear_check_dist_m: 2.0
-    recovery/recovery_reverse_speed_mps: 0.4
+    recovery/allow_reverse: false
+    recovery/rear_coverage_confirmed: false
+    recovery/recovery_reverse_speed_mps: 0.30
     recovery/recovery_max_reverse_distance_m: 0.4
     recovery/recovery_max_attempts: 1
     recovery/align_speed_mps: 0.4

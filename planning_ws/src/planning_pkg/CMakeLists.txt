@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(planning_pkg)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -117,6 +121,9 @@ install(PROGRAMS
 install(PROGRAMS scripts/tuner/raceline_tuner_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
+install(FILES scripts/tuner/controller_safety_model.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY rviz
   DESTINATION share/${PROJECT_NAME}
@@ -125,5 +132,19 @@ install(DIRECTORY rviz
 install(FILES package.xml
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(
+    safety_invariants
+    test/test_safety_invariants.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(
+    tuner_safety_model
+    test/test_tuner_safety_model.py
+    TIMEOUT 60
+  )
+endif()
 
 ament_package()

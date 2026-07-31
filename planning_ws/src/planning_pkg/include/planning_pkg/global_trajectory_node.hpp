@@ -1,11 +1,12 @@
 // 원본 planner_pkg에 헤더가 누락되어 있어 cpp 구현부로부터 복원 작성함.
-// raceline CSV(9열 세미콜론, step4_main.py 산출물)를 로드해
+// raceline CSV(9열 세미콜론, build_map.py 산출물)를 로드해
 // /global_waypoints (f1tenth_planning_msgs/WpntArray)로 주기 발행하는 노드.
 #ifndef PLANNING_PKG__GLOBAL_TRAJECTORY_NODE_HPP_
 #define PLANNING_PKG__GLOBAL_TRAJECTORY_NODE_HPP_
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -30,7 +31,15 @@ private:
   void Run();
   bool LoadTrajectoryFromCSV(
     const std::string & csv_filename,
-    std::vector<std::vector<double>> & out_trajectory);
+    std::vector<std::vector<double>> & out_trajectory,
+    std::string & out_generation_id);
+  bool ValidateTrajectory(
+    const std::string & name,
+    const std::vector<std::vector<double>> & trajectory,
+    bool strict_curvature) const;
+  bool ValidateTrajectoryPair(
+    const std::vector<std::vector<double>> & main_trajectory,
+    const std::vector<std::vector<double>> & overtaking_trajectory) const;
   void PublishGlobalWaypoints();
   f1tenth_planning_msgs::msg::WpntArray BuildWpntArray(
     const std::vector<std::vector<double>> & trajectory) const;
@@ -39,11 +48,22 @@ private:
   std::string trajectory_csv_file_;
   std::string overtaking_csv_file_;   // SP 추월 라인 (빈 문자열이면 발행 안 함)
   double publish_rate_hz_{2.0};
-  double velocity_scale_{1.0};   // 주행 중 ros2 param set으로 조정 (0.5~1.4 클램프)
+  double velocity_scale_{1.0};
+  double target_velocity_scale_{1.0};
+  double min_velocity_scale_{0.1};
+  double max_velocity_scale_{1.0};
+  double velocity_scale_slew_per_sec_{0.1};
+  double validation_mu_{0.75};
+  double validation_wheelbase_m_{0.33};
+  double validation_max_steer_rad_{0.36};
+  double validation_tolerance_{0.03};
+  double validation_ax_tolerance_{1.0};
 
   // CSV rows: [s_m, x_m, y_m, d_right, d_left, psi_rad, kappa_radpm, vx_mps, ax_mps2]
   std::vector<std::vector<double>> global_trajectory_;
   std::vector<std::vector<double>> overtaking_trajectory_;
+  std::string main_generation_id_;
+  std::string overtaking_generation_id_;
 
   rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_global_waypoints_;
   rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_overtaking_waypoints_;

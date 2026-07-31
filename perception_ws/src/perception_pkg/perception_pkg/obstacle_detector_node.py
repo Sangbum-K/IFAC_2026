@@ -8,7 +8,10 @@
    - 기존: laser frame 기준 폴리곤 (차량이 움직이면 매번 다시 계산해줘야 하는데 그 로직이 없었음)
    - 변경: target_frame(보통 map) 기준 폴리곤. 트랙 경계처럼 고정된 지형은 map frame에
      한 번만 정의해두면 차량 위치와 무관하게 항상 올바르게 동작함.
-3) TF lookup 실패 시 해당 스캔은 스킵하고 경고 로그만 남김 (잘못된 좌표로 publish하지 않음).
+3) LaserScan의 원본 시각으로 TF를 조회한다.
+   - 움직이는 차량에서 "최신 TF"로 과거 스캔을 변환하면 장애물 위치가 속도×지연만큼
+     어긋난다. exact-time TF가 없으면 기본적으로 해당 스캔을 발행하지 않는다.
+4) TF lookup 실패 시 해당 스캔은 스킵하고 경고 로그만 남김 (잘못된 좌표로 publish하지 않음).
 """
 import numpy as np
 import rclpy
@@ -72,6 +75,13 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('obstacle_topic', '/perception/obstacles')
         self.declare_parameter('target_frame', 'map')   # frame_id_override 대체
         self.declare_parameter('tf_timeout_sec', 0.05)
+        self.declare_parameter('require_source_stamp', True)
+        self.declare_parameter('max_source_age_sec', 0.20)
+        self.declare_parameter('source_future_tolerance_sec', 0.05)
+        # 고속주행에서는 latest TF fallback이 위치를 체계적으로 틀리게 하므로 기본 금지.
+        # 개발용으로 명시 opt-in해도 원본 스캔 시각과 충분히 가까운 TF만 허용한다.
+        self.declare_parameter('tf_allow_latest_fallback', False)
+        self.declare_parameter('tf_max_age_sec', 0.05)
         # target_frame(map) 기준. 기본 [0.0]은 "비활성" sentinel —
         # 빈 리스트 기본값은 rclpy에서 타입 미확정(ParameterUninitializedException)이 된다.
         self.declare_parameter('boundary_polygon_xy', [0.0])
@@ -81,42 +91,95 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('process_rate_hz', 20.0)
 
         p = self.get_parameter
-        self.range_min = p('range_min').value
-        self.range_max = p('range_max').value
-        self.fov_min = p('fov_min_deg').value * np.pi / 180.0
-        self.fov_max = p('fov_max_deg').value * np.pi / 180.0
-        self.median_kernel = p('median_kernel').value
+        self.range_min = float(p('range_min').value)
+        self.range_max = float(p('range_max').value)
+        self.fov_min = float(p('fov_min_deg').value) * np.pi / 180.0
+        self.fov_max = float(p('fov_max_deg').value) * np.pi / 180.0
+        self.median_kernel = int(p('median_kernel').value)
 
-        self.cluster_eps = p('cluster_eps').value
-        self.min_cluster_size = p('min_cluster_size').value
+        self.cluster_eps = float(p('cluster_eps').value)
+        self.min_cluster_size = int(p('min_cluster_size').value)
 
-        self.v_thresh = p('v_thresh').value
-        self.n_confirm = p('n_confirm').value
-        self.n_release = p('n_release').value
-        self.static_pos_std = p('static_pos_std').value
-        self.dynamic_pos_std = p('dynamic_pos_std').value
-        self.dynamic_release = p('dynamic_release').value
-        self.min_hits = p('min_hits').value
+        self.v_thresh = float(p('v_thresh').value)
+        self.n_confirm = int(p('n_confirm').value)
+        self.n_release = int(p('n_release').value)
+        self.static_pos_std = float(p('static_pos_std').value)
+        self.dynamic_pos_std = float(p('dynamic_pos_std').value)
+        self.dynamic_release = int(p('dynamic_release').value)
+        self.min_hits = int(p('min_hits').value)
+        gating_distance = float(p('gating_distance').value)
+        track_timeout = int(p('track_timeout').value)
+        reid_distance = float(p('reid_distance').value)
+        reid_timeout = float(p('reid_timeout_sec').value)
+        pos_hist_len = int(p('pos_hist_len').value)
 
-        rate = max(float(p('process_rate_hz').value), 0.1)
+        rate = float(p('process_rate_hz').value)
+        tf_timeout_sec = float(p('tf_timeout_sec').value)
+        self.require_source_stamp = bool(p('require_source_stamp').value)
+        self.max_source_age = float(p('max_source_age_sec').value)
+        self.source_future_tolerance = float(
+            p('source_future_tolerance_sec').value)
+        self.tf_allow_latest_fallback = bool(
+            p('tf_allow_latest_fallback').value)
+        self.tf_max_age = float(p('tf_max_age_sec').value)
+        timing_values = (
+            rate, tf_timeout_sec, self.max_source_age,
+            self.source_future_tolerance, self.tf_max_age,
+        )
+        if (not all(np.isfinite(v) for v in timing_values)
+                or not 1.0 <= rate <= 500.0
+                or not 0.001 <= tf_timeout_sec <= 5.0
+                or not 0.01 <= self.max_source_age <= 5.0
+                or not 0.0 <= self.source_future_tolerance <= 1.0
+                or not 0.0 <= self.tf_max_age <= self.max_source_age):
+            raise ValueError('invalid detector timing/freshness parameters')
+        continuous_values = (
+            self.range_min, self.range_max, self.fov_min, self.fov_max,
+            self.cluster_eps, self.v_thresh, self.static_pos_std,
+            self.dynamic_pos_std, gating_distance, reid_distance, reid_timeout,
+        )
+        if (not all(np.isfinite(v) for v in continuous_values)
+                or not 0.0 <= self.range_min < self.range_max <= 100.0
+                or not -2.0 * np.pi <= self.fov_min < self.fov_max <= 2.0 * np.pi
+                or self.median_kernel < 1 or self.median_kernel % 2 == 0
+                or not 0.001 <= self.cluster_eps <= 10.0
+                or not 1 <= self.min_cluster_size <= 100000
+                or not 0.001 <= gating_distance <= 100.0
+                or not 1 <= track_timeout <= 100000
+                or not 0.0 <= self.v_thresh <= 100.0
+                or not 1 <= self.n_confirm <= 100000
+                or not 1 <= self.n_release <= 100000
+                or not 0.0 <= self.static_pos_std <= self.dynamic_pos_std <= 100.0
+                or not 1 <= self.dynamic_release <= 100000
+                or not 0.0 <= reid_distance <= 100.0
+                or not 0.0 <= reid_timeout <= 60.0
+                or not 2 <= pos_hist_len <= 100000
+                or not 1 <= self.min_hits <= track_timeout):
+            raise ValueError('invalid detector geometry/tracking parameters')
+
         self.min_period = 1.0 / rate
         self.last_processed = -1e18
-        self.target_frame = p('target_frame').value
-        self.tf_timeout = Duration(seconds=p('tf_timeout_sec').value)
+        self.last_seen_stamp = -1e18
+        self.target_frame = str(p('target_frame').value).strip()
+        if not self.target_frame:
+            raise ValueError('target_frame must not be empty')
+        self.tf_timeout = Duration(seconds=tf_timeout_sec)
         self.boundary_polygon = self._parse_boundary_polygon(
             p('boundary_polygon_xy').value
         )
 
         self.tracker = Tracker(
-            gating_distance=p('gating_distance').value,
-            track_timeout=p('track_timeout').value,
-            reid_distance=p('reid_distance').value,
-            reid_timeout=p('reid_timeout_sec').value,
-            pos_hist_len=int(p('pos_hist_len').value),
+            gating_distance=gating_distance,
+            track_timeout=track_timeout,
+            reid_distance=reid_distance,
+            reid_timeout=reid_timeout,
+            pos_hist_len=pos_hist_len,
         )
 
-        scan_topic = p('scan_topic').value
-        obstacle_topic = p('obstacle_topic').value
+        scan_topic = str(p('scan_topic').value).strip()
+        obstacle_topic = str(p('obstacle_topic').value).strip()
+        if not scan_topic or not obstacle_topic:
+            raise ValueError('scan_topic and obstacle_topic must not be empty')
 
         # ---- TF2 ----
         # spin_thread=True 필수: /tf가 고빈도(gym 250Hz*8프레임=2000msg/s)면
@@ -146,22 +209,71 @@ class ObstacleDetectorNode(Node):
         if flat_xy is None or len(flat_xy) < 2:  # 미설정/sentinel -> 비활성
             return None
         if len(flat_xy) < 6 or len(flat_xy) % 2 != 0:
-            self.get_logger().warn(
+            raise ValueError(
                 'boundary_polygon_xy must contain an even number of values '
-                'with at least 3 vertices. Boundary filter disabled.'
+                'with at least 3 vertices'
             )
-            return None
         polygon = []
         for i in range(0, len(flat_xy), 2):
             polygon.append([float(flat_xy[i]), float(flat_xy[i + 1])])
+        if not np.all(np.isfinite(polygon)):
+            raise ValueError(
+                'boundary_polygon_xy contains non-finite coordinates')
         return polygon
 
     def on_scan(self, msg: LaserScan):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        source_frame = msg.header.frame_id.strip()
+        now = self.get_clock().now().nanoseconds * 1e-9
+
+        if not source_frame:
+            self.get_logger().warn(
+                'LaserScan has an empty frame_id; skipping.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        if not np.isfinite(stamp) or (self.require_source_stamp and stamp <= 0.0):
+            self.get_logger().warn(
+                'LaserScan has a missing/non-finite source stamp; skipping.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        age = now - stamp
+        if (not np.isfinite(age) or age > self.max_source_age
+                or age < -self.source_future_tolerance):
+            self.get_logger().warn(
+                f'LaserScan source stamp is outside the freshness window '
+                f'(age={age:.3f}s); skipping.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        if stamp <= self.last_seen_stamp:
+            self.get_logger().warn(
+                'Duplicate or out-of-order LaserScan stamp; skipping.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        self.last_seen_stamp = stamp
         if stamp - self.last_processed < self.min_period:
             return
         self.last_processed = stamp
-        source_frame = msg.header.frame_id
+
+        ranges = np.asarray(msg.ranges, dtype=np.float64)
+        scan_metadata = (
+            msg.angle_min, msg.angle_max, msg.angle_increment,
+            msg.range_min, msg.range_max,
+        )
+        if (ranges.ndim != 1 or ranges.size == 0
+                or not all(np.isfinite(v) for v in scan_metadata)
+                or msg.angle_increment <= 0.0
+                or msg.range_min < 0.0 or msg.range_max <= msg.range_min
+                or not np.any((np.isfinite(ranges) & (ranges > 0.0))
+                              | np.isposinf(ranges))):
+            self.get_logger().warn(
+                'Malformed LaserScan metadata/ranges; skipping.',
+                throttle_duration_sec=2.0,
+            )
+            return
 
         # ① 전처리 (laser frame 기준, range/FOV/median filter만)
         points = preprocess_scan(
@@ -170,33 +282,71 @@ class ObstacleDetectorNode(Node):
             fov_min=self.fov_min, fov_max=self.fov_max,
             median_kernel=self.median_kernel,
         )
-        if len(points) == 0:
-            return
 
         # ①.5 TF 변환: laser frame -> target_frame (보통 map)
         # 이 변환이 있어야 이후 boundary_polygon(map 기준)과 최종 publish 좌표가 실제로 맞음.
-        try:
-            tf_stamped = self.tf_buffer.lookup_transform(
-                self.target_frame, source_frame, Time(), timeout=self.tf_timeout
-            )
-        except (LookupException, ConnectivityException, ExtrapolationException) as ex:
-            self.get_logger().warn(
-                f'TF lookup {source_frame} -> {self.target_frame} failed: {ex}. '
-                'skipping this scan.',
-                throttle_duration_sec=2.0,
-            )
-            return
+        if self.target_frame != source_frame:
+            scan_time = Time.from_msg(msg.header.stamp)
+            try:
+                tf_stamped = self.tf_buffer.lookup_transform(
+                    self.target_frame, source_frame, scan_time,
+                    timeout=self.tf_timeout
+                )
+            except (LookupException, ConnectivityException,
+                    ExtrapolationException) as exact_ex:
+                if not self.tf_allow_latest_fallback:
+                    self.get_logger().warn(
+                        f'Exact-time TF lookup {source_frame} -> '
+                        f'{self.target_frame} failed: {exact_ex}. '
+                        'Skipping this scan.',
+                        throttle_duration_sec=2.0,
+                    )
+                    return
+                try:
+                    tf_stamped = self.tf_buffer.lookup_transform(
+                        self.target_frame, source_frame, Time(),
+                        timeout=self.tf_timeout
+                    )
+                except (LookupException, ConnectivityException,
+                        ExtrapolationException) as latest_ex:
+                    self.get_logger().warn(
+                        f'TF lookup {source_frame} -> {self.target_frame} '
+                        f'failed: {latest_ex}. Skipping this scan.',
+                        throttle_duration_sec=2.0,
+                    )
+                    return
+                tf_stamp = (tf_stamped.header.stamp.sec
+                            + tf_stamped.header.stamp.nanosec * 1e-9)
+                if (not np.isfinite(tf_stamp) or tf_stamp <= 0.0
+                        or abs(tf_stamp - stamp) > self.tf_max_age):
+                    self.get_logger().warn(
+                        'Latest TF is not close enough to the LaserScan '
+                        'source stamp; skipping.',
+                        throttle_duration_sec=2.0,
+                    )
+                    return
 
-        t = tf_stamped.transform.translation
-        q = tf_stamped.transform.rotation
-        R = rotation_matrix_2d_from_quaternion(q.x, q.y, q.z, q.w)
-        points = transform_points(points, [t.x, t.y], R)
+            t = tf_stamped.transform.translation
+            q = tf_stamped.transform.rotation
+            transform_values = (t.x, t.y, q.x, q.y, q.z, q.w)
+            q_norm = float(np.linalg.norm([q.x, q.y, q.z, q.w]))
+            if (not all(np.isfinite(v) for v in transform_values)
+                    or q_norm < 1e-9):
+                self.get_logger().warn(
+                    'TF contains non-finite/invalid values; skipping.',
+                    throttle_duration_sec=2.0,
+                )
+                return
+            qx, qy, qz, qw = (
+                q.x / q_norm, q.y / q_norm,
+                q.z / q_norm, q.w / q_norm,
+            )
+            R = rotation_matrix_2d_from_quaternion(qx, qy, qz, qw)
+            points = transform_points(points, [t.x, t.y], R)
 
         # ②.5 경계 필터 (이제 target_frame 기준이므로 정적 폴리곤을 그대로 써도 됨)
         if self.boundary_polygon is not None:
             points = filter_points_in_polygon(points, self.boundary_polygon)
-        if len(points) == 0:
-            return
 
         # ② 클러스터링
         clusters = cluster_points(
