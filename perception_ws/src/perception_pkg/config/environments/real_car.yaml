@@ -14,7 +14,19 @@ obstacle_detector_node:
     # real_car.launch.py는 PF 수렴 게이트를 통과한 뒤에 스택을 띄우므로
     # 이 시점엔 map->base_link TF가 이미 있다.
     target_frame: map
-    tf_timeout_sec: 0.05
+    # tf_timeout은 반드시 0으로. rclpy Buffer는 timeout>0이면 20ms 단위
+    # sleep 폴링을 하므로(geometry2 #327) 0.005를 줘도 매 스캔 최소 20ms씩
+    # executor를 블로킹해 /tf 콜백이 굶는다. exact-time lookup은 어차피
+    # 구조적으로 실패한다: PF가 map->odom을 scan 시각 stamp로 ~60-100ms
+    # 늦게 발행하므로, 처리 시점에 그 scan 시각을 커버하는 TF는 없다.
+    # 0이면 즉시 실패 -> latest 폴백으로 넘어가고 sleep 루프를 안 탄다.
+    tf_timeout_sec: 0.0
+    tf_allow_latest_fallback: true
+    # scan시각-최신TF시각 간격 실측: p50 83ms / p90 123ms / max 240ms
+    # (run_0731_221633). 0.15는 경계선이라 노드 내부 지연이 더해지면 전멸
+    # -> 출발 불가 재발. 0.3 = p90 + 여유. 정지 출발 시 오차 0, 주행 중
+    # 3.6m/s 기준 최대 ~0.4m 오차는 감수 (time-travel lookup으로 개선 예정).
+    tf_max_age_sec: 0.3
     range_max: 12.0
     cluster_eps: 0.16
     gating_distance: 0.45

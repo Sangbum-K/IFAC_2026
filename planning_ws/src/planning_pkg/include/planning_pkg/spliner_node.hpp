@@ -53,6 +53,7 @@ private:
     const f1tenth_planning_msgs::msg::Obstacle & obs, int gb_idx) const;
   bool DoSpline(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
@@ -67,8 +68,8 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
   // 목표 오프셋 d_hold로 ease-on→hold→ease-back 궤적 생성 + 충돌/경계 검증.
-  // closest_obs는 d_hold(=ApexFor)로 이미 클리어런스 확보 → 충돌검사에서 제외,
-  // '다른' 장애물이 이 레인을 막는지만 본다. 막히면 false.
+  // closest_obs를 포함한 모든 장애물과 차량 footprint/도착시간을 검증한다.
+  // 목표 오프셋 계산이 성공했더라도 실제 sampled path가 안전하지 않으면 false.
   bool BuildLaneSwitch(
     double d_hold,
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
@@ -76,14 +77,14 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
-  // 경로를 lookahead 내 장애물들과 (s,d) 충돌 검사 (정적 커밋 유효성 검증,
-  // SP 레인체인지 검증에 사용). exclude_id: 회피/추종 대상 장애물 자신은
-  // 제외 (경로가 의도적으로 그 주변/뒤를 지나므로).
+  // 경로를 lookahead 내 장애물들과 (s,d,t) 충돌 검사 (정적 커밋 유효성,
+  // 모든 회피 후보 검증에 사용). 차량 반길이/반폭, 장애물 분산, 경로
+  // 도착시각에서의 등속 이동을 포함하며 목표 장애물도 절대 제외하지 않는다.
   // 반환 true=충돌 없음, false=충돌(blocking_s에 막은 장애물의 s_start).
   bool CheckPathCollision(
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & path,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles,
-    int32_t exclude_id, double * blocking_s) const;
+    double * blocking_s) const;
   // lookahead 내 전체 장애물 (raceline 근접 여부 무관 — 경로 검증용)
   std::vector<f1tenth_planning_msgs::msg::Obstacle> ObstaclesInLookahead(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
@@ -133,6 +134,7 @@ private:
   // 복귀 완료 시 false 반환
   bool BuildSpExit(
     bool opp_beside, double v_floor,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
   // s_from부터 raceline 복귀 블렌드 창(blend_len)이 코너(|kappa| >
@@ -158,10 +160,21 @@ private:
 
   // 회피 궤적의 속도 프로파일을 물리적으로 성립하게 만든다:
   //  1) 각 점의 오프셋 곡률로 횡그립 상한 v <= sqrt(path_lat_acc_max/|kappa'|)
-  //  2) 뒤에서 앞으로 역방향 패스로 종방향 감속 한계 적용
-  //     v[i] <= sqrt(v[i+1]^2 + 2*path_decel_max*ds)
-  // 직선에서는 아무것도 깎지 않고(가속 유지), 코너 진입 전에만 크게 감속한다.
-  void ApplySpeedProfile(std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts) const;
+  //  2) 차량 조향각/조향률 한계 적용
+  //  3) friction-circle을 반영한 역방향 감속과 순방향 가속 한계 적용
+  //  4) 현재 속도/계획 지연/jerk로 곡률 상한 도달 가능성 검증
+  //  5) 변경된 속도로 ax를 다시 계산
+  // require_current_feasible=false는 충돌 회피보다 최대 제동 명령 발행이
+  // 우선인 trailing에만 사용한다. 반환 false면 현재 상태에서 물리적으로
+  // 도달할 수 없는 회피 경로다.
+  bool ApplySpeedProfile(
+    std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
+    bool require_current_feasible = true) const;
+
+  // local_trajectory의 modulo splice는 한 바퀴 이상 경로를 표현할 수 없다.
+  bool PlanSpanAllowed(double span) const;
+  double RequiredBoundaryMargin(double requested_margin) const;
+  bool WithinTrackBoundary(int gb_idx, double d, double requested_margin) const;
 
   // 자연 3차 스플라인: 절점 (xs, ys)를 지나는 곡선을 query 지점들에서 평가
   static std::vector<double> NaturalCubicSpline(
@@ -195,6 +208,13 @@ private:
   double blend_dist_max_m_{8.0};    // 전환 거리 상한 [m]
   double path_lat_acc_max_{7.0};    // 오프셋 경로 곡률 -> 속도 상한용 그립 [m/s^2]
   double path_decel_max_{6.0};      // 회피 궤적 역방향 감속 한계 [m/s^2]
+  double path_accel_max_{3.0};      // 회피 궤적 순방향 가속 한계 [m/s^2]
+  double path_jerk_max_{8.0};       // 현재 상태 도달 가능성/ax 변화 한계 [m/s^3]
+  double planning_delay_sec_{0.10}; // 인지-계획-제어 지연 보수치 [s]
+  double vehicle_half_length_m_{0.275};
+  double vehicle_half_width_m_{0.15};
+  double boundary_tracking_margin_m_{0.05};
+  double collision_sigma_{2.0};
   bool trailing_active_{false};
   // 라인 스위치 (기본 maneuver)
   bool use_lane_switch_{true};       // false면 기존처럼 DoSpline을 1순위로
@@ -212,7 +232,7 @@ private:
   double squeeze_speed_scale_{0.35};
   // 공격성 파라미터: 접근 구간은 감속하지 않고 장애물 직전에서만 제동한다
   double squeeze_brake_dist_m_{6.0};      // squeeze 감속을 시작하는 s_front 앞 거리 [m]
-  double trailing_engage_dist_m_{12.0};   // trailing 감속을 시작하는 정지점 앞 거리 [m]
+  double trailing_engage_dist_m_{8.0};    // trailing 감속을 시작하는 정지점 앞 거리 [m]
   double dyn_pass_speed_ratio_{1.4};     // 동적 상대 추월 중 최소 속도 = 상대 x 이 배율
 
   // 정적/동적 분류 파라미터 (unicorn opponent_tracker_params.yaml 기본값)
@@ -241,14 +261,13 @@ private:
   double ot_max_kappa_{0.1};         // 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m)
   double ot_sector_min_len_m_{8.0};
   double ot_bound_mindist_{0.25};
-  double ot_speed_scale_{1.1};
+  double ot_speed_scale_{1.0};
   std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
   bool in_ot_sector_{false};
   // 진행 중인 정적 회피 커밋 (경로 끝까지 유지 — 도중 소멸 시 벽 충돌)
   f1tenth_planning_msgs::msg::WpntArray committed_wpnts_;
   visualization_msgs::msg::MarkerArray committed_mrks_;
-  int32_t committed_id_{-1};
   double committed_start_s_{-1.0};
   double committed_until_s_{-1.0};
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
@@ -263,6 +282,11 @@ private:
   std::vector<double> sp_d_;    // gb 인덱스별 SP 라인의 IQP frenet 횡 오프셋
   std::vector<double> sp_vx_;   // gb 인덱스별 SP 라인 속도
   bool has_sp_{false};          // 매핑 완료 여부
+  bool sp_mapping_attempted_{false};
+  double sp_mapping_max_residual_m_{0.5};
+  double vehicle_wheelbase_m_{0.33};
+  double vehicle_max_steering_rad_{0.36};
+  double vehicle_max_steering_rate_radps_{2.0};
   bool lc_active_{false};
 
   // State

@@ -143,16 +143,18 @@ ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map
 2. raceline을 생성한다:
    ```bash
    cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
-   python3 step4_main.py --map <맵>_map --raceline iqp \
-       --safe-dist 0.5 --v-max 15
+   python3 build_map.py <맵>_map --dir ccw
    ```
-   → `config/global_trajectory/`에 `_iqp_` / `_sp_` CSV가 생성된다.
+   기하·차량 footprint·마찰원·폐루프 검증을 모두 통과한 경우에만
+   `config/global_trajectory/`에 동일 suffix의 `_iqp_` / `_sp_` CSV가 생성된다.
 3. `launch/sim_race.launch.py`의 `PARK_POSES`에 상대 주차 좌표
    (레이스라인에서 30m+ 떨어진 맵 구석)를 추가한다.
 4. `colcon build` 후 `map:=<맵>_map`으로 실행.
 
-CSV 파일명 접미사(`max15.00ms_margin0.15m_mu0.85`)는 launch의
-`RACELINE_SUFFIX`와 일치해야 한다.
+메인 IQP CSV가 한 개면 launch가 그 파일을 고른다. 같은 맵의 후보가 여러
+개면 임의 선택하지 않으므로 `suffix:=...`를 명시한다. SP는 자동 활성화하지
+않는다. 생성·검증된 동일 map/suffix의 파일만 `overtaking_csv_file:=...`로
+명시적으로 opt-in한다.
 
 ---
 

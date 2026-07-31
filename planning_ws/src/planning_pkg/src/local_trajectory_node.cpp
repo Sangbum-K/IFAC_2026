@@ -1,312 +1,611 @@
 #include "planning_pkg/local_trajectory_node.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 #include "planning_pkg/pitwall.hpp"
 
-namespace {
-// 음수 안전 modulo (트랙 s 좌표 wrap-around 용)
-double Mod(double a, double m) {
-    double r = std::fmod(a, m);
-    return (r < 0.0) ? r + m : r;
+namespace
+{
+constexpr double kEpsilon = 1.0e-7;
+
+double PositiveModulo(double value, double modulus)
+{
+  if (!(modulus > 0.0) || !std::isfinite(value)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  double result = std::fmod(value, modulus);
+  return result < 0.0 ? result + modulus : result;
+}
+
+double NormalizeAngle(double angle)
+{
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+bool IsZeroStamp(const builtin_interfaces::msg::Time & stamp)
+{
+  return stamp.sec == 0 && stamp.nanosec == 0U;
+}
+
+bool IsFiniteWaypoint(const f1tenth_planning_msgs::msg::Wpnt & wpnt)
+{
+  return std::isfinite(wpnt.s_m) && std::isfinite(wpnt.d_m) &&
+         std::isfinite(wpnt.x_m) && std::isfinite(wpnt.y_m) &&
+         std::isfinite(wpnt.d_right) && std::isfinite(wpnt.d_left) &&
+         std::isfinite(wpnt.psi_rad) && std::isfinite(wpnt.kappa_radpm) &&
+         std::isfinite(wpnt.vx_mps) && std::isfinite(wpnt.ax_mps2);
+}
+
+bool ComputeTrackLength(
+  const std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
+  double & track_length)
+{
+  if (wpnts.size() < 3U) {
+    return false;
+  }
+  for (std::size_t i = 0; i < wpnts.size(); ++i) {
+    if (!IsFiniteWaypoint(wpnts[i]) ||
+      (i > 0U && !(wpnts[i].s_m > wpnts[i - 1U].s_m)))
+    {
+      return false;
+    }
+  }
+  const double closure = std::hypot(
+    wpnts.back().x_m - wpnts.front().x_m,
+    wpnts.back().y_m - wpnts.front().y_m);
+  track_length = wpnts.back().s_m - wpnts.front().s_m + closure;
+  return closure > kEpsilon && std::isfinite(track_length) && track_length > 0.0;
 }
 }  // namespace
 
-LocalTrajectoryNode::LocalTrajectoryNode(const std::string &node_name, const rclcpp::NodeOptions &options)
-    : Node(node_name, options) {
+LocalTrajectoryNode::LocalTrajectoryNode(
+  const std::string & node_name, const rclcpp::NodeOptions & options)
+: Node(node_name, options)
+{
+  auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  pitwall::Init(this);
 
-    // QoS init - Use RELIABLE QoS to match frenet_frame_node
-    auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-    pitwall::Init(this);
+  this->declare_parameter("local_trajectory/loop_rate_hz", 40.0);
+  this->declare_parameter("local_trajectory/num_local_waypoints", 80);
+  this->declare_parameter("local_trajectory/avoidance_timeout_sec", 0.5);
+  this->declare_parameter("local_trajectory/require_avoidance_heartbeat", true);
+  this->declare_parameter("local_trajectory/frenet_odom_timeout_sec", 0.20);
+  this->declare_parameter("local_trajectory/frenet_odom_source_timeout_sec", 0.20);
+  this->declare_parameter("local_trajectory/future_stamp_tolerance_sec", 0.05);
+  this->declare_parameter("local_trajectory/max_avoidance_step_m", 1.0);
+  this->declare_parameter("local_trajectory/minimum_horizon_sec", 1.5);
+  this->declare_parameter("local_trajectory/minimum_braking_decel_mps2", 2.5);
+  this->declare_parameter("local_trajectory/minimum_stop_buffer_m", 1.5);
 
-    // Parameters - declare and get values
-    this->declare_parameter("local_trajectory/loop_rate_hz", 40.0);
-    this->declare_parameter("local_trajectory/num_local_waypoints", 80);
-    this->declare_parameter("local_trajectory/avoidance_timeout_sec", 0.5);
-    this->declare_parameter("local_trajectory/frenet_odom_timeout_sec", 0.5);
+  loop_rate_hz_ = this->get_parameter("local_trajectory/loop_rate_hz").as_double();
+  num_local_waypoints_ =
+    this->get_parameter("local_trajectory/num_local_waypoints").as_int();
+  avoidance_timeout_sec_ =
+    this->get_parameter("local_trajectory/avoidance_timeout_sec").as_double();
+  require_avoidance_heartbeat_ =
+    this->get_parameter("local_trajectory/require_avoidance_heartbeat").as_bool();
+  frenet_odom_timeout_sec_ =
+    this->get_parameter("local_trajectory/frenet_odom_timeout_sec").as_double();
+  frenet_odom_source_timeout_sec_ =
+    this->get_parameter("local_trajectory/frenet_odom_source_timeout_sec").as_double();
+  future_stamp_tolerance_sec_ =
+    this->get_parameter("local_trajectory/future_stamp_tolerance_sec").as_double();
+  max_avoidance_step_m_ =
+    this->get_parameter("local_trajectory/max_avoidance_step_m").as_double();
+  minimum_horizon_sec_ =
+    this->get_parameter("local_trajectory/minimum_horizon_sec").as_double();
+  minimum_braking_decel_mps2_ =
+    this->get_parameter("local_trajectory/minimum_braking_decel_mps2").as_double();
+  minimum_stop_buffer_m_ =
+    this->get_parameter("local_trajectory/minimum_stop_buffer_m").as_double();
 
-    loop_rate_hz_ = this->get_parameter("local_trajectory/loop_rate_hz").as_double();
-    num_local_waypoints_ = this->get_parameter("local_trajectory/num_local_waypoints").as_int();
-    avoidance_timeout_sec_ = this->get_parameter("local_trajectory/avoidance_timeout_sec").as_double();
-    frenet_odom_timeout_sec_ =
-        this->get_parameter("local_trajectory/frenet_odom_timeout_sec").as_double();
+  const std::array<double, 8> safety_values = {
+    loop_rate_hz_, avoidance_timeout_sec_, frenet_odom_timeout_sec_,
+    frenet_odom_source_timeout_sec_, future_stamp_tolerance_sec_,
+    max_avoidance_step_m_, minimum_horizon_sec_, minimum_braking_decel_mps2_};
+  if (!std::all_of(
+      safety_values.begin(), safety_values.end(),
+      [](double value) {return std::isfinite(value);}) ||
+    !std::isfinite(minimum_stop_buffer_m_) ||
+    loop_rate_hz_ < 1.0 || loop_rate_hz_ > 100.0 ||
+    num_local_waypoints_ < 2 || num_local_waypoints_ > 10000 ||
+    avoidance_timeout_sec_ < 0.01 || avoidance_timeout_sec_ > 1.0 ||
+    frenet_odom_timeout_sec_ < 0.01 || frenet_odom_timeout_sec_ > 1.0 ||
+    frenet_odom_source_timeout_sec_ < 0.01 ||
+    frenet_odom_source_timeout_sec_ > 1.0 ||
+    future_stamp_tolerance_sec_ < 0.0 || future_stamp_tolerance_sec_ > 0.5 ||
+    max_avoidance_step_m_ < 0.05 || max_avoidance_step_m_ > 5.0 ||
+    minimum_horizon_sec_ <= 0.0 || minimum_horizon_sec_ > 10.0 ||
+    minimum_braking_decel_mps2_ <= 0.0 ||
+    minimum_braking_decel_mps2_ > 20.0 ||
+    minimum_stop_buffer_m_ < 0.0 || minimum_stop_buffer_m_ > 20.0)
+  {
+    throw std::runtime_error(
+            "Invalid/non-finite local trajectory safety parameter");
+  }
 
-    RCLCPP_INFO(this->get_logger(), "loop_rate_hz: %f", loop_rate_hz_);
-    RCLCPP_INFO(this->get_logger(), "num_local_waypoints: %d", num_local_waypoints_);
-    
-    // Subscriber init
-    s_global_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
-        "/global_waypoints", qos_profile,
-        std::bind(&LocalTrajectoryNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
-    
-    s_frenet_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/car_state/frenet/odom", qos_profile,
-        std::bind(&LocalTrajectoryNode::CallbackFrenetOdom, this, std::placeholders::_1));
+  s_global_waypoints_ =
+    this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
+    "/global_waypoints", qos_profile,
+    std::bind(&LocalTrajectoryNode::CallbackGlobalWaypoints, this, std::placeholders::_1));
+  s_frenet_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
+    "/car_state/frenet/odom", qos_profile,
+    std::bind(&LocalTrajectoryNode::CallbackFrenetOdom, this, std::placeholders::_1));
+  s_avoidance_waypoints_ =
+    this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
+    "/planner/avoidance/otwpnts", qos_profile,
+    std::bind(
+      &LocalTrajectoryNode::CallbackAvoidanceWaypoints, this,
+      std::placeholders::_1));
 
-    // spliner_node 회피 궤적 (없거나 비어 있으면 raceline 추종)
-    s_avoidance_waypoints_ = this->create_subscription<f1tenth_planning_msgs::msg::WpntArray>(
-        "/planner/avoidance/otwpnts", qos_profile,
-        std::bind(&LocalTrajectoryNode::CallbackAvoidanceWaypoints, this, std::placeholders::_1));
+  p_local_waypoints_ =
+    this->create_publisher<f1tenth_planning_msgs::msg::WpntArray>(
+    "/local_waypoints", qos_profile);
+  t_publish_ = this->create_wall_timer(
+    std::chrono::duration<double>(1.0 / loop_rate_hz_),
+    [this]() {this->Run();});
 
-
-    // Publisher init
-    p_local_waypoints_ = this->create_publisher<f1tenth_planning_msgs::msg::WpntArray>(
-        "/local_waypoints", qos_profile);
-    
-    // Timer init
-    t_publish_ = this->create_wall_timer(
-        std::chrono::duration<double>(1.0 / loop_rate_hz_),
-        [this]() { this->Run(); });
-        
-    RCLCPP_INFO(this->get_logger(), "LocalTrajectoryNode initialized successfully");
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Local trajectory: %.1f Hz, base=%d points, Frenet receive/source timeout=%.3f/%.3fs",
+    loop_rate_hz_, num_local_waypoints_, frenet_odom_timeout_sec_,
+    frenet_odom_source_timeout_sec_);
 }
 
-LocalTrajectoryNode::~LocalTrajectoryNode() {}
+LocalTrajectoryNode::~LocalTrajectoryNode() = default;
 
-void LocalTrajectoryNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
+void LocalTrajectoryNode::CallbackGlobalWaypoints(
+  const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg)
+{
+  double track_length = 0.0;
+  if (!ComputeTrackLength(msg->wpnts, track_length)) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting invalid/non-monotonic global waypoints");
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_global_waypoints_);
+  global_waypoints_ = msg->wpnts;
+  has_global_waypoints_ = true;
+  RCLCPP_INFO_ONCE(
+    this->get_logger(), "Received %zu global waypoints, L=%.3fm",
+    global_waypoints_.size(), track_length);
+}
+
+void LocalTrajectoryNode::CallbackFrenetOdom(
+  const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  if (IsZeroStamp(msg->header.stamp) ||
+    !std::isfinite(msg->pose.pose.position.x) ||
+    !std::isfinite(msg->pose.pose.position.y) ||
+    !std::isfinite(msg->twist.twist.linear.x) ||
+    !std::isfinite(msg->twist.twist.linear.y))
+  {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting Frenet odom with zero stamp or non-finite state");
+    return;
+  }
+
+  const rclcpp::Time source_stamp(msg->header.stamp, get_clock()->get_clock_type());
+  const double source_age = (get_clock()->now() - source_stamp).seconds();
+  if (!std::isfinite(source_age) ||
+    source_age > frenet_odom_source_timeout_sec_ ||
+    source_age < -future_stamp_tolerance_sec_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting Frenet odom with source age %.3fs", source_age);
+    return;
+  }
+
+  const int64_t source_stamp_ns = source_stamp.nanoseconds();
+  std::lock_guard<std::mutex> lock(mutex_frenet_odom_);
+  if (last_frenet_source_stamp_ns_ != 0 &&
+    source_stamp_ns <= last_frenet_source_stamp_ns_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting duplicate/out-of-order Frenet timestamp (%ld <= %ld)",
+      static_cast<long>(source_stamp_ns),
+      static_cast<long>(last_frenet_source_stamp_ns_));
+    return;
+  }
+  current_frenet_odom_ = *msg;
+  frenet_odom_arrival_time_ = std::chrono::steady_clock::now();
+  last_frenet_source_stamp_ns_ = source_stamp_ns;
+  has_frenet_odom_ = true;
+}
+
+void LocalTrajectoryNode::CallbackAvoidanceWaypoints(
+  const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg)
+{
+  if (IsZeroStamp(msg->header.stamp)) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting avoidance path with zero source timestamp");
+    return;
+  }
+  const rclcpp::Time source_stamp(msg->header.stamp, get_clock()->get_clock_type());
+  const double source_age = (get_clock()->now() - source_stamp).seconds();
+  if (!std::isfinite(source_age) || source_age > avoidance_timeout_sec_ ||
+    source_age < -future_stamp_tolerance_sec_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting avoidance path with source age %.3fs", source_age);
+    return;
+  }
+
+  const int64_t source_stamp_ns = source_stamp.nanoseconds();
+  std::lock_guard<std::mutex> lock(mutex_avoidance_);
+  if (last_avoidance_source_stamp_ns_ != 0 &&
+    source_stamp_ns <= last_avoidance_source_stamp_ns_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Rejecting duplicate/out-of-order avoidance timestamp");
+    return;
+  }
+  avoidance_waypoints_ = msg->wpnts;
+  avoidance_arrival_time_ = std::chrono::steady_clock::now();
+  avoidance_source_stamp_ns_ = source_stamp_ns;
+  last_avoidance_source_stamp_ns_ = source_stamp_ns;
+  has_avoidance_message_ = true;
+}
+
+int LocalTrajectoryNode::FindClosestWaypointIndex(
+  double s_coordinate,
+  const std::vector<f1tenth_planning_msgs::msg::Wpnt> & global_waypoints,
+  double track_length)
+{
+  if (global_waypoints.empty() || !(track_length > 0.0)) {
+    return -1;
+  }
+  const double wrapped_s = PositiveModulo(s_coordinate, track_length);
+  if (!std::isfinite(wrapped_s)) {
+    return -1;
+  }
+
+  double best_distance = std::numeric_limits<double>::infinity();
+  int best_index = -1;
+  for (std::size_t i = 0; i < global_waypoints.size(); ++i) {
+    double delta = std::abs(
+      PositiveModulo(global_waypoints[i].s_m - wrapped_s, track_length));
+    delta = std::min(delta, track_length - delta);
+    if (delta < best_distance) {
+      best_distance = delta;
+      best_index = static_cast<int>(i);
+    }
+  }
+  if (best_index >= 0) {
+    last_closest_index_ = best_index;
+  }
+  return best_index;
+}
+
+void LocalTrajectoryNode::Run()
+{
+  std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_copy;
+  {
     std::lock_guard<std::mutex> lock(mutex_global_waypoints_);
-    global_waypoints_ = msg->wpnts;
-    has_global_waypoints_ = true;
-    
-    RCLCPP_INFO_ONCE(this->get_logger(), "Received global waypoints: %zu waypoints", global_waypoints_.size());
-}
-
-void LocalTrajectoryNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
-    std::lock_guard<std::mutex> lock(mutex_frenet_odom_);
-    current_frenet_odom_ = *msg;
-    has_frenet_odom_ = true;
-    frenet_odom_stamp_ = this->now();
-
-    RCLCPP_DEBUG(this->get_logger(), "Received Frenet odom: s=%.3f, d=%.3f",
-                msg->pose.pose.position.x, msg->pose.pose.position.y);
-}
-
-void LocalTrajectoryNode::CallbackAvoidanceWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg) {
-    std::lock_guard<std::mutex> lock(mutex_avoidance_);
-    avoidance_waypoints_ = msg->wpnts;
-    avoidance_stamp_ = msg->header.stamp;
-}
-
-int LocalTrajectoryNode::FindClosestWaypointIndex(double s_coordinate, 
-                                                const std::vector<f1tenth_planning_msgs::msg::Wpnt>& global_waypoints) {
-    if (global_waypoints.empty()) {
-        return -1;
-    }
-    
-    // 검색 범위 최적화 (frenet_converter와 유사한 로직)
-    int search_range = 20;  // ±20개 waypoint 검색
-    int trajectory_size = static_cast<int>(global_waypoints.size());
-    
-    // 트랙 끝부분에서는 wrap-around 검색 수행
-    bool check_wrap_around = (last_closest_index_ > trajectory_size * 0.8) || 
-                            (last_closest_index_ < trajectory_size * 0.2);
-    
-    double min_s_diff = std::numeric_limits<double>::max();
-    int closest_index = last_closest_index_;
-    
-    if (check_wrap_around) {
-        // 전체 검색 (트랙 경계 근처에서만)
-        for (int i = 0; i < trajectory_size; ++i) {
-            double s_diff = std::abs(global_waypoints[i].s_m - s_coordinate);
-            if (s_diff < min_s_diff) {
-                min_s_diff = s_diff;
-                closest_index = i;
-            }
-        }
-        RCLCPP_DEBUG(this->get_logger(), "Wrap-around search used, found closest: %d", closest_index);
-    } else {
-        // 지역 검색 (대부분의 경우)
-        int start_idx = std::max(0, last_closest_index_ - search_range);
-        int end_idx = std::min(trajectory_size - 1, last_closest_index_ + search_range);
-        
-        for (int i = start_idx; i <= end_idx; ++i) {
-            double s_diff = std::abs(global_waypoints[i].s_m - s_coordinate);
-            if (s_diff < min_s_diff) {
-                min_s_diff = s_diff;
-                closest_index = i;
-            }
-        }
-        RCLCPP_DEBUG(this->get_logger(), 
-            "Local search range: [%d, %d], Found closest: %d", 
-            start_idx, end_idx, closest_index);
-    }
-    
-    // 지역 검색 결과가 너무 멀면(순간이동/리스폰으로 s가 점프) 전체 재탐색
-    if (!check_wrap_around && min_s_diff > 3.0) {
-        for (int i = 0; i < trajectory_size; ++i) {
-            double s_diff = std::abs(global_waypoints[i].s_m - s_coordinate);
-            if (s_diff < min_s_diff) {
-                min_s_diff = s_diff;
-                closest_index = i;
-            }
-        }
-        RCLCPP_WARN(this->get_logger(),
-            "s jump detected, global re-search -> closest index %d", closest_index);
-    }
-
-    // 다음 검색을 위해 저장
-    last_closest_index_ = closest_index;
-
-    return closest_index;
-}
-
-void LocalTrajectoryNode::Run() {
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                        "RUN: has_global=%s, has_frenet=%s", 
-                        has_global_waypoints_ ? "true" : "false",
-                        has_frenet_odom_ ? "true" : "false");
-
-    // Check if we have all required data
     if (!has_global_waypoints_) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000, 
-                            "Waiting for global waypoints...");
-        return;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *get_clock(), 1000, "Waiting for global waypoints");
+      return;
     }
-    
+    global_waypoints_copy = global_waypoints_;
+  }
+
+  nav_msgs::msg::Odometry frenet_odom_copy;
+  std::chrono::steady_clock::time_point arrival_time;
+  {
+    std::lock_guard<std::mutex> lock(mutex_frenet_odom_);
     if (!has_frenet_odom_) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000, 
-                            "Waiting for Frenet odometry...");
-        return;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *get_clock(), 1000, "Waiting for Frenet odometry");
+      return;
     }
+    frenet_odom_copy = current_frenet_odom_;
+    arrival_time = frenet_odom_arrival_time_;
+  }
 
-    // 실행 확인 로그
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                         "Publishing local waypoints...");
-    
-    // Get current data with thread safety
-    std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_copy;
-    nav_msgs::msg::Odometry frenet_odom_copy;
-    rclcpp::Time frenet_odom_stamp(0, 0, RCL_ROS_TIME);
+  const double receive_age = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - arrival_time).count();
+  const rclcpp::Time source_stamp(
+    frenet_odom_copy.header.stamp, get_clock()->get_clock_type());
+  const double source_age = (get_clock()->now() - source_stamp).seconds();
+  if (!std::isfinite(receive_age) || receive_age > frenet_odom_timeout_sec_ ||
+    !std::isfinite(source_age) || source_age > frenet_odom_source_timeout_sec_ ||
+    source_age < -future_stamp_tolerance_sec_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Frenet stale: receive age=%.3fs, source age=%.3fs; local publish stopped",
+      receive_age, source_age);
+    return;
+  }
 
-    {
-        std::lock_guard<std::mutex> lock1(mutex_global_waypoints_);
-        global_waypoints_copy = global_waypoints_;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock2(mutex_frenet_odom_);
-        frenet_odom_copy = current_frenet_odom_;
-        frenet_odom_stamp = frenet_odom_stamp_;
-    }
-
-    // frenet odom이 끊기면 로컬 윈도우를 발행하지 않는다. 계속 발행하면
-    // 마지막으로 알던 s 기준 경로가 40Hz로 '신선하게' 나가서, 구독자
-    // (control / recovery)가 위치추정이 죽은 걸 알 방법이 없다.
-    if ((this->now() - frenet_odom_stamp).seconds() > frenet_odom_timeout_sec_) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
-            "Frenet odom stale (>%.2fs) — 로컬 경로 발행 중단",
-            frenet_odom_timeout_sec_);
-        return;
-    }
-
-    // Process with copied data (no more locks needed)
-    PublishLocalWaypoints(global_waypoints_copy, frenet_odom_copy);
+  PublishLocalWaypoints(global_waypoints_copy, frenet_odom_copy);
 }
 
-void LocalTrajectoryNode::PublishLocalWaypoints(const std::vector<f1tenth_planning_msgs::msg::Wpnt>& global_waypoints_copy,
-                                              const nav_msgs::msg::Odometry& frenet_odom_copy) {
-    if (global_waypoints_copy.empty()) {
+void LocalTrajectoryNode::PublishLocalWaypoints(
+  const std::vector<f1tenth_planning_msgs::msg::Wpnt> & global_waypoints_copy,
+  const nav_msgs::msg::Odometry & frenet_odom_copy)
+{
+  double track_length = 0.0;
+  if (!ComputeTrackLength(global_waypoints_copy, track_length)) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Global path became invalid; local publish stopped");
+    return;
+  }
+
+  const double current_s = frenet_odom_copy.pose.pose.position.x;
+  const double current_d = frenet_odom_copy.pose.pose.position.y;
+  const double coordinate_s_dot = frenet_odom_copy.twist.twist.linear.x;
+  const double coordinate_d_dot = frenet_odom_copy.twist.twist.linear.y;
+  if (!std::isfinite(current_s) || !std::isfinite(current_d) ||
+    !std::isfinite(coordinate_s_dot) || !std::isfinite(coordinate_d_dot))
+  {
+    return;
+  }
+  const int start_idx = FindClosestWaypointIndex(
+    current_s, global_waypoints_copy, track_length);
+  if (start_idx < 0) {
+    return;
+  }
+  const double jacobian =
+    1.0 - global_waypoints_copy[start_idx].kappa_radpm * current_d;
+  if (!std::isfinite(jacobian) || jacobian <= 0.20) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Unsafe Frenet Jacobian %.3f; local publish stopped", jacobian);
+    return;
+  }
+  // Frenet twist.x is ds/dt. Convert it back to physical tangent velocity
+  // before calculating a braking horizon.
+  const double current_speed = std::hypot(
+    jacobian * coordinate_s_dot, coordinate_d_dot);
+
+  const double braking_distance =
+    current_speed * current_speed / (2.0 * minimum_braking_decel_mps2_) +
+    minimum_stop_buffer_m_;
+  const double time_horizon_distance = current_speed * minimum_horizon_sec_;
+  const double required_horizon_distance =
+    std::max(braking_distance, time_horizon_distance);
+
+  f1tenth_planning_msgs::msg::WpntArray local_waypoints;
+  // Propagate localization source time rather than making stale pose-derived
+  // geometry look new at every local-planner timer tick.
+  local_waypoints.header.stamp = frenet_odom_copy.header.stamp;
+  local_waypoints.header.frame_id = "map";
+
+  const int trajectory_size = static_cast<int>(global_waypoints_copy.size());
+  const int base_count = std::min(num_local_waypoints_, trajectory_size);
+  local_waypoints.wpnts.reserve(trajectory_size);
+  double covered_distance = 0.0;
+  for (int offset = 0; offset < trajectory_size; ++offset) {
+    const int index = (start_idx + offset) % trajectory_size;
+    auto waypoint = global_waypoints_copy[index];
+    waypoint.id = static_cast<int32_t>(local_waypoints.wpnts.size());
+    if (!local_waypoints.wpnts.empty()) {
+      const double ds = PositiveModulo(
+        waypoint.s_m - local_waypoints.wpnts.back().s_m, track_length);
+      if (!(ds > kEpsilon) || ds > track_length * 0.5) {
+        RCLCPP_ERROR_THROTTLE(
+          this->get_logger(), *get_clock(), 1000,
+          "Invalid global waypoint progress %.3fm; local publish stopped", ds);
         return;
+      }
+      covered_distance += ds;
     }
-    
-    // Get current s coordinate from Frenet odometry
-    double current_s = frenet_odom_copy.pose.pose.position.x;
-    
-    // Find closest waypoint index based on s coordinate
-    int start_idx = FindClosestWaypointIndex(current_s, global_waypoints_copy);
-    if (start_idx < 0) {
-        RCLCPP_WARN(this->get_logger(), "Could not find closest waypoint");
-        return;
-    }
-    
-    // Create local waypoints message
-    f1tenth_planning_msgs::msg::WpntArray local_waypoints;
-    local_waypoints.header.stamp = this->now();
-    local_waypoints.header.frame_id = "map";
-    
-    int trajectory_size = static_cast<int>(global_waypoints_copy.size());
-    
-    // Pre-allocate vector for better performance
-    local_waypoints.wpnts.reserve(num_local_waypoints_);
-    
-    // Extract waypoints (with wrap-around for circular tracks)
-    for (int i = 0; i < num_local_waypoints_; ++i) {
-        int wp_idx = (start_idx + i) % trajectory_size;
-        const auto& source_waypoint = global_waypoints_copy[wp_idx];
-
-        // Create new waypoint with sequential ID
-        f1tenth_planning_msgs::msg::Wpnt waypoint = source_waypoint;
-        waypoint.id = static_cast<int32_t>(i);  // Sequential ID starting from 0
-
-        local_waypoints.wpnts.push_back(waypoint);
-    }
-
-    // 회피 궤적이 신선하면 겹치는 s 구간을 회피 궤적으로 치환 (splice)
-    std::vector<f1tenth_planning_msgs::msg::Wpnt> avoidance_copy;
+    local_waypoints.wpnts.push_back(waypoint);
+    if (static_cast<int>(local_waypoints.wpnts.size()) >= base_count &&
+      covered_distance >= required_horizon_distance)
     {
-        std::lock_guard<std::mutex> lock(mutex_avoidance_);
-        if (!avoidance_waypoints_.empty() &&
-            (this->now() - avoidance_stamp_).seconds() < avoidance_timeout_sec_) {
-            avoidance_copy = avoidance_waypoints_;
-        }
+      break;
     }
-    if (!avoidance_copy.empty()) {
-        double track_length = global_waypoints_copy.back().s_m +
-            (global_waypoints_copy.back().s_m - global_waypoints_copy[trajectory_size - 2].s_m);
-        SpliceAvoidanceWaypoints(local_waypoints.wpnts, avoidance_copy, track_length);
-    }
-    pitwall::Log("spliced_wpnts", static_cast<double>(avoidance_copy.size()));
+  }
 
-    // Publish local waypoints
-    p_local_waypoints_->publish(local_waypoints);
-    
-    RCLCPP_DEBUG(this->get_logger(), 
-        "Published %d local waypoints starting from index %d (s=%.2f)", 
-        num_local_waypoints_, start_idx, current_s);
+  if (covered_distance + kEpsilon < required_horizon_distance) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Closed track cannot provide required %.2fm stopping horizon (available %.2fm); "
+      "local publish stopped",
+      required_horizon_distance, covered_distance);
+    return;
+  }
+
+  std::vector<f1tenth_planning_msgs::msg::Wpnt> avoidance_copy;
+  bool avoidance_is_fresh = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_avoidance_);
+    if (has_avoidance_message_) {
+      const double receive_age = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - avoidance_arrival_time_).count();
+      const rclcpp::Time source_stamp(
+        avoidance_source_stamp_ns_, get_clock()->get_clock_type());
+      const double source_age = (get_clock()->now() - source_stamp).seconds();
+      avoidance_is_fresh =
+        std::isfinite(receive_age) && receive_age <= avoidance_timeout_sec_ &&
+        std::isfinite(source_age) && source_age <= avoidance_timeout_sec_ &&
+        source_age >= -future_stamp_tolerance_sec_;
+      if (avoidance_is_fresh) {
+        avoidance_copy = avoidance_waypoints_;
+      }
+    }
+  }
+
+  if (require_avoidance_heartbeat_ && !avoidance_is_fresh) {
+    // Spliner가 죽으면 회피 토픽이 끊기지만, 예전 동작은 전속 global path를
+    // 계속 발행했다. heartbeat를 safety lease로 삼아 local publish를 멈추면
+    // control/recovery waypoint timeout이 실제 차량을 정지시킨다.
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Avoidance planner heartbeat missing/stale; local publish stopped");
+    return;
+  }
+
+  if (avoidance_is_fresh && !avoidance_copy.empty() &&
+    !SpliceAvoidanceWaypoints(
+      local_waypoints.wpnts, avoidance_copy, track_length))
+  {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "Invalid avoidance trajectory rejected; local publish stopped");
+    return;
+  }
+
+  pitwall::Log(
+    "spliced_wpnts",
+    avoidance_is_fresh ? static_cast<double>(avoidance_copy.size()) : 0.0);
+  p_local_waypoints_->publish(local_waypoints);
+
+  RCLCPP_DEBUG(
+    this->get_logger(),
+    "Published %zu local waypoints, horizon %.2fm, start index %d",
+    local_waypoints.wpnts.size(), covered_distance, start_idx);
 }
 
-void LocalTrajectoryNode::SpliceAvoidanceWaypoints(
-    std::vector<f1tenth_planning_msgs::msg::Wpnt>& local_wpnts,
-    const std::vector<f1tenth_planning_msgs::msg::Wpnt>& avoidance_wpnts,
-    double track_length) {
-    if (avoidance_wpnts.size() < 2) {
-        return;
-    }
-    // 회피 궤적의 s 구간 [av_start, av_end] (wrap 가능)
-    double av_start = avoidance_wpnts.front().s_m;
-    double av_span = Mod(avoidance_wpnts.back().s_m - av_start, track_length);
-    // 회피 궤적 점 간격 (spliner는 0.1m 균일 샘플)
-    double av_spacing = av_span / static_cast<double>(avoidance_wpnts.size() - 1);
-    if (av_spacing <= 0.0) {
-        return;
-    }
+bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
+  std::vector<f1tenth_planning_msgs::msg::Wpnt> & local_wpnts,
+  const std::vector<f1tenth_planning_msgs::msg::Wpnt> & avoidance_wpnts,
+  double track_length)
+{
+  if (local_wpnts.size() < 2U || avoidance_wpnts.size() < 2U ||
+    !(track_length > 0.0))
+  {
+    return false;
+  }
 
-    int replaced = 0;
-    for (auto& wpnt : local_wpnts) {
-        double offset = Mod(wpnt.s_m - av_start, track_length);
-        if (offset > av_span) {
-            continue;  // 회피 구간 밖 -> global raceline 유지
-        }
-        int av_idx = std::min(
-            static_cast<int>(offset / av_spacing + 0.5),
-            static_cast<int>(avoidance_wpnts.size()) - 1);
-        int32_t id_keep = wpnt.id;
-        wpnt = avoidance_wpnts[av_idx];
-        wpnt.id = id_keep;  // 로컬 윈도우 내 순차 ID 유지
-        ++replaced;
+  std::vector<double> avoidance_progress(avoidance_wpnts.size(), 0.0);
+  for (std::size_t i = 0; i < avoidance_wpnts.size(); ++i) {
+    if (!IsFiniteWaypoint(avoidance_wpnts[i])) {
+      return false;
     }
+    if (i == 0U) {
+      continue;
+    }
+    const double raw_ds =
+      avoidance_wpnts[i].s_m - avoidance_wpnts[i - 1U].s_m;
+    // Accept a normal forward step or one normal closed-track wrap. Generic
+    // modulo would incorrectly disguise a corrupt +one-lap jump as a 0.1m step.
+    const double ds = raw_ds > 0.0 ? raw_ds : raw_ds + track_length;
+    const double cartesian_step = std::hypot(
+      avoidance_wpnts[i].x_m - avoidance_wpnts[i - 1U].x_m,
+      avoidance_wpnts[i].y_m - avoidance_wpnts[i - 1U].y_m);
+    const double max_cartesian_step =
+      std::max(2.0 * max_avoidance_step_m_, 3.0 * ds + 0.2);
+    if (!(ds > kEpsilon) || ds > max_avoidance_step_m_ ||
+      !std::isfinite(cartesian_step) || cartesian_step > max_cartesian_step)
+    {
+      RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *get_clock(), 1000,
+        "Avoidance path is non-monotonic/discontinuous at %zu: ds=%.3f, dxy=%.3f",
+        i, ds, cartesian_step);
+      return false;
+    }
+    avoidance_progress[i] = avoidance_progress[i - 1U] + ds;
+  }
 
-    if (replaced > 0) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-            "Spliced %d/%zu local waypoints with avoidance trajectory",
-            replaced, local_wpnts.size());
+  std::vector<double> local_progress(local_wpnts.size(), 0.0);
+  for (std::size_t i = 1; i < local_wpnts.size(); ++i) {
+    if (!IsFiniteWaypoint(local_wpnts[i])) {
+      return false;
     }
+    const double ds = PositiveModulo(
+      local_wpnts[i].s_m - local_wpnts[i - 1U].s_m, track_length);
+    if (!(ds > kEpsilon) || ds > track_length * 0.5) {
+      return false;
+    }
+    local_progress[i] = local_progress[i - 1U] + ds;
+  }
+
+  const double avoidance_start =
+    PositiveModulo(avoidance_wpnts.front().s_m, track_length);
+  const double local_start = PositiveModulo(local_wpnts.front().s_m, track_length);
+  double query_at_local_start = local_start - avoidance_start;
+  query_at_local_start -=
+    std::round(query_at_local_start / track_length) * track_length;
+
+  const double total_avoidance_progress = avoidance_progress.back();
+  const double match_tolerance =
+    std::min(0.5 * avoidance_progress[1U], 0.10) + kEpsilon;
+  int replaced = 0;
+  for (std::size_t local_index = 0; local_index < local_wpnts.size(); ++local_index) {
+    double query = query_at_local_start + local_progress[local_index];
+    if (query < -match_tolerance ||
+      query > total_avoidance_progress + match_tolerance)
+    {
+      continue;
+    }
+    query = std::clamp(query, 0.0, total_avoidance_progress);
+
+    const auto upper = std::upper_bound(
+      avoidance_progress.begin(), avoidance_progress.end(), query);
+    std::size_t upper_index =
+      static_cast<std::size_t>(std::distance(avoidance_progress.begin(), upper));
+    if (upper_index == 0U) {
+      upper_index = 1U;
+    } else if (upper_index >= avoidance_progress.size()) {
+      upper_index = avoidance_progress.size() - 1U;
+    }
+    const std::size_t lower_index = upper_index - 1U;
+    const double span =
+      avoidance_progress[upper_index] - avoidance_progress[lower_index];
+    if (!(span > kEpsilon)) {
+      return false;
+    }
+    const double ratio = std::clamp(
+      (query - avoidance_progress[lower_index]) / span, 0.0, 1.0);
+    const auto & lower = avoidance_wpnts[lower_index];
+    const auto & upper_wpnt = avoidance_wpnts[upper_index];
+
+    auto replacement = lower;
+    const auto lerp = [ratio](double a, double b) {
+        return a + ratio * (b - a);
+      };
+    replacement.d_m = lerp(lower.d_m, upper_wpnt.d_m);
+    replacement.x_m = lerp(lower.x_m, upper_wpnt.x_m);
+    replacement.y_m = lerp(lower.y_m, upper_wpnt.y_m);
+    replacement.d_right = lerp(lower.d_right, upper_wpnt.d_right);
+    replacement.d_left = lerp(lower.d_left, upper_wpnt.d_left);
+    replacement.psi_rad = NormalizeAngle(
+      lower.psi_rad + ratio * NormalizeAngle(upper_wpnt.psi_rad - lower.psi_rad));
+    replacement.kappa_radpm =
+      lerp(lower.kappa_radpm, upper_wpnt.kappa_radpm);
+    replacement.vx_mps = lerp(lower.vx_mps, upper_wpnt.vx_mps);
+    replacement.ax_mps2 = lerp(lower.ax_mps2, upper_wpnt.ax_mps2);
+
+    // Keep the ordered local reference coordinate. Avoidance s may wrap one
+    // or several times; copying it would make /local_waypoints non-monotonic.
+    replacement.s_m = local_wpnts[local_index].s_m;
+    replacement.id = local_wpnts[local_index].id;
+    if (!IsFiniteWaypoint(replacement)) {
+      return false;
+    }
+    local_wpnts[local_index] = replacement;
+    ++replaced;
+  }
+
+  if (replaced > 0) {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *get_clock(), 2000,
+      "Spliced %d/%zu local waypoints using ordered avoidance progress %.2fm",
+      replaced, local_wpnts.size(), total_avoidance_progress);
+  }
+  return true;
 }
 
-int main(int argc, char **argv) {
-    std::string node_name = "local_trajectory_node";
-
-    // Initialize node
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<LocalTrajectoryNode>(node_name));
-    rclcpp::shutdown();
-    return 0;
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<LocalTrajectoryNode>("local_trajectory_node"));
+  rclcpp::shutdown();
+  return 0;
 }

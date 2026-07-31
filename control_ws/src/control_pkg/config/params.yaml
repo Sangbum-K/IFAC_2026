@@ -11,16 +11,36 @@ control:
     service_name: /control/set_mode
     autonomous_on_start: false
 
-    waypoint_timeout_sec: 0.5
-    odom_timeout_sec: 0.5
-    frenet_odom_timeout_sec: 0.5
+    waypoint_timeout_sec: 0.25
+    odom_timeout_sec: 0.25
+    frenet_odom_timeout_sec: 0.25
     imu_acceleration_sign: -1.0
+    # Receipt 시각만 갱신되는 stale-republish를 막기 위해 원본 header도 검사한다.
+    "source_freshness/require_header_stamp": true
+    "source_freshness/future_tolerance_sec": 0.1
+
+    # 공용 파일은 control 단독 bench 운용을 위해 false. 실차/race/sim 환경
+    # 프로파일은 planning stack과 함께 쓸 때 true로 덮어쓴다.
+    # 두 토픽은 paired lease로 검증하며 stale·불일치·알 수 없는 상태는 모두 정지.
+    "recovery/state_topic": /planner/recovery/state
+    "recovery/target_speed_topic": /planner/recovery/target_speed
+    "recovery/require_supervisor": false
+    "recovery/command_timeout_sec": 0.25
+    "recovery/pair_max_skew_sec": 0.10
+    # 전용 후진 조향 경로와 후방 coverage가 없으므로 STOP-only가 기본.
+    "recovery/allow_reverse": false
+    "recovery/max_reverse_speed_mps": 0.30
+    "recovery/max_forward_override_mps": 1.0
 
     # ETH Forza MAP/L1 controller parameters.
     "map/t_clip_min": 0.5
     "map/t_clip_max": 8.0
     "map/m_l1": 0.47
     "map/q_l1": -0.2
+    # 0.25 유지. 2026-07-31 폐루프 스윕에서 0.35~0.6은 직선 투영이 코너
+    # 건너편 웨이포인트 속도를 잡아 전부 악화 — 이 트랙 크기에선 0.25가 최적.
+    # 제동 여유는 여기가 아니라 raceline 프로파일 mu 마진(build_map.py
+    # MU_PROFILE 0.65 < 물리 0.75)으로 확보한다.
     "map/speed_lookahead": 0.25
     "map/lat_err_coeff": 0.0
     "map/acc_scaler_for_steer": 1.0
@@ -32,6 +52,8 @@ control:
     "map/max_lateral_error_m": 0.5
     "map/max_curvature_reference": 0.8
     "map/velocity_steer_gain_max": 1.0
+    # local window 앞부분만 nearest 후보로 사용해 근접 평행/S자 구간 branch jump 방지.
+    "map/nearest_search_horizon_m": 3.0
 
     # Default to the temporary low-speed real-car LUT. Environment profiles
     # override this value where needed (for example, sim.yaml uses the SIM LUT).
@@ -44,4 +66,9 @@ control:
     # stalls against a mechanical stop. See ~/TUNING_STATUS.md.
     "vehicle/max_steering_angle_rad": 0.36
     "vehicle/max_steering_rate_radps": 2.0
+    "vehicle/max_accel_mps2": 5.5
+    # 2026-07-31: 7.0 -> 4.0 (run_0731_223152 실측 제동 ~4.2 m/s²). 7.0이면
+    # 속도 명령이 차가 못 따라가는 기울기로 떨어져 코너 진입 과속이 됨.
+    # build_map.py A_DEC_MAX와 동일 유지할 것.
+    "vehicle/max_decel_mps2": 4.0
     "vehicle/speed_scale": 1.0

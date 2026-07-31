@@ -186,8 +186,10 @@ ros2 launch integration_pkg stack.launch.py
 ```
 - f1tenth_gym_ros 시뮬레이터 (차 2대: 내 차 + 상대 차)
 - 실제 perception 파이프라인 (LiDAR → 장애물 탐지 → frenet 변환)
-- planning 스택: 레이스라인(RACE) 추종 + **spliner 회피** + **SP 레인체인지**
-  (`local_trajectory_node` + `spliner_node` + `recovery_supervisor_node`)
+- planning 스택: 레이스라인(RACE) 추종 + **spliner 회피** +
+  검증된 파일을 명시한 경우의 **SP 레인체인지**
+  (`local_trajectory_node` + `spliner_node` + `recovery_supervisor_node`).
+  recovery는 기본 기동되며 control이 state/target paired lease로 소비한다.
 - control_ws의 C++ 컨트롤러 (ETH MAP)
 - RViz (화면)
 - integration 헬스 모니터

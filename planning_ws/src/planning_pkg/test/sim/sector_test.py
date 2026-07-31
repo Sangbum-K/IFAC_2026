@@ -10,8 +10,11 @@
   E. 상대 스폰 -> 섹터에서 추월 (ego가 앞으로, 관통 없음)
 """
 import math
+import glob
+import os
 import sys
 import time
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -23,8 +26,13 @@ from visualization_msgs.msg import MarkerArray
 import numpy as np
 
 MAP = sys.argv[1] if len(sys.argv) > 1 else 'Spielberg_map'
-CSV = ('/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory/'
-       f'{MAP}_iqp_max15.00ms_margin0.15m_mu0.85.csv')
+GT = Path(__file__).resolve().parents[2] / 'config' / 'global_trajectory'
+matches = sorted(glob.glob(str(GT / f'{MAP}_iqp_*.csv')))
+if not matches:
+    print(f'FAIL: raceline CSV 없음 ({GT}/{MAP}_iqp_*.csv)', flush=True)
+    sys.exit(2)
+CSV = matches[0]
+print(f'[cfg] CSV={os.path.basename(CSV)}', flush=True)
 
 D = np.genfromtxt(CSV, delimiter=';', comments='#')
 S, X, Y, PSI = D[:, 0], D[:, 1], D[:, 2], D[:, 5]

@@ -3,6 +3,9 @@ control:
     odom_topic: /ego_racecar/odom
     ackermann_topic: /drive
     autonomous_on_start: true
+    "recovery/require_supervisor": false
     "map/steering_lut_file": "SIM_linear_lookup_table.csv"
     "vehicle/max_speed_mps": 4.0
-    "vehicle/speed_scale": 0.5
+    # planning_pkg의 tracker/speed_scale 및 spliner/cmd_speed_scale과 동일.
+    # tracker:=false로 C++ control을 써도 동적 trailing 속도 모델이 달라지지 않는다.
+    "vehicle/speed_scale": 0.30

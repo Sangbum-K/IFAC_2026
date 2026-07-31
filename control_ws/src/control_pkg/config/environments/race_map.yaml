@@ -3,6 +3,7 @@ control:
     odom_topic: /pf/pose/odom
     ackermann_topic: /ackermann_cmd
     autonomous_on_start: false
+    "recovery/require_supervisor": false
     "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
     "vehicle/max_speed_mps": 1.0
     "vehicle/speed_scale": 1.0

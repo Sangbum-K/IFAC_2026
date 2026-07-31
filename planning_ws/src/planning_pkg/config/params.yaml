@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # raceline 추종 파이프라인 (planner_stack.launch.py로 실행되는 4개 노드)
 # CSV는 share/planning_pkg/config/{global_trajectory,centerline}/ 에서 로드.
-# raceline 재생성: scripts/global_traj_sim/step4_main.py (오프라인 도구)
+# raceline 재생성: scripts/global_traj_sim/build_map.py <맵이름> (오프라인 도구)
 # ---------------------------------------------------------------------------
 global_trajectory_node:
   ros__parameters:
@@ -12,25 +12,51 @@ global_trajectory_node:
     # ⚠️ 실제 주행 속도는 environments/<env>.yaml의 velocity_scale이 결정한다 —
     # control의 vehicle/max_speed_mps와 짝을 맞출 것 (real_car.yaml 주석 참조).
     global_trajectory/trajectory_csv_file: my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv
-    # SP 추월 라인 -> /global_waypoints/overtaking (H2H lane-change용, 없으면 미발행)
-    global_trajectory/overtaking_csv_file: my_track_sp_max6.00ms_margin0.08m_mu0.75.csv
+    # SP는 전 구간 경계/조향 검증을 통과한 파일만 map:= 또는 CLI로 원자적으로
+    # 연결한다. 현재 기본 SP는 R_min 한계 위반이라 안전 기본값은 비활성.
+    global_trajectory/overtaking_csv_file: ""
     global_trajectory/publish_rate_hz: 2.0
-    global_trajectory/velocity_scale: 0.6667   # 주행 중 ros2 param set으로 0.5~1.4 조정 가능
+    global_trajectory/velocity_scale: 0.6667   # 주행 중 안전 범위 0.1~1.0에서 slew 적용
+    global_trajectory/min_velocity_scale: 0.10
+    global_trajectory/max_velocity_scale: 1.0  # 1 초과는 v²κ 한계를 깨므로 CSV 재생성 필요
+    global_trajectory/velocity_scale_slew_per_sec: 0.10
+    global_trajectory/validation_mu: 0.75
+    global_trajectory/validation_wheelbase_m: 0.33
+    global_trajectory/validation_max_steer_rad: 0.36
+    global_trajectory/validation_tolerance: 0.03
+    global_trajectory/validation_ax_tolerance: 1.0
 
 frenet_frame_node:
   ros__parameters:
     frenet_frame/loop_rate_hz: 40.0
     frenet_frame/odom_mode: sim_gt          # sim_gt | sim_pf | real
+    frenet_frame/odom_receive_timeout_sec: 0.20
+    frenet_frame/odom_source_timeout_sec: 0.20
+    frenet_frame/odom_future_tolerance_sec: 0.05
+    frenet_frame/projection_search_segments: 40
+    frenet_frame/projection_reacquire_distance_m: 2.0
+    frenet_frame/projection_heading_weight_m2: 0.25
+    frenet_frame/projection_progress_weight: 0.02
+    frenet_frame/min_frenet_jacobian: 0.20
 
 local_trajectory_node:
   ros__parameters:
     local_trajectory/loop_rate_hz: 40.0
-    local_trajectory/num_local_waypoints: 80
-    local_trajectory/avoidance_timeout_sec: 0.5   # 이보다 오래된 회피 궤적은 무시
+    # 12m perception/spliner horizon 전체를 control에 전달한다.
+    local_trajectory/num_local_waypoints: 130
+    local_trajectory/avoidance_timeout_sec: 0.20
+    # Spliner 장애/종료 시 global raceline으로 fail-open하지 않고 발행을 멈춘다.
+    local_trajectory/require_avoidance_heartbeat: true
     # frenet odom이 이보다 오래되면 /local_waypoints 발행을 멈춘다. 계속
     # 발행하면 위치추정이 죽어도 구독자(control/recovery) 눈에는 경로가
     # 신선해 보여서 stale 검출이 통째로 무력화된다.
-    local_trajectory/frenet_odom_timeout_sec: 0.5
+    local_trajectory/frenet_odom_timeout_sec: 0.20
+    local_trajectory/frenet_odom_source_timeout_sec: 0.20
+    local_trajectory/future_stamp_tolerance_sec: 0.05
+    local_trajectory/max_avoidance_step_m: 1.0
+    local_trajectory/minimum_horizon_sec: 1.5
+    local_trajectory/minimum_braking_decel_mps2: 2.5
+    local_trajectory/minimum_stop_buffer_m: 1.5
 
 # 장애물 회피 스플라인 플래너 (ForzaETH/unicorn spliner C++ 포팅)
 # /perception/obstacles가 없으면 회피 발행 없음 -> raceline 추종에 영향 없음
@@ -61,26 +87,23 @@ spliner_node:
     spliner/trailing_engage_dist_m: 6.0  # trailing 감속 시작: 정지 목표점 앞 이 거리부터 [m] (was 12.0)
                                          # 6 m/s 제동거리 v^2/2a = 36/(2*2.5) = 7.2 m지만 실차 캡
                                          # 낮고 squeeze로 이미 감속. lookahead(10) 이하여야 함
-    spliner/dyn_pass_speed_ratio: 1.4    # 동적 상대 추월 중 최소 속도 = 상대 속도 x 이 배율.
+    spliner/dyn_pass_speed_ratio: 1.15   # 물리 cap 아래에서만 쓰는 soft 추월 목표
                                          # 횡이동 후 이 부스트로 단숨에 옆을 지나가야 추월이
                                          # 끝난다 (1.15에선 나란히 달리며 결정적 순간을 놓침)
     spliner/obs_traj_tresh: 0.3          # raceline에서 이 이내 장애물만 대상 [m]
-    spliner/spline_bound_mindist: 0.12   # 회피 궤적 - 트랙 경계 최소 간격 [m] (was 0.2)
-                                         # 차 반폭 0.15 초과지만 margin0.08 여유로 실벽까진 0.20 m
+    spliner/spline_bound_mindist: 0.20   # center-to-wall 최소: 차반폭 0.15+추적여유 0.05
     spliner/pre_apex_dists: [-2.5, -1.8, -0.9]   # apex 앞 스플라인 절점 [m] (was [-4,-3,-1.5])
     spliner/post_apex_dists: [1.2, 1.8, 2.5]     # apex 뒤 스플라인 절점 [m] (was [2,3,4])
     spliner/fixed_pred_time: 0.15        # 동적 장애물 등속 전파 시간 [s]
     spliner/outside_spline_scale: 1.75   # 코너 바깥 추월 시 스플라인 완만화 배율
     spliner/inside_speed_scale: 0.9      # 코너 안쪽 통과 시 속도 스케일
     spliner/side_switch_d_tresh: 0.20    # |d|가 이보다 크면 추월 사이드 변경 금지 [m] (was 0.25)
-    spliner/obs_timeout_sec: 0.5         # 이보다 오래된 장애물 메시지는 무시 (perception 두절 대비)
+    spliner/obs_timeout_sec: 0.20
     spliner/use_prediction: true         # Predictive Spliner: 예측 충돌구간이 원시 관측 대체
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속.
-    # use_trailing=false → 이 감속/정지를 하지 않는다 (사용자 요청).
-    # ⚠️ 통과 불가 장애물에도 감속 없이 접근 → 충돌 위험. 회피 가능하면 회피,
-    #    불가하면 raceline 그대로(감속 없음). 되돌리려면 true.
-    spliner/use_trailing: false
+    # 고속 안전 기본값: 해가 없으면 raceline 전속 복귀가 아니라 감속/정지.
+    spliner/use_trailing: true
     spliner/trailing_gap_m: 1.5   # (use_trailing=true일 때만) 정지 시 장애물 뒤 간격 [m]
     spliner/trailing_decel: 2.5
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.35, 실차 1.0).
@@ -91,7 +114,11 @@ spliner_node:
     # 6*A*v^2/L^2 로 속도의 제곱에 비례해 커진다. 실제로 복귀 2.5m 고정은
     # 4 m/s에서 0.65g, 6 m/s에서 1.46g를 요구했다 (mu 0.75 한계 0.75g).
     # 아래 예산으로 L = v*sqrt(6A/a_max) 를 매 사이클 계산한다.
-    spliner/blend_lat_acc_max: 3.0    # 횡 전환에 배정할 그립 [m/s^2] (0.31g)
+    spliner/blend_lat_acc_max: 5.0    # 횡 전환에 배정할 그립 [m/s^2] (0.51g)
+                                      # 3.0(0.31g)은 raceline(0.75g) 대비 과보수 —
+                                      # 6 m/s 전환 6.0 m(1s)로 반응이 늦었다. 5.0이면
+                                      # 4.6 m(0.77s). 스월브 자체 곡률 상한(1b 패스)이
+                                      # 과속 전환을 다시 눌러주므로 상향 여지가 생김
     spliner/blend_dist_max_m: 8.0     # 전환 거리 상한 [m] — 장애물을 너무 일찍
                                       # 피해 라인을 오래 벗어나지 않게
     # 회피 궤적은 raceline을 d만큼 옮긴 경로라 곡률이 kappa/(1-d*kappa)로 변한다.
@@ -101,6 +128,17 @@ spliner_node:
     spliner/path_lat_acc_max: 7.0     # 오프셋 경로 횡그립 [m/s^2] (raceline은 7.36 사용)
     spliner/path_decel_max: 6.0       # 회피 궤적 역방향 감속 한계 [m/s^2]
                                       # (raceline 프로파일 최대 요구 6.27과 정합)
+    spliner/path_accel_max: 3.0       # 회피 중 보수적 재가속 한계 [m/s²]
+    spliner/path_jerk_max: 8.0        # 현재 상태에서 도달 가능한 감속 변화율 [m/s³]
+    spliner/planning_delay_sec: 0.15  # 인지→계획→제어 지연을 충돌 ETA에 포함
+    spliner/vehicle_half_length_m: 0.275
+    spliner/vehicle_half_width_m: 0.15
+    spliner/boundary_tracking_margin_m: 0.05
+    spliner/collision_sigma: 3.0       # 위치/속도 분산의 3σ footprint 충돌검사
+    spliner/sp_mapping_max_residual_m: 0.50
+    spliner/vehicle_wheelbase_m: 0.33
+    spliner/vehicle_max_steering_rad: 0.36
+    spliner/vehicle_max_steering_rate_radps: 2.0
     # 추월 섹터: 벽 여유가 충분한 s 구간을 자동 산출해 그 안에서만 회피 시도.
     # 밖에서는 TRAILING으로 따라가다 섹터에서 공격 모드(마진 완화+속도 부스트)로 승부.
     # RViz /planner/ot_sectors/markers (초록 라인)로 섹터 확인 가능.
@@ -114,19 +152,19 @@ spliner_node:
                                          # 직선이 하나도 없다. 0.4로 완만한 구간만 섹터에 포함
     # SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋 대신
     # SP 라인으로 갈아타 통과 (라인이 상대와 겹치는 구간이면 자동 폴백)
-    spliner/sp_lane_change: true
+    # 런타임/CSV 양쪽 검증을 모두 통과한 SP를 만든 뒤에만 true.
+    spliner/sp_lane_change: false
     spliner/lc_pass_clear_m: 2.5         # 추월 완료 판정: 상대 앞머리가 ego 뒤로 이만큼
                                          # 벌어져야 raceline 복귀 (was 4.0, 소형 트랙)
     spliner/ot_sector_min_len_m: 3.0     # 이보다 짧은 구간은 섹터에서 제외 (was 8.0)
                                          # 31.5 m 랩엔 8 m 연속 직선이 없어 섹터 0개였음
     # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
                                          # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
-    spliner/ot_bound_mindist: 0.15       # 섹터 내 회피의 벽 마진 [m] = 차 반폭 0.15 (was 0.25)
-                                         # 소형 트랙은 추적오차 여유(0.1)를 뺄 수밖에 없음.
-                                         # margin0.08 CSV라 실벽까진 0.15+0.08=0.23 m 유지됨.
-                                         # recovery/boundary_stop_margin_m는 반드시 이보다 작을 것
-    spliner/ot_speed_scale: 1.1          # 섹터 내 회피 궤적 속도 부스트 (raceline vmax 캡)
-    spliner/path_check_margin: 0.15      # 경로-장애물 충돌 판정 횡 여유 [m] (커밋/SP 검증)
+    spliner/ot_bound_mindist: 0.20       # 최종 요구값은 max(이 값, 차반폭+추적여유)
+                                         # = max(0.20, 0.15+0.05) = center-to-wall 0.20m.
+                                         # recovery 요구 여유와 같거나 더 커야 한다.
+    spliner/ot_speed_scale: 1.0          # 안전 프로파일 밖의 런타임 속도 부스트 금지
+    spliner/path_check_margin: 0.20      # 차 반폭 0.15 + 최소 불확실성 여유
     # 장애물 클러스터링: 사이를 통과 못 하는 배치를 하나의 박스로 병합해
     # "바깥으로 크게 도는" 회피를 후보에 넣는다. 원시 상대와 예측
     # 충돌구간(수 m 앞)이 한 박스로 합쳐지는 역할도 겸한다.
@@ -146,31 +184,44 @@ spliner_node:
 # /planner/recovery/target_speed (Float64; DRIVING=NaN, 정지=0.0, 후진=음수).
 # 실행(최종 속도·조향, 후진 하드리밋, E-stop)은 control_node 책임.
 # STOP은 래치 — /planner/recovery/reset (Bool true)로만 해제.
-# 주: sim의 waypoint_tracker는 이 토픽을 소비하지 않고 자체 후진 복구를 씀
-#     (tracker/stuck_* 참조) — sim에서 이 노드는 판정 모니터로만 동작.
+# sim tracker와 C++ control 모두 state/target을 짧은 paired lease로 소비한다.
 recovery_supervisor_node:
   ros__parameters:
+    # control_node의 lease 기반 safety override와 연결됨. 입력 미준비/stale은 STOP.
+    # 현재 recovery 체인 전체 비활성 (launch recovery:=true opt-in 시에만 기동).
+    recovery/enabled: false
     recovery/loop_rate_hz: 20.0
     recovery/stuck_timeout_sec: 1.0            # 전진 명령인데 이 시간 무진행 -> stuck
     recovery/stuck_min_progress_m: 0.10        # stuck 판정 최소 s 진행량 [m]
     recovery/min_forward_cmd_mps: 0.2          # 이 이상이 "전진 명령"으로 간주 [m/s]
-    recovery/boundary_stop_margin_m: 0.05      # 경계 여유가 이보다 작으면 COLLISION_STOP
-                                               # 섹터 공격 모드(ot_bound_mindist 0.15)보다
-                                               # 반드시 작아야 함 (안 그럼 회피 중 오탐 정지)
-    recovery/boundary_persist_sec: 0.2         # 위반이 이 시간 지속돼야 정지 (코너 스파이크 오탐 방지)
-    recovery/rear_check_dist_m: 1.0            # 후진 전 후방 안전 확인 거리 [m] (was 1.5, 소형 트랙)
-    recovery/recovery_reverse_speed_mps: 0.5   # 제한 후진 속도 (Control이 재리밋)
+    # 차량 half-width(0.15m)에 더하는 추적/위치 여유. 즉 기본 요구
+    # center-to-wall clearance는 최소 0.20m다.
+    recovery/boundary_stop_margin_m: 0.05
+    recovery/boundary_persist_sec: 0.10        # 현재 footprint 위반은 debounce 없이 즉시 정지
+    recovery/vehicle_width_m: 0.30
+    recovery/vehicle_length_m: 0.55
+    recovery/boundary_reaction_time_sec: 0.20
+    recovery/boundary_braking_decel_mps2: 4.0
+    recovery/require_boundary_horizon: true
+    recovery/front_check_dist_m: 1.5
+    recovery/rear_check_dist_m: 1.5
+    # 후방 전용 coverage와 reverse 경로가 검증되기 전까지 STOP-only.
+    recovery/allow_reverse: false
+    recovery/rear_coverage_confirmed: false
+    recovery/recovery_reverse_speed_mps: 0.30
     recovery/recovery_max_reverse_distance_m: 0.5
     recovery/recovery_timeout_sec: 4.0
     recovery/recovery_max_attempts: 2
     recovery/align_tolerance_rad: 0.35         # 재정렬 완료 heading 오차 [rad]
     recovery/align_speed_mps: 0.5              # 재정렬/재출발 저속 [m/s]
-    recovery/odom_timeout_sec: 0.5             # odom 두절 -> STOP
-    recovery/perception_timeout_sec: 0.5       # perception "두절" -> STOP.
-                                               # 한 번도 못 받은 상태(미기동)는 두절이 아니다 —
-                                               # 그걸 STOP으로 보면 부팅 즉시 래치된다.
-                                               # 대신 그동안은 후진(IsRearSafe)이 거부된다.
-    recovery/local_wpnts_timeout_sec: 0.5      # /local_waypoints 두절 -> STOP
+    recovery/odom_timeout_sec: 0.20            # receipt와 원본 header 둘 다 검사
+    recovery/perception_timeout_sec: 0.25
+    recovery/local_wpnts_timeout_sec: 0.20
+    recovery/source_stamp_future_tolerance_sec: 0.10
+    recovery/require_source_stamps: true
+    recovery/readiness_dwell_sec: 0.20
+    recovery/stopped_speed_threshold_mps: 0.05
+    recovery/stopped_dwell_sec: 0.20
     recovery/pose_odom_topic: /pf/pose/odom    # yaw 소스 (sim launch가 /ego_racecar/odom로 override)
 
 # --- 시뮬레이션 전용 (sim_race.launch.py) ---
@@ -187,8 +238,29 @@ waypoint_tracker_node:
                                          # 일치시켜 sim이 실차보다 낙관적이지 않게 함
     tracker/speed_scale: 0.30            # my_track: 연속 R~1.4m 헤어핀+S-bend라 저속이어야
                                          # pure-pursuit 조향 반전이 오버슛 없이 따라감
-    tracker/waypoint_timeout_sec: 0.5    # 로컬 경로 두절 시 정지
-    # 벽 충돌 복구 (gym은 충돌 시 차를 정지시킴 -> 후진으로 탈출)
+    tracker/waypoint_timeout_sec: 0.20   # receipt와 원본 header stale 시 정지
+    tracker/odom_timeout_sec: 0.20
+    tracker/require_source_stamps: true
+    tracker/source_future_tolerance_sec: 0.05
+    tracker/safety_watchdog_hz: 40.0
+    # 구형 자체 후진은 센서 coverage와 supervisor 계약이 없어 기본 비활성.
+    tracker/recovery_state_topic: /planner/recovery/state
+    tracker/recovery_target_speed_topic: /planner/recovery/target_speed
+    tracker/estop_topic: /safety/emergency_stop
+    tracker/recovery_required: false
+    tracker/recovery_command_timeout_sec: 0.25
+    tracker/recovery_pair_max_skew_sec: 0.10
+    tracker/recovery_allow_reverse: false
+    tracker/recovery_max_reverse_speed_mps: 0.30
+    tracker/recovery_max_forward_override_mps: 1.0
+    tracker/internal_stuck_recovery_enabled: false
+    # 정상 TRACK/ALIGN 명령의 액추에이터 변화율 제한. 안전정지는 즉시 0.
+    tracker/max_steering_rate_radps: 2.0
+    tracker/max_accel_mps2: 5.5
+    tracker/max_decel_mps2: 7.0
+    tracker/min_command_dt_sec: 0.001
+    tracker/max_command_dt_sec: 0.10
+    # 아래 값은 internal recovery를 명시 opt-in한 개발 시뮬에서만 사용.
     tracker/stuck_detect_sec: 0.6        # 전진 명령인데 이 시간 동안 정지면 스턱 판정
     tracker/reverse_speed_mps: 1.2       # 후진 속도
     tracker/reverse_max_sec: 3.0         # 최대 후진 시간
@@ -240,6 +312,15 @@ opponent_predictor_node:
                                      # (was 5.0, 소형 트랙 저속이라 축소)
     predictor/publish_rate_hz: 10.0
     predictor/vs_reset: 0.1          # 최근 실측 |vs| 평균 미만이면 정지 상대로 보고 예측 중단 [m/s]
+    predictor/obstacle_topic: /perception/obstacles
+    predictor/odom_timeout_sec: 0.20
+    predictor/obstacle_timeout_sec: 0.30
+    predictor/require_source_stamp: true
+    predictor/source_future_tolerance_sec: 0.05
+    predictor/uncertainty_sigma: 3.0
+    predictor/min_pass_relative_speed_mps: 0.5
+    predictor/max_prediction_span_ratio: 0.45
+    predictor/max_fit_ms: 30.0
 
 planner_visualizer_node:
   ros__parameters:

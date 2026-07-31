@@ -5,22 +5,23 @@
 //  - Control(control_node): 최종 속도·조향, 후진 하드 리밋, E-stop 우선 처리
 //  - Safety: /safety/emergency_stop=true는 항상 최우선 -> 즉시 STOP
 //
-// ⚠️ 미배선 상태 (2026-07-27 확인): 아래 출력 계약의 구독자가 워크스페이스에
-//    아직 존재하지 않는다. control_node(control_ws, 타 팀 관리)는
-//    /local_waypoints·odom·frenet·imu·estop만 구독하므로, 이 노드의 판정은
-//    전부 계산만 되고 차량 거동에는 영향이 없다.
-//    → control_node가 /planner/recovery/target_speed를 구독하고
-//      (NaN이면 무시, 그 외에는 자체 리밋 적용 후 채택) 배선이 완료된다.
-//      후진(RECOVER_REVERSE)은 control이 speed를 [0, max]로 clamp하는 한
-//      전달 불가하므로, 음수 속도를 받는 경로도 함께 필요하다.
+// 단독 노드의 `recovery/enabled` 기본값은 false다. planner_stack의 안전
+// 프로파일은 true로 기동하고 control과 아래 state/target lease를 함께 소비한다.
 //
-// 출력 계약 (control_node가 구독해야 함 — 위 경고 참조):
+// control_node는 아래 state/target_speed를 한 쌍의 lease로 소비한다. 한쪽이
+// 끊기거나 오래되거나 계약과 맞지 않으면 fail-closed로 정지한다.
+//
+// 출력 계약:
 //  - /planner/recovery/state       std_msgs/String  : 현재 상태 문자열 (진단/RViz)
 //  - /planner/recovery/target_speed std_msgs/Float64: 요청 속도 [m/s]
+//      WAITING_FOR_INPUTS -> 0.0
 //      DRIVING          -> NaN (override 없음, Control은 무시)
 //      COLLISION_STOP/STOP/STUCK_DETECTED -> 0.0
-//      RECOVER_REVERSE  -> -recovery_reverse_speed_mps (Control이 자체 리밋 재적용)
+//      RECOVER_REVERSE  -> -recovery_reverse_speed_mps
+//      RECOVER_STOP     -> 0.0 (방향 전환 전 실제 정지 dwell)
 //      RECOVER_ALIGN    -> +align_speed_mps
+// 후진은 전용 조향 경로가 없으므로 기본적으로 비활성이다. Planning과 Control의
+// allow_reverse를 둘 다 명시적으로 켜고 후방 coverage를 확인한 경우에만 전달된다.
 //  - STOP은 래치 상태: /planner/recovery/reset (std_msgs/Bool true)로만 해제.
 //
 // 상태 전이는 작업명세서 Task 4 다이어그램과 동일:
@@ -55,8 +56,8 @@ public:
 
 private:
   enum class State {
-    DRIVING, STUCK_DETECTED, COLLISION_STOP,
-    RECOVER_REVERSE, RECOVER_ALIGN, STOP
+    WAITING_FOR_INPUTS, DRIVING, STUCK_DETECTED, COLLISION_STOP,
+    RECOVER_REVERSE, RECOVER_STOP, RECOVER_ALIGN, STOP
   };
   static const char * StateName(State s);
 
@@ -71,10 +72,18 @@ private:
 
   // 판정 함수
   bool IsStuck(double now_sec);                 // 전진 명령 대비 s 진행량 부족
-  bool IsBoundaryViolation() const;             // 트랙 경계 여유 < 임계값
-  bool IsRearSafe(double now_sec) const;                      // 후방 rear_check 구간 장애물 없음
+  bool IsCurrentBoundaryViolation() const;      // 현재 footprint가 안전 경계를 침범
+  bool IsBoundaryViolation() const;             // 제동거리 내 경로의 footprint 여유 부족
+  bool IsRearSafe(double now_sec) const;         // 후방 coverage + 장애물 없음
+  bool IsFrontSafe(double now_sec) const;        // 정렬 중 전방 장애물 없음
   bool IsHeadingAligned() const;                // 차량 yaw vs local path psi
-  bool InputsStale(double now_sec) const;       // odom/perception timeout
+  bool InputsReady(
+    const rclcpp::Time & now, std::string * reason = nullptr) const;
+  bool StampFresh(
+    const rclcpp::Time & now, const rclcpp::Time & receipt_stamp,
+    const rclcpp::Time & source_stamp, double timeout_sec) const;
+  bool IsStoppedForDwell(double now_sec);
+  double StoppingDistance() const;
 
   void TransitionTo(State next, const std::string & reason);
   void PublishOutputs();
@@ -85,11 +94,16 @@ private:
   double stuck_min_progress_m_{0.10};
   double min_forward_cmd_mps_{0.2};
   double boundary_stop_margin_m_{0.15};
-  // 경계 위반이 이 시간 이상 "지속"돼야 COLLISION_STOP (통합 시 추가).
-  // v15 raceline은 코너 벽 여유 ~0.3m + 추적오차 ~0.2m라 순간 스파이크가
-  // 정상 주행에서도 발생 — 1사이클 오탐으로 정지하면 안 된다.
   double boundary_persist_sec_{0.2};
+  double vehicle_width_m_{0.30};
+  double vehicle_length_m_{0.55};
+  double boundary_reaction_time_sec_{0.20};
+  double boundary_braking_decel_mps2_{4.0};
+  bool require_boundary_horizon_{true};
   double rear_check_dist_m_{1.5};
+  double front_check_dist_m_{1.5};
+  bool allow_reverse_{false};
+  bool rear_coverage_confirmed_{false};
   double recovery_reverse_speed_mps_{0.5};
   double recovery_max_reverse_distance_m_{0.5};
   double recovery_timeout_sec_{4.0};
@@ -99,12 +113,19 @@ private:
   double odom_timeout_sec_{0.5};
   double perception_timeout_sec_{0.5};
   double local_wpnts_timeout_sec_{0.5};
+  double source_stamp_future_tolerance_sec_{0.1};
+  bool require_source_stamps_{true};
+  double readiness_dwell_sec_{0.2};
+  double stopped_speed_threshold_mps_{0.05};
+  double stopped_dwell_sec_{0.2};
 
   // State
-  State state_{State::DRIVING};
+  State state_{State::WAITING_FOR_INPUTS};
   int recovery_attempts_{0};
   double stuck_since_sec_{-1.0};
   double boundary_since_sec_{-1.0};
+  double ready_since_sec_{-1.0};
+  double stopped_since_sec_{-1.0};
   double stuck_ref_s_{0.0};
   double recover_start_sec_{0.0};
   double recover_start_s_{0.0};
@@ -115,16 +136,21 @@ private:
   double cur_d_{0.0};
   double cur_vs_{0.0};
   double cur_yaw_{0.0};
+  double cur_speed_norm_{0.0};
   f1tenth_planning_msgs::msg::WpntArray local_wpnts_;
   f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
-  rclcpp::Time frenet_stamp_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time pose_stamp_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time obstacles_stamp_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time local_wpnts_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time frenet_receipt_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time frenet_source_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time pose_receipt_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time pose_source_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time obstacles_receipt_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time obstacles_source_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time local_wpnts_receipt_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time local_wpnts_source_stamp_{0, 0, RCL_ROS_TIME};
   bool has_frenet_{false};
+  bool has_pose_{false};
+  bool has_global_{false};
   bool has_local_{false};
-  // "아직 한 번도 못 받음"과 "받다가 끊김"을 반드시 구분해야 한다. 안 그러면
-  // stamp 기본값(0) 때문에 부팅 첫 사이클에 stale로 판정돼 STOP으로 래치된다.
   bool has_obstacles_{false};
   // 트랙 한 바퀴 길이. /global_waypoints에서 (마지막 s + 간격)으로 받는다 —
   // 로컬 윈도우 s의 러닝 맥스로 추정하면 첫 랩 동안 실제보다 작아서

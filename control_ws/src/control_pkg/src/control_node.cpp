@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/string.hpp"
 
 namespace
 {
@@ -38,9 +41,18 @@ struct Point2D
 
 double yaw_from_quaternion(const geometry_msgs::msg::Quaternion & q)
 {
+  const double norm = std::sqrt(
+    q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (!std::isfinite(norm) || norm <= kEpsilon) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double x = q.x / norm;
+  const double y = q.y / norm;
+  const double z = q.z / norm;
+  const double w = q.w / norm;
   return std::atan2(
-    2.0 * (q.w * q.z + q.x * q.y),
-    1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    2.0 * (w * z + x * y),
+    1.0 - 2.0 * (y * y + z * z));
 }
 }  // namespace
 
@@ -52,6 +64,7 @@ class LookupSteerAngle
 public:
   bool load(const std::string & file_path, const rclcpp::Logger & logger)
   {
+    table_.clear();
     std::ifstream file(file_path);
     if (!file.is_open()) {
       RCLCPP_ERROR(logger, "Steering lookup table not found: %s", file_path.c_str());
@@ -71,7 +84,18 @@ public:
       std::string cell;
       while (std::getline(line_stream, cell, ',')) {
         try {
-          row.push_back(std::stod(cell));
+          const auto first = cell.find_first_not_of(" \t\r");
+          const auto last = cell.find_last_not_of(" \t\r");
+          if (first == std::string::npos) {
+            throw std::invalid_argument("empty cell");
+          }
+          cell = cell.substr(first, last - first + 1U);
+          std::size_t parsed = 0;
+          const double value = std::stod(cell, &parsed);
+          if (parsed != cell.size()) {
+            throw std::invalid_argument("trailing characters");
+          }
+          row.push_back(value);
         } catch (const std::exception &) {
           RCLCPP_ERROR(logger, "Invalid value in steering lookup table: '%s'", cell.c_str());
           return false;
@@ -91,6 +115,55 @@ public:
     if (parsed.size() < 2 || expected_columns < 2) {
       RCLCPP_ERROR(logger, "Steering lookup table must contain at least two rows and columns");
       return false;
+    }
+
+    if (!std::isfinite(parsed[0][0]) || std::abs(parsed[0][0]) > kEpsilon ||
+      !std::isfinite(parsed[1][0]) || std::abs(parsed[1][0]) > kEpsilon)
+    {
+      RCLCPP_ERROR(logger, "Steering lookup table must start at zero velocity/steering");
+      return false;
+    }
+    for (std::size_t column = 1; column < expected_columns; ++column) {
+      if (!std::isfinite(parsed[0][column]) || parsed[0][column] <= 0.0 ||
+        (column > 1 && parsed[0][column] <= parsed[0][column - 1]))
+      {
+        RCLCPP_ERROR(logger, "Steering lookup velocity header is invalid/non-monotonic");
+        return false;
+      }
+      bool seen_non_finite = false;
+      std::size_t finite_count = 0;
+      double previous_acceleration = -std::numeric_limits<double>::infinity();
+      for (std::size_t row = 1; row < parsed.size(); ++row) {
+        const double value = parsed[row][column];
+        if (!std::isfinite(value)) {
+          seen_non_finite = true;
+          continue;
+        }
+        if (seen_non_finite || value < 0.0 ||
+          value + kEpsilon < previous_acceleration)
+        {
+          RCLCPP_ERROR(
+            logger,
+            "Steering lookup column %zu has an invalid/non-monotonic finite region",
+            column);
+          return false;
+        }
+        previous_acceleration = value;
+        ++finite_count;
+      }
+      if (finite_count < 2U) {
+        RCLCPP_ERROR(
+          logger, "Steering lookup column %zu has fewer than two finite samples", column);
+        return false;
+      }
+    }
+    for (std::size_t row = 2; row < parsed.size(); ++row) {
+      if (!std::isfinite(parsed[row][0]) ||
+        parsed[row][0] + kEpsilon < parsed[row - 1][0])
+      {
+        RCLCPP_ERROR(logger, "Steering lookup angle axis is invalid/non-monotonic");
+        return false;
+      }
     }
 
     table_ = std::move(parsed);
@@ -209,6 +282,10 @@ public:
       "ackermann_topic", "/ackermann_cmd");
     const auto estop_topic = this->declare_parameter<std::string>(
       "estop_topic", "/safety/emergency_stop");
+    const auto recovery_state_topic = this->declare_parameter<std::string>(
+      "recovery/state_topic", "/planner/recovery/state");
+    const auto recovery_target_speed_topic = this->declare_parameter<std::string>(
+      "recovery/target_speed_topic", "/planner/recovery/target_speed");
     const auto service_name = this->declare_parameter<std::string>(
       "service_name", "/control/set_mode");
     autonomous_ = this->declare_parameter<bool>("autonomous_on_start", false);
@@ -217,6 +294,27 @@ public:
     odom_timeout_ = this->declare_parameter<double>("odom_timeout_sec", 0.5);
     frenet_odom_timeout_ = this->declare_parameter<double>("frenet_odom_timeout_sec", 0.5);
     imu_acceleration_sign_ = this->declare_parameter<double>("imu_acceleration_sign", -1.0);
+    require_source_stamps_ = this->declare_parameter<bool>(
+      "source_freshness/require_header_stamp", true);
+    source_stamp_future_tolerance_ = this->declare_parameter<double>(
+      "source_freshness/future_tolerance_sec", 0.1);
+
+    // Recovery state와 target_speed는 header가 없는 두 토픽이므로 수신 시각을
+    // 한 쌍의 짧은 lease로 검증한다. 공용/bench 설정만 기본 false이고
+    // real_car/race_map/sim 환경은 true로 덮어쓴다. 한쪽이라도 관측한 뒤에는
+    // 연결이 끊겨도 nominal 주행으로 되돌아가지 않고 fail-closed한다.
+    recovery_require_supervisor_ = this->declare_parameter<bool>(
+      "recovery/require_supervisor", false);
+    recovery_command_timeout_ = this->declare_parameter<double>(
+      "recovery/command_timeout_sec", 0.25);
+    recovery_pair_max_skew_ = this->declare_parameter<double>(
+      "recovery/pair_max_skew_sec", 0.10);
+    recovery_allow_reverse_ = this->declare_parameter<bool>(
+      "recovery/allow_reverse", false);
+    recovery_max_reverse_speed_ = this->declare_parameter<double>(
+      "recovery/max_reverse_speed_mps", 0.30);
+    recovery_max_forward_override_ = this->declare_parameter<double>(
+      "recovery/max_forward_override_mps", 1.0);
 
     // Parameters from the supplied ETH Forza MAP_Controller.
     t_clip_min_ = this->declare_parameter<double>("map/t_clip_min", 0.7);
@@ -241,6 +339,8 @@ public:
       "map/max_curvature_reference", 0.8);
     velocity_steer_gain_max_ = this->declare_parameter<double>(
       "map/velocity_steer_gain_max", 1.0);
+    nearest_search_horizon_ = this->declare_parameter<double>(
+      "map/nearest_search_horizon_m", 3.0);
 
     // Vehicle limits and the only non-ETH speed multiplier.
     wheelbase_ = this->declare_parameter<double>("vehicle/wheelbase_m", 0.33);
@@ -251,6 +351,10 @@ public:
     // before increasing real-car speed.
     max_steering_rate_ = this->declare_parameter<double>(
       "vehicle/max_steering_rate_radps", 2.0);
+    max_acceleration_ = this->declare_parameter<double>(
+      "vehicle/max_accel_mps2", 5.5);
+    max_deceleration_ = this->declare_parameter<double>(
+      "vehicle/max_decel_mps2", 7.0);
     speed_scale_ = this->declare_parameter<double>("vehicle/speed_scale", 1.0);
 
     validate_parameters();
@@ -272,6 +376,13 @@ public:
     estop_sub_ = this->create_subscription<std_msgs::msg::Bool>(
       estop_topic, reliable_qos,
       std::bind(&ControlNode::estop_callback, this, std::placeholders::_1));
+    recovery_state_sub_ = this->create_subscription<std_msgs::msg::String>(
+      recovery_state_topic, reliable_qos,
+      std::bind(&ControlNode::recovery_state_callback, this, std::placeholders::_1));
+    recovery_target_speed_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+      recovery_target_speed_topic, reliable_qos,
+      std::bind(
+        &ControlNode::recovery_target_speed_callback, this, std::placeholders::_1));
 
     command_pub_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(
       output_topic, reliable_qos);
@@ -292,22 +403,68 @@ public:
       "ETH MAP controller ready: %s + %s -> %s @ %.1f Hz, autonomous=%s",
       waypoint_topic.c_str(), odom_topic.c_str(), output_topic.c_str(), control_rate_,
       autonomous_ ? "ON" : "OFF");
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Recovery lease: required=%s timeout=%.2fs reverse=%s max_reverse=%.2fm/s",
+      recovery_require_supervisor_ ? "yes" : "no", recovery_command_timeout_,
+      recovery_allow_reverse_ ? "OPT-IN" : "OFF", recovery_max_reverse_speed_);
   }
 
 private:
   void validate_parameters()
   {
-    control_rate_ = std::max(control_rate_, 1.0);
-    t_clip_min_ = std::max(t_clip_min_, 0.01);
-    t_clip_max_ = std::max(t_clip_max_, t_clip_min_);
-    max_lateral_error_ = std::max(max_lateral_error_, 0.001);
-    max_curvature_reference_ = std::max(max_curvature_reference_, 0.001);
-    max_speed_ = std::max(max_speed_, 0.0);
-    max_steering_angle_ = std::max(max_steering_angle_, 0.0);
-    max_steering_rate_ = std::max(max_steering_rate_, 0.01);
-    lat_err_coeff_ = std::clamp(lat_err_coeff_, 0.0, 1.0);
-    downscale_factor_ = std::clamp(downscale_factor_, 0.0, 1.0);
-    velocity_steer_gain_max_ = std::max(velocity_steer_gain_max_, 1.0);
+    const std::array<double, 33> finite_values = {
+      control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
+      imu_acceleration_sign_, source_stamp_future_tolerance_,
+      recovery_command_timeout_, recovery_pair_max_skew_,
+      recovery_max_reverse_speed_, recovery_max_forward_override_,
+      t_clip_min_, t_clip_max_, m_l1_, q_l1_, speed_lookahead_,
+      lat_err_coeff_, acc_scaler_for_steer_, dec_scaler_for_steer_,
+      start_scale_speed_, end_scale_speed_, downscale_factor_,
+      speed_lookahead_for_steer_, max_lateral_error_,
+      max_curvature_reference_, velocity_steer_gain_max_,
+      nearest_search_horizon_, wheelbase_, max_speed_, max_steering_angle_,
+      max_steering_rate_, max_acceleration_, max_deceleration_, speed_scale_};
+    if (!std::all_of(
+        finite_values.begin(), finite_values.end(),
+        [](double value) {return std::isfinite(value);}) ||
+      control_rate_ < 1.0 || control_rate_ > 200.0 ||
+      waypoint_timeout_ < 0.01 || waypoint_timeout_ > 2.0 ||
+      odom_timeout_ < 0.01 || odom_timeout_ > 2.0 ||
+      frenet_odom_timeout_ < 0.01 || frenet_odom_timeout_ > 2.0 ||
+      source_stamp_future_tolerance_ < 0.0 ||
+      source_stamp_future_tolerance_ > 0.5 ||
+      recovery_command_timeout_ < 0.01 || recovery_command_timeout_ > 2.0 ||
+      recovery_pair_max_skew_ < 0.0 ||
+      recovery_pair_max_skew_ > recovery_command_timeout_ ||
+      recovery_max_reverse_speed_ < 0.0 || recovery_max_reverse_speed_ > 1.0 ||
+      recovery_max_forward_override_ < 0.0 ||
+      recovery_max_forward_override_ > 3.0 ||
+      t_clip_min_ < 0.05 || t_clip_max_ < t_clip_min_ || t_clip_max_ > 20.0 ||
+      m_l1_ <= 0.0 || m_l1_ > 5.0 || q_l1_ < -5.0 || q_l1_ > 10.0 ||
+      speed_lookahead_ < 0.0 || speed_lookahead_ > 2.0 ||
+      speed_lookahead_for_steer_ < 0.0 || speed_lookahead_for_steer_ > 2.0 ||
+      lat_err_coeff_ < 0.0 || lat_err_coeff_ > 1.0 ||
+      acc_scaler_for_steer_ < 0.0 || acc_scaler_for_steer_ > 5.0 ||
+      dec_scaler_for_steer_ < 0.0 || dec_scaler_for_steer_ > 5.0 ||
+      start_scale_speed_ < 0.0 || end_scale_speed_ <= start_scale_speed_ ||
+      end_scale_speed_ > 30.0 ||
+      downscale_factor_ < 0.0 || downscale_factor_ > 1.0 ||
+      max_lateral_error_ <= 0.0 || max_lateral_error_ > 5.0 ||
+      max_curvature_reference_ <= 0.0 || max_curvature_reference_ > 5.0 ||
+      velocity_steer_gain_max_ < 1.0 || velocity_steer_gain_max_ > 3.0 ||
+      nearest_search_horizon_ < 0.5 || nearest_search_horizon_ > 20.0 ||
+      wheelbase_ < 0.1 || wheelbase_ > 1.0 ||
+      max_speed_ < 0.0 || max_speed_ > 20.0 ||
+      max_steering_angle_ <= 0.0 || max_steering_angle_ > 0.8 ||
+      max_steering_rate_ <= 0.0 || max_steering_rate_ > 10.0 ||
+      max_acceleration_ <= 0.0 || max_acceleration_ > 20.0 ||
+      max_deceleration_ <= 0.0 || max_deceleration_ > 20.0 ||
+      speed_scale_ < 0.0 || speed_scale_ > 1.0)
+    {
+      throw std::runtime_error(
+              "Invalid/non-finite control safety parameter; refusing to command vehicle");
+    }
   }
 
   void load_steering_lookup()
@@ -329,10 +486,15 @@ private:
         RCLCPP_ERROR(
           this->get_logger(), "Could not resolve control_pkg share directory: %s",
           exception.what());
-        return;
+        throw std::runtime_error(
+                std::string("Could not resolve steering LUT package path: ") +
+                exception.what());
       }
     }
-    steer_lookup_.load(lookup_file, this->get_logger());
+    if (!steer_lookup_.load(lookup_file, this->get_logger())) {
+      throw std::runtime_error(
+              "Configured steering LUT is missing or malformed: " + lookup_file);
+    }
   }
 
   void waypoint_callback(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg)
@@ -341,6 +503,8 @@ private:
     waypoints_ = msg->wpnts;
     waypoint_frame_ = msg->header.frame_id;
     waypoint_stamp_ = this->now();
+    waypoint_source_stamp_ =
+      rclcpp::Time(msg->header.stamp, this->get_clock()->get_clock_type());
   }
 
   void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -348,6 +512,8 @@ private:
     std::lock_guard<std::mutex> lock(data_mutex_);
     odom_ = *msg;
     odom_stamp_ = this->now();
+    odom_source_stamp_ =
+      rclcpp::Time(msg->header.stamp, this->get_clock()->get_clock_type());
     has_odom_ = true;
   }
 
@@ -356,6 +522,8 @@ private:
     std::lock_guard<std::mutex> lock(data_mutex_);
     frenet_odom_ = *msg;
     frenet_odom_stamp_ = this->now();
+    frenet_odom_source_stamp_ =
+      rclcpp::Time(msg->header.stamp, this->get_clock()->get_clock_type());
     has_frenet_odom_ = true;
   }
 
@@ -370,10 +538,29 @@ private:
 
   void estop_callback(const std_msgs::msg::Bool::SharedPtr msg)
   {
-    estop_ = msg->data;
-    if (estop_) {
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      estop_ = msg->data;
+    }
+    if (msg->data) {
       publish_stop();
     }
+  }
+
+  void recovery_state_callback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    recovery_state_ = msg->data;
+    recovery_state_stamp_ = this->now();
+    has_recovery_state_ = true;
+  }
+
+  void recovery_target_speed_callback(const std_msgs::msg::Float64::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    recovery_target_speed_ = msg->data;
+    recovery_target_speed_stamp_ = this->now();
+    has_recovery_target_speed_ = true;
   }
 
   void set_mode_callback(
@@ -391,16 +578,67 @@ private:
     RCLCPP_WARN(this->get_logger(), "Control mode: %s", response->message.c_str());
   }
 
+  bool input_stamp_fresh(
+    const rclcpp::Time & now,
+    const rclcpp::Time & receipt_stamp,
+    const rclcpp::Time & source_stamp,
+    double timeout_sec) const
+  {
+    const auto valid_age = [&](const rclcpp::Time & stamp) {
+        if (stamp.nanoseconds() <= 0) {
+          return false;
+        }
+        const double age = (now - stamp).seconds();
+        return std::isfinite(age) &&
+               age >= -source_stamp_future_tolerance_ &&
+               age <= timeout_sec;
+      };
+    if (!valid_age(receipt_stamp)) {
+      return false;
+    }
+    if (source_stamp.nanoseconds() <= 0) {
+      return !require_source_stamps_;
+    }
+    return valid_age(source_stamp);
+  }
+
+  bool inputs_finite(
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
+    const nav_msgs::msg::Odometry & odom,
+    const nav_msgs::msg::Odometry & frenet_odom) const
+  {
+    const auto & p = odom.pose.pose.position;
+    const auto & q = odom.pose.pose.orientation;
+    const auto & v = odom.twist.twist.linear;
+    const auto & fp = frenet_odom.pose.pose.position;
+    const auto & fv = frenet_odom.twist.twist.linear;
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) ||
+      !std::isfinite(q.x) || !std::isfinite(q.y) ||
+      !std::isfinite(q.z) || !std::isfinite(q.w) ||
+      !std::isfinite(v.x) || !std::isfinite(v.y) ||
+      !std::isfinite(fp.x) || !std::isfinite(fp.y) ||
+      !std::isfinite(fv.x) || !std::isfinite(fv.y))
+    {
+      return false;
+    }
+    const double quaternion_norm =
+      q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    if (!std::isfinite(quaternion_norm) || quaternion_norm < kEpsilon) {
+      return false;
+    }
+    for (const auto & waypoint : waypoints) {
+      if (!std::isfinite(waypoint.x_m) || !std::isfinite(waypoint.y_m) ||
+        !std::isfinite(waypoint.vx_mps) ||
+        !std::isfinite(waypoint.kappa_radpm))
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void main_loop()
   {
-    if (estop_) {
-      publish_stop();
-      return;
-    }
-    if (!autonomous_) {
-      return;
-    }
-
     std::vector<f1tenth_planning_msgs::msg::Wpnt> waypoints;
     nav_msgs::msg::Odometry odom;
     nav_msgs::msg::Odometry frenet_odom;
@@ -409,8 +647,18 @@ private:
     rclcpp::Time waypoint_stamp(0, 0, RCL_ROS_TIME);
     rclcpp::Time odom_stamp(0, 0, RCL_ROS_TIME);
     rclcpp::Time frenet_odom_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time waypoint_source_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time odom_source_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time frenet_odom_source_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time recovery_state_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time recovery_target_speed_stamp(0, 0, RCL_ROS_TIME);
+    std::string recovery_state;
+    double recovery_target_speed = std::numeric_limits<double>::quiet_NaN();
     bool has_odom = false;
     bool has_frenet_odom = false;
+    bool has_recovery_state = false;
+    bool has_recovery_target_speed = false;
+    bool estop = false;
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
       waypoints = waypoints_;
@@ -421,23 +669,161 @@ private:
       waypoint_stamp = waypoint_stamp_;
       odom_stamp = odom_stamp_;
       frenet_odom_stamp = frenet_odom_stamp_;
+      waypoint_source_stamp = waypoint_source_stamp_;
+      odom_source_stamp = odom_source_stamp_;
+      frenet_odom_source_stamp = frenet_odom_source_stamp_;
       has_odom = has_odom_;
       has_frenet_odom = has_frenet_odom_;
+      recovery_state = recovery_state_;
+      recovery_target_speed = recovery_target_speed_;
+      recovery_state_stamp = recovery_state_stamp_;
+      recovery_target_speed_stamp = recovery_target_speed_stamp_;
+      has_recovery_state = has_recovery_state_;
+      has_recovery_target_speed = has_recovery_target_speed_;
+      estop = estop_;
     }
 
     const auto now = this->now();
-    if (waypoints.size() < 2 || (now - waypoint_stamp).seconds() > waypoint_timeout_) {
-      warn_and_stop("Local waypoints missing or stale");
+    // E-stop은 recovery와 autonomous mode를 포함한 모든 명령보다 최우선이다.
+    if (estop) {
+      publish_stop();
       return;
     }
-    if (!has_odom || (now - odom_stamp).seconds() > odom_timeout_) {
-      warn_and_stop("Map odometry missing or stale");
+
+    bool recovery_stop = false;
+    bool recovery_reverse = false;
+    bool recovery_forward_override = false;
+    const bool recovery_contract_active =
+      recovery_require_supervisor_ || has_recovery_state || has_recovery_target_speed;
+    if (recovery_contract_active) {
+      const auto lease_fresh = [&](const rclcpp::Time & stamp) {
+          if (stamp.nanoseconds() <= 0) {
+            return false;
+          }
+          const double age = (now - stamp).seconds();
+          return std::isfinite(age) &&
+                 age >= -source_stamp_future_tolerance_ &&
+                 age <= recovery_command_timeout_;
+        };
+      const bool pair_complete = has_recovery_state && has_recovery_target_speed;
+      const bool pair_fresh =
+        pair_complete && lease_fresh(recovery_state_stamp) &&
+        lease_fresh(recovery_target_speed_stamp) &&
+        std::abs((recovery_state_stamp - recovery_target_speed_stamp).seconds()) <=
+        recovery_pair_max_skew_;
+
+      if (!pair_fresh) {
+        recovery_stop = true;
+        RCLCPP_ERROR_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Recovery command pair missing/stale/skewed -> stop");
+      } else if (
+        recovery_state == "WAITING_FOR_INPUTS" ||
+        recovery_state == "STUCK_DETECTED" ||
+        recovery_state == "COLLISION_STOP" ||
+        recovery_state == "RECOVER_STOP" ||
+        recovery_state == "STOP")
+      {
+        // State alone is sufficient to stop. A malformed target cannot weaken it.
+        recovery_stop = true;
+        if (!std::isfinite(recovery_target_speed)) {
+          RCLCPP_ERROR_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Recovery stop state has non-finite target (still stopping)");
+        }
+      } else if (recovery_state == "DRIVING") {
+        // NaN is an intentional, state-qualified sentinel meaning "no override".
+        // +/-inf or a finite target in DRIVING indicates an incoherent pair.
+        if (!std::isnan(recovery_target_speed)) {
+          recovery_stop = true;
+          RCLCPP_ERROR_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Recovery DRIVING state must carry NaN no-override target -> stop");
+        }
+      } else if (recovery_state == "RECOVER_REVERSE") {
+        if (!recovery_allow_reverse_ || !std::isfinite(recovery_target_speed) ||
+          recovery_target_speed >= 0.0 || recovery_max_reverse_speed_ <= 0.0)
+        {
+          recovery_stop = true;
+          RCLCPP_ERROR_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Recovery reverse rejected (not opted-in/invalid target) -> stop");
+        } else {
+          recovery_reverse = true;
+        }
+      } else if (recovery_state == "RECOVER_ALIGN") {
+        if (!std::isfinite(recovery_target_speed) || recovery_target_speed < 0.0) {
+          recovery_stop = true;
+          RCLCPP_ERROR_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Recovery align target invalid -> stop");
+        } else {
+          recovery_forward_override = true;
+        }
+      } else {
+        recovery_stop = true;
+        RCLCPP_ERROR_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Unknown recovery state '%s' -> stop", recovery_state.c_str());
+      }
+    }
+
+    if (recovery_stop) {
+      publish_stop();
+      return;
+    }
+    if (!autonomous_) {
+      publish_stop();
+      return;
+    }
+
+    if (waypoints.size() < 2 ||
+      !input_stamp_fresh(
+        now, waypoint_stamp, waypoint_source_stamp, waypoint_timeout_))
+    {
+      warn_and_stop("Local waypoints missing or receipt/source stale");
+      return;
+    }
+    if (!has_odom ||
+      !input_stamp_fresh(now, odom_stamp, odom_source_stamp, odom_timeout_))
+    {
+      warn_and_stop("Map odometry missing or receipt/source stale");
       return;
     }
     if (!has_frenet_odom ||
-      (now - frenet_odom_stamp).seconds() > frenet_odom_timeout_)
+      !input_stamp_fresh(
+        now, frenet_odom_stamp, frenet_odom_source_stamp,
+        frenet_odom_timeout_))
     {
-      warn_and_stop("Frenet odometry missing or stale");
+      warn_and_stop("Frenet odometry missing or receipt/source stale");
+      return;
+    }
+    if (!inputs_finite(waypoints, odom, frenet_odom)) {
+      warn_and_stop("Planner/odometry input contains non-finite values");
+      return;
+    }
+
+    if (recovery_reverse) {
+      // 전용 reverse path/steering 계약은 아직 없다. 양쪽 노드에서 명시적으로
+      // opt-in된 경우에도 forward L1 조향을 역주행에 재사용하지 않고 직진
+      // 저속 후진만 허용한다. Supervisor가 매 cycle 경계와 후방을 재검사한다.
+      const double reverse_speed = -std::min(
+        std::abs(recovery_target_speed), recovery_max_reverse_speed_);
+      if (!std::isfinite(reverse_speed) || !(reverse_speed < 0.0)) {
+        warn_and_stop("Recovery reverse command is invalid");
+        return;
+      }
+      curr_steering_angle_ = 0.0;
+      last_speed_command_ = 0.0;
+      last_control_time_.reset();
+      ackermann_msgs::msg::AckermannDriveStamped command;
+      command.header.stamp = now;
+      command.header.frame_id = "base_link";
+      command.drive.speed = static_cast<float>(reverse_speed);
+      command.drive.acceleration = 0.0F;
+      command.drive.jerk = 0.0F;
+      command.drive.steering_angle = 0.0F;
+      command_pub_->publish(command);
       return;
     }
 
@@ -484,7 +870,27 @@ private:
       return;
     }
 
-    speed_command = std::clamp(speed_command * speed_scale_, 0.0, max_speed_);
+    if (recovery_forward_override) {
+      speed_command = std::clamp(
+        recovery_target_speed, 0.0,
+        std::min(max_speed_, recovery_max_forward_override_));
+    } else {
+      speed_command = std::clamp(speed_command * speed_scale_, 0.0, max_speed_);
+    }
+    // 정상 TRACK/ALIGN 명령은 물리 가감속 한계 안에서만 바뀐다. E-stop,
+    // stale, recovery STOP은 위에서 publish_stop()으로 이 limiter를 우회해 즉시 0.
+    const double speed_delta = speed_command - last_speed_command_;
+    const double max_speed_delta = (
+      speed_delta >= 0.0 ? max_acceleration_ : max_deceleration_) * control_dt;
+    speed_command = last_speed_command_ +
+      std::clamp(speed_delta, -max_speed_delta, max_speed_delta);
+    if (recovery_forward_override) {
+      // Supervisor의 저속 align 상한은 감속 slew보다 우선한다. 정상 상태에서
+      // RECOVER_STOP을 거치지만, 중간 메시지를 놓쳐도 이전 고속 명령이 남지 않는다.
+      speed_command = std::min(
+        speed_command, std::min(max_speed_, recovery_max_forward_override_));
+    }
+    last_speed_command_ = speed_command;
     steering_angle = std::clamp(
       steering_angle, -max_steering_angle_, max_steering_angle_);
 
@@ -680,7 +1086,16 @@ private:
   {
     std::size_t nearest_index = 0;
     double nearest_squared_distance = std::numeric_limits<double>::max();
+    double forward_progress = 0.0;
     for (std::size_t index = 0; index < waypoints.size(); ++index) {
+      if (index > 0) {
+        forward_progress += std::hypot(
+          waypoints[index].x_m - waypoints[index - 1].x_m,
+          waypoints[index].y_m - waypoints[index - 1].y_m);
+        if (forward_progress > nearest_search_horizon_) {
+          break;
+        }
+      }
       const double dx = position.x - waypoints[index].x_m;
       const double dy = position.y - waypoints[index].y_m;
       const double squared_distance = dx * dx + dy * dy;
@@ -737,6 +1152,7 @@ private:
       return;
     }
     curr_steering_angle_ = 0.0;
+    last_speed_command_ = 0.0;
     last_control_time_.reset();
     ackermann_msgs::msg::AckermannDriveStamped command;
     command.header.stamp = this->now();
@@ -750,6 +1166,14 @@ private:
   double odom_timeout_{0.5};
   double frenet_odom_timeout_{0.5};
   double imu_acceleration_sign_{-1.0};
+  bool require_source_stamps_{true};
+  double source_stamp_future_tolerance_{0.1};
+  bool recovery_require_supervisor_{false};
+  double recovery_command_timeout_{0.25};
+  double recovery_pair_max_skew_{0.10};
+  bool recovery_allow_reverse_{false};
+  double recovery_max_reverse_speed_{0.30};
+  double recovery_max_forward_override_{1.0};
   double t_clip_min_{0.7};
   double t_clip_max_{8.0};
   double m_l1_{0.47};
@@ -765,10 +1189,13 @@ private:
   double max_lateral_error_{0.5};
   double max_curvature_reference_{0.8};
   double velocity_steer_gain_max_{1.0};
+  double nearest_search_horizon_{3.0};
   double wheelbase_{0.33};
   double max_speed_{4.0};
   double max_steering_angle_{0.4189};
   double max_steering_rate_{2.0};
+  double max_acceleration_{5.5};
+  double max_deceleration_{7.0};
   double speed_scale_{1.0};
 
   // Controller state
@@ -776,7 +1203,10 @@ private:
   bool estop_{false};
   bool has_odom_{false};
   bool has_frenet_odom_{false};
+  bool has_recovery_state_{false};
+  bool has_recovery_target_speed_{false};
   double curr_steering_angle_{0.0};
+  double last_speed_command_{0.0};
   double curvature_waypoints_{0.0};
   std::size_t idx_nearest_waypoint_{0};
   std::optional<rclcpp::Time> last_control_time_;
@@ -789,15 +1219,24 @@ private:
   nav_msgs::msg::Odometry frenet_odom_;
   std::array<double, 10> acceleration_samples_{};
   std::string waypoint_frame_;
+  std::string recovery_state_;
+  double recovery_target_speed_{std::numeric_limits<double>::quiet_NaN()};
   rclcpp::Time waypoint_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time odom_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time frenet_odom_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time waypoint_source_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time odom_source_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time frenet_odom_source_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time recovery_state_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time recovery_target_speed_stamp_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr waypoint_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr frenet_odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr recovery_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr recovery_target_speed_sub_;
   rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr command_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr lookahead_pub_;
   rclcpp::Service<example_interfaces::srv::Trigger>::SharedPtr mode_service_;
