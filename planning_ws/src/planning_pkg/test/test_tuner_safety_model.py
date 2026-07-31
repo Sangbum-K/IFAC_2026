@@ -86,8 +86,8 @@ def test_profile_manifest_is_versioned_and_matches_generator():
 def test_generator_profile_drift_is_fail_closed(tmp_path):
     model = _load_model()
     changed = BUILD_MAP_PATH.read_text(encoding='utf-8').replace(
-        '"planner_speed_scale": 0.60,',
-        '"planner_speed_scale": 0.61,', 1)
+        '"planner_speed_scale": 0.83,',
+        '"planner_speed_scale": 0.84,', 1)
     candidate = tmp_path / 'build_map.py'
     candidate.write_text(changed, encoding='utf-8')
     with pytest.raises(ValueError, match='profile constants differ'):

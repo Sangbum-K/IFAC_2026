@@ -59,7 +59,9 @@ class RacelineTunerNode(Node):
         self.declare_parameter('tuner/v_max_mps', 12.0)
         self.declare_parameter('tuner/mu', 0.85)
         self.declare_parameter('tuner/a_acc_max', 5.5)
-        self.declare_parameter('tuner/a_dec_max', 7.0)
+        # build_map A_DEC_MAX와 동일 유지. 2026-07-31 실측 제동 한계 ~4.2 m/s²
+        # (7.0 가정 프로파일은 헤어핀 진입 과속 → 이탈).
+        self.declare_parameter('tuner/a_dec_max', 4.0)
         self.declare_parameter('tuner/wheelbase_m', 0.33)
         self.declare_parameter('tuner/max_steer_rad', 0.36)
         self.declare_parameter('tuner/validation_tolerance', 0.03)

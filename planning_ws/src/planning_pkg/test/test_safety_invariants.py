@@ -58,10 +58,12 @@ def test_default_profile_is_fail_safe():
     assert local["local_trajectory/require_avoidance_heartbeat"] is True
     assert local["local_trajectory/avoidance_timeout_sec"] <= 0.25
     assert local["local_trajectory/frenet_odom_source_timeout_sec"] <= 0.25
-    assert recovery["recovery/enabled"] is True
+    # recovery 체인은 현재 기본 비활성 (launch recovery:=true opt-in).
+    # 다시 켤 때도 후진 계열은 검증 전까지 꺼져 있어야 한다.
+    assert recovery["recovery/enabled"] is False
     assert recovery.get("recovery/allow_reverse", False) is False
     assert recovery.get("recovery/rear_coverage_confirmed", False) is False
-    assert tracker["tracker/recovery_required"] is True
+    assert tracker["tracker/recovery_required"] is False
     assert tracker["tracker/recovery_allow_reverse"] is False
     assert tracker["tracker/internal_stuck_recovery_enabled"] is False
 
@@ -141,7 +143,7 @@ def test_real_profiles_require_exact_time_and_fresh_inputs():
         assert bridge["bridge/tf_max_age_sec"] <= 0.10
 
 
-def test_control_profiles_require_supervisor_and_disable_reverse():
+def test_control_profiles_disable_reverse_and_supervisor_not_required():
     control_base = _ros_params(
         _yaml(WORKSPACE / "control_ws" / "src" / "control_pkg" /
               "config" / "params.yaml"),
@@ -154,7 +156,8 @@ def test_control_profiles_require_supervisor_and_disable_reverse():
                   "config" / "environments" / f"{env_name}.yaml"),
             "control",
         )
-        assert control_env["recovery/require_supervisor"] is True
+        # recovery 체인 비활성 상태이므로 supervisor 부재로 fail-closed 하지 않는다.
+        assert control_env["recovery/require_supervisor"] is False
         assert control_env["vehicle/speed_scale"] <= 1.0
 
 

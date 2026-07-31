@@ -272,9 +272,10 @@ def generate_launch_description():
         DeclareLaunchArgument('pose_odom_topic', default_value='',
                               description='recovery yaw 소스 odom 토픽 '
                                           '(실차 /pf/pose/odom, sim /ego_racecar/odom)'),
-        DeclareLaunchArgument('recovery', default_value='true',
+        DeclareLaunchArgument('recovery', default_value='false',
                               description='recovery_supervisor_node 기동 여부. '
-                                          '기본 true — control의 lease 기반 safety override와 연결'),
+                                          '기본 false — 필요 시 recovery:=true로 opt-in '
+                                          '(control의 lease 기반 safety override와 연결)'),
         DeclareLaunchArgument('predictor', default_value='auto',
                               description='opponent predictor: auto | true | false. '
                                           'auto는 real_car/race_map에서 기동'),

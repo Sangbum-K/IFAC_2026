@@ -72,7 +72,14 @@ MIN_ISLAND_M2 = 0.3
 
 # --- 레이스라인 생성 파라미터 ------------------------------------------------
 V_MAX      = 6.0     # 최대 속도 [m/s]  (소형 트랙 → 보수적. 잘 돌면 올려라)
-MU         = 0.75    # 노면 마찰계수    (실내/접지 낮으면 더 낮춰라 0.6~0.7)
+MU         = 0.75    # 물리 노면 마찰계수. 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
+                     # 2026-07-31 run_0731_223152 IMU 실측 |a_lat| p95 7.0~7.9 m/s²
+                     # → 0.75(7.36)는 실측과 일치. 실측이 바뀔 때만 수정할 것.
+# 속도 프로파일 계획용 mu. MU(물리 한계)의 ~87%만 쓰도록 낮춰서, 컨트롤러의
+# 추종 보정(조향 수정 + 제동 겹침)이 남은 마진 안에서 소화되게 한다.
+# 2026-07-31 폐루프 스윕: 프로파일 mu 0.75(마진 0)는 scale 0.71부터 friction
+# 초과로 FAIL, 0.65는 scale 0.83/cap 5.0에서 합성 7.22/7.36로 PASS.
+MU_PROFILE = 0.65
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -132,8 +139,16 @@ WHEELBASE  = 0.33    # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동일
 MAX_STEER  = 0.36    # [rad] (20.7°) 실차 검증 조향 한계. TUNING_STATUS 기준이며
                      # control_pkg vehicle/max_steering_angle_rad와 동일하게 유지할 것
                      # (순정 링키지 명목 24°=0.4189가 아니라 실측 포화 한계값)
-A_ACC_MAX  = 5.5     # 최대 가속 [m/s²]
-A_DEC_MAX  = 7.0     # 최대 제동 [m/s²]
+# 종방향 한계 — run_0731_231343 실측 (모터 전류/속도 응답):
+#   가속: 모터 전류 ~30 A 포화 → 최대 2.2 m/s² (p90 실측 2.23). 예전 5.5는
+#     달성 불가라 프로파일 속도에 차가 못 붙고, 직선 끝까지 가속만 하다
+#     제동 구간을 놓치는 원인이 됐다.
+#   감속: VESC가 브레이크 전류를 전혀 안 씀 (전류 최소 +5.8 A, 음수 없음)
+#     → 감속은 코스팅 항력뿐, 실측 평균 -1.5 m/s². 여유 두고 1.3으로 계획.
+# ⚠️ VESC 제동(펌웨어 brake 한계 또는 commands/motor/brake 경로)이 생겨
+#   실측 감속이 좋아지면 그때 A_DEC_MAX를 실측값으로 올리고 재생성할 것.
+A_ACC_MAX  = 2.2     # 최대 가속 [m/s²] (30 A 전류 제한 실측)
+A_DEC_MAX  = 1.3     # 최대 제동 [m/s²] (코스팅 전용 실측, 제동 전류 없음)
 MAX_STEER_RATE = 2.0 # [rad/s] control 기본 steering-rate limit
 N_LOCAL_WP = 130     # 로컬 윈도우 웨이포인트 수 (local_trajectory_node와 동일)
 
@@ -146,18 +161,24 @@ SIM_CONTROLLER_PROFILES = (
     "python_sim_tracker",
 )
 CONTROLLER_PROFILE_LIBRARY = {
-    # planning environments/real_car.yaml velocity_scale=0.60 +
-    # control environments/real_car.yaml speed_scale=1.0, max_speed=3.6.
+    # planning environments/real_car.yaml velocity_scale=0.83 +
+    # control environments/real_car.yaml speed_scale=1.0, max_speed=5.0.
+    # (2026-07-31: 4→5→6 단계 승격의 5 m/s 단계. 6.0 직행은 실차 실패 확인)
     # C++ MAP/L1의 실제 NUC6 steering LUT도 그대로 사용한다.
     "cpp_real_car": {
         "kind": "cpp_map_l1",
-        "planner_speed_scale": 0.60,
+        "planner_speed_scale": 0.83,
         "controller_speed_scale": 1.0,
-        "max_speed_mps": 3.6,
+        "max_speed_mps": 5.0,
         "lookahead_gain": 0.47,
         "lookahead_offset": -0.2,
         "lookahead_min_m": 0.5,
         "lookahead_max_m": 8.0,
+        # control params.yaml map/speed_lookahead와 동일 유지.
+        # 2026-07-31 스윕: 0.35/0.45/0.6은 직선 투영이 코너 건너편 웨이포인트를
+        # 잡아 전부 악화(|derr| 0.30/0.38/0.51). 이 트랙 크기에선 0.25가 최적.
+        # 제동 여유는 speed_lookahead가 아니라 MU_PROFILE(프로파일 마진)로 확보.
+        "speed_lookahead_s": 0.25,
         "wheelbase_m": WHEELBASE,
         "max_steer_rad": MAX_STEER,
         "max_steer_rate_radps": MAX_STEER_RATE,
@@ -1517,8 +1538,8 @@ class PurePursuitSim:
 
     def _speed_target(self, pos, theta, speed, target_idx):
         if self.profile["kind"] == "cpp_map_l1":
-            # control params map/speed_lookahead=0.25 s.
-            query = pos + speed * 0.25 * np.array(
+            # control params map/speed_lookahead (프로파일과 런타임 YAML 동기화).
+            query = pos + speed * self.profile["speed_lookahead_s"] * np.array(
                 [np.cos(theta), np.sin(theta)])
             _, speed_idx = self.tree.query(query)
         else:
@@ -1879,7 +1900,7 @@ def main():
         # ⚠️ 이 모드는 검증을 거의 못 통과한다 (설정 블록 주석 참조).
         print("[2/4] 중앙선 라인 + 속도 프로파일 ...")
         geo = center
-    traj = build_trajectory(geo)
+    traj = build_trajectory(geo, mu=MU_PROFILE)
     start_heading = float(traj["psi"][0])
     print(f"      [dir] 주행 방향 {orientation.upper()} · 출발점 "
           f"({traj['xy'][0, 0]:+.2f}, {traj['xy'][0, 1]:+.2f}) m, "
@@ -1891,11 +1912,12 @@ def main():
     # <맵>_iqp_*.csv 만 글롭하므로, 태그가 붙어 있으면 center CSV가 실수로
     # 메인 라인으로 잡히는 일이 없고 trajectory_csv_file:= 로만 쓰게 된다.
     tag = {"iqp": "iqp_", "sp": "sp_", "center": "center_"}.get(RACELINE, "")
-    csv_name = f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
+    csv_name = (f"{m}_{tag}max{V_MAX:.2f}ms_margin{MARGIN:.2f}m"
+                f"_mu{MU_PROFILE:.2f}.csv")
 
     traj_sp = None
     sp_name = (
-        f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU:.2f}.csv"
+        f"{m}_sp_max{V_MAX:.2f}ms_margin{MARGIN:.2f}m_mu{MU_PROFILE:.2f}.csv"
         if RACELINE == "iqp" else None)
     sp_disabled_reason = ""
     if RACELINE == "iqp":
@@ -1906,7 +1928,7 @@ def main():
                     optimize_raceline_iqp(
                         center, grid, objective="length"),
                     orientation=orientation)
-                traj_sp = build_trajectory(geo_sp)
+                traj_sp = build_trajectory(geo_sp, mu=MU_PROFILE)
                 print(f"      경로 길이: IQP {traj['s'][-1]:.1f} m vs "
                       f"SP {traj_sp['s'][-1]:.1f} m")
             except Exception as exc:

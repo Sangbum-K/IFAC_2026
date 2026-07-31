@@ -128,10 +128,10 @@ class ObstacleDetectorNode(Node):
         )
         if (not all(np.isfinite(v) for v in timing_values)
                 or not 1.0 <= rate <= 500.0
-                or not 0.001 <= tf_timeout_sec <= 5.0
+                or not 0.0 <= tf_timeout_sec <= 5.0
                 or not 0.01 <= self.max_source_age <= 5.0
                 or not 0.0 <= self.source_future_tolerance <= 1.0
-                or not 0.0 <= self.tf_max_age <= self.max_source_age):
+                or not 0.0 <= self.tf_max_age <= 1.0):
             raise ValueError('invalid detector timing/freshness parameters')
         continuous_values = (
             self.range_min, self.range_max, self.fov_min, self.fov_max,

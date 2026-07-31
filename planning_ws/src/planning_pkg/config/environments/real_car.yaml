@@ -15,9 +15,16 @@
 # 필요조향의 1.7~2.0배가 나온다. scale = (control cap) / 6.0 으로 계산.
 global_trajectory_node:
   ros__parameters:
-    # 현재 control cap 3.6 m/s와 정확히 맞춘 검증 단계. 6 m/s 승격은 scale만
-    # 올리지 말고 control cap/타이어 한계/4→5→6 회귀시험을 함께 통과시킬 것.
-    global_trajectory/velocity_scale: 0.60
+    # 6 m/s 승격은 scale만 올리지 말고 control cap/타이어 한계/4→5→6
+    # 회귀시험을 함께 통과시킬 것 (control cap과 함께 이동).
+    # 2026-07-31 run_0731_223152 분석: scale 1.0 + cap 6.0에서 헤어핀 진입속도
+    # 4.6~4.7 m/s(기준 2.7~3.1) → 최대 2.9 m 바깥으로 밀림 + PF 발산으로 랩 중단.
+    # 대응: build_map A_DEC_MAX 7.0→4.0(실측 ~4.2) + MU_PROFILE 0.65(물리 0.75의
+    # ~87%만 계획에 사용, 추종 보정 마진)로 CSV 재생성(mu0.65 파일), 5 m/s 단계 진행.
+    # 폐루프 게이트: scale 0.83/cap 5.0 PASS (lap 8.40s, |lat err|max 0.207 m).
+    # ⚠️ PF가 4.5 m/s 이상에서 발산 이력 있음(erpm gain 미캘리브레이션) — 주행 시
+    # PF 점프/발산 재현되면 즉시 0.67로 복귀할 것.
+    global_trajectory/velocity_scale: 0.83
 
 frenet_frame_node:
   ros__parameters:

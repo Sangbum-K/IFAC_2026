@@ -188,7 +188,8 @@ spliner_node:
 recovery_supervisor_node:
   ros__parameters:
     # control_node의 lease 기반 safety override와 연결됨. 입력 미준비/stale은 STOP.
-    recovery/enabled: true
+    # 현재 recovery 체인 전체 비활성 (launch recovery:=true opt-in 시에만 기동).
+    recovery/enabled: false
     recovery/loop_rate_hz: 20.0
     recovery/stuck_timeout_sec: 1.0            # 전진 명령인데 이 시간 무진행 -> stuck
     recovery/stuck_min_progress_m: 0.10        # stuck 판정 최소 s 진행량 [m]
@@ -246,7 +247,7 @@ waypoint_tracker_node:
     tracker/recovery_state_topic: /planner/recovery/state
     tracker/recovery_target_speed_topic: /planner/recovery/target_speed
     tracker/estop_topic: /safety/emergency_stop
-    tracker/recovery_required: true
+    tracker/recovery_required: false
     tracker/recovery_command_timeout_sec: 0.25
     tracker/recovery_pair_max_skew_sec: 0.10
     tracker/recovery_allow_reverse: false

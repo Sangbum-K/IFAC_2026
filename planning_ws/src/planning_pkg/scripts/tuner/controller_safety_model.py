@@ -20,12 +20,12 @@ from pathlib import Path
 import numpy as np
 
 G = 9.81
-MODEL_VERSION = 'tuner-controller-safety-2026-07-31-v1'
+MODEL_VERSION = 'tuner-controller-safety-2026-07-31-v2'
 # Restricted-AST digest of the generator functions that must remain numerically
 # paired with this lightweight copy.  Any generator algorithm edit locks tuner
 # saves until this model and its parity test are deliberately updated.
 GENERATOR_MODEL_AST_SHA256 = (
-    '4214370c89f4badce24a2b9fade4219f87263cc0d3fb8c6549ab04f67689dbbe')
+    '0007bdcbf7654c965be3593ab6811dcaa6b1bb898e2e8cdd49c23f99f61f13db')
 SELECTED_CONTROLLER_PROFILES = (
     'cpp_real_car',
     'python_sim_tracker',
@@ -38,18 +38,19 @@ VEHICLE_HALF_LENGTH_M = 0.275
 CONTROLLER_PROFILE_LIBRARY = {
     'cpp_real_car': {
         'kind': 'cpp_map_l1',
-        'planner_speed_scale': 0.60,
+        'planner_speed_scale': 0.83,
         'controller_speed_scale': 1.0,
-        'max_speed_mps': 3.6,
+        'max_speed_mps': 5.0,
         'lookahead_gain': 0.47,
         'lookahead_offset': -0.2,
         'lookahead_min_m': 0.5,
         'lookahead_max_m': 8.0,
+        'speed_lookahead_s': 0.25,
         'wheelbase_m': 0.33,
         'max_steer_rad': 0.36,
         'max_steer_rate_radps': 2.0,
         'max_accel_mps2': 5.5,
-        'max_decel_mps2': 7.0,
+        'max_decel_mps2': 4.0,
         'control_rate_hz': 40.0,
         'num_local_waypoints': 130,
         'steering_lut': (
@@ -69,7 +70,7 @@ CONTROLLER_PROFILE_LIBRARY = {
         'max_steer_rad': 0.36,
         'max_steer_rate_radps': 2.0,
         'max_accel_mps2': 5.5,
-        'max_decel_mps2': 7.0,
+        'max_decel_mps2': 4.0,
         'control_rate_hz': 40.0,
         'num_local_waypoints': 130,
         'steering_lut': None,
@@ -527,8 +528,9 @@ class PurePursuitSim:
 
     def _speed_target(self, position, theta, speed, target_index):
         if self.profile['kind'] == 'cpp_map_l1':
-            query = position + speed * 0.25 * np.array([
-                np.cos(theta), np.sin(theta)])
+            query = position + \
+                speed * self.profile['speed_lookahead_s'] * np.array([
+                    np.cos(theta), np.sin(theta)])
             speed_index = self._nearest_index(query)
         else:
             speed_index = target_index

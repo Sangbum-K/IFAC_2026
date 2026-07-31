@@ -300,8 +300,13 @@ class ParticleFiler(Node):
             odom.pose.pose.position.x = map_to_base[0]
             odom.pose.pose.position.y = map_to_base[1]
             odom.pose.pose.orientation = Utils.angle_to_quaternion(map_to_base[2])
-            cov_mat = np.cov(self.particles, rowvar=False, ddof=0, aweights=self.weights).flatten()
-            odom.pose.covariance[:cov_mat.shape[0]] = cov_mat
+            cov3 = np.cov(self.particles, rowvar=False, ddof=0, aweights=self.weights)
+            cov6 = np.zeros((6, 6))
+            idx = [0, 1, 5]  # (x, y, theta) -> (x, y, yaw) slots of the 6x6 matrix
+            for i, r in enumerate(idx):
+                for j, c in enumerate(idx):
+                    cov6[r, c] = cov3[i, j]
+            odom.pose.covariance = cov6.flatten().tolist()
             odom.twist.twist.linear.x = self.current_speed
             self.odom_pub.publish(odom)
         

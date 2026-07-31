@@ -4,7 +4,12 @@ obstacle_detector_node:
     scan_topic: /scan
     obstacle_topic: /perception/obstacles
     target_frame: map
-    tf_timeout_sec: 0.05
+    # real_car.yaml과 동일한 이유: timeout>0이면 rclpy가 20ms sleep 폴링으로
+    # executor를 블로킹해 TF 콜백이 굶고, 0.15 max_age는 PF TF 지연 실측
+    # (p90 123ms)의 경계선이라 전멸했다 (real_car.yaml 주석 참고).
+    tf_timeout_sec: 0.0
+    tf_allow_latest_fallback: true
+    tf_max_age_sec: 0.3
     range_max: 12.0
     cluster_eps: 0.16
     gating_distance: 0.45

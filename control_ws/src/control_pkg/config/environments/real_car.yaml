@@ -4,9 +4,11 @@ control:
     odom_topic: /pf/pose/odom
     ackermann_topic: /autonomy/ackermann_cmd
     autonomous_on_start: true
-    "recovery/require_supervisor": true
+    "recovery/require_supervisor": false
     "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
 
-    # Real-car speed cap; keep aligned with the planning velocity profile.
-    "vehicle/max_speed_mps": 3.6
+    # Real-car speed cap; keep aligned with the planning velocity profile
+    # (= 6.0 * planning velocity_scale 0.83). 6.0 직행은 run_0731_223152에서
+    # 코너 이탈 + PF 발산 확인 — 4→5→6 단계 회귀시험으로만 올릴 것.
+    "vehicle/max_speed_mps": 5.0
     "vehicle/speed_scale": 1.0

@@ -37,6 +37,10 @@ control:
     "map/t_clip_max": 8.0
     "map/m_l1": 0.47
     "map/q_l1": -0.2
+    # 0.25 유지. 2026-07-31 폐루프 스윕에서 0.35~0.6은 직선 투영이 코너
+    # 건너편 웨이포인트 속도를 잡아 전부 악화 — 이 트랙 크기에선 0.25가 최적.
+    # 제동 여유는 여기가 아니라 raceline 프로파일 mu 마진(build_map.py
+    # MU_PROFILE 0.65 < 물리 0.75)으로 확보한다.
     "map/speed_lookahead": 0.25
     "map/lat_err_coeff": 0.0
     "map/acc_scaler_for_steer": 1.0
@@ -63,5 +67,8 @@ control:
     "vehicle/max_steering_angle_rad": 0.36
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5
-    "vehicle/max_decel_mps2": 7.0
+    # 2026-07-31: 7.0 -> 4.0 (run_0731_223152 실측 제동 ~4.2 m/s²). 7.0이면
+    # 속도 명령이 차가 못 따라가는 기울기로 떨어져 코너 진입 과속이 됨.
+    # build_map.py A_DEC_MAX와 동일 유지할 것.
+    "vehicle/max_decel_mps2": 4.0
     "vehicle/speed_scale": 1.0
