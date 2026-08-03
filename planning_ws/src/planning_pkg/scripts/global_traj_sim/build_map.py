@@ -161,15 +161,20 @@ SIM_CONTROLLER_PROFILES = (
     "python_sim_tracker",
 )
 CONTROLLER_PROFILE_LIBRARY = {
-    # planning environments/real_car.yaml velocity_scale=0.83 +
-    # control environments/real_car.yaml speed_scale=1.0, max_speed=5.0.
-    # (2026-07-31: 4→5→6 단계 승격의 5 m/s 단계. 6.0 직행은 실차 실패 확인)
+    # planning environments/real_car.yaml velocity_scale=0.97 +
+    # control environments/real_car.yaml speed_scale=1.0, max_speed=6.0.
+    # (2026-08-01: 5 m/s 단계(0.83/5.0) 실차 성공 후 6 m/s 단계로 승격.
+    #  프로파일 자체가 A_ACC 2.2/A_DEC 1.3 실측 한계로 v-max ~5.4라
+    #  cap 6.0은 클램프 없이 프로파일 속도를 그대로 통과시킨다.
+    #  scale 스윕(my_track0801): 1.00 FAIL(footprint 벽 침범), 0.97~0.99 PASS.
+    #  0.97은 |lat err|max 0.202 m로 5 m/s 성공 배포(0.207)와 같은 마진 —
+    #  0.99(0.212 m)는 절벽(1.0) 한 칸 옆이라 채택하지 않음.)
     # C++ MAP/L1의 실제 NUC6 steering LUT도 그대로 사용한다.
     "cpp_real_car": {
         "kind": "cpp_map_l1",
-        "planner_speed_scale": 0.83,
+        "planner_speed_scale": 0.97,
         "controller_speed_scale": 1.0,
-        "max_speed_mps": 5.0,
+        "max_speed_mps": 6.0,
         "lookahead_gain": 0.47,
         "lookahead_offset": -0.2,
         "lookahead_min_m": 0.5,

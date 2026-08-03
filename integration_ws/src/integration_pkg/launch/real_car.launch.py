@@ -37,6 +37,7 @@ from launch.actions import (
     LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
     TimerAction,
 )
 from launch.event_handlers import OnProcessExit
@@ -166,6 +167,12 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
+        # Fast DDS 비동기 발행. 동기(기본) 발행은 RELIABLE /tf writer가 느린
+        # 구독자(WiFi 원격 RViz 등)에 막히면 모든 구독자로의 /tf 전달이 밀려
+        # perception이 "TF not close enough"로 전멸한다
+        # (run_0731_215405 케이스 1, run_0801_175634 재발).
+        # ~/.zshrc에도 있지만 launch 밖 환경에 의존하지 않도록 여기서도 박는다.
+        SetEnvironmentVariable('RMW_FASTRTPS_PUBLICATION_MODE', 'ASYNCHRONOUS'),
         DeclareLaunchArgument('hardware', default_value='true',
                               description='f1tenth_stack bringup 실행 여부'),
         DeclareLaunchArgument('localization', default_value='true',

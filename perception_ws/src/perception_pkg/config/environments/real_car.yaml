@@ -24,9 +24,14 @@ obstacle_detector_node:
     tf_allow_latest_fallback: true
     # scan시각-최신TF시각 간격 실측: p50 83ms / p90 123ms / max 240ms
     # (run_0731_221633). 0.15는 경계선이라 노드 내부 지연이 더해지면 전멸
-    # -> 출발 불가 재발. 0.3 = p90 + 여유. 정지 출발 시 오차 0, 주행 중
-    # 3.6m/s 기준 최대 ~0.4m 오차는 감수 (time-travel lookup으로 개선 예정).
+    # -> 출발 불가 재발. 0.3 = p90 + 여유.
     tf_max_age_sec: 0.3
+    # time-travel lookup: laser->odom은 scan 정시각, odom->map은 latest로
+    # 합성. latest 폴백의 주행 중 오차(속도 x TF지연, 6m/s x 0.3s = 최대
+    # 1.8m)가 PF 보정 드리프트 수준으로 줄어든다. odom->base_link
+    # (vesc_to_odom, ~47Hz)가 scan 시각을 아직 못 덮은 스캔은 자동으로
+    # latest 폴백(위 0.3s 게이트)으로 내려간다.
+    tf_fixed_frame: odom
     range_max: 12.0
     cluster_eps: 0.16
     gating_distance: 0.45

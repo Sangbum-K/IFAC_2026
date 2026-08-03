@@ -10,6 +10,8 @@ obstacle_detector_node:
     tf_timeout_sec: 0.0
     tf_allow_latest_fallback: true
     tf_max_age_sec: 0.3
+    # time-travel lookup (real_car.yaml 주석 참고)
+    tf_fixed_frame: odom
     range_max: 12.0
     cluster_eps: 0.16
     gating_distance: 0.45

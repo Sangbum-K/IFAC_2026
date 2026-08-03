@@ -82,6 +82,11 @@ class ObstacleDetectorNode(Node):
         # 개발용으로 명시 opt-in해도 원본 스캔 시각과 충분히 가까운 TF만 허용한다.
         self.declare_parameter('tf_allow_latest_fallback', False)
         self.declare_parameter('tf_max_age_sec', 0.05)
+        # time-travel lookup의 경유(fixed) 프레임. ''(기본) = 비활성.
+        # 'odom'으로 주면 laser->odom은 scan 정시각, odom->map은 latest로
+        # 합성해, latest 폴백의 주행 중 오차(속도 x TF지연)를 PF 보정
+        # 드리프트 수준으로 줄인다. odom 프레임이 없는 환경(sim)은 비워 둘 것.
+        self.declare_parameter('tf_fixed_frame', '')
         # target_frame(map) 기준. 기본 [0.0]은 "비활성" sentinel —
         # 빈 리스트 기본값은 rclpy에서 타입 미확정(ParameterUninitializedException)이 된다.
         self.declare_parameter('boundary_polygon_xy', [0.0])
@@ -122,6 +127,7 @@ class ObstacleDetectorNode(Node):
         self.tf_allow_latest_fallback = bool(
             p('tf_allow_latest_fallback').value)
         self.tf_max_age = float(p('tf_max_age_sec').value)
+        self.tf_fixed_frame = str(p('tf_fixed_frame').value).strip()
         timing_values = (
             rate, tf_timeout_sec, self.max_source_age,
             self.source_future_tolerance, self.tf_max_age,
@@ -294,34 +300,65 @@ class ObstacleDetectorNode(Node):
                 )
             except (LookupException, ConnectivityException,
                     ExtrapolationException) as exact_ex:
-                if not self.tf_allow_latest_fallback:
-                    self.get_logger().warn(
-                        f'Exact-time TF lookup {source_frame} -> '
-                        f'{self.target_frame} failed: {exact_ex}. '
-                        'Skipping this scan.',
-                        throttle_duration_sec=2.0,
-                    )
-                    return
-                try:
-                    tf_stamped = self.tf_buffer.lookup_transform(
-                        self.target_frame, source_frame, Time(),
-                        timeout=self.tf_timeout
-                    )
-                except (LookupException, ConnectivityException,
-                        ExtrapolationException) as latest_ex:
-                    self.get_logger().warn(
-                        f'TF lookup {source_frame} -> {self.target_frame} '
-                        f'failed: {latest_ex}. Skipping this scan.',
-                        throttle_duration_sec=2.0,
-                    )
-                    return
+                # 1순위 폴백 — time-travel: laser->fixed(odom)는 스캔 시각
+                # (또는 odom 레그가 아직 스캔 시각을 못 덮으면 그 레그의 latest
+                # 시각으로 클램프), fixed->target(map)은 latest로 합성.
+                # 스캔 도착 시점엔 스캔 시각을 덮는 odom TF가 보통 수 ms 뒤에
+                # 오므로 클램프가 없으면 이 경로를 거의 못 탄다. 클램프하면
+                # ego-motion 오차가 그 수 ms 공백만큼으로 줄고, map 레그는
+                # PF 보정 드리프트만 남는다 (run_0801_175634 재생 실측: 전방
+                # 3m 기준 p50 29cm -> 5cm, p90 65cm -> 18cm).
+                tf_stamped = None
+                if self.tf_fixed_frame:
+                    try:
+                        odom_leg = self.tf_buffer.lookup_transform(
+                            self.tf_fixed_frame, source_frame, Time(),
+                            timeout=self.tf_timeout
+                        )
+                        odom_stamp = (odom_leg.header.stamp.sec
+                                      + odom_leg.header.stamp.nanosec * 1e-9)
+                        if (np.isfinite(odom_stamp) and odom_stamp > 0.0
+                                and abs(stamp - odom_stamp) <= self.tf_max_age):
+                            src_time = (scan_time if odom_stamp >= stamp
+                                        else Time.from_msg(odom_leg.header.stamp))
+                            tf_stamped = self.tf_buffer.lookup_transform_full(
+                                self.target_frame, Time(),
+                                source_frame, src_time,
+                                self.tf_fixed_frame, timeout=self.tf_timeout
+                            )
+                    except (LookupException, ConnectivityException,
+                            ExtrapolationException):
+                        tf_stamped = None
+                if tf_stamped is None:
+                    if not self.tf_allow_latest_fallback:
+                        self.get_logger().warn(
+                            f'Exact-time TF lookup {source_frame} -> '
+                            f'{self.target_frame} failed: {exact_ex}. '
+                            'Skipping this scan.',
+                            throttle_duration_sec=2.0,
+                        )
+                        return
+                    try:
+                        tf_stamped = self.tf_buffer.lookup_transform(
+                            self.target_frame, source_frame, Time(),
+                            timeout=self.tf_timeout
+                        )
+                    except (LookupException, ConnectivityException,
+                            ExtrapolationException) as latest_ex:
+                        self.get_logger().warn(
+                            f'TF lookup {source_frame} -> {self.target_frame} '
+                            f'failed: {latest_ex}. Skipping this scan.',
+                            throttle_duration_sec=2.0,
+                        )
+                        return
                 tf_stamp = (tf_stamped.header.stamp.sec
                             + tf_stamped.header.stamp.nanosec * 1e-9)
                 if (not np.isfinite(tf_stamp) or tf_stamp <= 0.0
                         or abs(tf_stamp - stamp) > self.tf_max_age):
                     self.get_logger().warn(
-                        'Latest TF is not close enough to the LaserScan '
-                        'source stamp; skipping.',
+                        f'TF is not close enough to the LaserScan source '
+                        f'stamp (|tf-scan|={abs(tf_stamp - stamp):.3f}s, '
+                        f'limit={self.tf_max_age:.3f}s); skipping.',
                         throttle_duration_sec=2.0,
                     )
                     return

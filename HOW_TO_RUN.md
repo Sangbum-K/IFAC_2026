@@ -50,6 +50,14 @@ sa
 cd ~/IFAC_ws && rosbag       # run_MMDD_HHMMSS/ 로 저장, Ctrl+C 로 종료
 ```
 
+녹화한 백 시각화 (ROS source 불필요)
+```bash
+bagviz                       # 서버 시작 → 브라우저에서 http://127.0.0.1:8998
+# .db3 파일/백 폴더를 드래그앤드롭하거나, 화면의 로컬 백 목록 클릭
+# 지도+궤적(속도 색)+LiDAR 재생, 속도/조향/횡오차 차트, 이벤트·경고 로그
+# 다른 PC 브라우저에서 보려면: bagviz --host 0.0.0.0
+```
+
 ### alias 목록 (`~/.zshrc`)
 
 | alias | 하는 일 |
@@ -60,6 +68,7 @@ cd ~/IFAC_ws && rosbag       # run_MMDD_HHMMSS/ 로 저장, Ctrl+C 로 종료
 | `mkcsv <맵> [cw\|ccw]` | 레이스라인/센터라인 CSV 생성 |
 | `tune [맵] [인자...]` | 레이스라인 튜너 GUI (`raceline_tuner.launch.py`), 저장 후 `./build_all.sh` |
 | `rosbag` | 전체 토픽 녹화 (marker류 제외) |
+| `bagviz` | 로스백 시각화 웹앱 (`tools/bagviz.py`, 드래그앤드롭·재생·차트) |
 | `hw` | 하드웨어 bringup만 (`rc hardware:=false`와 짝) |
 | `cb` | `colcon build` |
 
@@ -265,6 +274,18 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 > 로드되는지 확인. (재빌드는 위 1장의 `./build_all.sh`.)
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
+
+> 🩺 **출발 전 perception 생존 확인 (run_0801_175634 사고 재발 방지)**
+> 08-01 런에서 perception이 3분 내내 장애물 0건인 채로 주행한 사고가 있었습니다
+> (RELIABLE `/tf`가 느린 구독자에 막혀 TF 신선도 게이트에 전멸 — 원격 RViz(WiFi) 의심).
+> 스택이 뜬 뒤 **출발 전에** 반드시:
+> 1. `env | grep RMW` → `RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS` 확인
+>    (`~/.zshrc`와 `real_car.launch.py` 양쪽에 있음 — 없으면 절대 출발 금지)
+> 2. `ros2 topic echo /integration/status --once` → **`perception:OK`** 확인.
+>    `perception:WAIT`가 계속되면 장애물 회피가 통째로 죽어 있는 것
+> 3. 의심되면 `ros2 topic delay /tf` — 지연이 수백 ms를 넘으면 원격 RViz(WiFi)를
+>    끄고 다시 비교
+> 4. 주행 중 WiFi 원격 RViz 구독은 되도록 끄기 (차량 로컬 RViz는 무관)
 
 ### 4-A. 한 줄로 실행 (권장)
 
