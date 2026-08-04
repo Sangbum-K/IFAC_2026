@@ -879,10 +879,11 @@ private:
     }
     // 정상 TRACK/ALIGN 명령은 물리 가감속 한계 안에서만 바뀐다. E-stop,
     // stale, recovery STOP은 위에서 publish_stop()으로 이 limiter를 우회해 즉시 0.
-    const double speed_delta = speed_command - last_speed_command_;
+    const double previous_speed_command = last_speed_command_;
+    const double speed_delta = speed_command - previous_speed_command;
     const double max_speed_delta = (
       speed_delta >= 0.0 ? max_acceleration_ : max_deceleration_) * control_dt;
-    speed_command = last_speed_command_ +
+    speed_command = previous_speed_command +
       std::clamp(speed_delta, -max_speed_delta, max_speed_delta);
     if (recovery_forward_override) {
       // Supervisor의 저속 align 상한은 감속 slew보다 우선한다. 정상 상태에서
@@ -890,6 +891,9 @@ private:
       speed_command = std::min(
         speed_command, std::min(max_speed_, recovery_max_forward_override_));
     }
+    const double target_acceleration = std::clamp(
+      (speed_command - previous_speed_command) / control_dt,
+      -max_deceleration_, max_acceleration_);
     last_speed_command_ = speed_command;
     steering_angle = std::clamp(
       steering_angle, -max_steering_angle_, max_steering_angle_);
@@ -898,7 +902,7 @@ private:
     command.header.stamp = now;
     command.header.frame_id = "base_link";
     command.drive.speed = static_cast<float>(speed_command);
-    command.drive.acceleration = 0.0F;
+    command.drive.acceleration = static_cast<float>(target_acceleration);
     command.drive.jerk = 0.0F;
     command.drive.steering_angle = static_cast<float>(steering_angle);
     command_pub_->publish(command);

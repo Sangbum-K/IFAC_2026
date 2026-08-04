@@ -34,12 +34,14 @@
 #include <ackermann_msgs/msg/ackermann_drive_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <vesc_msgs/msg/vesc_state_stamped.hpp>
 
 namespace vesc_ackermann
 {
 
 using ackermann_msgs::msg::AckermannDriveStamped;
 using std_msgs::msg::Float64;
+using vesc_msgs::msg::VescStateStamped;
 
 class AckermannToVesc : public rclcpp::Node
 {
@@ -51,16 +53,31 @@ private:
   // conversion gain and offset
   double speed_to_erpm_gain_, speed_to_erpm_offset_;
   double steering_to_servo_gain_, steering_to_servo_offset_;
+  bool brake_control_enabled_;
+  double brake_max_, brake_speed_error_gain_;
+  double brake_decel_threshold_, brake_entry_speed_error_;
+  double brake_overspeed_error_, brake_release_speed_error_;
+  double brake_min_vehicle_speed_, vesc_state_timeout_;
 
   /** @todo consider also providing an interpolated look-up table conversion */
 
   // ROS services
   rclcpp::Publisher<Float64>::SharedPtr erpm_pub_;
+  rclcpp::Publisher<Float64>::SharedPtr current_pub_;
+  rclcpp::Publisher<Float64>::SharedPtr brake_pub_;
   rclcpp::Publisher<Float64>::SharedPtr servo_pub_;
   rclcpp::Subscription<AckermannDriveStamped>::SharedPtr ackermann_sub_;
+  rclcpp::Subscription<VescStateStamped>::SharedPtr vesc_state_sub_;
+
+  // Latest VESC feedback and longitudinal mode state
+  double actual_speed_;
+  rclcpp::Time last_vesc_state_time_;
+  bool has_vesc_state_;
+  bool braking_active_;
 
   // ROS callbacks
   void ackermannCmdCallback(const AckermannDriveStamped::SharedPtr cmd);
+  void vescStateCallback(const VescStateStamped::SharedPtr state);
 };
 
 }  // namespace vesc_ackermann
