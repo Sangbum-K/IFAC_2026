@@ -26,7 +26,7 @@ import math
 
 import numpy as np
 import rclpy
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from rclpy.time import Time
@@ -157,10 +157,18 @@ class PerceptionObstacleBridgeNode(Node):
         self.last_source_ns = None
 
         self.tf_buffer = tf2_ros.Buffer()
-        # cb_obs 안의 exact-time lookup이 single-thread executor를 기다리는 동안
-        # /tf callback 자체가 굶지 않도록 전용 listener thread를 쓴다.
+        # cb_obs 안의 exact-time lookup이 executor를 기다리는 동안 /tf callback이
+        # 굶지 않아야 한다. spin_thread=True는 이걸 못 한다 — 오히려 무력화된다:
+        # TransformListener가 전용 executor에 node를 add_node한 뒤 main()의
+        # rclpy.spin(node)이 글로벌 executor에 같은 node를 넣으면 rclpy의
+        # Node.executor setter가 기존 executor에서 노드를 빼버린다
+        # (rclpy/node.py: `current_executor.remove_node(self)`).
+        # 그러면 /tf 콜백이 결국 메인 executor에 직렬화되고, depth 100인 /tf
+        # 큐가 포화되며 버퍼가 ~1.6초 늙는다 (obstacle_detector에서 실측:
+        # run_0803_204743, |tf-scan| 1.3~2.1s로 스캔 전멸).
+        # -> spin_thread=False + main()의 MultiThreadedExecutor 조합을 쓴다.
         self.tf_listener = tf2_ros.TransformListener(
-            self.tf_buffer, self, spin_thread=True)
+            self.tf_buffer, self, spin_thread=False)
 
         waypoint_qos = QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -497,8 +505,15 @@ class PerceptionObstacleBridgeNode(Node):
                             'frame rejected',
                             throttle_duration_sec=2.0)
                         return
-                elif wall_dist + raw_half < self.wall_dist_min:
-                    # 물체 전체가 벽 마진 안쪽일 때만 wall ghost로 삭제한다.
+                elif wall_dist < self.wall_dist_min:
+                    # centroid 기준으로 판정한다. 예전 조건
+                    # (wall_dist + raw_half < wall_dist_min)은 raw_half가
+                    # wall_dist_min보다 크면 중심이 벽 픽셀 위(거리 0)여도
+                    # 절대 삭제되지 않아 필터가 사실상 무력했다 —
+                    # run_0803_213313에서 벽거리 0.000m 유령(radius 0.31~0.40)이
+                    # 그대로 통과해 spliner TRAILING 정지 라치를 유발했다.
+                    # 물리적 분리는 명확하다: 유령 중심은 벽 위(실측 p50 0.000m),
+                    # 진짜 차량(0.30m 폭)은 벽에 붙어도 중심이 >=0.15m 떨어진다.
                     continue
 
             # id별 시간차분으로 map 기준 vs/vd 추정 (laser 프레임 속도는
@@ -566,12 +581,17 @@ class PerceptionObstacleBridgeNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PerceptionObstacleBridgeNode()
+    # rclpy.spin(node) 금지 — TransformListener 전용 executor에서 노드를 빼앗아
+    # TF 콜백을 메인 스레드에 직렬화시킨다 (생성자 주석 참조).
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         # launch가 SIGINT를 보내면 컨텍스트가 이미 shutdown된 상태로 spin이 깨진다.
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

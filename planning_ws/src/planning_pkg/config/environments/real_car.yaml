@@ -36,7 +36,15 @@ perception_obstacle_bridge_node:
     bridge/tf_timeout_sec: 0.05
     bridge/tf_allow_latest_fallback: false
     bridge/tf_max_age_sec: 0.05
-    bridge/max_source_age_sec: 0.20
+    # detector 실측 출력 지연(scan stamp 기준) p50 0.258s / p90 0.306s /
+    # max 0.445s (run_0803_213313). 0.20이면 511프레임 중 508개가 거부돼
+    # 장애물 스트림이 사실상 끊기고, 우연히 통과한 3프레임이 spliner를
+    # TRAILING(v=0)에 넣은 뒤 stale fail-safe 정지로 라치됐다.
+    # 0.40 = p99(0.356s) + 여유. 장애물 좌표는 detector가 scan 정시각 TF로
+    # 이미 변환했으므로 age 완화가 위치 오차를 키우지 않는다.
+    # ⚠️ 근본 수정은 detector on_scan 처리시간(~150ms/scan) 단축이다.
+    #    그게 끝나면 이 값을 다시 조여야 stale 장애물이 안 샌다.
+    bridge/max_source_age_sec: 0.40
     bridge/source_future_tolerance_sec: 0.05
     bridge/require_source_stamp: true
     bridge/projection_window_wpnts: 80
@@ -44,11 +52,19 @@ perception_obstacle_bridge_node:
     bridge/max_abs_vs_mps: 10.0
     bridge/max_abs_vd_mps: 4.0
     # 맵 벽거리 필터 (근거·주의사항은 race_map.yaml 동일 블록 주석 참조).
-    # localization.launch.py의 map_server가 /map을 latched 발행 — PF 산포
-    # 측정 후 true로 켤 것. 활성화 후 map/거리변환이 준비되지 않으면 해당
-    # perception frame 전체를 거부해 건강한 "빈 관측"으로 위장하지 않는다.
-    bridge/use_map_filter: false
-    bridge/wall_dist_min_m: 0.20
+    # localization.launch.py의 map_server가 /map을 latched 발행.
+    # 활성화 후 map/거리변환이 준비되지 않으면 해당 perception frame 전체를
+    # 거부해 건강한 "빈 관측"으로 위장하지 않는다.
+    # 2026-08-03 활성화: run_0803_204743에서 벽 유령(r=2.9~5.2m)이 레이스라인
+    # 대부분을 덮어 정지 — 장애물이 하나도 없던 주행이었다. 1차 방어는
+    # perception detector의 포인트 단위 맵 필터(use_map_filter)이고, 이
+    # centroid 단위 필터는 detector 쪽이 무력화됐을 때의 2차 방어선.
+    # 2026-08-03(2차) 판정식 수정: 예전 `wall_dist + radius < min`은 radius가
+    # min보다 크면 중심이 벽 위여도 삭제 불가라 무력했다. 이제 centroid의
+    # 벽거리만 본다 — 0.20이면 벽에 붙은 진짜 차(중심 >=0.15m)를 지울 수
+    # 있으므로 detector와 같은 0.15로 맞춘다.
+    bridge/use_map_filter: true
+    bridge/wall_dist_min_m: 0.15
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
 

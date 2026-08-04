@@ -53,7 +53,13 @@ def test_default_profile_is_fail_safe():
         global_cfg["global_trajectory/max_velocity_scale"] <= 1.0
     assert spliner["spliner/use_trailing"] is True
     assert spliner["spliner/sp_lane_change"] is False
-    assert spliner["spliner/obs_timeout_sec"] <= 0.25
+    # perception lease. 짧을수록 "빨리 알아챈다"가 아니다 — 초과하면 spliner가
+    # fail-safe 정지 궤적(vx=0)을 발행하므로, detector 실측 발행 주기보다
+    # 짧으면 정상 스트림에서도 프레임 사이마다 정지가 끼어든다.
+    # run_0803_213313: 0.20 < detector 주기 0.246s -> 28.6초 정지 라치.
+    # 상한은 "탐지 실패를 이만큼 안에는 알아챈다"는 안전 계약이므로 유지하되,
+    # detector가 목표대로 >=15Hz가 되면 다시 조일 것.
+    assert spliner["spliner/obs_timeout_sec"] <= 0.60
     assert spliner["spliner/ot_speed_scale"] <= 1.0
     assert local["local_trajectory/require_avoidance_heartbeat"] is True
     assert local["local_trajectory/avoidance_timeout_sec"] <= 0.25
@@ -137,7 +143,13 @@ def test_real_profiles_require_exact_time_and_fresh_inputs():
         env = _yaml(PKG / "config" / "environments" / f"{env_name}.yaml")
         bridge = _ros_params(env, "perception_obstacle_bridge_node")
         assert bridge["bridge/tf_allow_latest_fallback"] is False
-        assert bridge["bridge/max_source_age_sec"] <= 0.25
+        # detector 출력 지연 실측 p50 0.258 / p90 0.306 / p99 0.356s
+        # (run_0803_213313). 0.25면 511프레임 중 508개가 거부돼 장애물
+        # 스트림이 통째로 끊긴다 — 이 상한은 "신선한 입력만 쓴다"는 계약이지
+        # 파이프라인을 굶기라는 뜻이 아니다. 좌표 자체는 detector가 scan
+        # 정시각 TF로 변환하므로 age 완화가 위치 오차를 키우지 않는다.
+        # detector on_scan 처리시간(~150ms)을 줄이면 다시 조일 것.
+        assert bridge["bridge/max_source_age_sec"] <= 0.45
         assert bridge["bridge/tf_max_age_sec"] <= 0.10
 
 

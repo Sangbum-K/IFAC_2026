@@ -98,7 +98,14 @@ spliner_node:
     spliner/outside_spline_scale: 1.75   # 코너 바깥 추월 시 스플라인 완만화 배율
     spliner/inside_speed_scale: 0.9      # 코너 안쪽 통과 시 속도 스케일
     spliner/side_switch_d_tresh: 0.20    # |d|가 이보다 크면 추월 사이드 변경 금지 [m] (was 0.25)
-    spliner/obs_timeout_sec: 0.20
+    # perception 스트림 lease. 초과하면 마지막 장애물 유지도 클리어도 아닌
+    # fail-safe 정지 궤적(전 점 vx=0)을 발행하므로, 반드시 detector 실측
+    # 발행 주기의 2배 이상이어야 한다. 0.20은 detector 실측 주기 0.246s
+    # (6.6Hz)보다 짧아서 프레임 사이마다 정지가 깜빡였고, 브릿지 age 게이트와
+    # 겹치며 run_0803_213313에서 28.6초 정지 라치가 됐다.
+    # 0.50 = 6.6Hz 스트림의 3프레임 분. detector가 목표대로 >=15Hz가 되면
+    # 다시 조일 것.
+    spliner/obs_timeout_sec: 0.50
     spliner/use_prediction: true         # Predictive Spliner: 예측 충돌구간이 원시 관측 대체
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속.

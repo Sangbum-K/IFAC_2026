@@ -7,37 +7,52 @@ slam_toolbox:
     use_map_saver: true
     mode: mapping
     debug_logging: false
-    throttle_scans: 1
+    # /scan 은 39 Hz 로 들어오는데 Jetson 이 그 속도로 스캔매칭+래스터화를 못 따라가,
+    # tf2 MessageFilter 큐가 밀려 "dropping message ... queue is full" 로 스캔이
+    # 통째로 버려졌다 (2026-08-03 매핑). 버려진 스캔만큼 정합 체인에 구멍이 나서
+    # 오차가 커진다. 입력을 절반으로 줄이고 맵 갱신 주기를 기본값으로 되돌린다.
+    throttle_scans: 2
     transform_publish_period: 0.02
-    map_update_interval: 2.0
+    map_update_interval: 5.0
     resolution: 0.05
     restamp_tf: false
     min_laser_range: 0.05
     max_laser_range: 20.0
-    minimum_time_interval: 0.1
+    minimum_time_interval: 0.2
     transform_timeout: 0.2
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000
     enable_interactive_mode: true
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.2
-    minimum_travel_heading: 0.1
+    minimum_travel_distance: 0.3
+    minimum_travel_heading: 0.2
     check_min_dist_and_heading_precisely: false
     scan_buffer_size: 20
     scan_buffer_maximum_scan_distance: 10.0
-    link_match_minimum_response_fine: 0.35
+    link_match_minimum_response_fine: 0.15
     link_scan_maximum_distance: 1.5
-    loop_search_maximum_distance: 1.5
+    # ── 루프 클로징 ──────────────────────────────────────────────
+    # upstream f1tenth_stack 값(1.5 / 15 / 0.55 / 0.65)은 slam_toolbox 기본값보다
+    # 전부 훨씬 빡빡해서 사실상 루프클로징이 불가능했다. 특히
+    # loop_search_maximum_distance 1.5 는 "한 바퀴 뒤 누적 오차가 1.5 m 를 넘으면
+    # 루프 후보 노드를 아예 안 뽑는다"는 뜻이라, 오차가 커지는 순간 영구히 못 닫는
+    # 닭-달걀이 된다 (2026-08-03 my_track0803 매핑 실패 원인).
+    #
+    # ⚠ 응답 문턱(coarse/fine)을 기본값 0.35/0.45 아래로는 내리지 말 것.
+    #   이 트랙은 폭이 비슷한 복도 구간이 여러 개라 반대편 직선과 잘못 닫히면
+    #   맵이 통째로 접힌다. 3.0 으로도 안 닫히면 search_maximum_distance 만 5.0 까지.
+    loop_search_maximum_distance: 3.0
     do_loop_closing: true
-    loop_match_minimum_chain_size: 15
+    loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0
-    loop_match_minimum_response_coarse: 0.55
-    loop_match_minimum_response_fine: 0.65
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
     correlation_search_space_dimension: 0.5
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.1
-    loop_search_space_dimension: 3.0
+    # 3.0 은 상관검색창이 ±1.5 m 라 그 이상 어긋난 루프는 후보가 잡혀도 정렬 실패.
+    loop_search_space_dimension: 8.0
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
     distance_variance_penalty: 0.5

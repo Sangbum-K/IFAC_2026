@@ -36,6 +36,10 @@ particle_filter:
     pose_jump_guard_enabled: true
     max_pose_jump_translation_m: 0.30
     max_pose_jump_yaw_rad: 0.35
+    # 가드가 영구 거부권이 되지 않도록: 연속 거부가 이 횟수에 닿으면 보정을
+    # 한 번 받아들여 재동기화한다. 0 = 비활성(구 동작 = 영구 차단 위험).
+    # PF ~15Hz -> 10회는 약 0.7초. 그 안에 못 붙으면 예측이 틀린 것이다.
+    max_consecutive_jump_rejects: 10
     # Use the Python log-likelihood path to avoid sensor-weight underflow on real bags.
     rangelib_variant: 0
 

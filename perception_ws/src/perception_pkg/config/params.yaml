@@ -34,6 +34,16 @@ obstacle_detector_node:
     dynamic_release: 40       # 상대(한번 동적)의 정적 복귀 연속 프레임 (정체성 유지)
     pos_hist_len: 20          # 위치분산 판별 윈도우 [frames]
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)
+    # 맵 벽 필터: 기본 비활성 (맵 없이도 돌아야 하는 개발/디버그 기본값).
+    # 실차/레이스는 environments/*.yaml에서 켠다 — 좁은 트랙에서는 필수.
+    use_map_filter: false
+    map_topic: /map
+    wall_dist_min_m: 0.15
+    # use_map_filter=true면 맵 수신 전까지 장애물 발행을 보류한다(벽 파편이
+    # 유령으로 나가는 것 방지). 이 시간을 넘기면 시끄러운 error와 함께
+    # 필터 없이 진행 — 맵서버가 죽었을 때 조용히 영구 침묵하지 않게.
+    map_wait_timeout_sec: 10.0
+    max_cluster_radius_m: 0.0   # 0 = 비활성
 
 # 인지 결과 -> RViz 마커 (monitor.rviz "Obstacles" 디스플레이).
 # 순수 구독자라 인지/플래닝 동작에는 영향이 없다.
