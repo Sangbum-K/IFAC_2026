@@ -51,6 +51,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+HERE = Path(__file__).resolve().parent
+PKG_ROOT = next((p for p in HERE.parents if p.name == "planning_pkg"),
+                HERE.parent.parent)
+WORKSPACE_ROOT = PKG_ROOT.parents[2]
+
 # ============================================================ 설정 (여기만 고치면 됨)
 # --- 스케일 ------------------------------------------------------------------
 # 크기(resolution/origin)는 SLAM이 만든 yaml 값을 그대로 쓴다. 아래 값은
@@ -152,29 +157,73 @@ A_DEC_MAX  = 1.3     # 최대 제동 [m/s²] (코스팅 전용 실측, 제동 �
 MAX_STEER_RATE = 2.0 # [rad/s] control 기본 steering-rate limit
 N_LOCAL_WP = 130     # 로컬 윈도우 웨이포인트 수 (local_trajectory_node와 동일)
 
+# cpp_real_car 게이트는 하드코딩 숫자가 아니라 planning/control real_car.yaml을
+# 직접 읽는다. (2026-08-05: velocity_scale 0.97/max_speed 6.0 하드코딩이 실제
+# real_car.yaml 값(0.75/4.5, 커밋 54574dd)과 어긋난 채 방치돼 게이트가 실제
+# 배포보다 높은 속도로 폐루프를 검증 — 마진이 실제보다 타이트해져 매핑할
+# 때마다 CSV 생성이 불필요하게 FAIL하는 사고가 있었음. 이 로더가 그 클래스의
+# drift를 원천 차단한다 — real_car.yaml만 바꾸면 게이트도 같이 따라간다.)
+def _load_runtime_speed_profile():
+    planning_yaml = (WORKSPACE_ROOT / "planning_ws" / "src" / "planning_pkg"
+                      / "config" / "environments" / "real_car.yaml")
+    control_yaml = (WORKSPACE_ROOT / "control_ws" / "src" / "control_pkg"
+                     / "config" / "environments" / "real_car.yaml")
+
+    def _load(path):
+        if not path.exists():
+            raise RuntimeError(f"폐루프 게이트 설정 파일이 없음: {path}")
+        with open(path) as f:
+            return yaml.safe_load(f)
+
+    planning_cfg = _load(planning_yaml)
+    control_cfg = _load(control_yaml)
+
+    try:
+        planner_scale = float(
+            planning_cfg["global_trajectory_node"]["ros__parameters"]
+            ["global_trajectory/velocity_scale"])
+        controller_scale = float(
+            control_cfg["control"]["ros__parameters"]["vehicle/speed_scale"])
+        max_speed = float(
+            control_cfg["control"]["ros__parameters"]["vehicle/max_speed_mps"])
+    except KeyError as exc:
+        raise RuntimeError(
+            f"real_car.yaml에서 속도 파라미터를 못 찾음 (키 누락: {exc}). "
+            "planning/control real_car.yaml 구조가 바뀌었으면 "
+            "_load_runtime_speed_profile()도 같이 고칠 것.") from exc
+
+    if not (0.0 < planner_scale <= 1.0):
+        raise RuntimeError(f"planning velocity_scale 범위 이상: {planner_scale}")
+    if not (0.0 < controller_scale <= 1.0):
+        raise RuntimeError(f"control speed_scale 범위 이상: {controller_scale}")
+    if not (max_speed > 0.0):
+        raise RuntimeError(f"control max_speed_mps 범위 이상: {max_speed}")
+
+    return planner_scale, controller_scale, max_speed
+
+
+(_RUNTIME_PLANNER_SCALE, _RUNTIME_CONTROLLER_SCALE,
+ _RUNTIME_MAX_SPEED_MPS) = _load_runtime_speed_profile()
+
 # 폐루프 검증은 이름 없는 "비슷한 pure pursuit" 설정으로 돌리면 안 된다.
-# 아래 목록에 선택된 배포 프로파일을 **모두** 통과해야 CSV를 쓴다. 값은 각각
-# planning/config와 control/config의 현재 활성 설정을 명시적으로 복제한다.
-# 프로파일을 바꿀 때 런타임 YAML과 이 블록을 한 변경으로 맞출 것.
+# 아래 목록에 선택된 배포 프로파일을 **모두** 통과해야 CSV를 쓴다.
 SIM_CONTROLLER_PROFILES = (
     "cpp_real_car",
     "python_sim_tracker",
 )
 CONTROLLER_PROFILE_LIBRARY = {
-    # planning environments/real_car.yaml velocity_scale=0.97 +
-    # control environments/real_car.yaml speed_scale=1.0, max_speed=6.0.
-    # (2026-08-01: 5 m/s 단계(0.83/5.0) 실차 성공 후 6 m/s 단계로 승격.
-    #  프로파일 자체가 A_ACC 2.2/A_DEC 1.3 실측 한계로 v-max ~5.4라
-    #  cap 6.0은 클램프 없이 프로파일 속도를 그대로 통과시킨다.
+    # planner_speed_scale/controller_speed_scale/max_speed_mps는 위
+    # _load_runtime_speed_profile()이 real_car.yaml에서 직접 읽은 값이다.
+    # 과거 스윕 이력(참고용, 현재 숫자를 대표하지 않음):
     #  scale 스윕(my_track0801): 1.00 FAIL(footprint 벽 침범), 0.97~0.99 PASS.
     #  0.97은 |lat err|max 0.202 m로 5 m/s 성공 배포(0.207)와 같은 마진 —
-    #  0.99(0.212 m)는 절벽(1.0) 한 칸 옆이라 채택하지 않음.)
+    #  0.99(0.212 m)는 절벽(1.0) 한 칸 옆이라 채택하지 않았음.
     # C++ MAP/L1의 실제 NUC6 steering LUT도 그대로 사용한다.
     "cpp_real_car": {
         "kind": "cpp_map_l1",
-        "planner_speed_scale": 0.80,
-        "controller_speed_scale": 1.0,
-        "max_speed_mps": 6.0,
+        "planner_speed_scale": _RUNTIME_PLANNER_SCALE,
+        "controller_speed_scale": _RUNTIME_CONTROLLER_SCALE,
+        "max_speed_mps": _RUNTIME_MAX_SPEED_MPS,
         "lookahead_gain": 0.47,
         "lookahead_offset": -0.2,
         "lookahead_min_m": 0.5,
@@ -224,14 +273,10 @@ LAPS       = 1       # 시뮬 랩 수
 
 G = 9.81
 
-HERE = Path(__file__).resolve().parent
-PKG_ROOT = next((p for p in HERE.parents if p.name == "planning_pkg"),
-                HERE.parent.parent)
 # 맵을 찾을 폴더 (앞에서부터 순서대로 — 먼저 있는 걸 쓴다):
 #   1) <workspace>/maps      — mapping.launch.py 가 저장하는 워크스페이스 공용 폴더.
 #      여기서 먼저 찾으므로 매핑 직후 복사 없이 바로 build_map 을 돌릴 수 있다.
 #   2) planning_pkg/maps     — 패키지에 함께 두는 맵 (기존 동작).
-WORKSPACE_ROOT = PKG_ROOT.parents[2]
 MAPS_SEARCH_DIRS = [WORKSPACE_ROOT / "maps", PKG_ROOT / "maps"]
 CSV_DIR = PKG_ROOT / "config" / "global_trajectory"
 CENTERLINE_DIR = PKG_ROOT / "config" / "centerline"
