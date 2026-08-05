@@ -19,7 +19,7 @@ Ctrl+C 하는 순간 맵이 `map_dir/map_name.{pgm,yaml}`로 저장된다.
   hardware:=false       이미 A가 떠 있을 때
   rviz:=false           화면 없이
   save_on_exit:=false   Ctrl+C 자동 저장을 끄고 /save_map 서비스로만 저장
-  overwrite:=true       이름이 이미 쓰이고 있어도 강행 (기본은 launch 단계에서 거부)
+  overwrite:=false      이름이 이미 쓰일 때만 거부. 기본은 덮어쓰기 허용
 
 이름이 겹치면 **주행 전에** 막는다: map_dir 은 localization / raceline_tuner /
 build_map 모두가 먼저 뒤지는 폴더라, 기존 맵이나 패키지 맵(particle_filter/maps,
@@ -117,15 +117,15 @@ def launch_setup(context, *args, **kwargs):
             '    %s\n'
             '  %s 는 다른 폴더보다 먼저 검색되므로, 이 이름으로 저장하면 위 맵이\n'
             '  에러 없이 조용히 안 쓰이게 됩니다 (주행은 되는데 다른 맵으로 됩니다).\n'
-            '  → 새 이름을 쓰세요 (예: mapp %s_%s)\n'
-            '  → 정말 덮어쓰려면: mapp %s overwrite:=true'
+            '  → 그냥 덮어쓰려면: mapp %s\n'
+            '  → 정말 막고 싶을 때만: mapp %s overwrite:=false'
             % (map_name, '\n    '.join(conflicts), map_dir,
-               map_name, 'v2', map_name))
+               map_name, map_name))
 
     actions = []
     if conflicts:
         actions.append(LogInfo(msg=(
-            '\n[경고] overwrite:=true — 아래를 덮어쓰거나 가립니다:\n    %s\n'
+            '\n[경고] 기존 이름 재사용 — 아래를 덮어쓰거나 가립니다:\n    %s\n'
             % '\n    '.join(conflicts))))
 
     if hardware:
@@ -209,8 +209,9 @@ def generate_launch_description():
                               description='맵 확인용 RViz 실행 여부'),
         DeclareLaunchArgument('save_on_exit', default_value='true',
                               description='Ctrl+C 시 자동 저장 여부'),
-        DeclareLaunchArgument('overwrite', default_value='false',
-                              description='기존 맵/패키지 맵과 이름이 겹쳐도 진행. '
+        DeclareLaunchArgument('overwrite', default_value='true',
+                              description='기존 맵/패키지 맵과 이름이 겹쳐도 진행 '
+                                          '(기본). false면 launch 단계에서 거부. '
                                           '겹친 파일은 저장 시 .bak 으로 백업된다'),
         OpaqueFunction(function=launch_setup),
     ])
