@@ -27,7 +27,7 @@ global_trajectory_node:
     # 가감속 반영 재생성 후 단계 승격으로 회복.
     # ⚠️ PF가 4.5 m/s 이상에서 발산 이력 있음(erpm gain 미캘리브레이션) — 주행 시
     # PF 점프/발산 재현되면 즉시 0.83으로 복귀할 것.
-    global_trajectory/velocity_scale: 0.833333
+    global_trajectory/velocity_scale: 0.916666
 
 frenet_frame_node:
   ros__parameters:
