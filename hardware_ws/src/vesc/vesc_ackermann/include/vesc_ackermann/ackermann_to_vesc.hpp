@@ -54,7 +54,7 @@ private:
   double speed_to_erpm_gain_, speed_to_erpm_offset_;
   double steering_to_servo_gain_, steering_to_servo_offset_;
   bool brake_control_enabled_;
-  double brake_max_, brake_speed_error_gain_;
+  double ackermann_brake_max_, brake_speed_error_gain_;
   double brake_decel_threshold_, brake_entry_speed_error_;
   double brake_overspeed_error_, brake_release_speed_error_;
   double brake_min_vehicle_speed_, vesc_state_timeout_;

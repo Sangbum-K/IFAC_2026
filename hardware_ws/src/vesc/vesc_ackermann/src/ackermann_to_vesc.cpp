@@ -62,7 +62,7 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
   steering_to_servo_offset_ =
     declare_parameter<double>("steering_angle_to_servo_offset");
   brake_control_enabled_ = declare_parameter<bool>("brake_control_enabled");
-  brake_max_ = declare_parameter<double>("brake_max");
+  ackermann_brake_max_ = declare_parameter<double>("ackermann_brake_max");
   brake_speed_error_gain_ = declare_parameter<double>("brake_speed_error_gain");
   brake_decel_threshold_ = declare_parameter<double>("brake_decel_threshold");
   brake_entry_speed_error_ = declare_parameter<double>("brake_entry_speed_error");
@@ -72,7 +72,7 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
   vesc_state_timeout_ = declare_parameter<double>("vesc_state_timeout");
 
   if (
-    speed_to_erpm_gain_ == 0.0 || brake_max_ <= 0.0 ||
+    speed_to_erpm_gain_ == 0.0 || ackermann_brake_max_ <= 0.0 ||
     brake_speed_error_gain_ < 0.0 || brake_decel_threshold_ < 0.0 ||
     brake_entry_speed_error_ < 0.0 || brake_overspeed_error_ < 0.0 ||
     brake_release_speed_error_ < 0.0 ||
@@ -164,9 +164,12 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPt
     if (braking_active_) {
       Float64 brake_msg;
       brake_msg.data = std::min(
-        brake_max_, std::max(0.0, brake_speed_error_gain_ * speed_error));
+        ackermann_brake_max_, std::max(0.0, brake_speed_error_gain_ * speed_error));
       brake_pub_->publish(brake_msg);
-    } else if (speed_error > 0.0) {
+    } else if (speed_error >= brake_entry_speed_error_) {
+      // Keep the VESC speed PID active for small positive errors. Enter COAST
+      // only once the overspeed is large enough to warrant intervention but
+      // neither explicit-brake entry condition is active.
       current_pub_->publish(current_msg);
     } else {
       erpm_pub_->publish(erpm_msg);
