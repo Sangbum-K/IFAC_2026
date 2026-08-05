@@ -6,6 +6,6 @@ obstacle_detector_node:
     target_frame: laser
     tf_timeout_sec: 0.05
     range_max: 12.0
-    cluster_eps: 0.18
+    # 클러스터링 임계값은 params.yaml의 lambda_angle_deg/sigma가 담당한다.
     gating_distance: 0.5
     track_timeout: 10

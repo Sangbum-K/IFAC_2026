@@ -99,7 +99,7 @@ MU_PROFILE = 0.65
 #   occupancy 마스크에서 받으면서, 코리도가 2*SAFE_DIST 보다 좁은 구간은
 #   불능이 아니라 '정중앙 고정'으로 처리된다(_solve_qp 의 narrow 분기).
 #   불능 대신 곡률로 대가를 치르는 형태로 바뀐 것이라 위 표가 나온다.
-SAFE_DIST  = 0.40    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 추적오차 여유
+SAFE_DIST  = 0.325    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 추적오차 여유
 # 소형 트랙(my_track: 실폭 median 1.2 m, 최대 2.15 m)은 벽 여유를 크게 빼면
 # 회피용 가용 corridor가 0으로 붕괴한다. MARGIN은 주행선을 안 옮기고 CSV의
 # d_left/d_right 보고값만 줄이므로(주행 위험 0) 0.15→0.08로 낮춰 회피 여유 확보.
@@ -172,7 +172,7 @@ CONTROLLER_PROFILE_LIBRARY = {
     # C++ MAP/L1의 실제 NUC6 steering LUT도 그대로 사용한다.
     "cpp_real_car": {
         "kind": "cpp_map_l1",
-        "planner_speed_scale": 0.97,
+        "planner_speed_scale": 0.80,
         "controller_speed_scale": 1.0,
         "max_speed_mps": 6.0,
         "lookahead_gain": 0.47,

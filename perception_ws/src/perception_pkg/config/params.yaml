@@ -17,7 +17,10 @@ obstacle_detector_node:
     fov_min_deg: -80.0
     fov_max_deg: 80.0
     median_kernel: 3
-    cluster_eps: 0.18
+    # adaptive breakpoint 클러스터링 (구 cluster_eps 대체).
+    # 임계값이 센서 거리에 비례해 커지므로 환경별 eps 튜닝이 필요 없다.
+    lambda_angle_deg: 10.0    # 허용 표면 입사각 — 클수록 관대(덜 쪼갬)
+    sigma: 0.015              # 라이다 거리 노이즈 [m]
     min_cluster_size: 5
     gating_distance: 0.5
     track_timeout: 10

@@ -33,7 +33,22 @@ obstacle_detector_node:
     # latest 폴백(위 0.3s 게이트)으로 내려간다.
     tf_fixed_frame: odom
     range_max: 12.0
-    cluster_eps: 0.16
+    # 클러스터링 임계값은 params.yaml의 lambda_angle_deg/sigma가 담당한다
+    # (거리 적응형이라 환경별 고정 eps가 불필요 — 구 cluster_eps 제거).
+    #
+    # ⚠️ 임시: 장애물 인지 OFF (2026-08-05)
+    # 벽이 반경 2m대 클러스터로 잡혀 브릿지 코리도 필터를 통과 -> frenet에서
+    # 트랙 폭(~1.05m)을 통째로 덮음 -> spliner가 Trailing fallback(v_target=0)으로
+    # 떨어져 출발 자체를 못 했다 (run_0805_001936 실측).
+    #
+    # 노드를 죽이지 않고 min_cluster_size로 막는 이유: spliner는 장애물 스트림이
+    # obs_timeout_sec(0.5s) 동안 끊기면 perception_stale -> fail-safe stop을 낸다.
+    # 즉 "안 띄우기"는 정지를 유발한다. 반드시 "비어 있는 스트림"을 계속 흘려야 한다.
+    # 스캔 빔 수(~1080)보다 큰 값이라 클러스터가 절대 생기지 않고,
+    # 노드는 매 스캔 빈 ObstacleArray를 계속 발행한다.
+    #
+    # 회피를 되살리려면 이 줄을 지울 것 (params.yaml 기본값 5로 복귀).
+    min_cluster_size: 100000
     gating_distance: 0.45
     track_timeout: 8
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)

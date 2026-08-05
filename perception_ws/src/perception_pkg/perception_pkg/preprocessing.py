@@ -37,6 +37,9 @@ def preprocess_scan(ranges, angle_min, angle_increment,
     Returns
     -------
     points : (N, 2) ndarray, [x, y] in laser frame
+    point_ranges : (N,) ndarray, 각 포인트의 센서 원점 기준 거리 [m]
+        adaptive 클러스터링의 임계값이 이 값을 쓴다. points는 이후 map frame으로
+        옮겨지므로 |point|로는 복원할 수 없어 따로 돌려준다.
     """
     ranges = np.asarray(ranges, dtype=np.float32)
     n = len(ranges)
@@ -60,7 +63,7 @@ def preprocess_scan(ranges, angle_min, angle_increment,
     ys = r * np.sin(a)
     points = np.stack([xs, ys], axis=1)
 
-    return points
+    return points, r.astype(np.float64)
 
 
 def transform_points(points, translation, rotation_matrix_2d):
@@ -95,9 +98,12 @@ def rotation_matrix_2d_from_quaternion(qx, qy, qz, qw):
     return np.array([[c, -s], [s, c]])
 
 
-def filter_points_in_polygon(points, polygon):
+def polygon_mask(points, polygon):
     """
-    polygon(원하는 frame, 보통 map frame 기준) 내부에 있는 points만 남긴다.
+    polygon(원하는 frame, 보통 map frame 기준) 내부에 있는 포인트의 bool 마스크.
+
+    points와 나란히 관리되는 부수 배열(예: 센서 거리)을 같은 마스크로 잘라야
+    하므로, 필터 결과가 아니라 마스크를 돌려주는 형태를 기본으로 둔다.
 
     Parameters
     ----------
@@ -106,26 +112,45 @@ def filter_points_in_polygon(points, polygon):
 
     Returns
     -------
-    (K, 2) ndarray, 필터링된 포인트
+    (N,) bool ndarray. 폴리곤이 없거나 부적합하면 전부 True (필터 미적용).
     """
     if polygon is None or len(points) == 0:
-        return points
+        return np.ones(len(points), dtype=bool)
     polygon = np.asarray(polygon, dtype=np.float32)
     if polygon.ndim != 2 or polygon.shape[0] < 3 or polygon.shape[1] != 2:
-        return points
-    mask = _points_in_polygon(points, polygon)
-    return points[mask]
+        return np.ones(len(points), dtype=bool)
+    return _points_in_polygon(points, polygon)
+
+
+def filter_points_in_polygon(points, polygon):
+    """polygon 내부 포인트만 남긴다 (polygon_mask의 편의 래퍼)."""
+    return points[polygon_mask(points, polygon)]
 
 
 def _median_filter_1d(arr, kernel):
-    """가장자리는 그대로 두고 내부 구간만 median filter 적용 (간단/저비용 구현)"""
+    """가장자리는 그대로 두고 내부 구간만 median filter 적용.
+
+    윈도 안의 비유한값(inf = 미반사, nan)은 제외하고 중앙값을 낸다.
+    윈도가 전부 비유한값이면 원본을 유지한다.
+
+    포인트마다 파이썬 루프를 돌면 1080빔 스캔에서 53ms가 걸려 on_scan 전체
+    (~58ms)를 지배한다 — process_rate_hz 20을 못 채우고 실효 15Hz로 떨어지며,
+    싱글스레드 executor가 TF 콜백을 굶는 원인이 된다 (bag 재생 실측).
+    sliding_window_view로 벡터화해 결과는 동일하게 두고 비용만 없앤다.
+    """
     half = kernel // 2
     out = arr.copy()
-    for i in range(half, len(arr) - half):
-        window = arr[i - half:i + half + 1]
-        finite = window[np.isfinite(window)]
-        if len(finite) > 0:
-            out[i] = np.median(finite)
+    if half < 1 or len(arr) <= 2 * half:
+        return out
+
+    win = np.lib.stride_tricks.sliding_window_view(arr, kernel)
+    finite = np.isfinite(win)
+    # 전부 비유한값인 윈도는 nanmedian이 nan + RuntimeWarning을 내므로 제외하고,
+    # 해당 위치는 out에 그대로 둔다 (기존 동작).
+    valid = finite.any(axis=1)
+    if valid.any():
+        masked = np.where(finite[valid], win[valid], np.nan)
+        out[half:len(arr) - half][valid] = np.nanmedian(masked, axis=1)
     return out
 
 

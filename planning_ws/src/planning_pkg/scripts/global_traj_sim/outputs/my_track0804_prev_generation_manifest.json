@@ -1,0 +1,49 @@
+{
+  "files": [
+    {
+      "bytes": 55978,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0804_prev_walls.csv",
+      "role": "walls_output",
+      "sha256": "12a22d5fe36e2891f0d80e67fea70070c4768d997d1b22a005493b54bccff8eb"
+    },
+    {
+      "bytes": 55978,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_track0804_prev_walls.csv",
+      "role": "walls_runtime",
+      "sha256": "12a22d5fe36e2891f0d80e67fea70070c4768d997d1b22a005493b54bccff8eb"
+    },
+    {
+      "bytes": 7589,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0804_prev_centerline.csv",
+      "role": "centerline_output",
+      "sha256": "50ba434d03094ebaeed4e91cbdabadddb5acc3c0d6f84292b417de99c0cbba3f"
+    },
+    {
+      "bytes": 7589,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_track0804_prev_centerline.csv",
+      "role": "centerline_runtime",
+      "sha256": "50ba434d03094ebaeed4e91cbdabadddb5acc3c0d6f84292b417de99c0cbba3f"
+    },
+    {
+      "bytes": 32378,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0804_prev_iqp_max6.00ms_margin0.08m_mu0.65.csv",
+      "role": "main_output",
+      "sha256": "810618c89d64c8ffec5a1a6ac4ac63b45bee7f50f546a2802cf78b0a55640d60"
+    },
+    {
+      "bytes": 32378,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0804_prev_iqp_max6.00ms_margin0.08m_mu0.65.csv",
+      "role": "main_runtime",
+      "sha256": "810618c89d64c8ffec5a1a6ac4ac63b45bee7f50f546a2802cf78b0a55640d60"
+    }
+  ],
+  "generation_content_sha256": "1a904a9229687716b6cbc12621eb3d6ba1647d2a4b758bcf66f7ba94750f1557",
+  "generation_id": "e78b269120914c8aa936bb81781471aa",
+  "main": "my_track0804_prev_iqp_max6.00ms_margin0.08m_mu0.65.csv",
+  "map": "my_track0804_prev",
+  "schema_version": 1,
+  "sp": null,
+  "sp_disabled_reason": "SP static validation failed: [FAIL] R=0.85 m @ s=5.7~5.7 m xy=(2.39,3.13) \u2014 \uc870\ud5a5 \ud3ec\ud654, 1\uc810",
+  "sp_enabled": false,
+  "sp_expected": "my_track0804_prev_sp_max6.00ms_margin0.08m_mu0.65.csv"
+}

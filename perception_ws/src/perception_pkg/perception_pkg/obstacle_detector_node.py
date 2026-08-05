@@ -33,9 +33,9 @@ from perception_pkg.preprocessing import (
     preprocess_scan,
     transform_points,
     rotation_matrix_2d_from_quaternion,
-    filter_points_in_polygon,
+    polygon_mask,
 )
-from perception_pkg.clustering import cluster_points
+from perception_pkg.clustering import adaptive_cluster_points
 from perception_pkg.tracker import Tracker
 from perception_pkg.classifier import classify_track
 
@@ -52,7 +52,10 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('fov_max_deg', 135.0)
         self.declare_parameter('median_kernel', 3)
 
-        self.declare_parameter('cluster_eps', 0.18)
+        # adaptive breakpoint 클러스터링: 임계값이 센서 거리에 따라 커지므로
+        # 구 cluster_eps(고정 거리)는 필요 없다.
+        self.declare_parameter('lambda_angle_deg', 10.0)
+        self.declare_parameter('sigma', 0.015)
         self.declare_parameter('min_cluster_size', 3)
 
         self.declare_parameter('gating_distance', 0.5)
@@ -102,7 +105,8 @@ class ObstacleDetectorNode(Node):
         self.fov_max = float(p('fov_max_deg').value) * np.pi / 180.0
         self.median_kernel = int(p('median_kernel').value)
 
-        self.cluster_eps = float(p('cluster_eps').value)
+        self.lambda_angle = float(p('lambda_angle_deg').value) * np.pi / 180.0
+        self.sigma = float(p('sigma').value)
         self.min_cluster_size = int(p('min_cluster_size').value)
 
         self.v_thresh = float(p('v_thresh').value)
@@ -141,14 +145,19 @@ class ObstacleDetectorNode(Node):
             raise ValueError('invalid detector timing/freshness parameters')
         continuous_values = (
             self.range_min, self.range_max, self.fov_min, self.fov_max,
-            self.cluster_eps, self.v_thresh, self.static_pos_std,
+            self.lambda_angle, self.sigma, self.v_thresh, self.static_pos_std,
             self.dynamic_pos_std, gating_distance, reid_distance, reid_timeout,
         )
         if (not all(np.isfinite(v) for v in continuous_values)
                 or not 0.0 <= self.range_min < self.range_max <= 100.0
                 or not -2.0 * np.pi <= self.fov_min < self.fov_max <= 2.0 * np.pi
                 or self.median_kernel < 1 or self.median_kernel % 2 == 0
-                or not 0.001 <= self.cluster_eps <= 10.0
+                # lambda는 angle_increment보다 확실히 커야 한다. 작거나 같으면
+                # d_max가 음수가 되어 모든 포인트가 쪼개지고 장애물이 통째로
+                # 사라진다. 하한 1deg는 실사용 라이다 증분(UST-10LX 0.25deg)의
+                # 4배 여유. 상한 45deg 이상은 사실상 무한 병합이라 의미가 없다.
+                or not np.deg2rad(1.0) <= self.lambda_angle <= np.deg2rad(45.0)
+                or not 0.0 <= self.sigma <= 1.0
                 or not 1 <= self.min_cluster_size <= 100000
                 or not 0.001 <= gating_distance <= 100.0
                 or not 1 <= track_timeout <= 100000
@@ -282,7 +291,9 @@ class ObstacleDetectorNode(Node):
             return
 
         # ① 전처리 (laser frame 기준, range/FOV/median filter만)
-        points = preprocess_scan(
+        # point_ranges는 센서 원점 기준 거리 — 아래에서 points를 map frame으로
+        # 옮겨도 클러스터링 임계값은 이 값을 써야 한다.
+        points, point_ranges = preprocess_scan(
             msg.ranges, msg.angle_min, msg.angle_increment,
             range_min=self.range_min, range_max=self.range_max,
             fov_min=self.fov_min, fov_max=self.fov_max,
@@ -382,12 +393,27 @@ class ObstacleDetectorNode(Node):
             points = transform_points(points, [t.x, t.y], R)
 
         # ②.5 경계 필터 (이제 target_frame 기준이므로 정적 폴리곤을 그대로 써도 됨)
+        # point_ranges도 같은 마스크로 잘라야 포인트와 1:1 대응이 유지된다.
         if self.boundary_polygon is not None:
-            points = filter_points_in_polygon(points, self.boundary_polygon)
+            keep = polygon_mask(points, self.boundary_polygon)
+            points = points[keep]
+            point_ranges = point_ranges[keep]
 
         # ② 클러스터링
-        clusters = cluster_points(
-            points, eps=self.cluster_eps, min_cluster_size=self.min_cluster_size
+        if msg.angle_increment >= self.lambda_angle:
+            self.get_logger().warn(
+                f'angle_increment ({np.rad2deg(msg.angle_increment):.3f} deg) >= '
+                f'lambda_angle_deg ({np.rad2deg(self.lambda_angle):.3f}); '
+                'clustering will merge everything. Raise lambda_angle_deg.',
+                throttle_duration_sec=5.0,
+            )
+        clusters = adaptive_cluster_points(
+            points,
+            point_ranges,
+            angle_increment=msg.angle_increment,
+            lambda_angle=self.lambda_angle,
+            sigma=self.sigma,
+            min_cluster_size=self.min_cluster_size,
         )
 
         # ③④ 매칭 + 칼만필터 트래킹

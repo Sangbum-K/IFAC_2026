@@ -13,6 +13,6 @@ obstacle_detector_node:
     # time-travel lookup (real_car.yaml 주석 참고)
     tf_fixed_frame: odom
     range_max: 12.0
-    cluster_eps: 0.16
+    # 클러스터링 임계값은 params.yaml의 lambda_angle_deg/sigma가 담당한다.
     gating_distance: 0.45
     track_timeout: 8
