@@ -316,7 +316,7 @@ class ParticleFiler(Node):
             odom.pose.pose.position.x = map_to_base[0]
             odom.pose.pose.position.y = map_to_base[1]
             odom.pose.pose.orientation = Utils.angle_to_quaternion(map_to_base[2])
-            cov3 = np.cov(self.particles, rowvar=False, ddof=0, aweights=self.weights)
+            cov3 = self.pose_covariance_3x3()
             cov6 = np.zeros((6, 6))
             idx = [0, 1, 5]  # (x, y, theta) -> (x, y, yaw) slots of the 6x6 matrix
             for i, r in enumerate(idx):
@@ -746,6 +746,27 @@ class ParticleFiler(Node):
         cos_yaw = np.dot(np.cos(self.particles[:, 2]), self.weights)
         yaw = np.arctan2(sin_yaw, cos_yaw)
         return np.array([xy[0], xy[1], yaw])
+
+    def pose_covariance_3x3(self):
+        """Weighted covariance in [x, y, yaw], with yaw residuals wrapped.
+
+        A linear covariance on raw yaw values explodes near the +-pi branch cut:
+        headings at +3.13 and -3.13 rad are almost identical, but np.cov treats
+        them as far apart. Use the circular mean yaw and wrapped residuals so
+        published yaw covariance reflects actual spread.
+        """
+        mean_pose = self.expected_pose()
+        centered = np.empty_like(self.particles)
+        centered[:, :2] = self.particles[:, :2] - mean_pose[:2]
+        centered[:, 2] = self.wrap_angle(self.particles[:, 2] - mean_pose[2])
+
+        weight_sum = np.sum(self.weights)
+        if not np.isfinite(weight_sum) or weight_sum <= 1e-12:
+            return np.zeros((3, 3))
+
+        normalized_weights = self.weights / weight_sum
+        weighted_centered = centered * normalized_weights[:, np.newaxis]
+        return centered.T @ weighted_centered
 
     def restore_motion_only_pose(self, particles, weights, action):
         self.particles = np.copy(particles)
