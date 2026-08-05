@@ -8,6 +8,7 @@ F1TENTH 자율주행 전체 스택(perception → planning → control)을 **시
 ```bash
 cd ~/IFAC_ws
 ./build_all.sh  
+아니런아ㅐㄹ냐러ㅐ쟈ㅓ디라ㅓ;민아
 ```
 매핑하기
 ```bash
@@ -60,15 +61,17 @@ bagviz                       # 서버 시작 → 브라우저에서 http://127.0
 
 ### alias 목록 (`~/.zshrc`)
 
-'sa' : 전체 source
-'rc 맵이름 런치인자' : 실차 주행 
-'mapp 맵이름 런치인자' : 매핑
-'mkcsv 맵이름 ccw' : 레이스라인/센터라인 csv생성
-'tune 맵이름 런치인자 : 레이스라인 튜닝
-'rosbag' : 전체 토픽 녹화 
-'bagviz' : 로스백 시각화
-'hw' : hardware_bringup만 실행
-'cb' : colcon build
+| alias | 하는 일 |
+|---|---|
+| `sa` | IFAC_ws 전체 워크스페이스 source (오버레이 순서 고정) |
+| `rc [맵] [인자...]` | 실차 원커맨드 (`real_car.launch.py`) |
+| `mapp <맵> [인자...]` | 매핑 (`mapping.launch.py`) |
+| `mkcsv <맵> [cw\|ccw]` | 레이스라인/센터라인 CSV 생성 |
+| `tune [맵] [인자...]` | 레이스라인 튜너 GUI (`raceline_tuner.launch.py`), 저장 후 `./build_all.sh` |
+| `rosbag` | 전체 토픽 녹화 (marker류 제외) |
+| `bagviz` | 로스백 시각화 웹앱 (`tools/bagviz.py`, 드래그앤드롭·재생·차트) |
+| `hw` | 하드웨어 bringup만 (`rc hardware:=false`와 짝) |
+| `cb` | `colcon build` |
 
 
 
