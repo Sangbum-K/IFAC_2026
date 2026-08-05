@@ -93,6 +93,12 @@ class ParticleFiler(Node):
         self.declare_parameter('pose_jump_guard_enabled', True)
         self.declare_parameter('max_pose_jump_translation_m', 0.30)
         self.declare_parameter('max_pose_jump_yaw_rad', 0.35)
+        self.declare_parameter('low_speed_threshold_mps', 0.2)
+        self.declare_parameter('low_speed_odom_xy_deadband_m', 0.01)
+        self.declare_parameter('low_speed_odom_yaw_deadband_rad', 0.02)
+        self.declare_parameter('low_speed_odom_scale', 0.25)
+        self.declare_parameter('low_speed_jump_guard_translation_m', 0.50)
+        self.declare_parameter('low_speed_jump_guard_yaw_rad', 0.60)
         # 가드가 '영구 거부권'이 되는 것을 막는 탈출구. 0 = 비활성(구 동작).
         #
         # 가드는 단발성 스냅을 걸러내라고 있는데, 거부하면 odom 전파 포즈를
@@ -137,6 +143,18 @@ class ParticleFiler(Node):
         self.MAX_POSE_JUMP_TRANSLATION = self.get_parameter(
             'max_pose_jump_translation_m').value
         self.MAX_POSE_JUMP_YAW = self.get_parameter('max_pose_jump_yaw_rad').value
+        self.LOW_SPEED_THRESHOLD = self.get_parameter(
+            'low_speed_threshold_mps').value
+        self.LOW_SPEED_ODOM_XY_DEADBAND = self.get_parameter(
+            'low_speed_odom_xy_deadband_m').value
+        self.LOW_SPEED_ODOM_YAW_DEADBAND = self.get_parameter(
+            'low_speed_odom_yaw_deadband_rad').value
+        self.LOW_SPEED_ODOM_SCALE = self.get_parameter(
+            'low_speed_odom_scale').value
+        self.LOW_SPEED_JUMP_GUARD_TRANSLATION = self.get_parameter(
+            'low_speed_jump_guard_translation_m').value
+        self.LOW_SPEED_JUMP_GUARD_YAW = self.get_parameter(
+            'low_speed_jump_guard_yaw_rad').value
         self.MAX_CONSECUTIVE_JUMP_REJECTS = int(self.get_parameter(
             'max_consecutive_jump_rejects').value)
         if self.MAX_CONSECUTIVE_JUMP_REJECTS < 0:
@@ -438,6 +456,14 @@ class ParticleFiler(Node):
                 local_delta[0,1],
                 self.wrap_angle(orientation - self.last_pose[2]),
             ])
+            if abs(self.current_speed) < self.LOW_SPEED_THRESHOLD:
+                if np.hypot(delta_pose[0], delta_pose[1]) < \
+                        self.LOW_SPEED_ODOM_XY_DEADBAND:
+                    delta_pose[0] = 0.0
+                    delta_pose[1] = 0.0
+                if abs(delta_pose[2]) < self.LOW_SPEED_ODOM_YAW_DEADBAND:
+                    delta_pose[2] = 0.0
+                delta_pose *= self.LOW_SPEED_ODOM_SCALE
             self.odometry_data = self.compose_pose_2d(self.odometry_data, delta_pose)
             self.last_pose = pose
             self.last_stamp = msg.header.stamp
@@ -790,9 +816,14 @@ class ParticleFiler(Node):
         correction = self.compose_pose_2d(correction, candidate_pose)
         correction_xy = np.hypot(correction[0], correction[1])
         correction_yaw = abs(self.wrap_angle(correction[2]))
+        max_correction_xy = self.MAX_POSE_JUMP_TRANSLATION
+        max_correction_yaw = self.MAX_POSE_JUMP_YAW
+        if abs(self.current_speed) < self.LOW_SPEED_THRESHOLD:
+            max_correction_xy = self.LOW_SPEED_JUMP_GUARD_TRANSLATION
+            max_correction_yaw = self.LOW_SPEED_JUMP_GUARD_YAW
         reject = (
-            correction_xy > self.MAX_POSE_JUMP_TRANSLATION or
-            correction_yaw > self.MAX_POSE_JUMP_YAW
+            correction_xy > max_correction_xy or
+            correction_yaw > max_correction_yaw
         )
         return reject, correction_xy, correction_yaw
 
