@@ -524,7 +524,7 @@ def load_track(map_name):
         if touches_border:                 # 맵 바깥 배경 → 버림
             continue
         filled = ndimage.binary_fill_holes(comp)
-        if filled.sum() - comp.sum() > comp.sum() * 0.05:
+        if filled.sum() - comp.sum() > comp.sum() * 0.02:
             ring = comp
             break
     if ring is None:
