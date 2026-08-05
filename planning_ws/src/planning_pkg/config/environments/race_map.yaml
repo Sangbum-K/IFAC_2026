@@ -30,7 +30,9 @@ perception_obstacle_bridge_node:
     bridge/tf_timeout_sec: 0.05
     bridge/tf_allow_latest_fallback: false
     bridge/tf_max_age_sec: 0.05
-    bridge/max_source_age_sec: 0.20
+    # real_car.yaml 동일 블록 주석 참조 — detector 출력 지연 p90 0.306s에
+    # 0.20 게이트가 스트림을 통째로 끊어 정지 라치를 만들었다 (0803).
+    bridge/max_source_age_sec: 0.40
     bridge/source_future_tolerance_sec: 0.05
     bridge/require_source_stamp: true
     bridge/projection_window_wpnts: 80
@@ -40,11 +42,14 @@ perception_obstacle_bridge_node:
     # 맵 벽거리 필터: frenet d-경계 필터가 코너에서 놓치는 벽 위 유령
     # (실측 d=-0.85, 경계 1.32 통과, 4434점 전부 벽) 을 /map EDT 실거리로
     # 차단. 유령은 벽에서 0~0.1m, 진짜 콘은 최소 반폭 이상 떨어져 분리 명확.
-    # ⚠️ true로 켜기 전에 PF 수렴 상태에서 정지 장애물 map 좌표 산포를 잴 것 —
-    #    wall_dist_min < PF 오차면 유령이 새고, 크면 벽 근처 진짜를 버린다.
+    # ⚠️ wall_dist_min < PF 오차면 유령이 새고, 크면 벽 근처 진짜를 버린다.
     #    활성화 후 map/거리변환이 준비되지 않으면 frame 전체를 거부한다.
-    bridge/use_map_filter: false
-    bridge/wall_dist_min_m: 0.20
+    # 2026-08-03 활성화 (real_car.yaml 동일 블록 주석 참조 — detector 포인트
+    # 단위 맵 필터의 2차 방어선).
+    # 2026-08-03(2차): centroid 벽거리 기준으로 판정식 수정 (real_car.yaml
+    # 동일 블록 주석 참조). 임계는 detector와 같은 0.15.
+    bridge/use_map_filter: true
+    bridge/wall_dist_min_m: 0.15
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
 

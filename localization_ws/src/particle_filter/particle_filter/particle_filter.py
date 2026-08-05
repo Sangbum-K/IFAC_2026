@@ -93,6 +93,17 @@ class ParticleFiler(Node):
         self.declare_parameter('pose_jump_guard_enabled', True)
         self.declare_parameter('max_pose_jump_translation_m', 0.30)
         self.declare_parameter('max_pose_jump_yaw_rad', 0.35)
+        # 가드가 '영구 거부권'이 되는 것을 막는 탈출구. 0 = 비활성(구 동작).
+        #
+        # 가드는 단발성 스냅을 걸러내라고 있는데, 거부하면 odom 전파 포즈를
+        # 유지하므로 진짜 오차가 그대로 남는다 -> 다음 프레임 보정량은 더
+        # 커지고 -> 또 거부. 한 번 문턱을 넘으면 스캔 업데이트가 영원히
+        # 차단되고 PF는 사실상 데드레커닝이 된다.
+        # run_0803_204743 실측: 3035회 업데이트 중 ~725회(24%) 거부, 연속으로
+        # 몰려 발생했고 그 사이 포즈가 10.09m / 10.67m 점프했다.
+        # 연속 거부가 이 횟수에 닿으면 "필터가 아니라 예측이 틀렸다"고 보고
+        # 보정을 한 번 받아들여 재동기화한다.
+        self.declare_parameter('max_consecutive_jump_rejects', 10)
 
         # parameters
         self.ANGLE_STEP           = self.get_parameter('angle_step').value
@@ -126,6 +137,10 @@ class ParticleFiler(Node):
         self.MAX_POSE_JUMP_TRANSLATION = self.get_parameter(
             'max_pose_jump_translation_m').value
         self.MAX_POSE_JUMP_YAW = self.get_parameter('max_pose_jump_yaw_rad').value
+        self.MAX_CONSECUTIVE_JUMP_REJECTS = int(self.get_parameter(
+            'max_consecutive_jump_rejects').value)
+        if self.MAX_CONSECUTIVE_JUMP_REJECTS < 0:
+            raise ValueError('max_consecutive_jump_rejects must be >= 0')
         
         # various data containers used in the MCL algorithm
         self.MAX_RANGE_PX = None
@@ -146,7 +161,8 @@ class ParticleFiler(Node):
         self.last_stamp = None
         self.first_sensor_update = True
         self.state_lock = Lock()
-        self.jump_reject_count = 0
+        self.jump_reject_count = 0            # 로그 스로틀용 누적 카운터
+        self.consecutive_jump_rejects = 0     # 탈출구 판정용 연속 카운터
 
         # cache this to avoid memory allocation in motion model
         self.local_deltas = np.zeros((self.MAX_PARTICLES, 3))
@@ -845,18 +861,39 @@ class ParticleFiler(Node):
                         predicted_pose = self.compose_pose_2d(prior_pose, action)
                         reject, correction_xy, correction_yaw = self.should_reject_pose_update(
                             predicted_pose, candidate_pose)
+                        # 연속 거부가 한계에 닿으면 이번 보정은 받아들인다.
+                        # 거부는 odom 전파 포즈를 유지하므로 오차가 줄지 않고,
+                        # 그래서 다음 보정량은 더 커진다 — 탈출구가 없으면
+                        # 가드가 스캔 업데이트를 영구 차단해 PF가 데드레커닝이
+                        # 된다 (run_0803_204743: 업데이트의 24%가 연속 거부,
+                        # 그 사이 포즈 10m 점프).
+                        if (reject and self.MAX_CONSECUTIVE_JUMP_REJECTS > 0
+                                and self.consecutive_jump_rejects + 1
+                                >= self.MAX_CONSECUTIVE_JUMP_REJECTS):
+                            self.get_logger().warn(
+                                'PF jump guard 연속 거부 %d회 — 예측이 어긋난 것으로 '
+                                '보고 보정 %.2fm, %.1fdeg 수용(재동기화)' % (
+                                    self.consecutive_jump_rejects + 1,
+                                    correction_xy,
+                                    np.degrees(correction_yaw),
+                                )
+                            )
+                            reject = False
                         if reject:
                             self.jump_reject_count += 1
+                            self.consecutive_jump_rejects += 1
                             if self.jump_reject_count <= 5 or self.jump_reject_count % 20 == 0:
                                 self.get_logger().warn(
                                     'Rejected PF scan update: correction %.2fm, %.1fdeg exceeds guard; '
-                                    'keeping odom-propagated pose' % (
+                                    'keeping odom-propagated pose (연속 %d회)' % (
                                         correction_xy,
                                         np.degrees(correction_yaw),
+                                        self.consecutive_jump_rejects,
                                     )
                                 )
                             self.restore_motion_only_pose(prior_particles, prior_weights, action)
                         else:
+                            self.consecutive_jump_rejects = 0
                             self.inferred_pose = candidate_pose
                     else:
                         self.inferred_pose = candidate_pose

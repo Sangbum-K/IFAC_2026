@@ -1686,6 +1686,16 @@ bool SplinerNode::BuildTrailing(
         int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
         f1tenth_planning_msgs::msg::Wpnt w = gb_wpnts_[gi];
         w.id = i;
+        // gb에서 통째로 복사했으므로 s_m도 gb[gi]의 값이다 — 그대로 두면
+        // 랩 경계에서 s가 중복돼 경로가 비단조가 된다. gb는 s<=back_s까지만
+        // 있고 track_len_ = back_s + wpnt_dist_이므로 마지막 폐합 구간의 s는
+        // 대응 gb 점이 없고, 게다가 int(s/wpnt_dist_)가 gb_size로 넘치면
+        // %gb_size가 그것을 0으로 접어 바로 앞 점과 같은 gb를 가리킨다.
+        // 실측(run_0803_213313): s[10]=s[11]=0.00000, dxy=0.0955 -> local_
+        // trajectory가 ds=track_len 점프로 판정해 궤적을 통째로 거부하고
+        // /local_waypoints 발행을 멈췄다(= 차 정지). 다른 경로 생성 루프들은
+        // 모두 wpnt.s_m = s로 계산값을 쓴다 — 여기만 어긋나 있었다.
+        w.s_m = s;
         // perception stale 비상정지는 알 수 없는 raceline 쪽으로 횡이동하지
         // 않고 현재 lateral line을 유지한다.
         double d = hold_current_d

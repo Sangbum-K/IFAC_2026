@@ -4,6 +4,20 @@ F1TENTH 자율주행 전체 스택(perception → planning → control)을 **시
 **실차**에서 실행하는 방법
 
 ## 주행명령어 alias버전입니다
+
+> 🖥️ **어디서 치느냐 — 기준은 "자율주행 중이냐"입니다.**
+>
+> | 단계 | 어디서 | 이유 |
+> |---|---|---|
+> | 빌드 · `mapp` · `mkcsv` · `tune` | **NoMachine / 차량 모니터** (예전 그대로) | 조이스틱 저속 작업이라 부하 무관. `tune`은 마커를 드래그하는 GUI라 **화면이 필수** |
+> | `rc` (주행) | **SSH + 노트북 RViz** | 주행 중 차량 렌더링 부하가 제어 주기를 흔든다 |
+>
+> 주행만 `ssh miru@10.1.1.250` → `sa` → `rc <맵> rviz:=false`, RViz는 노트북에서
+> 따로 띄웁니다. 셋업은 **[4-4](#4-4-노트북에서-원격-rviz로-주행-2026-08-03-이후-권장-구성)**.
+> alias·함수는 SSH로 접속해도 그대로 동작합니다(로그인 쉘이 zsh). 단 SSH 세션에는
+> 화면이 없으므로 RViz를 여는 `mapp`·`rc`는 `rviz:=false`가 필요하고, `tune`은
+> 끄는 인자 자체가 없어 SSH로는 못 씁니다.
+
 빌드 안했으면
 ```bash
 cd ~/IFAC_ws
@@ -43,6 +57,15 @@ rc my_track0728   # mapp/mkcsv와 같은 이름 — 생략하면 옛 기본 맵(
 #   → RViz(monitor.rviz)가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
 #   → 파티클 수렴하면 자율 스택 자동 시작 → 조이스틱 버튼 5로 자율주행 모드 실행
 ```
+
+> 💻 **주행은 노트북 원격 RViz가 권장 구성입니다** (차량 부하 0).
+> ```bash
+> # 터미널1 (SSH)                      # 터미널2 (노트북)
+> ssh miru@10.1.1.250
+> sa && rc my_track0728 rviz:=false     rv
+> ```
+> → 2D Pose Estimate 로 초기 위치 → 수렴 확인 → **RViz 닫고** → 버튼 5 → 주행.
+> 셋업과 주의사항은 **[4-4](#4-4-노트북에서-원격-rviz로-주행-2026-08-03-이후-권장-구성)** 참고.
 
 주행 데이터 녹화 (별도 터미널)
 ```bash
@@ -183,6 +206,12 @@ source ~/IFAC_ws/localization_ws/install/setup.zsh
 ```
 실차용 소스 alias 해서 sa치면 위에 블록 전체 실행됩니다!
 
+> `ROS_DOMAIN_ID=81`과 `RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS`는 `sa`가 아니라
+> `~/.zshrc`(+`~/.bashrc`)에 들어 있어 새 터미널이면 자동으로 잡힙니다.
+> **값을 바꿨다면 열려 있는 터미널을 전부 닫고 새로 열 것** — 반만 재시작하면
+> 도메인이 갈려서 노드끼리 서로 안 보입니다. 노트북에서 RViz를 붙이려면
+> 노트북에도 같은 두 줄이 있어야 합니다([4-4](#4-4-노트북에서-원격-rviz로-주행-2026-08-03-이후-권장-구성)).
+
 ## 3. 시뮬레이터로 실행하기 
 
 ### 3-1. 한 줄로 전체 켜기
@@ -275,6 +304,11 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
 
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> b4f2ad5
 > 🩺 **출발 전 perception 생존 확인 (run_0801_175634 사고 재발 방지)**
 > 08-01 런에서 perception이 3분 내내 장애물 0건인 채로 주행한 사고가 있었습니다
 > (RELIABLE `/tf`가 느린 구독자에 막혀 TF 신선도 게이트에 전멸 — 원격 RViz(WiFi) 의심).
@@ -285,8 +319,17 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 >    `perception:WAIT`가 계속되면 장애물 회피가 통째로 죽어 있는 것
 > 3. 의심되면 `ros2 topic delay /tf` — 지연이 수백 ms를 넘으면 원격 RViz(WiFi)를
 >    끄고 다시 비교
+<<<<<<< HEAD
 > 4. 주행 중 WiFi 원격 RViz 구독은 되도록 끄기 (차량 로컬 RViz는 무관)
 
+=======
+> 4. **주행 중에는 원격 RViz를 끌 것.** 2026-08-03부터 노트북 원격 RViz가 기본
+>    구성이 됐으므로([4-4](#4-4-노트북에서-원격-rviz로-주행-2026-08-03-이후-권장-구성)),
+>    **초기 위치를 찍고 수렴을 확인한 뒤 RViz 창을 닫고 출발**하는 것이 절차입니다.
+>    주행 중 상태는 SSH에서 `ros2 topic echo /integration/status`로 봅니다.
+
+>>>>>>> Stashed changes
+>>>>>>> b4f2ad5
 ### 4-A. 한 줄로 실행 (권장)
 
 터미널 하나에서:
@@ -479,6 +522,148 @@ ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
   찍힙니다. (`/ackermann_cmd_mux/mode` 같은 모드 토픽은 **없습니다.**)
 - 수동 모드에서 스틱을 놓거나 조이스틱이 0.5초(`joy_timeout`) 끊기면 속도 0을 냅니다.
 
+### 4-4. 노트북에서 원격 RViz로 주행 (2026-08-03 이후 권장 구성)
+
+예전에는 차량에 NoMachine으로 붙어 화면을 스트리밍하며 RViz를 봤습니다. 이 방식은
+젯슨에 **삼중 부하**(RViz 렌더링 + H.264 인코딩 + 데스크톱 세션)를 겁니다. 차량 RAM이
+7.4GB인데 데스크톱만으로 5GB를 쓰고 있어 여유가 2GB뿐이라, 주행 중 부하가 튀면 제어
+주기가 흔들립니다.
+
+**대신 스택은 SSH로 차량에서 띄우고, RViz만 노트북에서 직접 실행합니다.** 렌더링이
+전부 노트북 몫이 되므로 차량 부하는 0입니다.
+
+```
+차량(Jetson)  ──  MIRU_5G  ──  노트북(Ubuntu 22.04)
+  스택 (SSH로 실행)              rviz2 (렌더링은 여기서)
+  토픽 발행만                    2D Pose Estimate → /initialpose 가 네트워크로 전달
+```
+
+#### 차량 네트워크 현황 (2026-08-03 설정 완료)
+
+| 항목 | 값 |
+|---|---|
+| 접속 | `ssh miru@10.1.1.250` (또는 `ssh miru@IFAC.local`) |
+| 호스트명 | `IFAC` |
+| WiFi | `MIRU_5G` 고정 (`autoconnect-priority 100`) |
+| IP | `10.1.1.250/24` static, GW `10.1.1.1`, DNS `166.104.100.100` |
+| `ROS_DOMAIN_ID` | **81** (`~/.zshrc`·`~/.bashrc`) |
+| Tailscale | 정지·비활성화 (학교망이 차단, health 경고만 냄) |
+| ufw | `allow from 10.1.1.0/24` |
+
+> ⚠️ **ufw 규칙을 지우지 마세요.** 22번만 열면 SSH는 되지만 DDS(UDP 27650번대)와
+> 멀티캐스트 디스커버리가 막혀서 **RViz에 토픽이 하나도 안 뜹니다.**
+> 도메인 81 → 포트 `7400 + 250×81 = 27650`. 도메인을 바꾸면 포트도 바뀝니다.
+
+> ⚠️ **`ROS_DOMAIN_ID`는 차량·노트북이 반드시 같아야** 합니다. 다르면 같은 WiFi에
+> 있어도 서로 완전히 안 보입니다. 값은 0–101 안에서 고를 것 — 그 위는 커널 임시
+> 포트 대역(32768–60999)과 겹쳐 디스커버리가 간헐적으로 실패합니다.
+
+#### 노트북 최초 1회
+
+Ubuntu 22.04 + ROS 2 Humble 필요 (Humble은 22.04 전용, macOS는 RViz2 불가).
+
+```bash
+sudo apt install -y ros-humble-desktop \
+  ros-humble-rviz-2d-overlay-plugins ros-humble-rviz-2d-overlay-msgs \
+  python3-colcon-common-extensions qtbase5-dev avahi-daemon libnss-mdns
+
+# 소스는 GitHub 말고 차량에서 직접 — 커스텀 메시지 정의가 한 글자라도 다르면
+# DDS 타입 해시가 어긋나 그 토픽만 조용히 안 붙는다.
+mkdir -p ~/IFAC_ws/planning_ws
+rsync -av --exclude build --exclude install --exclude log \
+  miru@10.1.1.250:~/IFAC_ws/planning_ws/src/ ~/IFAC_ws/planning_ws/src/
+
+source /opt/ros/humble/setup.bash
+cd ~/IFAC_ws/planning_ws
+colcon build --base-paths src --packages-select \
+  f1tenth_planning_msgs f1tenth_perception_msgs monitor_pkg pitwall_panel
+
+cat >> ~/.bashrc <<'EOF'
+source /opt/ros/humble/setup.bash
+source ~/IFAC_ws/planning_ws/install/setup.bash
+export ROS_DOMAIN_ID=81
+export RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS
+alias rv='rviz2 -d $(ros2 pkg prefix --share monitor_pkg)/rviz/monitor.rviz'
+EOF
+```
+
+빌드는 이 4개면 됩니다 — `planning_pkg`(플래너 본체)는 무거운 파이썬 의존성이
+딸려오는데 RViz엔 필요 없습니다. `monitor_pkg`는 rviz 설정, `pitwall_panel`은 RViz
+패널 플러그인 때문에 필요합니다. RobotModel은 `Description Source: Topic`이라
+URDF가 네트워크로 넘어오므로 `hardware_ws`는 안 받아도 됩니다.
+
+#### 실행 (터미널 3개)
+
+```bash
+# 터미널 1 — SSH (스택). alias·함수는 SSH로도 그대로 동작한다(로그인 쉘이 zsh).
+ssh miru@10.1.1.250
+sa
+rc my_track0801 rviz:=false      # ← rviz:=false 필수. 빼면 차량에서도 RViz가 뜬다
+
+# 터미널 2 — 노트북 로컬 (RViz)
+rv
+
+# 터미널 3 — SSH (녹화, 필요할 때)
+ssh miru@10.1.1.250
+sa && cd ~/IFAC_ws && rosbag
+```
+
+RViz에서 `2D Pose Estimate`로 초기 위치를 찍는 절차는 4-1과 동일합니다.
+
+> ⚠️ **SSH 한 줄 명령으로는 alias가 안 먹습니다.** zsh는 `.zshrc`를 대화형 쉘일
+> 때만 읽습니다. `ssh miru@10.1.1.250 'sa && rc ...'` → `command not found`.
+> 자동화하려면 `ssh -t miru@10.1.1.250 'zsh -ic "sa && rc my_track0801"'`.
+
+#### 🚨 수렴 확인 후 RViz를 닫고 출발할 것
+
+원격 RViz는 **주행 중에 켜 두면 안 됩니다.** run_0801_175634 사고(perception이 3분간
+장애물 0건)의 원인으로 지목된 것이 WiFi 원격 RViz입니다 — RELIABLE `/tf`가 느린
+구독자에 막혀 TF 신선도 게이트에 전멸했습니다. 완화책
+(`RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS`)은 **그 사고 이후에** 추가돼서 아직
+실제 부하에서 검증되지 않았습니다.
+
+**초기 위치 찍기 → 수렴 확인 → RViz 닫기 → 조이스틱 버튼 5 → 주행.**
+이러면 차량 렌더링 부하와 TF 기아 위험을 둘 다 피합니다. 주행 중 상태는
+SSH에서 `ros2 topic echo /integration/status`로 보세요.
+
+#### 명령별 실행 위치 (SSH로 되는 것 / 화면이 필요한 것)
+
+alias·함수는 **전부 차량에서(SSH로) 실행**합니다. 하드웨어가 차량에 물려 있고
+결과물(맵·CSV)이 차량 소스 트리에 있어야 하기 때문입니다. 다만 **RViz 창을 여는
+명령은 화면이 필요**해서 처리가 갈립니다.
+
+| 명령 | SSH로 그대로? | 비고 |
+|---|---|---|
+| `./build_all.sh`, `cb` | ✅ | 화면 불필요 |
+| `sa` | ✅ | |
+| `mkcsv <맵> ccw` | ✅ | 순수 파이썬, 화면 불필요 |
+| `rosbag` | ✅ | |
+| `hw` | ✅ | |
+| `mapp <맵>` | ⚠️ | 기본 `rviz:=true`. **`mapp <맵> rviz:=false`** 로 띄우고 RViz는 노트북에서 |
+| `rc <맵>` | ⚠️ | 마찬가지로 **`rviz:=false`** + 노트북 RViz |
+| `tune <맵>` | ❌ | **`rviz` 인자가 없어 RViz가 무조건 뜬다.** 아래 참고 |
+
+**매핑을 원격으로** — 노트북에서 맵이 그려지는 걸 보며 조이스틱으로 한 바퀴 돕니다.
+`mapp`이 쓰는 설정은 `particle_filter/rviz/pf.rviz`인데 노트북엔 그 패키지가 없으므로,
+이미 빌드해 둔 `monitor.rviz`(`rv`)를 쓰면 됩니다 — Map(`/map`)·LaserScan(`/scan`)·TF가
+들어 있어 매핑 확인에 충분합니다.
+
+```bash
+# 터미널1 (SSH)          # 터미널2 (노트북)
+sa && mapp my_track0805 rviz:=false      rv
+```
+
+**`tune`은 차량 화면이 필요합니다.** [raceline_tuner.launch.py](planning_ws/src/planning_pkg/launch/raceline_tuner.launch.py)가
+`rviz_node`를 조건 없이 띄우고 `rviz` 인자를 제공하지 않습니다. 게다가 인터랙티브
+마커를 드래그해 편집하고 저장이 차량 소스 트리로 가는 도구입니다. **주행 중에 쓰는
+게 아니므로 NoMachine(또는 차량 모니터)으로 하면 됩니다** — 부하가 문제되는 건 주행
+중일 때뿐입니다. `ssh -X`도 되지만 인터랙티브 마커 드래그가 매우 느립니다.
+
+`bagviz`는 차량에서 `bagviz --host 0.0.0.0`으로 띄우고 노트북 브라우저에서
+`http://10.1.1.250:8998`로 봅니다.
+
+---
+
 ### 실차 안전장치 (요약 — 배선 상세는 [README](README.md#실차-안전장치))
 
 - **자율/수동 전환 = 조이스틱 버튼 5(RB).** 시작은 **수동**이라, 버튼 5를 눌러야
@@ -544,6 +729,25 @@ ros2 launch control_pkg control.launch.py env:=sim
 → tf2 TransformListener의 내부 스레드가 남기는 로그로, 프로세스는 정상 종료(exit 0)합니다.
   `process has died [exit code 1]`이 함께 뜨면 그건 다른 문제입니다.
 
+**노트북에서 `ros2 topic list`에 아무것도 안 보임 (원격 RViz)**
+→ 순서대로 확인:
+1. `echo $ROS_DOMAIN_ID` — 차량·노트북 **양쪽 다 81**이어야 함. 다르면 서로 완전히 안 보임
+2. `env | grep RMW` — 노트북에 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`가 잡혀 있으면
+   차량(기본 FastDDS)과 안 붙음. 양쪽 다 미설정이 정답
+3. 차량 ufw — `sudo ufw status`에 `10.1.1.0/24` ALLOW가 있어야 함. 22번만 열려 있으면
+   SSH는 되는데 DDS(UDP 27650번대)가 막혀 토픽이 안 보임
+4. 노트북 방화벽(`sudo ufw status`), 같은 WiFi(MIRU_5G)인지
+5. 공유기 무선 분리(AP isolation) — 켜져 있으면 기기 간 통신 자체가 불가
+
+**커스텀 메시지 토픽만 안 보임 (`/perception/obstacles` 등)**
+→ 노트북과 차량의 메시지 정의가 다르면 DDS 타입 해시가 어긋나 그 토픽만 조용히
+  안 붙습니다. 차량에서 다시 동기화 후 재빌드:
+  `rsync -av --exclude build --exclude install --exclude log miru@10.1.1.250:~/IFAC_ws/planning_ws/src/ ~/IFAC_ws/planning_ws/src/`
+
+**SSH로 `sa`/`rc`가 `command not found`**
+→ `ssh user@host '명령'` 형태는 비대화형이라 `.zshrc`를 안 읽습니다. 그냥 접속해서
+  치거나, `ssh -t miru@10.1.1.250 'zsh -ic "sa && rc my_track0801"'`.
+
 **빌드 에러 (`ae_hyu_msgs`, 심링크 관련)**
 → `--symlink-install` 썼거나 옛 캐시 남음. 해당 ws에서
 `rm -rf build install log && colcon build`.
@@ -573,6 +777,14 @@ ros2 launch integration_pkg real_car.launch.py
 #   → RViz가 자동으로 뜸. "2D Pose Estimate"로 실제 차 위치 클릭+드래그.
 #   → 파티클이 수렴하면 자율 스택이 자동 시작됨. 버튼 5로 자율 명령 인가.
 # ⚠️ 비상정지(E-stop)는 배선 안 돼 있음 — 4번 맨 위 경고 / "실차 안전장치" 참고
+
+# ── 노트북 원격 RViz (권장 구성, 상세는 4-4) ──
+ssh miru@10.1.1.250        # 차량: 호스트명 IFAC, ROS_DOMAIN_ID=81
+sa && rc my_track0801 rviz:=false                                   # 터미널1 (SSH)
+rv                                                                  # 터미널2 (노트북)
+#   rv = rviz2 -d $(ros2 pkg prefix --share monitor_pkg)/rviz/monitor.rviz
+#   → 2D Pose Estimate 로 초기 위치 → 수렴 확인 → 🚨 RViz 닫고 → 버튼 5 → 주행
+#   노트북에도 ROS_DOMAIN_ID=81 + RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS 필수
 
 # 실차를 단계별로 나눠 띄우려면 (디버깅용, 터미널 3개 — A→B→C 순서 엄수):
 ros2 launch f1tenth_stack bringup_launch.py                                             # A 하드웨어

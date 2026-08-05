@@ -16,3 +16,10 @@ obstacle_detector_node:
     # 클러스터링 임계값은 params.yaml의 lambda_angle_deg/sigma가 담당한다.
     gating_distance: 0.45
     track_timeout: 8
+    # 맵 벽 필터 — real_car.yaml과 동일한 이유 (좁은 트랙에서 벽이 통째로
+    # 한 클러스터가 되어 트랙 한복판에 반경 수 m짜리 가짜 장애물이 생김).
+    # 근거와 값 선정은 real_car.yaml 주석 참고.
+    use_map_filter: true
+    map_topic: /map
+    wall_dist_min_m: 0.15
+    max_cluster_radius_m: 0.60
