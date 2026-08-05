@@ -305,11 +305,6 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
 
-<<<<<<< HEAD
-=======
-<<<<<<< Updated upstream
-=======
->>>>>>> b4f2ad5
 > 🩺 **출발 전 perception 생존 확인 (run_0801_175634 사고 재발 방지)**
 > 08-01 런에서 perception이 3분 내내 장애물 0건인 채로 주행한 사고가 있었습니다
 > (RELIABLE `/tf`가 느린 구독자에 막혀 TF 신선도 게이트에 전멸 — 원격 RViz(WiFi) 의심).
@@ -320,17 +315,11 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 >    `perception:WAIT`가 계속되면 장애물 회피가 통째로 죽어 있는 것
 > 3. 의심되면 `ros2 topic delay /tf` — 지연이 수백 ms를 넘으면 원격 RViz(WiFi)를
 >    끄고 다시 비교
-<<<<<<< HEAD
-> 4. 주행 중 WiFi 원격 RViz 구독은 되도록 끄기 (차량 로컬 RViz는 무관)
-
-=======
 > 4. **주행 중에는 원격 RViz를 끌 것.** 2026-08-03부터 노트북 원격 RViz가 기본
 >    구성이 됐으므로([4-4](#4-4-노트북에서-원격-rviz로-주행-2026-08-03-이후-권장-구성)),
 >    **초기 위치를 찍고 수렴을 확인한 뒤 RViz 창을 닫고 출발**하는 것이 절차입니다.
 >    주행 중 상태는 SSH에서 `ros2 topic echo /integration/status`로 봅니다.
 
->>>>>>> Stashed changes
->>>>>>> b4f2ad5
 ### 4-A. 한 줄로 실행 (권장)
 
 터미널 하나에서:
