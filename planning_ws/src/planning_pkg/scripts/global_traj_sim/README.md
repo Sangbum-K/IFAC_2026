@@ -33,21 +33,46 @@ PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
 
 ### 옵션은 없다 — 상수를 고친다
 
-`build_map.py` 상단 `설정` 블록에 전부 모여 있다 (`V_MAX` 6.0, `MU` 0.75,
-`SAFE_DIST` 0.40, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP` True,
-`SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
+**트랙 생성 파라미터**는 `build_map.py` 상단 `설정` 블록에 모여 있다
+(`MU` 0.75, `MU_PROFILE` 0.65, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP`
+True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
 표와 의미는 maps/README.md 참고.
 
-> **실차 첫 주행 팁:** 보수적으로 시작 → `V_MAX 5.0 / MU 0.6 / SAFE_DIST 0.40`.
-> 잘 돌면 V_MAX 올리고 MU·SAFE_DIST 조여가며 반복.
+**라인-벽 이격은 이제 상수가 아니라 구간별로 다르다.** SLAM 트랙은 폭이
+2배 넘게 변하는데(my_track 0.9~2.15 m) 균일 `SAFE_DIST` 하나로는 넓은 곳에서
+여유를 버리고 좁은 곳에서는 최적화가 '정중앙 고정'으로 꺼진다. 지금은
+`ADAPTIVE_SAFE_DIST=True`에서 각 지점의 코리도 폭 × `SAFE_DIST_WIDTH_FRAC`
+(0.30)을 `[SAFE_DIST_MIN 0.22, SAFE_DIST_MAX 0.45]`로 자른 값을 쓰고, 차 전장
+창으로 rolling-min 해서 좁은 게이트 앞에서 미리 완화한다. 좁혀서 얻은 여유는
+`ADAPTIVE_SPEED_BY_WIDTH`가 속도로 갚는다 —
+`v ≤ (벽여유 − 차 반폭) / LAT_ERR_PER_MPS(0.045 s)`.
+`ADAPTIVE_SAFE_DIST=False`로 두면 예전 균일 `SAFE_DIST` 동작이다.
+
+> **실차 첫 주행 팁:** 보수적으로 시작 → `V_MAX 5.0 / MU 0.6`. 잘 돌면
+> V_MAX 올리고 MU 조여가며 반복.
+
+**차량 상수와 배포 프로파일은 `../deployment_profiles.py`가 단일 기준이다.**
+`build_map.py`에 베껴 적지 말 것. 프로파일 숫자(velocity_scale, control 속도
+cap, MAP/L1 lookahead, steering LUT …)는 launch가 읽는 바로 그 YAML에서
+읽는다. 2026-08-05 이전에는 build_map(0.97/6.0), tuner(0.83/5.0), 런타임
+YAML(0.742/4.0) 세 벌이 전부 달랐고, CSV는 실차가 달리지 않는 조건으로
+검증받고 있었다.
 
 > `WHEELBASE`/`MAX_STEER`는 출력 CSV에 영향이 **없다** — 폐루프 시뮬에서
-> "실차 조향 한계로 이 라인을 따라갈 수 있나"(lat err)를 보는 데만 쓰이므로
-> 반드시 실차 실측값(현재 0.33 m / 0.36 rad)으로 둘 것.
-> 폐루프 검증은 `SIM_CONTROLLER_PROFILES`에 선택한 배포 프로파일을 모두
-> 실행한다. 기본값은 실제 NUC6 LUT를 쓰는 C++ real-car MAP/L1과 Python
-> simulation tracker이며, 한 프로파일이라도 footprint·조향·합성 타이어
-> 가속도 한계를 넘으면 기존 CSV를 보존하고 새 CSV는 쓰지 않는다.
+> "실차 조향 한계로 이 라인을 따라갈 수 있나"(lat err)를 보는 데만 쓰인다.
+> control YAML의 `vehicle/wheelbase_m` 등이 이 실측 상수와 어긋나면 프로파일
+> 해석 단계에서 죽는다(검증한 차 ≠ 달리는 차).
+>
+> 폐루프 검증은 `--profiles`로 고른 gate 프로파일을 **모두** 통과해야 CSV를
+> 쓴다. 기본 `real`은 실제 NUC6 LUT를 쓰는 C++ real-car MAP/L1만 gate이고
+> Python simulation tracker는 실행·보고만 한다(advisory). 예전처럼 둘 다
+> gate로 하려면 `--profiles all`. 실차 CSV가 시뮬 프로파일 실패로 막히던
+> 문제를 없애면서도 결과는 계속 보인다.
+>
+> 종방향 plant는 `ackermann_to_vesc`의 DRIVE/COAST/BRAKE 중재를 그대로
+> 모델링한다(임계값은 `hardware_ws .../vesc.yaml`에서 읽음). 제동 전류
+> 1 A당 감속(`BRAKE_DECEL_PER_AMP`)은 **아직 미실측이라 0**이므로 계획은
+> 코스팅 감속만 쓴다 — 실측 후 올리면 프로파일이 다시 빨라진다.
 
 ### 끝나면
 
@@ -140,7 +165,7 @@ levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 �
 | 속도 프로파일 + CSV | `step2_global_trajectory.py` | `global_trajectory_node` 입력 생성 |
 | 로컬 윈도우(130 wpt) + 배포 제어기 + 차량 모델 | `build_map.py` | `local_trajectory_node` + C++ `control_node` / Python tracker |
 
-`build_map.py`의 `CONTROLLER_PROFILE_LIBRARY`가 배포 파라미터를 명시한다.
+`../deployment_profiles.py`가 배포 파라미터를 런타임 YAML에서 해석한다.
 C++ 프로파일은 MAP/L1 lookahead와 실제 NUC6 steering LUT를 명령 역변환과
 plant 정방향 응답 양쪽에 사용한다. Python 프로파일은
 `clip(0.5·v, 0.6, 1.2)` pure pursuit를 사용한다. 속도 프로파일은 각 구간

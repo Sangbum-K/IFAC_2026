@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -9,12 +10,16 @@ import pytest
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_ROOT = PACKAGE_ROOT / 'scripts'
 MODEL_PATH = (
     PACKAGE_ROOT / 'scripts' / 'tuner' / 'controller_safety_model.py')
 BUILD_MAP_PATH = (
     PACKAGE_ROOT / 'scripts' / 'global_traj_sim' / 'build_map.py')
 TUNER_NODE_PATH = (
     PACKAGE_ROOT / 'scripts' / 'tuner' / 'raceline_tuner_node.py')
+
+sys.path.insert(0, str(SCRIPTS_ROOT))
+import deployment_profiles as profiles  # noqa: E402
 
 
 def _load_model():
@@ -26,19 +31,17 @@ def _load_model():
 
 
 def _load_generator_safety_slice(steering_lut):
-    """Execute only build_map's pure controller AST, without heavy imports."""
+    """Execute only build_map's pure controller AST, without heavy imports.
+
+    Deployment profiles are no longer defined in build_map -- they come from
+    ``deployment_profiles``, which is dependency-light enough to import here.
+    """
     tree = ast.parse(
         BUILD_MAP_PATH.read_text(encoding='utf-8'),
         filename=str(BUILD_MAP_PATH))
-    assignments = {
-        'G', 'MU', 'V_MAX', 'WHEELBASE', 'MAX_STEER', 'A_ACC_MAX',
-        'A_DEC_MAX', 'MAX_STEER_RATE', 'N_LOCAL_WP',
-        'SIM_CONTROLLER_PROFILES', 'CONTROLLER_PROFILE_LIBRARY',
-        '_PROFILE_NUMERIC_FIELDS',
-    }
+    assignments = {'G', 'MU', 'V_MAX'}
     definitions = {
         '_max_segment_endpoint_speed', 'velocity_profile',
-        'controller_profile', 'selected_controller_profiles',
         '_lookup_steer_angle', '_lookup_lateral_accel', 'PurePursuitSim',
     }
     selected = []
@@ -65,6 +68,11 @@ def _load_generator_safety_slice(steering_lut):
         'np': np,
         'cKDTree': NumpyTree,
         '_load_steering_lut': lambda _path: steering_lut,
+        'RACELINE_V_MAX': profiles.RACELINE_V_MAX,
+        'SIM_LOG_FIELDS': profiles.SIM_LOG_FIELDS,
+        'controller_profile': profiles.controller_profile,
+        'make_longitudinal_plant': profiles.make_longitudinal_plant,
+        'profile_brake_max': profiles.profile_brake_max,
     }
     module = ast.Module(body=selected, type_ignores=[])
     ast.fix_missing_locations(module)
@@ -77,21 +85,123 @@ def test_profile_manifest_is_versioned_and_matches_generator():
     assert model.MODEL_VERSION.startswith('tuner-controller-safety-')
     assert len(model.PROFILE_SIGNATURE) == 64
     assert len(model.GENERATOR_MODEL_AST_SHA256) == 64
-    assert tuple(model.SELECTED_CONTROLLER_PROFILES) == (
-        'cpp_real_car', 'python_sim_tracker')
+    assert [p['name'] for p in model.gate_controller_profiles()] == \
+        ['cpp_real_car']
+    assert [p['name'] for p in model.advisory_controller_profiles()] == \
+        ['python_sim_tracker']
     assert model.assert_generator_profile_contract(
         BUILD_MAP_PATH) == model.PROFILE_SIGNATURE
 
 
-def test_generator_profile_drift_is_fail_closed(tmp_path):
+def test_generator_algorithm_drift_is_fail_closed(tmp_path):
+    """A generator algorithm edit must lock tuner saves until reviewed."""
     model = _load_model()
-    changed = BUILD_MAP_PATH.read_text(encoding='utf-8').replace(
-        '"planner_speed_scale": 0.83,',
-        '"planner_speed_scale": 0.84,', 1)
+    source = BUILD_MAP_PATH.read_text(encoding='utf-8')
+    changed = source.replace(
+        'tire_saturated = combined_demand > self.tire_limit * (1.0 + 1e-9)',
+        'tire_saturated = combined_demand > self.tire_limit * (1.0 + 1e-8)',
+        1)
+    assert changed != source, 'algorithm anchor line not found'
     candidate = tmp_path / 'build_map.py'
     candidate.write_text(changed, encoding='utf-8')
-    with pytest.raises(ValueError, match='profile constants differ'):
+    with pytest.raises(ValueError, match='safety algorithm revision differs'):
         model.assert_generator_profile_contract(candidate)
+
+
+def test_generator_reintroducing_a_profile_copy_is_fail_closed(tmp_path):
+    """The whole point of deployment_profiles: no second copy of the numbers."""
+    model = _load_model()
+    source = BUILD_MAP_PATH.read_text(encoding='utf-8')
+    candidate = tmp_path / 'build_map.py'
+
+    candidate.write_text(
+        source + '\nCONTROLLER_PROFILE_LIBRARY = {}\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='CONTROLLER_PROFILE_LIBRARY'):
+        model.assert_generator_profile_contract(candidate)
+
+    candidate.write_text(
+        source.replace('from deployment_profiles import', 'from os import', 1),
+        encoding='utf-8')
+    with pytest.raises(ValueError, match='deployment_profiles'):
+        model.assert_generator_profile_contract(candidate)
+
+
+def test_deployed_yaml_is_the_only_source_of_profile_speeds():
+    """Resolved profiles must equal what launch would load, not a copy."""
+    control, _ = profiles.runtime_params(
+        profiles.CONTROL_PKG_ROOT, 'control', 'real_car')
+    planning, _ = profiles.runtime_params(
+        profiles.PKG_ROOT, 'global_trajectory_node', 'real_car')
+    profile = profiles.controller_profile('cpp_real_car')
+    assert profile['max_speed_mps'] == control['vehicle/max_speed_mps']
+    assert profile['controller_speed_scale'] == control['vehicle/speed_scale']
+    assert profile['planner_speed_scale'] == \
+        planning['global_trajectory/velocity_scale']
+
+
+def test_vehicle_geometry_drift_between_yaml_and_measured_is_fail_closed(
+        monkeypatch):
+    """control YAML disagreeing with the measured car must not validate.
+
+    A wheelbase mismatch means the closed-loop gate and the minimum-turn-radius
+    check are describing a different car than the one that will drive the CSV.
+    """
+    monkeypatch.setattr(profiles, 'WHEELBASE', profiles.WHEELBASE + 0.02)
+    with pytest.raises(ValueError, match='vehicle/wheelbase_m'):
+        profiles.controller_profile('cpp_real_car')
+
+
+def test_vesc_brake_arbitration_matches_ackermann_to_vesc():
+    """The plant must reproduce the deployed DRIVE/COAST/BRAKE state machine."""
+    config = profiles.vesc_brake_config()
+    assert config['enabled'], 'brake_control_enabled is off in vesc.yaml'
+    plant = profiles.VescLongitudinalPlant(
+        config, profiles.A_ACC_MAX, profiles.A_DEC_MAX)
+    dt = 1.0 / 40.0
+
+    # Accelerating: current-saturation ceiling, never the raw command slope.
+    accel, mode, amps = plant.step(3.0, 9.0, 5.5, dt)
+    assert mode == 'drive' and amps == 0.0
+    assert accel == pytest.approx(profiles.A_ACC_MAX)
+
+    # Speed error below brake_entry_speed_error: the deployed code keeps the
+    # erpm/speed-PID path active rather than cutting to coast (53f2e44).
+    _, mode, amps = plant.step(3.0, 3.0 - 0.5 * config['entry_speed_error'],
+                               -1.0, dt)
+    assert mode == 'drive' and amps == 0.0
+
+    # At/above entry but neither brake-entry condition met (no planned
+    # deceleration, overspeed below the no-intent threshold): coast.
+    coast_error = 0.5 * (
+        config['entry_speed_error'] + config['overspeed_error'])
+    assert config['entry_speed_error'] <= coast_error < \
+        config['overspeed_error']
+    plant.reset()
+    _, mode, amps = plant.step(3.0, 3.0 - coast_error, 0.0, dt)
+    assert mode == 'coast' and amps == 0.0
+
+    # Planned deceleration + error past entry: brake engages with gain*error.
+    error = config['entry_speed_error'] + 0.05
+    _, mode, amps = plant.step(3.0, 3.0 - error, -1.0, dt)
+    assert mode == 'brake'
+    assert amps == pytest.approx(
+        min(config['brake_max'], config['gain'] * error))
+
+    # Hysteresis: stays engaged between release and entry thresholds.
+    held = 0.5 * (config['release_speed_error'] + config['entry_speed_error'])
+    _, mode, _ = plant.step(3.0, 3.0 - held, -1.0, dt)
+    assert mode == 'brake'
+    # Released below the release threshold, and since that error is also below
+    # brake_entry the deployed code returns to the erpm/speed-PID path, not
+    # coast (53f2e44 changed `speed_error > 0` to `>= brake_entry`).
+    _, mode, _ = plant.step(
+        3.0, 3.0 - 0.5 * config['release_speed_error'], -1.0, dt)
+    assert mode == 'drive'
+
+    # Below brake_min_vehicle_speed the deployed code coasts instead.
+    _, mode, _ = plant.step(
+        0.5 * config['min_vehicle_speed'], 0.0, -1.0, dt)
+    assert mode == 'coast'
 
 
 def test_default_wall_contract_accepts_unchanged_deployed_main_csv():
@@ -117,6 +227,23 @@ def test_default_wall_contract_accepts_unchanged_deployed_main_csv():
         'my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv')
     trajectory = np.loadtxt(csv_path, delimiter=';', comments='#')
     assert np.min(trajectory[:, 3:5]) >= default_min_wall
+
+
+def test_tuner_longitudinal_defaults_match_measured_plant():
+    """The tuner must not plan with limits the car cannot deliver."""
+    tree = ast.parse(
+        TUNER_NODE_PATH.read_text(encoding='utf-8'),
+        filename=str(TUNER_NODE_PATH))
+    defaults = {}
+    for call in (
+            node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        if isinstance(call.func, ast.Attribute) and \
+                call.func.attr == 'declare_parameter' and \
+                len(call.args) >= 2 and \
+                isinstance(call.args[0], ast.Constant):
+            defaults[call.args[0].value] = ast.literal_eval(call.args[1])
+    assert defaults['tuner/a_acc_max'] == pytest.approx(profiles.A_ACC_MAX)
+    assert defaults['tuner/a_dec_max'] == pytest.approx(profiles.A_DEC_PLANNED)
 
 
 def test_velocity_projection_respects_manual_ceiling_and_wrap_segment():
@@ -150,7 +277,7 @@ def test_lightweight_velocity_and_controller_logs_match_generator():
     workspace_root = PACKAGE_ROOT.parents[2]
     lut_path = (
         workspace_root /
-        model.CONTROLLER_PROFILE_LIBRARY['cpp_real_car']['steering_lut'])
+        profiles.controller_profile('cpp_real_car')['steering_lut'])
     steering_lut = np.loadtxt(lut_path, delimiter=',')
     generator = _load_generator_safety_slice(steering_lut)
 
@@ -179,18 +306,16 @@ def test_lightweight_velocity_and_controller_logs_match_generator():
         'vx': np.minimum(tuner_speed, 2.5),
         'ax': np.zeros(count),
     }
-    fields = (
-        't', 'x', 'y', 'theta', 'v', 'v_ref', 's', 'd_err', 'steer',
-        'a_long_cmd', 'a_lat_cmd', 'a_long', 'a_lat',
-        'combined_demand', 'combined_accel', 'tire_saturated')
-    for profile_name in model.SELECTED_CONTROLLER_PROFILES:
+    gate, advisory = profiles.selected_controller_profiles()
+    for profile in gate + advisory:
+        profile_name = profile['name']
         generator_log = generator['PurePursuitSim'](
             trajectory, profile_name, mu=0.75).run(
                 n_laps=99, max_time=2.0)
         tuner_log = model.PurePursuitSim(
             trajectory, profile_name, workspace_root, mu=0.75).run(
                 requested_laps=99, max_time_sec=2.0)
-        for field in fields:
+        for field in profiles.SIM_LOG_FIELDS:
             assert np.allclose(
                 tuner_log[field], generator_log[field],
                 rtol=1e-12, atol=1e-12), (profile_name, field)

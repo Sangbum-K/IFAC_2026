@@ -5,9 +5,16 @@ This module deliberately has no ROS, scipy, skimage, matplotlib, or PIL
 dependency.  The tuner runs with the system ROS Python, while build_map.py is
 normally run in a map-generation venv with heavier dependencies.
 
-The profile manifest is duplicated intentionally to isolate those runtime
-dependencies.  ``assert_generator_profile_contract`` parses build_map.py with a
-restricted AST evaluator and fails if the two selected profile manifests drift.
+Deployment profile values are NOT duplicated here.  They used to be, and on
+2026-08-05 all three copies disagreed: build_map.py had planner scale 0.97 /
+cap 6.0, this file had 0.83 / 5.0, and the runtime YAML that the car actually
+loads had 0.742 / 4.0.  ``assert_generator_profile_contract`` was supposed to
+catch exactly that and was itself failing, which locked tuner saves.
+
+Profiles now come from ``scripts/deployment_profiles.py``, which reads the same
+YAML files that launch reads (numpy + pyyaml only, so both runtimes can import
+it).  The AST contract below no longer compares constants -- it only pins the
+generator's *algorithm* revision, which is still duplicated in this file.
 """
 
 import ast
@@ -15,146 +22,55 @@ import copy
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
 
+# scripts/ 를 import 경로에 넣는다. 이 모듈은 튜너 노드가 파일 경로로 직접
+# 로드하므로 패키지 import 가 아니다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# gate_controller_profiles / advisory_controller_profiles /
+# selected_controller_profiles 는 여기서 안 쓰지만 재수출해야 한다 —
+# raceline_tuner_node 가 이 모듈을 파일 경로로 로드해 module.<name> 으로 부른다.
+from deployment_profiles import (          # noqa: E402,F401
+    BRAKE_DECEL_PER_AMP, DEFAULT_GATE_TARGET, SIM_LOG_FIELDS,
+    advisory_controller_profiles, controller_profile,
+    gate_controller_profiles, make_longitudinal_plant, profile_brake_max,
+    selected_controller_profiles,
+)
+import deployment_profiles as _profiles     # noqa: E402
+
 G = 9.81
-MODEL_VERSION = 'tuner-controller-safety-2026-07-31-v2'
+MODEL_VERSION = 'tuner-controller-safety-2026-08-05-v3'
 # Restricted-AST digest of the generator functions that must remain numerically
 # paired with this lightweight copy.  Any generator algorithm edit locks tuner
 # saves until this model and its parity test are deliberately updated.
 GENERATOR_MODEL_AST_SHA256 = (
-    '0007bdcbf7654c965be3593ab6811dcaa6b1bb898e2e8cdd49c23f99f61f13db')
-SELECTED_CONTROLLER_PROFILES = (
-    'cpp_real_car',
-    'python_sim_tracker',
-)
+    '8ee562c228d312efda07c96ed65427d2af1354cd499c15a55245586a01d7929a')
 VEHICLE_HALF_WIDTH_M = 0.15
 VEHICLE_HALF_LENGTH_M = 0.275
 
-# These values mirror the explicitly selected deployment profiles in
-# build_map.py.  The AST contract check below makes any future drift fail closed.
-CONTROLLER_PROFILE_LIBRARY = {
-    'cpp_real_car': {
-        'kind': 'cpp_map_l1',
-        'planner_speed_scale': 0.83,
-        'controller_speed_scale': 1.0,
-        'max_speed_mps': 5.0,
-        'lookahead_gain': 0.47,
-        'lookahead_offset': -0.2,
-        'lookahead_min_m': 0.5,
-        'lookahead_max_m': 8.0,
-        'speed_lookahead_s': 0.25,
-        'wheelbase_m': 0.33,
-        'max_steer_rad': 0.36,
-        'max_steer_rate_radps': 2.0,
-        'max_accel_mps2': 5.5,
-        'max_decel_mps2': 4.0,
-        'control_rate_hz': 40.0,
-        'num_local_waypoints': 130,
-        'steering_lut': (
-            'control_ws/src/control_pkg/config/steering_lookup/'
-            'NUC6_glc_pacejka_lookup_table.csv'),
-    },
-    'python_sim_tracker': {
-        'kind': 'python_pure_pursuit',
-        'planner_speed_scale': 0.6667,
-        'controller_speed_scale': 0.30,
-        'max_speed_mps': 6.0,
-        'lookahead_gain': 0.5,
-        'lookahead_offset': 0.0,
-        'lookahead_min_m': 0.6,
-        'lookahead_max_m': 1.2,
-        'wheelbase_m': 0.33,
-        'max_steer_rad': 0.36,
-        'max_steer_rate_radps': 2.0,
-        'max_accel_mps2': 5.5,
-        'max_decel_mps2': 4.0,
-        'control_rate_hz': 40.0,
-        'num_local_waypoints': 130,
-        'steering_lut': None,
-    },
-}
 
-_PROFILE_NUMERIC_FIELDS = (
-    'planner_speed_scale', 'controller_speed_scale', 'max_speed_mps',
-    'lookahead_gain', 'lookahead_offset', 'lookahead_min_m',
-    'lookahead_max_m', 'wheelbase_m', 'max_steer_rad',
-    'max_steer_rate_radps', 'max_accel_mps2', 'max_decel_mps2',
-    'control_rate_hz', 'num_local_waypoints',
-)
+def profile_manifest(target=DEFAULT_GATE_TARGET):
+    """Stable, test-visible manifest of the resolved deployment profiles."""
+    manifest = copy.deepcopy(_profiles.profile_manifest(target))
+    manifest['model_version'] = MODEL_VERSION
+    manifest['generator_model_ast_sha256'] = GENERATOR_MODEL_AST_SHA256
+    return manifest
 
 
-def controller_profile(name):
-    if not isinstance(name, str) or name not in CONTROLLER_PROFILE_LIBRARY:
-        raise ValueError(f'unknown controller profile: {name!r}')
-    profile = copy.deepcopy(CONTROLLER_PROFILE_LIBRARY[name])
-    profile['name'] = name
-    if profile.get('kind') not in ('cpp_map_l1', 'python_pure_pursuit'):
-        raise ValueError(f'{name}: unsupported controller kind')
-    for field in _PROFILE_NUMERIC_FIELDS:
-        value = profile.get(field)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
-                not np.isfinite(value):
-            raise ValueError(f'{name}: {field} is not a finite number')
-    if not (0.0 < profile['planner_speed_scale'] <= 1.0) or \
-            not (0.0 < profile['controller_speed_scale'] <= 1.0):
-        raise ValueError(f'{name}: speed scales must be in (0, 1]')
-    positive = (
-        'max_speed_mps', 'lookahead_min_m', 'lookahead_max_m',
-        'wheelbase_m', 'max_steer_rad', 'max_steer_rate_radps',
-        'max_accel_mps2', 'max_decel_mps2', 'control_rate_hz',
-    )
-    if any(profile[field] <= 0.0 for field in positive):
-        raise ValueError(f'{name}: vehicle/controller limits must be positive')
-    if profile['lookahead_max_m'] < profile['lookahead_min_m']:
-        raise ValueError(f'{name}: lookahead bounds are reversed')
-    if profile['max_steer_rad'] >= 0.5 * np.pi:
-        raise ValueError(f'{name}: max steer is outside bicycle-model range')
-    count = profile['num_local_waypoints']
-    if int(count) != count or count < 2:
-        raise ValueError(f'{name}: num_local_waypoints must be an integer >= 2')
-    profile['num_local_waypoints'] = int(count)
-    lut = profile.get('steering_lut')
-    if profile['kind'] == 'cpp_map_l1' and \
-            (not isinstance(lut, str) or not lut):
-        raise ValueError(f'{name}: steering LUT is missing')
-    if profile['kind'] == 'python_pure_pursuit' and lut is not None:
-        raise ValueError(f'{name}: Python tracker must not specify a LUT')
-    return profile
+def profile_signature(target=DEFAULT_GATE_TARGET):
+    """Digest of the *resolved* profile values actually used for validation.
 
-
-def selected_controller_profiles():
-    names = tuple(SELECTED_CONTROLLER_PROFILES)
-    if not names or len(names) != len(set(names)):
-        raise ValueError('selected controller profile list is empty or duplicated')
-    return tuple(controller_profile(name) for name in names)
-
-
-def profile_manifest():
-    """Stable, test-visible manifest excluding derived ``name`` fields."""
-    return {
-        'model_version': MODEL_VERSION,
-        'generator_model_ast_sha256': GENERATOR_MODEL_AST_SHA256,
-        'selected_profiles': list(SELECTED_CONTROLLER_PROFILES),
-        'profiles': {
-            name: copy.deepcopy(CONTROLLER_PROFILE_LIBRARY[name])
-            for name in SELECTED_CONTROLLER_PROFILES
-        },
-    }
-
-
-def profile_signature():
-    payload = {
-        'selected_profiles': list(SELECTED_CONTROLLER_PROFILES),
-        'profiles': {
-            name: CONTROLLER_PROFILE_LIBRARY[name]
-            for name in SELECTED_CONTROLLER_PROFILES
-        },
-    }
+    Because the values are read from the deployed YAML, this signature changes
+    the moment someone retunes velocity_scale or the control speed cap -- which
+    is the point: a tuner result recorded under one set of deployed limits must
+    not be mistaken for one recorded under another.
+    """
     encoded = json.dumps(
-        payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        _profiles.profile_manifest(target),
+        sort_keys=True, separators=(',', ':')).encode('utf-8')
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -191,52 +107,41 @@ def _restricted_ast_value(node, values):
 
 
 def assert_generator_profile_contract(build_map_path):
-    """Fail if build_map.py's selected deployment manifest differs.
+    """Fail if build_map.py's safety algorithm revision differs from this copy.
 
     Importing build_map.py is intentionally avoided: its map-generation
     dependencies are not ROS runtime dependencies.
+
+    Profile *constants* are no longer compared -- both sides now import
+    ``deployment_profiles`` and read the deployed YAML, so there is nothing left
+    to drift.  What is still duplicated is the closed-loop algorithm below, and
+    that is what this digest pins.  Also assert that the generator really does
+    delegate its profiles, so a future edit cannot quietly reintroduce a copy.
     """
     path = Path(build_map_path)
     if not path.is_file():
         raise FileNotFoundError(f'generator profile source missing: {path}')
-    tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
-    values = {}
-    wanted = {
-        'V_MAX', 'WHEELBASE', 'MAX_STEER', 'A_ACC_MAX', 'A_DEC_MAX',
-        'MAX_STEER_RATE', 'N_LOCAL_WP', 'SIM_CONTROLLER_PROFILES',
-        'CONTROLLER_PROFILE_LIBRARY',
-    }
-    for statement in tree.body:
-        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            continue
-        targets = (
-            statement.targets if isinstance(statement, ast.Assign)
-            else [statement.target])
-        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
-            continue
-        name = targets[0].id
-        if name not in wanted:
-            continue
-        try:
-            values[name] = _restricted_ast_value(statement.value, values)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(
-                f'cannot evaluate generator profile field {name}: {exc}') from exc
-    if 'SIM_CONTROLLER_PROFILES' not in values or \
-            'CONTROLLER_PROFILE_LIBRARY' not in values:
-        raise ValueError('generator selected profile manifest is missing')
-    generator_selected = tuple(values['SIM_CONTROLLER_PROFILES'])
-    if generator_selected != tuple(SELECTED_CONTROLLER_PROFILES):
+    source = path.read_text(encoding='utf-8')
+    tree = ast.parse(source, filename=str(path))
+    delegated = any(
+        isinstance(statement, ast.ImportFrom) and
+        statement.module == 'deployment_profiles'
+        for statement in tree.body)
+    if not delegated:
         raise ValueError(
-            f'generator/tuner selected profiles differ: '
-            f'{generator_selected} != {SELECTED_CONTROLLER_PROFILES}')
-    generator_library = values['CONTROLLER_PROFILE_LIBRARY']
-    for name in SELECTED_CONTROLLER_PROFILES:
-        if name not in generator_library:
-            raise ValueError(f'generator profile missing: {name}')
-        if generator_library[name] != CONTROLLER_PROFILE_LIBRARY[name]:
-            raise ValueError(
-                f'generator/tuner profile constants differ for {name}')
+            'generator no longer imports deployment_profiles: deployment '
+            'constants would be duplicated again')
+    for forbidden in ('CONTROLLER_PROFILE_LIBRARY', 'SIM_CONTROLLER_PROFILES'):
+        for statement in tree.body:
+            targets = (
+                statement.targets if isinstance(statement, ast.Assign)
+                else [statement.target]
+                if isinstance(statement, ast.AnnAssign) else [])
+            if any(isinstance(target, ast.Name) and target.id == forbidden
+                   for target in targets):
+                raise ValueError(
+                    f'generator redefines {forbidden}: profile constants must '
+                    'come from deployment_profiles only')
     implementation_names = {
         '_max_segment_endpoint_speed', 'velocity_profile',
         '_lookup_steer_angle', '_lookup_lateral_accel',
@@ -482,8 +387,12 @@ class PurePursuitSim:
         self.lookahead_clip = (
             self.profile['lookahead_min_m'],
             self.profile['lookahead_max_m'])
+        # Controller speed-command slew limits (runtime YAML), which are not
+        # the same thing as what the car can physically do -- the plant below
+        # owns that.  See deployment_profiles.VescLongitudinalPlant.
         self.a_acc_max = self.profile['max_accel_mps2']
         self.a_dec_max = self.profile['max_decel_mps2']
+        self.plant = make_longitudinal_plant(self.profile)
         self.local_count = min(
             self.profile['num_local_waypoints'], self.count)
         self.dt = 1.0 / self.profile['control_rate_hz']
@@ -541,14 +450,15 @@ class PurePursuitSim:
         theta = float(self.traj['psi'][0])
         speed = 0.0
         previous_s = 0.0
-        fields = (
-            't', 'x', 'y', 'theta', 'v', 'v_ref', 's', 'd_err', 'steer',
-            'a_long_cmd', 'a_lat_cmd', 'a_long', 'a_lat',
-            'combined_demand', 'combined_accel', 'tire_saturated')
+        fields = SIM_LOG_FIELDS
         log = {key: [] for key in fields}
         elapsed = 0.0
         laps = 0
         steering = 0.0
+        # control_node.cpp's last_speed_command_: the slew limiter runs on the
+        # previous *command*, not on measured speed.
+        speed_command = 0.0
+        self.plant.reset()
         while elapsed < max_time_sec:
             index = self._nearest_index(position)
             current_s = self.s_ref[index]
@@ -587,25 +497,39 @@ class PurePursuitSim:
                 -self.max_steer_rate * self.dt,
                 self.max_steer_rate * self.dt)
 
-            speed_command = self._speed_target(
+            # Stage 1: controller speed command + slew (control_node.cpp).
+            speed_target = self._speed_target(
                 position, theta, speed, target_index)
+            previous_command = speed_command
+            speed_command = previous_command + float(np.clip(
+                speed_target - previous_command,
+                -self.a_dec_max * self.dt, self.a_acc_max * self.dt))
+            # What the car publishes as drive.acceleration; the VESC brake
+            # entry test reads exactly this.
             a_long_command = float(np.clip(
-                (speed_command - speed) / self.dt,
+                (speed_command - previous_command) / self.dt,
                 -self.a_dec_max, self.a_acc_max))
+
+            # Stage 2: longitudinal plant (VESC arbitration + measured limits).
+            a_long_plant, plant_mode, brake_amps = self.plant.step(
+                speed, speed_command, a_long_command, self.dt)
+
             if self.profile['kind'] == 'cpp_map_l1':
                 a_lat_command = _lookup_lateral_accel(
                     self.steering_lut, steering, speed)
             else:
                 a_lat_command = float(
                     speed ** 2 * np.tan(steering) / self.wheelbase)
+            # Tire budget is what the car actually tries to do.  The controller
+            # command slope does not load the tires if the plant cannot deliver.
             combined_demand = float(np.hypot(
-                a_long_command, a_lat_command))
+                a_long_plant, a_lat_command))
             a_lat = float(np.clip(
                 a_lat_command, -self.tire_limit, self.tire_limit))
             longitudinal_available = float(np.sqrt(max(
                 self.tire_limit ** 2 - a_lat ** 2, 0.0)))
             a_long = float(np.clip(
-                a_long_command,
+                a_long_plant,
                 -longitudinal_available, longitudinal_available))
             combined_accel = float(np.hypot(a_long, a_lat))
             saturated = combined_demand > self.tire_limit * (1.0 + 1e-9)
@@ -622,8 +546,12 @@ class PurePursuitSim:
             values = (
                 elapsed, position[0], position[1], theta, speed,
                 speed_command, current_s + laps * self.track_len, d_error,
-                steering, a_long_command, a_lat_command, a_long, a_lat,
-                combined_demand, combined_accel, float(saturated))
+                steering, a_long_command, a_long_plant, a_lat_command,
+                a_long, a_lat, combined_demand, combined_accel,
+                float(saturated), brake_amps,
+                1.0 if plant_mode == 'brake' else 0.0)
+            if len(values) != len(fields):
+                raise RuntimeError('simulation log column count mismatch')
             for key, value in zip(fields, values):
                 log[key].append(value)
         output = {key: np.asarray(value) for key, value in log.items()}
@@ -663,10 +591,7 @@ def verify_simulation(name, log, grid, requested_laps, profile_name, mu):
     """Fail-closed log, footprint, actuator, and tire-demand verification."""
     profile = controller_profile(profile_name)
     failures = []
-    fields = (
-        't', 'x', 'y', 'theta', 'v', 'v_ref', 's', 'd_err', 'steer',
-        'a_long_cmd', 'a_lat_cmd', 'a_long', 'a_lat',
-        'combined_demand', 'combined_accel', 'tire_saturated')
+    fields = SIM_LOG_FIELDS
     lengths = [len(log.get(field, ())) for field in fields]
     prefix = f'{name}/{profile_name}'
     if not lengths or min(lengths) == 0 or len(set(lengths)) != 1:
@@ -709,7 +634,7 @@ def verify_simulation(name, log, grid, requested_laps, profile_name, mu):
             np.any(log['v'] > profile['max_speed_mps'] + 1e-6):
         failures.append(f'{prefix}: [FAIL] profile speed limit exceeded')
     reconstructed_demand = np.hypot(
-        log['a_long_cmd'], log['a_lat_cmd'])
+        log['a_long_plant'], log['a_lat_cmd'])
     reconstructed_actual = np.hypot(log['a_long'], log['a_lat'])
     if not np.allclose(
             reconstructed_demand, log['combined_demand'],
@@ -735,4 +660,15 @@ def verify_simulation(name, log, grid, requested_laps, profile_name, mu):
     if np.any(log['a_long_cmd'] > profile['max_accel_mps2'] + 1e-9) or \
             np.any(log['a_long_cmd'] < -profile['max_decel_mps2'] - 1e-9):
         failures.append(f'{prefix}: [FAIL] longitudinal command cap exceeded')
+    plant_decel_limit = (
+        profile['plant_decel_max_mps2'] +
+        BRAKE_DECEL_PER_AMP * profile_brake_max(profile))
+    if np.any(log['a_long_plant'] > profile['plant_accel_max_mps2'] + 1e-9) or \
+            np.any(log['a_long_plant'] < -plant_decel_limit - 1e-9):
+        failures.append(
+            f'{prefix}: [FAIL] plant acceleration exceeds measured limits '
+            f'({log["a_long_plant"].min():.2f}~'
+            f'{log["a_long_plant"].max():.2f} m/s², allowed '
+            f'-{plant_decel_limit:.2f}~'
+            f'+{profile["plant_accel_max_mps2"]:.2f})')
     return not failures, failures

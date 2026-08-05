@@ -34,6 +34,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -51,10 +52,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-HERE = Path(__file__).resolve().parent
-PKG_ROOT = next((p for p in HERE.parents if p.name == "planning_pkg"),
-                HERE.parent.parent)
-WORKSPACE_ROOT = PKG_ROOT.parents[2]
+# scripts/ 를 import 경로에 넣어 배포 프로파일 모듈을 공유한다. 이 스크립트는
+# 보통 자기 디렉터리에서 직접 실행되므로(make_raceline.sh) 자동으론 안 잡힌다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from deployment_profiles import (          # noqa: E402
+    A_ACC_MAX, A_DEC_PLANNED, BRAKE_DECEL_PER_AMP, DEFAULT_GATE_TARGET,
+    GATE_PROFILE_SETS, MAX_STEER, PKG_ROOT, RACELINE_V_MAX, SIM_LOG_FIELDS,
+    WHEELBASE, WORKSPACE_ROOT, controller_profile, make_longitudinal_plant,
+    profile_brake_max, selected_controller_profiles,
+)
 
 # ============================================================ 설정 (여기만 고치면 됨)
 # --- 스케일 ------------------------------------------------------------------
@@ -76,7 +82,10 @@ INFIELD_FILL_M = 0.8
 MIN_ISLAND_M2 = 0.3
 
 # --- 레이스라인 생성 파라미터 ------------------------------------------------
-V_MAX      = 6.0     # 최대 속도 [m/s]  (소형 트랙 → 보수적. 잘 돌면 올려라)
+# 최대 속도 [m/s] (소형 트랙 → 보수적. 잘 돌면 올려라). 값은
+# ../deployment_profiles.py 의 RACELINE_V_MAX 에 있다 — python_sim_tracker
+# 프로파일이 이걸 속도 cap 으로 쓰기 때문에 공유 모듈에 있어야 한다.
+V_MAX      = RACELINE_V_MAX
 MU         = 0.75    # 물리 노면 마찰계수. 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
                      # 2026-07-31 run_0731_223152 IMU 실측 |a_lat| p95 7.0~7.9 m/s²
                      # → 0.75(7.36)는 실측과 일치. 실측이 바뀔 때만 수정할 것.
@@ -135,136 +144,59 @@ SP_CURV_W  = 12.0
 CAR_HALF_WIDTH = 0.15    # 실차 전폭 0.30 m의 절반. 라인-벽 여유가 이 미만이면 접촉
 CAR_HALF_LENGTH = 0.275  # 실차 전장 약 0.55 m의 절반
 
-# --- 차량/컨트롤러 파라미터 (실차 실측값, 트랙 크기와 무관) ------------------
-# ⚠️ 이 두 값은 출력 CSV(라인 형상·속도 프로파일)에 영향이 없다. 레이스라인은
-#    optimize_raceline_iqp(기하 QP) + build_trajectory(곡률·mu)만으로 정해진다.
-#    아래 두 값은 PurePursuitSim 폐루프 검증에만 쓰여 "실차 조향 한계로 이 라인을
-#    실제로 따라갈 수 있는가"(lat err)를 판정한다 → 반드시 실차값이어야 의미 있음.
-WHEELBASE  = 0.33    # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동일)
-MAX_STEER  = 0.36    # [rad] (20.7°) 실차 검증 조향 한계. TUNING_STATUS 기준이며
-                     # control_pkg vehicle/max_steering_angle_rad와 동일하게 유지할 것
-                     # (순정 링키지 명목 24°=0.4189가 아니라 실측 포화 한계값)
-# 종방향 한계 — run_0731_231343 실측 (모터 전류/속도 응답):
-#   가속: 모터 전류 ~30 A 포화 → 최대 2.2 m/s² (p90 실측 2.23). 예전 5.5는
-#     달성 불가라 프로파일 속도에 차가 못 붙고, 직선 끝까지 가속만 하다
-#     제동 구간을 놓치는 원인이 됐다.
-#   감속: VESC가 브레이크 전류를 전혀 안 씀 (전류 최소 +5.8 A, 음수 없음)
-#     → 감속은 코스팅 항력뿐, 실측 평균 -1.5 m/s². 여유 두고 1.3으로 계획.
-# ⚠️ VESC 제동(펌웨어 brake 한계 또는 commands/motor/brake 경로)이 생겨
-#   실측 감속이 좋아지면 그때 A_DEC_MAX를 실측값으로 올리고 재생성할 것.
-A_ACC_MAX  = 2.2     # 최대 가속 [m/s²] (30 A 전류 제한 실측)
-A_DEC_MAX  = 1.3     # 최대 제동 [m/s²] (코스팅 전용 실측, 제동 전류 없음)
-MAX_STEER_RATE = 2.0 # [rad/s] control 기본 steering-rate limit
-N_LOCAL_WP = 130     # 로컬 윈도우 웨이포인트 수 (local_trajectory_node와 동일)
+# --- 폭에 따라 유동적으로 변하는 이격/속도 (SLAM 맵 대응) --------------------
+# SLAM(slam_toolbox)으로 딴 트랙은 구간마다 코리도 폭이 다르다. my_track 실측:
+# 실폭 median 1.2 m, 최소 ~0.9 m, 최대 2.15 m — 2배 넘게 변한다.
+# 이걸 SAFE_DIST 상수 하나로 처리하면 양쪽 끝에서 동시에 손해를 본다:
+#   (a) 넓은 구간 — 벽에서 0.6 m 이상 띄울 수 있는데도 0.40만 띄운다.
+#       벽여유를 공짜로 받을 수 있는 곳에서 안 받는다.
+#   (b) 좁은 구간 — 코리도가 2*0.40 = 0.80 m 보다 좁으면 _solve_qp 의 narrow
+#       분기가 '정중앙 고정'으로 떨어진다. 그 구간만 최적화가 사실상 꺼져서
+#       헤어핀 반경이 중앙선 수준(R 0.3~0.4 m)까지 붕괴하고 조향 포화로 FAIL.
+# 그래서 이격을 상수가 아니라 '그 지점의 코리도 폭에 비례하는 값'으로 준다.
+# 폭은 이미 매 반복 occupancy 마스크에서 재는 값(Grid.corridor_interval)이라
+# 새로 측정할 게 없다 — 버리고 있던 정보를 쓰는 것뿐이다.
+ADAPTIVE_SAFE_DIST = True
+# 로컬 코리도 '전폭'의 이 비율을 좌우 각각의 이격으로 요구한다. 0.5 미만이면
+# 산술적으로 항상 lo < hi 라 narrow 분기(정중앙 고정)로 떨어지지 않는다.
+# 폭 1.0 m -> 0.30 m씩, 1.5 m -> 0.45 m씩, 2.0 m -> 0.60 m씩(상한에서 잘림).
+SAFE_DIST_WIDTH_FRAC = 0.30
+# 하한: 차 반폭 + 폐루프 추적오차 최소 허용치. 폭이 아무리 좁아도 이 아래로는
+# 안 내린다 (내려봐야 verify_line 의 CAR_HALF_WIDTH 검사에서 걸린다).
+SAFE_DIST_MIN = CAR_HALF_WIDTH + 0.07    # 0.22 m
+# 상한: 넓다고 무한정 벽을 피하면 라인이 중앙선으로 수렴해 곡률이 나빠진다.
+# 2026-07-27 실측표(위 SAFE_DIST 주석)에서 균일 0.50부터 조향 포화가 시작됐다.
+SAFE_DIST_MAX = 0.45
+# 이격 프로파일 rolling-min 창 [m]. 차 전장만큼 앞뒤로 미리 완화해 두지 않으면
+# 좁은 게이트 진입 직전에 바운드가 계단으로 변해 라인에 꺾임(곡률 스파이크)이 생긴다.
+SAFE_DIST_SMOOTH_M = 2.0 * CAR_HALF_LENGTH
 
-# cpp_real_car 게이트는 하드코딩 숫자가 아니라 planning/control real_car.yaml을
-# 직접 읽는다. (2026-08-05: velocity_scale 0.97/max_speed 6.0 하드코딩이 실제
-# real_car.yaml 값(0.75/4.5, 커밋 54574dd)과 어긋난 채 방치돼 게이트가 실제
-# 배포보다 높은 속도로 폐루프를 검증 — 마진이 실제보다 타이트해져 매핑할
-# 때마다 CSV 생성이 불필요하게 FAIL하는 사고가 있었음. 이 로더가 그 클래스의
-# drift를 원천 차단한다 — real_car.yaml만 바꾸면 게이트도 같이 따라간다.)
-def _load_runtime_speed_profile():
-    planning_yaml = (WORKSPACE_ROOT / "planning_ws" / "src" / "planning_pkg"
-                      / "config" / "environments" / "real_car.yaml")
-    control_yaml = (WORKSPACE_ROOT / "control_ws" / "src" / "control_pkg"
-                     / "config" / "environments" / "real_car.yaml")
+# 좁은 구간에서 이격을 줄인 만큼은 속도로 갚는다. 폐루프 횡추적오차는 속도에
+# 거의 비례한다 — 2026-08-01 게이트 실측 |lat err|max 0.202 m @ v_max 5.23 m/s
+# → 0.0386 s. 여유를 두고 0.045 s로 잡는다. 각 웨이포인트에서
+#   v_width = (실제 벽여유 - 차 반폭) / LAT_ERR_PER_MPS
+# 를 속도 상한으로 걸면, 폭이 좁은 곳만 자동으로 느려지고 넓은 곳은 V_MAX 그대로다.
+# (감속 램프는 velocity_profile 의 backward pass 가 알아서 만들어 준다.)
+ADAPTIVE_SPEED_BY_WIDTH = True
+LAT_ERR_PER_MPS = 0.045      # [s] 속도 1 m/s 당 예상 |횡추적오차| [m]
+WIDTH_SPEED_MIN_MPS = 1.5    # 폭 때문에 이보다 더 낮추지는 않는다 (정지 방지)
 
-    def _load(path):
-        if not path.exists():
-            raise RuntimeError(f"폐루프 게이트 설정 파일이 없음: {path}")
-        with open(path) as f:
-            return yaml.safe_load(f)
-
-    planning_cfg = _load(planning_yaml)
-    control_cfg = _load(control_yaml)
-
-    try:
-        planner_scale = float(
-            planning_cfg["global_trajectory_node"]["ros__parameters"]
-            ["global_trajectory/velocity_scale"])
-        controller_scale = float(
-            control_cfg["control"]["ros__parameters"]["vehicle/speed_scale"])
-        max_speed = float(
-            control_cfg["control"]["ros__parameters"]["vehicle/max_speed_mps"])
-    except KeyError as exc:
-        raise RuntimeError(
-            f"real_car.yaml에서 속도 파라미터를 못 찾음 (키 누락: {exc}). "
-            "planning/control real_car.yaml 구조가 바뀌었으면 "
-            "_load_runtime_speed_profile()도 같이 고칠 것.") from exc
-
-    if not (0.0 < planner_scale <= 1.0):
-        raise RuntimeError(f"planning velocity_scale 범위 이상: {planner_scale}")
-    if not (0.0 < controller_scale <= 1.0):
-        raise RuntimeError(f"control speed_scale 범위 이상: {controller_scale}")
-    if not (max_speed > 0.0):
-        raise RuntimeError(f"control max_speed_mps 범위 이상: {max_speed}")
-
-    return planner_scale, controller_scale, max_speed
-
-
-(_RUNTIME_PLANNER_SCALE, _RUNTIME_CONTROLLER_SCALE,
- _RUNTIME_MAX_SPEED_MPS) = _load_runtime_speed_profile()
-
-# 폐루프 검증은 이름 없는 "비슷한 pure pursuit" 설정으로 돌리면 안 된다.
-# 아래 목록에 선택된 배포 프로파일을 **모두** 통과해야 CSV를 쓴다.
-SIM_CONTROLLER_PROFILES = (
-    "cpp_real_car",
-    "python_sim_tracker",
-)
-CONTROLLER_PROFILE_LIBRARY = {
-    # planner_speed_scale/controller_speed_scale/max_speed_mps는 위
-    # _load_runtime_speed_profile()이 real_car.yaml에서 직접 읽은 값이다.
-    # 과거 스윕 이력(참고용, 현재 숫자를 대표하지 않음):
-    #  scale 스윕(my_track0801): 1.00 FAIL(footprint 벽 침범), 0.97~0.99 PASS.
-    #  0.97은 |lat err|max 0.202 m로 5 m/s 성공 배포(0.207)와 같은 마진 —
-    #  0.99(0.212 m)는 절벽(1.0) 한 칸 옆이라 채택하지 않았음.
-    # C++ MAP/L1의 실제 NUC6 steering LUT도 그대로 사용한다.
-    "cpp_real_car": {
-        "kind": "cpp_map_l1",
-        "planner_speed_scale": _RUNTIME_PLANNER_SCALE,
-        "controller_speed_scale": _RUNTIME_CONTROLLER_SCALE,
-        "max_speed_mps": _RUNTIME_MAX_SPEED_MPS,
-        "lookahead_gain": 0.47,
-        "lookahead_offset": -0.2,
-        "lookahead_min_m": 0.5,
-        "lookahead_max_m": 8.0,
-        # control params.yaml map/speed_lookahead와 동일 유지.
-        # 2026-07-31 스윕: 0.35/0.45/0.6은 직선 투영이 코너 건너편 웨이포인트를
-        # 잡아 전부 악화(|derr| 0.30/0.38/0.51). 이 트랙 크기에선 0.25가 최적.
-        # 제동 여유는 speed_lookahead가 아니라 MU_PROFILE(프로파일 마진)로 확보.
-        "speed_lookahead_s": 0.25,
-        "wheelbase_m": WHEELBASE,
-        "max_steer_rad": MAX_STEER,
-        "max_steer_rate_radps": MAX_STEER_RATE,
-        "max_accel_mps2": A_ACC_MAX,
-        "max_decel_mps2": A_DEC_MAX,
-        "control_rate_hz": 40.0,
-        "num_local_waypoints": N_LOCAL_WP,
-        "steering_lut": (
-            "control_ws/src/control_pkg/config/steering_lookup/"
-            "NUC6_glc_pacejka_lookup_table.csv"),
-    },
-    # planner params velocity_scale=0.6667 + waypoint_tracker speed_scale=0.30.
-    # Python tracker의 lookahead=clip(0.5*v, 0.6, 1.2)를 그대로 사용한다.
-    "python_sim_tracker": {
-        "kind": "python_pure_pursuit",
-        "planner_speed_scale": 0.6667,
-        "controller_speed_scale": 0.30,
-        "max_speed_mps": V_MAX,
-        "lookahead_gain": 0.5,
-        "lookahead_offset": 0.0,
-        "lookahead_min_m": 0.6,
-        "lookahead_max_m": 1.2,
-        "wheelbase_m": WHEELBASE,
-        "max_steer_rad": MAX_STEER,
-        "max_steer_rate_radps": MAX_STEER_RATE,
-        "max_accel_mps2": A_ACC_MAX,
-        "max_decel_mps2": A_DEC_MAX,
-        "control_rate_hz": 40.0,
-        "num_local_waypoints": N_LOCAL_WP,
-        "steering_lut": None,
-    },
-}
+# --- 차량/컨트롤러 배포 프로파일 ---------------------------------------------
+# 실차 상수(WHEELBASE / MAX_STEER / A_ACC_MAX / A_DEC_MAX / BRAKE_DECEL_PER_AMP)
+# 와 배포 프로파일은 ../deployment_profiles.py 가 단일 기준이다. 여기 베껴 적지
+# 말 것 — 2026-08-05 리뷰 시점에 같은 매니페스트가 세 벌이었고 전부 달랐다:
+#   build_map.py 이 블록      planner scale 0.80 / cap 6.0
+#   tuner/controller_safety…  planner scale 0.83 / cap 5.0
+#   런타임 YAML (차가 읽는 값) velocity_scale 0.75 / cap 4.5
+# 즉 CSV는 4.8 m/s 조건으로 검증받고 차는 4.5 m/s로 달렸다. 게이트가 실제 배포보다
+# 높은 속도로 폐루프를 돌려 마진이 실제보다 타이트해지고, 매핑할 때마다 CSV 생성이
+# 불필요하게 FAIL하는 사고까지 있었다 (c610bad). 베껴 적는 한 이 드리프트는 반드시
+# 다시 생긴다 — 이 블록은 0.97 -> 0.80 으로 손댄 이력도 있다.
+# 프로파일 숫자는 이제 launch 가 읽는 바로 그 YAML 에서 온다. c610bad 가
+# cpp_real_car 속도 3개에 대해 먼저 한 일을, 전 파라미터 + 두 프로파일 +
+# tuner 사본까지로 확장한 것이다.
+# 과거 스윕 이력(참고용, 현재 숫자를 대표하지 않음): my_track0801에서 scale
+# 1.00 FAIL(footprint 벽 침범), 0.97~0.99 PASS, 0.97이 |lat err|max 0.202 m.
 
 # --- 이산화 간격 -------------------------------------------------------------
 DS_OUT     = 0.1     # 출력 웨이포인트 간격 [m]
@@ -273,6 +205,10 @@ LAPS       = 1       # 시뮬 랩 수
 
 G = 9.81
 
+# 경로는 deployment_profiles 와 같은 기준을 쓴다 (거기서 이미 <planning_pkg> 와
+# 워크스페이스 루트를 정한다). 따로 계산하면 두 모듈이 다른 워크스페이스를
+# 가리킬 수 있다.
+HERE = Path(__file__).resolve().parent
 # 맵을 찾을 폴더 (앞에서부터 순서대로 — 먼저 있는 걸 쓴다):
 #   1) <workspace>/maps      — mapping.launch.py 가 저장하는 워크스페이스 공용 폴더.
 #      여기서 먼저 찾으므로 매핑 직후 복사 없이 바로 build_map 을 돌릴 수 있다.
@@ -729,10 +665,59 @@ def _respline_closed(xy, ds, smooth=0.5):
     return {"s": s, "xy": np.column_stack([x, y]), "psi": psi, "kappa": kappa}
 
 
+def adaptive_safe_dist(a_lo, a_hi, ds, enabled=ADAPTIVE_SAFE_DIST):
+    """각 스테이션의 코리도 폭에서 그 지점의 라인-벽 이격 [m] 을 정한다.
+
+    SLAM 트랙은 구간마다 폭이 다르므로 이격도 구간마다 달라야 한다. 상수 하나면
+    넓은 곳에서는 여유를 버리고 좁은 곳에서는 최적화가 꺼진다(설정 블록 주석).
+
+    절차:
+      1. 로컬 전폭의 SAFE_DIST_WIDTH_FRAC 배를 좌우 각각의 목표 이격으로 잡고
+         [SAFE_DIST_MIN, SAFE_DIST_MAX] 로 자른다.
+      2. 차 전장만큼의 창으로 rolling-min → 좁아지는 구간의 완화가 게이트에
+         '도착하기 전에' 시작된다. 이걸 안 하면 바운드가 계단으로 변해 라인에
+         곡률 스파이크가 생긴다.
+      3. 평활 후 다시 실현가능(2*safe < 폭)하게 자른다. 여기서 걸리는 구간이
+         진짜로 차 반폭+여유가 안 나오는 곳이고, _solve_qp 의 narrow 분기가
+         정중앙 고정으로 받는다.
+
+    반환: (이격 배열, 진단 dict)
+    """
+    width = np.maximum(np.asarray(a_hi) - np.asarray(a_lo), 0.0)
+    n = len(width)
+    if not enabled:
+        safe = np.full(n, float(SAFE_DIST))
+    else:
+        safe = np.clip(SAFE_DIST_WIDTH_FRAC * width,
+                       SAFE_DIST_MIN, SAFE_DIST_MAX)
+        # ds 가 크면(최적화 격자 0.5 m) 창이 1이 되어 평활이 사라진다.
+        # 최소 3 스테이션은 보도록 해서 앞뒤 한 칸씩은 항상 미리 완화한다.
+        window = max(int(round(SAFE_DIST_SMOOTH_M / max(ds, 1e-6))), 3)
+        safe = ndimage.minimum_filter1d(safe, size=window, mode="wrap")
+        safe = ndimage.uniform_filter1d(safe, size=window, mode="wrap")
+    # 좌우 이격의 합이 폭보다 확실히 작아야 lsq_linear 이 lo < hi 를 받는다.
+    feasible = np.maximum(0.5 * width - 1e-3, 0.0)
+    limited = np.minimum(safe, feasible)
+    info = {
+        "enabled": bool(enabled),
+        "width_min": float(width.min()) if n else 0.0,
+        "width_median": float(np.median(width)) if n else 0.0,
+        "width_max": float(width.max()) if n else 0.0,
+        "safe_min": float(limited.min()) if n else 0.0,
+        "safe_median": float(np.median(limited)) if n else 0.0,
+        "safe_max": float(limited.max()) if n else 0.0,
+        # 폭이 좁아 목표 이격을 못 지킨 스테이션 (정중앙 고정으로 떨어지는 곳)
+        "narrow_pts": int(np.sum(limited < safe - 1e-9)),
+        "total_pts": n,
+    }
+    return limited, info
+
+
 def _solve_qp(ref, safe_dist_m, objective):
     """법선 오프셋 alpha 에 대한 부등식 제약 최소제곱.
 
     바운드는 마스크에서 받은 free 구간 [a_lo, a_hi] 에 safe_dist 를 물린 것이다.
+    safe_dist 는 스칼라도 되고 스테이션별 배열도 된다(adaptive_safe_dist).
     a_lo/a_hi 는 부호가 있으므로, 기준점이 벽 안이면 두 끝이 같은 부호로 들어와
     alpha 가 코리도 쪽으로 강제된다 — 위반이 스스로 복구된다.
     코리도가 2*safe_dist 보다 좁으면 정중앙((a_lo+a_hi)/2)에 고정한다.
@@ -762,7 +747,7 @@ def _solve_qp(ref, safe_dist_m, objective):
     return lsq_linear(A, b, bounds=(lo, hi)).x, normal
 
 
-def optimize_raceline_iqp(center, grid, safe_dist_m=SAFE_DIST,
+def optimize_raceline_iqp(center, grid, safe_dist_m=None,
                           n_iters=3, ds_opt=0.5, ds_out=DS_OUT,
                           objective="curvature"):
     """중앙선을 법선 방향으로 밀어 최소곡률(IQP) 또는 최단거리(SP) 라인을 만든다.
@@ -770,13 +755,27 @@ def optimize_raceline_iqp(center, grid, safe_dist_m=SAFE_DIST,
     폭/바운드는 매 반복 occupancy 마스크에서 다시 잰다(Grid.corridor_interval).
     경계 폴리라인 최근접 거리로는 '벽 안에 들어간 점'을 못 알아봐서 위반이
     영구히 남았다 — 그게 my_track0727 벽 관통의 직접 원인이었다.
+
+    safe_dist_m=None 이면 매 반복 그때의 코리도 폭에서 이격을 다시 계산한다
+    (adaptive_safe_dist). 라인이 움직이면 그 지점의 폭도 달라지므로, 첫 반복의
+    중앙선 폭에 이격을 고정하면 실제 주행선 위치의 폭과 어긋난다.
+    숫자를 주면 예전처럼 전 구간 균일 이격이다.
     """
     tag = "IQP" if objective == "curvature" else "SP"
     stride = max(int(round(ds_opt / (center["s"][1] - center["s"][0]))), 1)
     ref = {k: center[k][::stride].copy() for k in ("xy", "psi")}
     ref["a_lo"], ref["a_hi"] = grid.corridor_interval(ref["xy"], ref["psi"])
+
+    def bounds_for(reference):
+        if safe_dist_m is not None:
+            return np.full(len(reference["a_lo"]), float(safe_dist_m)), None
+        return adaptive_safe_dist(
+            reference["a_lo"], reference["a_hi"], ds_opt)
+
+    info = None
     for it in range(n_iters):
-        alpha, normal = _solve_qp(ref, safe_dist_m, objective)
+        safe, info = bounds_for(ref)
+        alpha, normal = _solve_qp(ref, safe, objective)
         geo = _respline_closed(ref["xy"] + alpha[:, None] * normal, ds_opt)
         a_lo, a_hi = grid.corridor_interval(geo["xy"], geo["psi"])
         ref = {"xy": geo["xy"], "psi": geo["psi"], "a_lo": a_lo, "a_hi": a_hi}
@@ -784,8 +783,10 @@ def optimize_raceline_iqp(center, grid, safe_dist_m=SAFE_DIST,
         print(f"      {tag} iter {it + 1}/{n_iters}: "
               f"max|alpha|={np.max(np.abs(alpha)):.3f} m, "
               f"max|kappa|={np.max(np.abs(geo['kappa'])):.3f} 1/m, "
+              f"이격 {safe.min():.2f}~{safe.max():.2f} m, "
               f"코리도 밖 {n_out}/{len(a_lo)}")
-    alpha, normal = _solve_qp(ref, safe_dist_m, objective)
+    safe, info = bounds_for(ref)
+    alpha, normal = _solve_qp(ref, safe, objective)
     xy_final = ref["xy"] + alpha[:, None] * normal
     geo = _respline_closed(xy_final, ds_out, smooth=0.0)
     # 최종 해상도(0.1 m)에서 다시 재는 이유: 위 최적화는 0.5 m 격자에서만
@@ -794,8 +795,16 @@ def optimize_raceline_iqp(center, grid, safe_dist_m=SAFE_DIST,
     a_lo, a_hi = grid.corridor_interval(geo["xy"], geo["psi"])
     d_left = np.maximum(a_hi, 0.0)
     d_right = np.maximum(-a_lo, 0.0)
+    if info is not None and info["enabled"]:
+        print(f"      {tag} 코리도 폭 {info['width_min']:.2f}/"
+              f"{info['width_median']:.2f}/{info['width_max']:.2f} m "
+              f"(min/median/max) → 이격 {info['safe_min']:.2f}/"
+              f"{info['safe_median']:.2f}/{info['safe_max']:.2f} m · "
+              f"폭 부족으로 정중앙 고정 {info['narrow_pts']}/"
+              f"{info['total_pts']} pt")
     return {"s": geo["s"], "xy": geo["xy"], "psi": geo["psi"],
-            "kappa": geo["kappa"], "d_left": d_left, "d_right": d_right}
+            "kappa": geo["kappa"], "d_left": d_left, "d_right": d_right,
+            "safe_dist_info": info}
 
 
 def _max_segment_endpoint_speed(base_speed, base_kappa, candidate_kappa,
@@ -839,12 +848,18 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     forward/backward pass는 곡률이 급증하는 지점 직전의 ax를 과대 허용해,
     최종 CSV에서 hypot(v²*kappa, ax)가 mu*g를 넘길 수 있었다.
     """
-    values = (v_max, mu, a_acc_max, a_dec_max)
-    if not all(np.isfinite(value) and value > 0.0 for value in values):
+    if not all(np.isfinite(value) and value > 0.0
+               for value in (mu, a_acc_max, a_dec_max)):
         raise ValueError("velocity profile limits must be positive and finite")
+    # v_max 는 스칼라(전 구간 동일) 또는 웨이포인트별 배열(폭에 따른 상한)이다.
+    v_max = np.asarray(v_max, dtype=float)
+    if not np.isfinite(v_max).all() or np.any(v_max <= 0.0):
+        raise ValueError("velocity profile v_max must be positive and finite")
     kappa = np.abs(np.asarray(kappa, dtype=float))
     s = np.asarray(s, dtype=float)
     n = len(s)
+    if v_max.ndim not in (0, 1) or (v_max.ndim == 1 and len(v_max) != n):
+        raise ValueError("per-waypoint v_max length does not match trajectory")
     if n < 3 or len(kappa) != n or not np.isfinite(s).all() or \
             not np.isfinite(kappa).all():
         raise ValueError("velocity profile input is malformed")
@@ -906,14 +921,52 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     return v
 
 
+def width_speed_cap(d_left, d_right, v_max=V_MAX,
+                    enabled=ADAPTIVE_SPEED_BY_WIDTH):
+    """웨이포인트별 벽 여유에서 속도 상한 [m/s] 을 만든다.
+
+    좁은 구간에서는 이격을 줄여 라인을 통과시키는 대신 속도를 깎아 갚는다.
+    폐루프 횡추적오차가 속도에 거의 비례하므로(LAT_ERR_PER_MPS), 남은 여유
+    (벽까지 거리 - 차 반폭)를 그 기울기로 나눈 값이 그 지점의 속도 상한이다.
+    감속 램프는 velocity_profile 의 backward pass 가 알아서 만들어 준다.
+
+    반환: (상한 배열, 진단 dict)
+    """
+    clearance = np.minimum(np.asarray(d_left, dtype=float),
+                           np.asarray(d_right, dtype=float))
+    n = len(clearance)
+    if not enabled:
+        return np.full(n, float(v_max)), {"enabled": False, "limited_pts": 0,
+                                          "v_min": float(v_max), "total_pts": n}
+    margin = np.maximum(clearance - CAR_HALF_WIDTH, 0.0)
+    cap = np.clip(margin / LAT_ERR_PER_MPS, WIDTH_SPEED_MIN_MPS, float(v_max))
+    return cap, {
+        "enabled": True,
+        "limited_pts": int(np.sum(cap < float(v_max) - 1e-9)),
+        "v_min": float(cap.min()) if n else float(v_max),
+        "total_pts": n,
+    }
+
+
 def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
     s, kappa = geo["s"], geo["kappa"]
     xy = np.asarray(geo["xy"], dtype=float)
     ds = np.hypot(
         np.roll(xy[:, 0], -1) - xy[:, 0],
         np.roll(xy[:, 1], -1) - xy[:, 1])
+    # 폭에 따른 속도 상한은 MARGIN 을 빼기 전의 '물리적' 벽 여유로 계산한다.
+    # MARGIN 은 CSV 보고값만 줄이는 회피용 마진이라 주행 안전과 무관하다.
+    v_cap, width_speed_info = width_speed_cap(
+        geo["d_left"], geo["d_right"], v_max=v_max)
+    # '상한이 걸린 점'과 '실제로 프로파일을 바꾼 점'은 다르다. 대부분의 구간은
+    # 곡률 상한이 이미 더 낮아서 폭 상한이 아무 것도 안 한다 — 그 구분을 남긴다.
+    with np.errstate(divide="ignore"):
+        lateral_cap = np.sqrt(
+            mu * G / np.maximum(np.abs(np.asarray(kappa, dtype=float)), 1e-12))
+    width_speed_info["binding_pts"] = int(np.sum(
+        v_cap < np.minimum(lateral_cap, float(v_max)) - 1e-9))
     v = velocity_profile(
-        s, kappa, v_max, mu, A_ACC_MAX, A_DEC_MAX,
+        s, kappa, v_cap, mu, A_ACC_MAX, A_DEC_PLANNED,
         segment_ds=ds)
     ax = (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds)
     # 실제 CSV 정밀도까지 양자화한 값도 다시 검사한다. 메모리 float가 PASS해도
@@ -931,7 +984,13 @@ def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
     return {"s": s, "xy": geo["xy"],
             "d_right": np.maximum(geo["d_right"] - margin, 0.0),
             "d_left": np.maximum(geo["d_left"] - margin, 0.0),
-            "psi": geo["psi"], "kappa": kappa, "vx": v, "ax": ax}
+            "psi": geo["psi"], "kappa": kappa, "vx": v, "ax": ax,
+            "width_speed_info": width_speed_info,
+            "safe_dist_info": geo.get("safe_dist_info")}
+
+
+# 웨이포인트 배열이 아니라 생성 요약인 키. roll/flip 대상이 아니다.
+TRAJ_META_KEYS = ("safe_dist_info", "width_speed_info")
 
 
 def loop_orientation(xy):
@@ -986,7 +1045,11 @@ def roll_to_start(traj, start_xy=(0.0, 0.0), orientation=None):
             a = np.concatenate([a[:1], a[1:][::-1]])
         return a.copy()
 
-    out = {k: reorder(v) for k, v in traj.items() if k != "s"}
+    # 웨이포인트 배열만 굴린다. 폭/속도 진단(dict)은 순서와 무관한 요약이라
+    # 그대로 들고 간다 — reorder 에 넣으면 np.roll 이 dict 에서 죽는다.
+    out = {k: reorder(v) for k, v in traj.items()
+           if k != "s" and k not in TRAJ_META_KEYS}
+    out.update({k: traj[k] for k in TRAJ_META_KEYS if k in traj})
     if flip:
         out["psi"] = np.arctan2(np.sin(out["psi"] + np.pi), np.cos(out["psi"] + np.pi))
         out["kappa"] = -out["kappa"]
@@ -1171,9 +1234,18 @@ def _manifest_path(path):
         return str(path)
 
 
+def _safe_dist_note(traj):
+    """CSV 헤더에 넣을 이격 요약. 균일/유동 어느 쪽인지 파일만 보고 알 수 있게."""
+    info = traj.get("safe_dist_info")
+    if not info or not info.get("enabled"):
+        return f"safe_dist={SAFE_DIST:.2f}m"
+    return (f"safe_dist=adaptive {info['safe_min']:.2f}~{info['safe_max']:.2f}m"
+            f" (corridor {info['width_min']:.2f}~{info['width_max']:.2f}m)")
+
+
 def commit_generation_set(map_name, main_name, main_traj, center, walls,
                           orientation, sp_name=None, sp_traj=None,
-                          sp_disabled_reason=""):
+                          sp_disabled_reason="", validation=None):
     """검증 완료된 생성 세트를 stage/fsync 후 순서 있게 승격한다.
 
     SP -> center/walls -> main 순으로 승격하고 각 단계 디렉터리를 fsync한다.
@@ -1190,7 +1262,7 @@ def commit_generation_set(map_name, main_name, main_traj, center, walls,
     generation_id = uuid.uuid4().hex
     main_note = (
         f"build_map ({map_name}, dir={orientation.upper()}, "
-        f"safe_dist={SAFE_DIST:.2f}m)")
+        f"{_safe_dist_note(main_traj)})")
     main_bytes = _trajectory_csv_bytes(
         main_traj, main_note, generation_id=generation_id)
     sp_bytes = None
@@ -1200,7 +1272,7 @@ def commit_generation_set(map_name, main_name, main_traj, center, walls,
         sp_bytes = _trajectory_csv_bytes(
             sp_traj,
             f"build_map ({map_name}, SP overtake, "
-            f"dir={orientation.upper()}, safe_dist={SAFE_DIST:.2f}m)",
+            f"dir={orientation.upper()}, {_safe_dist_note(sp_traj)})",
             generation_id=generation_id)
     elif sp_name and not sp_disabled_reason:
         sp_disabled_reason = "SP not generated"
@@ -1259,6 +1331,9 @@ def commit_generation_set(map_name, main_name, main_traj, center, walls,
         "sp_enabled": sp_bytes is not None,
         "sp_disabled_reason": (
             "" if sp_bytes is not None else sp_disabled_reason),
+        # 이 CSV가 '어떤 설정으로' 검증됐는지 남긴다. 리뷰에서 잡힌 드리프트는
+        # 검증 조건이 아무 데도 기록되지 않아서 몇 주 동안 안 보였던 것이다.
+        "validation": validation or {},
         "files": file_records,
     }
     manifest_bytes = (
@@ -1359,64 +1434,6 @@ def commit_generation_set(map_name, main_name, main_traj, center, walls,
 
 
 # ============================================================ 3. 시뮬레이션
-_PROFILE_NUMERIC_FIELDS = (
-    "planner_speed_scale", "controller_speed_scale", "max_speed_mps",
-    "lookahead_gain", "lookahead_offset", "lookahead_min_m",
-    "lookahead_max_m", "wheelbase_m", "max_steer_rad",
-    "max_steer_rate_radps", "max_accel_mps2", "max_decel_mps2",
-    "control_rate_hz", "num_local_waypoints",
-)
-
-
-def controller_profile(name):
-    """이름으로 선택한 배포 프로파일을 검증해 사본으로 반환한다."""
-    if not isinstance(name, str) or name not in CONTROLLER_PROFILE_LIBRARY:
-        raise ValueError(f"알 수 없는 controller profile: {name!r}")
-    profile = dict(CONTROLLER_PROFILE_LIBRARY[name])
-    profile["name"] = name
-    if profile.get("kind") not in ("cpp_map_l1", "python_pure_pursuit"):
-        raise ValueError(f"{name}: 지원하지 않는 controller kind")
-    for field in _PROFILE_NUMERIC_FIELDS:
-        value = profile.get(field)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
-                not np.isfinite(value):
-            raise ValueError(f"{name}: {field}가 유한 숫자가 아님")
-    if not (0.0 < profile["planner_speed_scale"] <= 1.0) or \
-            not (0.0 < profile["controller_speed_scale"] <= 1.0):
-        raise ValueError(f"{name}: speed scale은 (0, 1]이어야 함")
-    positive = (
-        "max_speed_mps", "lookahead_min_m", "lookahead_max_m",
-        "wheelbase_m", "max_steer_rad", "max_steer_rate_radps",
-        "max_accel_mps2", "max_decel_mps2", "control_rate_hz",
-    )
-    if any(profile[field] <= 0.0 for field in positive):
-        raise ValueError(f"{name}: 차량/제어 한계는 양수여야 함")
-    if profile["lookahead_max_m"] < profile["lookahead_min_m"]:
-        raise ValueError(f"{name}: lookahead min/max가 뒤집힘")
-    if profile["max_steer_rad"] >= 0.5 * np.pi:
-        raise ValueError(f"{name}: max steer가 자전거 모델 범위를 벗어남")
-    n_local = profile["num_local_waypoints"]
-    if int(n_local) != n_local or n_local < 2:
-        raise ValueError(f"{name}: num_local_waypoints는 2 이상의 정수여야 함")
-    profile["num_local_waypoints"] = int(n_local)
-    lut = profile.get("steering_lut")
-    if profile["kind"] == "cpp_map_l1" and \
-            (not isinstance(lut, str) or not lut):
-        raise ValueError(f"{name}: C++ MAP/L1 steering LUT가 지정되지 않음")
-    if profile["kind"] == "python_pure_pursuit" and lut is not None:
-        raise ValueError(f"{name}: Python pure pursuit에 LUT를 지정할 수 없음")
-    return profile
-
-
-def selected_controller_profiles():
-    """빈/중복/오타 선택을 허용하지 않고, 선택된 모든 프로파일을 반환한다."""
-    names = tuple(SIM_CONTROLLER_PROFILES)
-    if not names:
-        raise ValueError("SIM_CONTROLLER_PROFILES가 비어 있음 — 검증 없이 저장 금지")
-    if len(names) != len(set(names)):
-        raise ValueError("SIM_CONTROLLER_PROFILES에 중복 이름이 있음")
-    return tuple(controller_profile(name) for name in names)
-
 
 def _load_steering_lut(relative_path):
     """control_node.cpp와 같은 CSV 계약으로 LUT를 읽고, 이상하면 즉시 실패한다."""
@@ -1514,12 +1531,20 @@ def _lookup_lateral_accel(table, steering_angle, velocity):
     return lateral * sign
 
 
+
 class PurePursuitSim:
-    """선택한 실제 컨트롤러 계약 + friction-circle 차량 모델.
+    """선택한 실제 컨트롤러 계약 + 종방향 plant + friction-circle 차량 모델.
 
     profile_name을 필수로 받아 예전의 이름 없는 generic 설정으로 PASS가
     나오는 것을 막는다. 제어기가 타이어 예산을 넘는 명령을 요구하면 모델은
     물리 한계로 포화해 적분하되, verify_simulation은 그 요구 자체를 FAIL한다.
+
+    종방향은 2단으로 나눈다 — 예전엔 한 덩어리라 컨트롤러의 명령 slew 한계와
+    차의 실제 가감속 능력이 구분되지 않았다.
+      1) 컨트롤러: control_node.cpp 와 같이 '이전 속도 명령' 기준으로 slew 를
+         걸고 (vehicle/max_accel_mps2, max_decel_mps2), 그 기울기를
+         drive.acceleration 으로 내보낸다.
+      2) plant: VESC 가 그 명령을 DRIVE/COAST/BRAKE 로 중재하고 실측 한계로 적분.
     """
 
     def __init__(self, traj, profile_name, mu=MU):
@@ -1545,8 +1570,10 @@ class PurePursuitSim:
         self.lookahead_clip = (
             self.profile["lookahead_min_m"],
             self.profile["lookahead_max_m"])
+        # 컨트롤러 명령 slew 한계 (런타임 YAML). plant 한계와 다른 값이다.
         self.a_acc_max = self.profile["max_accel_mps2"]
         self.a_dec_max = self.profile["max_decel_mps2"]
+        self.plant = make_longitudinal_plant(self.profile)
         self.n_local = min(self.profile["num_local_waypoints"], self.n)
         self.dt = 1.0 / self.profile["control_rate_hz"]
         if not np.isfinite(mu) or mu <= 0.0:
@@ -1602,14 +1629,14 @@ class PurePursuitSim:
         theta = float(self.traj["psi"][0])
         v = 0.0
         prev_s = 0.0
-        fields = (
-            "t", "x", "y", "theta", "v", "v_ref", "s", "d_err", "steer",
-            "a_long_cmd", "a_lat_cmd", "a_long", "a_lat",
-            "combined_demand", "combined_accel", "tire_saturated")
-        log = {key: [] for key in fields}
+        log = {key: [] for key in SIM_LOG_FIELDS}
         t = 0.0
         laps_done = 0
         steer = 0.0
+        # control_node.cpp 의 last_speed_command_ 와 같은 역할. slew 는 측정
+        # 속도가 아니라 '이전 명령'을 기준으로 걸린다 — 이게 실차 동작이다.
+        speed_command = 0.0
+        self.plant.reset()
         while t < max_time:
             _, idx = self.tree.query(pos)
             idx = int(idx)
@@ -1647,10 +1674,24 @@ class PurePursuitSim:
                 -self.max_steer_rate * self.dt,
                 self.max_steer_rate * self.dt)
 
-            v_cmd = self._speed_target(
+            # --- 1단: 컨트롤러 속도 명령 + slew (control_node.cpp 와 동일) ----
+            v_target = self._speed_target(
                 pos, theta, v, int(target_idx))
+            previous_command = speed_command
+            speed_command = previous_command + float(np.clip(
+                v_target - previous_command,
+                -self.a_dec_max * self.dt, self.a_acc_max * self.dt))
+            # 실차가 drive.acceleration 으로 내보내는 값. VESC 제동 진입 판정이
+            # 바로 이 값을 본다 (brake_decel_threshold).
             a_long_cmd = float(np.clip(
-                (v_cmd - v) / self.dt, -self.a_dec_max, self.a_acc_max))
+                (speed_command - previous_command) / self.dt,
+                -self.a_dec_max, self.a_acc_max))
+            v_cmd = speed_command
+
+            # --- 2단: 종방향 plant (VESC 중재 + 실측 한계) -------------------
+            a_long_plant, plant_mode, brake_amps = self.plant.step(
+                v, v_cmd, a_long_cmd, self.dt)
+
             if self.profile["kind"] == "cpp_map_l1":
                 # NUC6의 measured forward response로 plant를 적분한다.
                 # inverse LUT command + ideal bicycle plant 조합은 실차
@@ -1659,7 +1700,9 @@ class PurePursuitSim:
                     self.steering_lut, steer, v)
             else:
                 a_lat_cmd = float(v ** 2 * np.tan(steer) / self.L)
-            combined_demand = float(np.hypot(a_long_cmd, a_lat_cmd))
+            # 타이어 예산은 '차가 실제로 내려고 하는 가속도'로 잰다. 컨트롤러
+            # 명령 기울기(a_long_cmd)는 plant 가 못 내면 타이어에 걸리지 않는다.
+            combined_demand = float(np.hypot(a_long_plant, a_lat_cmd))
 
             # Lateral demand gets priority because steering has already been
             # applied. Remaining friction-circle capacity alone may be used
@@ -1670,7 +1713,7 @@ class PurePursuitSim:
             a_long_available = float(np.sqrt(max(
                 self.tire_limit ** 2 - a_lat ** 2, 0.0)))
             a_long = float(np.clip(
-                a_long_cmd, -a_long_available, a_long_available))
+                a_long_plant, -a_long_available, a_long_available))
             combined_accel = float(np.hypot(a_long, a_lat))
             tire_saturated = combined_demand > self.tire_limit * (1.0 + 1e-9)
 
@@ -1690,12 +1733,15 @@ class PurePursuitSim:
             log["s"].append(s_now + laps_done * self.track_len)
             log["d_err"].append(d_err); log["steer"].append(steer)
             log["a_long_cmd"].append(a_long_cmd)
+            log["a_long_plant"].append(a_long_plant)
             log["a_lat_cmd"].append(a_lat_cmd)
             log["a_long"].append(a_long)
             log["a_lat"].append(a_lat)
             log["combined_demand"].append(combined_demand)
             log["combined_accel"].append(combined_accel)
             log["tire_saturated"].append(float(tire_saturated))
+            log["brake_amps"].append(brake_amps)
+            log["braking"].append(1.0 if plant_mode == "brake" else 0.0)
         return {key: np.asarray(value) for key, value in log.items()} | {
             "laps": laps_done,
             "track_len": self.track_len,
@@ -1708,10 +1754,7 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
     """배포 프로파일 폐루프/footprint/합성 타이어 예산을 fail-closed 검사."""
     profile = controller_profile(profile_name)
     msgs = []
-    fields = (
-        "t", "x", "y", "theta", "v", "v_ref", "s", "d_err", "steer",
-        "a_long_cmd", "a_lat_cmd", "a_long", "a_lat",
-        "combined_demand", "combined_accel", "tire_saturated")
+    fields = SIM_LOG_FIELDS
     lengths = [len(log.get(key, ())) for key in fields]
     if not lengths or min(lengths) == 0 or len(set(lengths)) != 1:
         return False, [f"      {name}/{profile_name}: [FAIL] "
@@ -1761,7 +1804,7 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
         msgs.append(f"{prefix}: [FAIL] 전진 속도/프로파일 cap 위반")
 
     reconstructed_demand = np.hypot(
-        log["a_long_cmd"], log["a_lat_cmd"])
+        log["a_long_plant"], log["a_lat_cmd"])
     reconstructed_actual = np.hypot(log["a_long"], log["a_lat"])
     if not np.allclose(
             reconstructed_demand, log["combined_demand"],
@@ -1795,22 +1838,83 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
         (log["a_long_cmd"] < -profile["max_decel_mps2"] - 1e-9))
     if np.any(cmd_accel_bad):
         msgs.append(f"{prefix}: [FAIL] 종가속/제동 명령 cap 위반")
+    plant_decel_limit = (
+        profile["plant_decel_max_mps2"] +
+        BRAKE_DECEL_PER_AMP * profile_brake_max(profile))
+    plant_bad = (
+        (log["a_long_plant"] > profile["plant_accel_max_mps2"] + 1e-9) |
+        (log["a_long_plant"] < -plant_decel_limit - 1e-9))
+    if np.any(plant_bad):
+        msgs.append(
+            f"{prefix}: [FAIL] plant 가감속이 실측 한계를 초과 "
+            f"({log['a_long_plant'].min():.2f}~"
+            f"{log['a_long_plant'].max():.2f} m/s², 허용 "
+            f"-{plant_decel_limit:.2f}~"
+            f"+{profile['plant_accel_max_mps2']:.2f})")
 
     if not msgs:
         effective_scale = (
             profile["planner_speed_scale"] *
             profile["controller_speed_scale"])
+        brake_note = ""
+        if profile["plant"] == "vesc":
+            braking = log["braking"] > 0.5
+            brake_duty = float(np.mean(braking)) if len(braking) else 0.0
+            brake_note = (
+                f" · VESC 제동 {brake_duty * 100:.1f}% 구간 "
+                f"(max {log['brake_amps'].max():.2f} A, "
+                f"크레딧 {BRAKE_DECEL_PER_AMP:.2f} m/s²/A)")
         msgs.append(
             f"{prefix}: PASS · {requested_laps}랩 · profile speed scale "
-            f"{effective_scale:.4f} · footprint 충돌 0 · "
+            f"{effective_scale:.4f} (planner {profile['planner_speed_scale']:.4f}"
+            f" × control {profile['controller_speed_scale']:.2f}, cap "
+            f"{profile['max_speed_mps']:.2f} m/s) · footprint 충돌 0 · "
             f"|lat err|max {np.abs(log['d_err']).max():.3f} m · "
             f"합성 요구/실제 max {log['combined_demand'].max():.2f}/"
-            f"{log['combined_accel'].max():.2f} <= {tire_limit:.2f} m/s²")
+            f"{log['combined_accel'].max():.2f} <= {tire_limit:.2f} m/s²"
+            f"{brake_note}")
     return not any("[FAIL]" in msg for msg in msgs), msgs
 
 
-def simulate_controller_profiles(name, traj, grid, requested_laps, profiles):
-    """선택된 모든 배포 프로파일을 실행하고 하나라도 실패하면 전체 실패."""
+def report_speed_pairing(traj, profiles):
+    """프로파일 속도가 control cap 에 얼마나 잘리는지 보고한다.
+
+    real_car.yaml 의 계약은 scale = (control cap) / V_MAX 다. 이게 어긋나면
+    control 이 전 구간을 cap 상수로 뭉개서 (a) 속도 프로파일이 사라지고
+    (b) 조향 LUT를 wpnt 속도로 조회하는 구조 때문에 필요 조향이 과대해진다.
+    검증은 실제 cap 으로 돌기 때문에 PASS 는 나지만, 그때 달리는 라인은
+    build_map 이 만든 속도 프로파일이 아니다 — 그 사실을 눈에 보이게 남긴다.
+    """
+    lines = []
+    vx = np.asarray(traj["vx"], dtype=float)
+    for profile in profiles:
+        scaled = vx * profile["planner_speed_scale"] * \
+            profile["controller_speed_scale"]
+        cap = profile["max_speed_mps"]
+        clamped = int(np.sum(scaled > cap + 1e-9))
+        lines.append(
+            f"      [{profile['name']}] 프로파일 속도 max "
+            f"{scaled.max():.2f} m/s vs control cap {cap:.2f} → "
+            f"{clamped}/{len(vx)} pt 클램프 "
+            f"({100.0 * clamped / max(len(vx), 1):.1f}%)")
+        if clamped > 0.2 * len(vx):
+            lines.append(
+                f"        [warn] 프로파일의 {100.0 * clamped / len(vx):.0f}% 가 "
+                f"cap 상수로 뭉개진다. 계약대로 맞추려면 planner "
+                f"velocity_scale 을 {cap / V_MAX:.4f} 로 내리거나 "
+                f"control vehicle/max_speed_mps 를 "
+                f"{V_MAX * profile['planner_speed_scale'] * profile['controller_speed_scale']:.2f} "
+                f"로 올릴 것 (어느 쪽이 맞는지는 실차 단계 승격 판단).")
+    return lines
+
+
+def simulate_controller_profiles(name, traj, grid, requested_laps, profiles,
+                                 advisory_profiles=()):
+    """gate 프로파일은 하나라도 실패하면 전체 실패. advisory 는 보고만 한다.
+
+    advisory 도 반드시 실행된다 — 실차 CSV를 만들 때 시뮬 프로파일 결과를 조용히
+    숨기면 "시뮬에서 못 돈다"는 사실이 아무 데도 안 남는다. 승격만 막지 않는다.
+    """
     all_ok = True
     messages = []
     primary_log = None
@@ -1826,6 +1930,19 @@ def simulate_controller_profiles(name, traj, grid, requested_laps, profiles):
             first_failed_log = log
         all_ok = all_ok and ok
         messages.extend(profile_messages)
+    for profile in advisory_profiles:
+        try:
+            log = PurePursuitSim(traj, profile["name"]).run(
+                n_laps=requested_laps)
+            _, profile_messages = verify_simulation(
+                name, log, grid, requested_laps, profile["name"])
+        except Exception as exc:
+            profile_messages = [
+                f"      {name}/{profile['name']}: [FAIL] advisory 실행 예외 "
+                f"{type(exc).__name__}: {exc}"]
+        messages.extend(
+            line.replace("[FAIL]", "[advisory FAIL]")
+            for line in profile_messages)
     return all_ok, messages, primary_log, first_failed_log
 
 
@@ -1910,12 +2027,35 @@ def main():
                          "map(0,0) 최근접점이 +x 를 향하도록 맞춘다. 이는 map origin "
                          "이 SLAM 시작 시 차량 pose 이고 그때 차가 주행 방향을 보고 "
                          "있었을 때만 맞으므로 권장하지 않는다.")
+    ap.add_argument("--profiles", choices=tuple(GATE_PROFILE_SETS),
+                    default=DEFAULT_GATE_TARGET,
+                    help="어떤 배포 프로파일이 CSV 승격을 막는가. real=실차 "
+                         "(cpp_real_car 만 gate, 시뮬은 보고만) / sim=시뮬 / "
+                         "all=둘 다 gate. 어느 쪽이든 두 프로파일 모두 실행되고 "
+                         "결과가 출력된다.")
     args = ap.parse_args()
     m = args.map
-    profiles = selected_controller_profiles()
+    profiles, advisory_profiles = selected_controller_profiles(args.profiles)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    print("폐루프 필수 배포 프로파일: " +
+    print("폐루프 필수(gate) 배포 프로파일: " +
           ", ".join(profile["name"] for profile in profiles))
+    if advisory_profiles:
+        print("폐루프 참고(advisory) 프로파일: " +
+              ", ".join(profile["name"] for profile in advisory_profiles))
+    for profile in profiles + advisory_profiles:
+        print(f"      [{profile['name']}] {profile['config_sources']}")
+        print(f"        planner scale {profile['planner_speed_scale']:.4f} × "
+              f"control scale {profile['controller_speed_scale']:.2f}, "
+              f"cap {profile['max_speed_mps']:.2f} m/s → 유효 최고 "
+              f"{min(V_MAX * profile['planner_speed_scale'] * profile['controller_speed_scale'], profile['max_speed_mps']):.2f} m/s")
+        if profile["plant"] == "vesc":
+            vesc = profile["vesc"]
+            print(f"        VESC 제동 {'ON' if vesc['enabled'] else 'OFF'} · "
+                  f"entry {vesc['entry_speed_error']:.2f} m/s · "
+                  f"overspeed {vesc['overspeed_error']:.2f} m/s · "
+                  f"max {vesc['brake_max']:.2f} A · 크레딧 "
+                  f"{BRAKE_DECEL_PER_AMP:.2f} m/s²/A "
+                  f"{'(미측정 — 코스팅만으로 계획)' if BRAKE_DECEL_PER_AMP <= 0.0 else ''}")
 
     # 1) 트랙 추출 (+ 실측 크기 스케일 보정) --------------------------------
     print(f"[1/4] '{m}' 로드 + 트랙 추출 (크기는 yaml resolution 기준) ...")
@@ -1951,6 +2091,16 @@ def main():
         print("[2/4] 중앙선 라인 + 속도 프로파일 ...")
         geo = center
     traj = build_trajectory(geo, mu=MU_PROFILE)
+    width_info = traj.get("width_speed_info") or {}
+    if width_info.get("enabled"):
+        print(f"      [폭 연동 속도] 벽 여유가 V_MAX {V_MAX:.2f} 를 못 받치는 점 "
+              f"{width_info['limited_pts']}/{width_info['total_pts']} "
+              f"(최저 {width_info['v_min']:.2f} m/s, 기울기 "
+              f"{LAT_ERR_PER_MPS:.3f} s) · 그중 곡률 상한보다 낮아 실제로 "
+              f"프로파일을 낮춘 점 {width_info.get('binding_pts', 0)} · "
+              f"프로파일 v_max {traj['vx'].max():.2f} m/s")
+    for line in report_speed_pairing(traj, profiles + advisory_profiles):
+        print(line)
     start_heading = float(traj["psi"][0])
     print(f"      [dir] 주행 방향 {orientation.upper()} · 출발점 "
           f"({traj['xy'][0, 0]:+.2f}, {traj['xy'][0, 1]:+.2f}) m, "
@@ -2029,7 +2179,8 @@ def main():
     # 3) 폐루프 시뮬 --------------------------------------------------------
     print(f"[3/4] {LAPS}랩 시뮬 (선택된 배포 제어기 + friction circle) ...")
     sim_ok, sim_msgs, log, failed_log = simulate_controller_profiles(
-        RACELINE.upper(), traj, grid, LAPS, profiles)
+        RACELINE.upper(), traj, grid, LAPS, profiles,
+        advisory_profiles=advisory_profiles)
     for line in sim_msgs:
         print(line)
     if not sim_ok:
@@ -2042,7 +2193,8 @@ def main():
     if traj_sp is not None:
         try:
             sp_sim_ok, sp_sim_msgs, _, _ = simulate_controller_profiles(
-                "SP  ", traj_sp, grid, LAPS, profiles)
+                "SP  ", traj_sp, grid, LAPS, profiles,
+                advisory_profiles=advisory_profiles)
         except Exception as exc:
             sp_sim_ok = False
             sp_sim_msgs = [
@@ -2070,7 +2222,27 @@ def main():
     commit_generation_set(
         m, csv_name, traj, center, walls, orientation,
         sp_name=sp_name, sp_traj=traj_sp,
-        sp_disabled_reason=sp_disabled_reason)
+        sp_disabled_reason=sp_disabled_reason,
+        validation={
+            "gate_target": args.profiles,
+            "gate_profiles": [p["name"] for p in profiles],
+            "advisory_profiles": [p["name"] for p in advisory_profiles],
+            "profile_settings": [{
+                "name": p["name"],
+                "config_sources": p["config_sources"],
+                "planner_speed_scale": p["planner_speed_scale"],
+                "controller_speed_scale": p["controller_speed_scale"],
+                "max_speed_mps": p["max_speed_mps"],
+                "plant": p["plant"],
+            } for p in profiles + advisory_profiles],
+            "raceline_v_max_mps": V_MAX,
+            "mu_profile": MU_PROFILE,
+            "plant_accel_mps2": A_ACC_MAX,
+            "plant_decel_planned_mps2": A_DEC_PLANNED,
+            "brake_decel_per_amp": BRAKE_DECEL_PER_AMP,
+            "adaptive_safe_dist": traj.get("safe_dist_info"),
+            "adaptive_speed_by_width": traj.get("width_speed_info"),
+        })
 
     # 4) 플롯 ---------------------------------------------------------------
     print("[4/4] 플롯 저장 ...")

@@ -58,10 +58,14 @@ class RacelineTunerNode(Node):
         self.declare_parameter('tuner/corridor_margin_m', 0.15)
         self.declare_parameter('tuner/v_max_mps', 12.0)
         self.declare_parameter('tuner/mu', 0.85)
-        self.declare_parameter('tuner/a_acc_max', 5.5)
-        # build_map A_DEC_MAX와 동일 유지. 2026-07-31 실측 제동 한계 ~4.2 m/s²
-        # (7.0 가정 프로파일은 헤어핀 진입 과속 → 이탈).
-        self.declare_parameter('tuner/a_dec_max', 4.0)
+        # ⚠️ 이 두 값은 '차가 실제로 낼 수 있는 가감속'이어야 한다 (컨트롤러 명령
+        # slew 한계가 아니라). deployment_profiles.A_ACC_MAX / A_DEC_PLANNED 가
+        # 기준이며, 여기 기본값은 그것과 같게 유지할 것 — 어긋나면 튜너가
+        # build_map 보다 낙관적인 속도를 계획하고 그 CSV가 그대로 실차로 나간다.
+        # (2026-07-31 실측: 가속 2.2 = 30 A 전류 포화, 감속 1.3 = 코스팅 항력만.
+        #  VESC 제동 크레딧을 실측하면 A_DEC_PLANNED 와 함께 올릴 것.)
+        self.declare_parameter('tuner/a_acc_max', 2.2)
+        self.declare_parameter('tuner/a_dec_max', 1.3)
         self.declare_parameter('tuner/wheelbase_m', 0.33)
         self.declare_parameter('tuner/max_steer_rad', 0.36)
         self.declare_parameter('tuner/validation_tolerance', 0.03)
@@ -243,13 +247,12 @@ class RacelineTunerNode(Node):
             sys.modules[module_name] = module
             try:
                 spec.loader.exec_module(module)
-                profiles = module.selected_controller_profiles()
-                if not profiles:
-                    raise RuntimeError('배포 controller profile 선택이 비어 있음')
+                if not module.gate_controller_profiles():
+                    raise RuntimeError('배포 controller gate profile이 비어 있음')
             except Exception:
                 sys.modules.pop(module_name, None)
                 raise
-        module.selected_controller_profiles()
+        module.gate_controller_profiles()
         if package_root is None:
             raise RuntimeError(
                 'source planning_pkg root를 CSV 경로에서 찾을 수 없음')
@@ -497,10 +500,15 @@ class RacelineTunerNode(Node):
         grid = OccupancyGridAdapter()
         failures = []
         passed = []
+        advisory_notes = []
         try:
-            profiles = model.selected_controller_profiles()
-            for profile in profiles:
+            # gate = 저장을 막는 프로파일, advisory = 돌려서 보고만 하는 것.
+            # build_map 과 같은 구분이다 (deployment_profiles.GATE_PROFILE_SETS).
+            gate_profiles = model.gate_controller_profiles()
+            advisory_profiles = model.advisory_controller_profiles()
+            for profile in gate_profiles + advisory_profiles:
                 profile_name = profile['name']
+                is_gate = profile in gate_profiles
                 log = model.PurePursuitSim(
                     trajectory, profile_name,
                     workspace_root=self._workspace_root,
@@ -526,18 +534,25 @@ class RacelineTunerNode(Node):
                         f'{profile_name}: [FAIL] 폐루프 pose log가 비어 있음')
                     ok = False
                 if ok:
-                    passed.append(profile_name)
-                else:
+                    if is_gate:
+                        passed.append(profile_name)
+                    else:
+                        advisory_notes.append(f'{profile_name}: advisory PASS')
+                elif is_gate:
                     failures.extend(
                         message for message in messages
                         if '[FAIL]' in message)
+                else:
+                    advisory_notes.extend(
+                        message.replace('[FAIL]', '[advisory FAIL]')
+                        for message in messages if '[FAIL]' in message)
         except Exception as exc:
             return False, f'폐루프 배포 제어기 검증 실행 오류: {exc}'
         if failures:
             return False, '\n  - '.join(failures)
         if not passed:
-            return False, '검증할 배포 controller profile이 비어 있음'
-        return True, ', '.join(passed)
+            return False, '검증할 gate controller profile이 비어 있음'
+        return True, ', '.join(passed + advisory_notes)
 
     def _load_csv(self, path):
         rows = []
