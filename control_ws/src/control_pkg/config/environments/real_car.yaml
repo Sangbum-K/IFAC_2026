@@ -9,8 +9,13 @@ control:
 
     # Real-car speed cap. 2026-08-01: 5 m/s 단계(scale 0.83/cap 5.0) 실차 성공
     # 후 6 m/s 단계 승격 (planning velocity_scale 0.97과 한 변경으로 이동).
-    # 프로파일 v-max는 실측 가감속 한계(A_ACC 2.2/A_DEC 1.3) 때문에 ~5.4 m/s,
-    # scale 0.97 적용 시 5.23 m/s라 cap 6.0은 클램프하지 않는 안전 상한이다.
+    # 2026-08-07 6.0 -> 7.0: deployment_profiles.RACELINE_V_MAX 를 7.0 으로
+    # 올리면서 짝을 맞춘 것(= scale 1.0 × 7.0). 실제 프로파일 최고속은 여전히
+    # 6.04 m/s 라 이 cap 은 클램프하지 않는 안전 상한이다 — 근거와 스윕 실측은
+    # deployment_profiles.py RACELINE_V_MAX 주석에 있다.
+    # ⚠️ cap 을 올리는 것과 차가 빨라지는 것은 별개다. 08-06 백 4개 실측:
+    #    명령 max 5.50 m/s / 달성(odom) max 5.25 · PF 지면속도 = odom×0.97 이라
+    #    erpm gain 문제가 아니라 프로파일을 못 따라가는 지연이다.
     # (scale 1.0은 build_map 폐루프 게이트 FAIL — planning yaml 주석 참조)
-    "vehicle/max_speed_mps": 6.0
+    "vehicle/max_speed_mps": 7.0
     "vehicle/speed_scale": 1.0

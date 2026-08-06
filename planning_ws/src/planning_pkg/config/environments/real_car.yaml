@@ -9,10 +9,11 @@
 #     /autonomy/ackermann_cmd 발행 (hardware ackermann_cmd_mux가 /ackermann_cmd로 중계)
 #   hardware: /odom (vesc), /scan, /safety/emergency_stop (latched)
 # velocity_scale은 control의 vehicle/max_speed_mps와 반드시 짝을 맞출 것.
-# raceline v-max(6.0)가 control cap보다 높으면 control이 전 구간을 clamp해서
+# raceline v-max(deployment_profiles.RACELINE_V_MAX, 2026-08-07부터 7.0)가
+# control cap보다 높으면 control이 전 구간을 clamp해서
 # (a) 속도 프로파일이 cap 상수로 뭉개지고 (b) 조향 LUT를 wpnt 속도로 조회하는
 # 구조(control_node.cpp calc_steering_angle의 speed_for_lookup) 때문에 실제
-# 필요조향의 1.7~2.0배가 나온다. scale = (control cap) / 6.0 으로 계산.
+# 필요조향의 1.7~2.0배가 나온다. scale = (control cap) / RACELINE_V_MAX 로 계산.
 global_trajectory_node:
   ros__parameters:
     # 2026-08-01: 5 m/s 단계(scale 0.83/cap 5.0) 실차 성공 → 6 m/s 단계 승격
