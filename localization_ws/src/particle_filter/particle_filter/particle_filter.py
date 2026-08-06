@@ -20,31 +20,32 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# ros2 python
-import rclpy
-from rclpy.duration import Duration
-from rclpy.node import Node
+from dataclasses import dataclass
+from threading import current_thread, Event, Lock, Thread
+import time
 
-# libraries
 import numpy as np
 import range_libc
-import time
-from threading import Lock
-from particle_filter import utils as Utils
-
-# TF
-# import tf.transformations
-# import tf
-from tf2_ros import Buffer, TransformBroadcaster, TransformListener
-import tf_transformations
-
-# messages
-from std_msgs.msg import String, Header, Float32MultiArray
-from sensor_msgs.msg import LaserScan
-from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point, Pose, PoseStamped, PoseArray, Quaternion, PolygonStamped, Polygon, Point32, PoseWithCovarianceStamped, PointStamped, TransformStamped
+import rclpy
+from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PolygonStamped
+from geometry_msgs.msg import PoseArray
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from nav_msgs.srv import GetMap
+from particle_filter import utils as Utils
+from particle_filter.synchronization import LatestValueSlot
+from particle_filter.synchronization import LOOKUP_OK
+from particle_filter.synchronization import OdomSample
+from particle_filter.synchronization import TimestampedOdomBuffer
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rclpy.time import Time as RosTime
+from sensor_msgs.msg import LaserScan
+import tf_transformations
+from tf2_ros import Buffer, TransformBroadcaster, TransformListener
 
 '''
 These flags indicate several variants of the sensor model. Only one of them is used at a time.
@@ -54,6 +55,15 @@ VAR_CALC_RANGE_MANY_EVAL_SENSOR = 1
 VAR_REPEAT_ANGLES_EVAL_SENSOR = 2
 VAR_REPEAT_ANGLES_EVAL_SENSOR_ONE_SHOT = 3
 VAR_RADIAL_CDDT_OPTIMIZATIONS = 4
+
+
+@dataclass(frozen=True)
+class ScanSample:
+    """A preprocessed scan waiting for timestamp-synchronized PF work."""
+
+    stamp_ns: int
+    received_monotonic: float
+    ranges: np.ndarray
 
 
 class ParticleFiler(Node):
@@ -110,6 +120,21 @@ class ParticleFiler(Node):
         # 연속 거부가 이 횟수에 닿으면 "필터가 아니라 예측이 틀렸다"고 보고
         # 보정을 한 번 받아들여 재동기화한다.
         self.declare_parameter('max_consecutive_jump_rejects', 10)
+        # Jetson-safe scan/odom synchronization. Odom callbacks only append a
+        # small sample; a dedicated worker always processes the newest scan.
+        self.declare_parameter('odom_buffer_size', 150)
+        self.declare_parameter('odom_sync_wait_sec', 0.04)
+        self.declare_parameter('max_odom_interp_gap_sec', 0.06)
+        self.declare_parameter('max_pending_scan_age_sec', 0.10)
+        self.declare_parameter('max_update_rate_hz', 25.0)
+        self.declare_parameter('sync_diagnostics_period_sec', 1.0)
+        self.declare_parameter('max_localization_update_age_sec', 0.50)
+        # Fixed noise on a zero-motion update creates artificial pose shake.
+        # Scale the existing noise values by motion, while retaining a small
+        # floor so stopped particles do not become completely deterministic.
+        self.declare_parameter('motion_noise_min_scale', 0.08)
+        self.declare_parameter('motion_noise_reference_translation_m', 0.25)
+        self.declare_parameter('motion_noise_reference_yaw_rad', 0.15)
 
         # parameters
         self.ANGLE_STEP           = self.get_parameter('angle_step').value
@@ -159,18 +184,33 @@ class ParticleFiler(Node):
             'max_consecutive_jump_rejects').value)
         if self.MAX_CONSECUTIVE_JUMP_REJECTS < 0:
             raise ValueError('max_consecutive_jump_rejects must be >= 0')
+        self.ODOM_BUFFER_SIZE = int(self.get_parameter('odom_buffer_size').value)
+        self.ODOM_SYNC_WAIT_SEC = float(self.get_parameter('odom_sync_wait_sec').value)
+        self.MAX_ODOM_INTERP_GAP_SEC = float(self.get_parameter(
+            'max_odom_interp_gap_sec').value)
+        self.MAX_PENDING_SCAN_AGE_SEC = float(self.get_parameter(
+            'max_pending_scan_age_sec').value)
+        self.MAX_UPDATE_RATE_HZ = float(self.get_parameter('max_update_rate_hz').value)
+        self.SYNC_DIAGNOSTICS_PERIOD_SEC = float(self.get_parameter(
+            'sync_diagnostics_period_sec').value)
+        self.MAX_LOCALIZATION_UPDATE_AGE_SEC = float(self.get_parameter(
+            'max_localization_update_age_sec').value)
+        self.MOTION_NOISE_MIN_SCALE = float(self.get_parameter(
+            'motion_noise_min_scale').value)
+        self.MOTION_NOISE_REFERENCE_TRANSLATION = float(self.get_parameter(
+            'motion_noise_reference_translation_m').value)
+        self.MOTION_NOISE_REFERENCE_YAW = float(self.get_parameter(
+            'motion_noise_reference_yaw_rad').value)
+        self._validate_sync_parameters()
         
         # various data containers used in the MCL algorithm
         self.MAX_RANGE_PX = None
-        self.odometry_data = np.array([0.0, 0.0, 0.0])
         self.laser = None
         self.iters = 0
         self.map_info = None
         self.map_initialized = False
         self.lidar_initialized = False
         self.odom_initialized = False
-        self.last_pose = None
-        self.current_odom_pose = None
         self.laser_angles = None
         self.downsampled_angles = None
         self.downsampled_ranges = None
@@ -179,8 +219,34 @@ class ParticleFiler(Node):
         self.last_stamp = None
         self.first_sensor_update = True
         self.state_lock = Lock()
+        self.transform_lock = Lock()
+        self.filter_reference_lock = Lock()
         self.jump_reject_count = 0            # 로그 스로틀용 누적 카운터
         self.consecutive_jump_rejects = 0     # 탈출구 판정용 연속 카운터
+
+        # Input callbacks never run MCL. They only touch these bounded,
+        # independently locked containers and return immediately.
+        self.odom_buffer = TimestampedOdomBuffer(self.ODOM_BUFFER_SIZE)
+        self.pending_scans = LatestValueSlot()
+        self.worker_stop = Event()
+        self.filter_worker = None
+        self.previous_filter_odom = None
+        self.filter_generation = 0
+        self.map_to_odom = None
+        self.map_to_odom_updated_monotonic = 0.0
+        self.localized_covariance = np.zeros((6, 6))
+        self.localization_output_stale_active = False
+        self.scan_processed_count = 0
+        self.scan_sync_drop_count = 0
+        self.scan_stale_drop_count = 0
+        self.scan_out_of_order_count = 0
+        self.worker_error_count = 0
+        self.odom_reject_log_count = 0
+        self.last_received_scan_stamp_ns = 0
+        self.last_published_odom_stamp_ns = 0
+        self.last_sync_diagnostic_time = time.monotonic()
+        self.compute_time_ms = Utils.CircularArray(20)
+        self.scan_turnaround_ms = Utils.CircularArray(20)
 
         # cache this to avoid memory allocation in motion model
         self.local_deltas = np.zeros((self.MAX_PARTICLES, 3))
@@ -236,7 +302,7 @@ class ParticleFiler(Node):
             Odometry,
             self.get_parameter('odometry_topic').value,
             self.odomCB,
-            1)
+            10)
         self.pose_sub = self.create_subscription(
             PoseWithCovarianceStamped,
             '/initialpose',
@@ -248,7 +314,19 @@ class ParticleFiler(Node):
             self.clicked_pose,
             1)
 
-        self.get_logger().info('Finished initializing, waiting on messages...')
+        self.filter_worker = Thread(
+            target=self._filter_worker_loop,
+            name='pf_scan_worker',
+            daemon=True,
+        )
+        self.filter_worker.start()
+
+        self.get_logger().info(
+            'Finished initializing: odom buffer=%d, latest-scan worker<=%.1fHz' % (
+                self.ODOM_BUFFER_SIZE,
+                self.MAX_UPDATE_RATE_HZ,
+            )
+        )
 
     def get_omap(self):
         '''
@@ -292,59 +370,72 @@ class ParticleFiler(Node):
         self.permissible_region[array_255==0] = 1
         self.map_initialized = True
 
-    def publish_tf(self, pose, stamp=None):
-        '''Publish a map->odom transform derived from the inferred laser pose.'''
-        if stamp == None:
-            stamp = self.get_clock().now().to_msg()
-
-        if self.current_odom_pose is None:
-            return
-
-        if self.laser_to_base_pose is None and not self.lookup_laser_to_base_pose():
-            return
-
-        map_to_base = self.compose_pose_2d(pose, self.laser_to_base_pose)
+    def set_localization_transform(self, pose, odom_sample, covariance):
+        """Store map->odom from a PF pose and scan-time interpolated odom."""
+        map_to_base_at_scan = self.compose_pose_2d(pose, self.laser_to_base_pose)
+        odom_pose_at_scan = self.odom_sample_to_pose(odom_sample)
         map_to_odom = self.compose_pose_2d(
-            map_to_base,
-            self.inverse_pose_2d(self.current_odom_pose),
+            map_to_base_at_scan,
+            self.inverse_pose_2d(odom_pose_at_scan),
         )
+        with self.transform_lock:
+            self.map_to_odom = map_to_odom
+            self.map_to_odom_updated_monotonic = time.monotonic()
+            self.localized_covariance = covariance
 
-        t = TransformStamped()
-        # header
-        t.header.stamp = stamp
-        t.header.frame_id = self.MAP_FRAME
-        t.child_frame_id = self.ODOM_FRAME
-        # translation
-        t.transform.translation.x = map_to_odom[0]
-        t.transform.translation.y = map_to_odom[1]
-        t.transform.translation.z = 0.0
-        q = tf_transformations.quaternion_from_euler(0., 0., map_to_odom[2])
-        # rotation
-        t.transform.rotation.x = q[0]
-        t.transform.rotation.y = q[1]
-        t.transform.rotation.z = q[2]
-        t.transform.rotation.w = q[3]
-        self.pub_tf.sendTransform(t)
-        # also publish odometry to facilitate getting the localization pose
-        if self.PUBLISH_ODOM:
-            odom = Odometry()
-            odom.header.stamp = self.get_clock().now().to_msg()
-            odom.header.frame_id = self.MAP_FRAME
-            odom.child_frame_id = self.BASE_FRAME
-            odom.pose.pose.position.x = map_to_base[0]
-            odom.pose.pose.position.y = map_to_base[1]
-            odom.pose.pose.orientation = Utils.angle_to_quaternion(map_to_base[2])
-            cov3 = self.pose_covariance_3x3()
-            cov6 = np.zeros((6, 6))
-            idx = [0, 1, 5]  # (x, y, theta) -> (x, y, yaw) slots of the 6x6 matrix
-            for i, r in enumerate(idx):
-                for j, c in enumerate(idx):
-                    cov6[r, c] = cov3[i, j]
-            odom.pose.covariance = cov6.flatten().tolist()
-            odom.twist.twist.linear.x = self.current_speed
-            self.odom_pub.publish(odom)
-        
-        return
+    def publish_propagated_pose(self, odom_sample):
+        """Publish the latest base pose using the most recent PF correction."""
+        with self.transform_lock:
+            if self.map_to_odom is None:
+                return
+            map_to_odom = np.copy(self.map_to_odom)
+            correction_updated = self.map_to_odom_updated_monotonic
+            covariance = np.copy(self.localized_covariance)
+
+        correction_age = time.monotonic() - correction_updated
+        if correction_age > self.MAX_LOCALIZATION_UPDATE_AGE_SEC:
+            if not self.localization_output_stale_active:
+                self.get_logger().error(
+                    'PF correction is %.2fs old; stopping localization output' %
+                    correction_age
+                )
+            self.localization_output_stale_active = True
+            return
+        self.localization_output_stale_active = False
+
+        odom_pose = self.odom_sample_to_pose(odom_sample)
+        map_to_base = self.compose_pose_2d(map_to_odom, odom_pose)
+        stamp = self.nanoseconds_to_stamp(odom_sample.stamp_ns)
+
+        transform = TransformStamped()
+        transform.header.stamp = stamp
+        transform.header.frame_id = self.MAP_FRAME
+        transform.child_frame_id = self.ODOM_FRAME
+        transform.transform.translation.x = map_to_odom[0]
+        transform.transform.translation.y = map_to_odom[1]
+        transform.transform.translation.z = 0.0
+        quaternion = tf_transformations.quaternion_from_euler(
+            0.0, 0.0, map_to_odom[2])
+        transform.transform.rotation.x = quaternion[0]
+        transform.transform.rotation.y = quaternion[1]
+        transform.transform.rotation.z = quaternion[2]
+        transform.transform.rotation.w = quaternion[3]
+        self.pub_tf.sendTransform(transform)
+
+        if not self.PUBLISH_ODOM:
+            return
+
+        odom = Odometry()
+        odom.header.stamp = stamp
+        odom.header.frame_id = self.MAP_FRAME
+        odom.child_frame_id = self.BASE_FRAME
+        odom.pose.pose.position.x = map_to_base[0]
+        odom.pose.pose.position.y = map_to_base[1]
+        odom.pose.pose.orientation = Utils.angle_to_quaternion(map_to_base[2])
+        odom.pose.covariance = covariance.flatten().tolist()
+        odom.twist.twist.linear.x = odom_sample.linear_speed
+        odom.twist.twist.angular.z = odom_sample.angular_speed
+        self.odom_pub.publish(odom)
 
     def visualize(self):
         '''
@@ -360,7 +451,7 @@ class ParticleFiler(Node):
             inferred_base_pose = self.compose_pose_2d(self.inferred_pose, self.laser_to_base_pose)
             # Publish the inferred pose for visualization
             ps = PoseStamped()
-            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.header.stamp = self.last_stamp
             ps.header.frame_id = self.MAP_FRAME
             ps.pose.position.x = inferred_base_pose[0]
             ps.pose.position.y = inferred_base_pose[1]
@@ -388,7 +479,7 @@ class ParticleFiler(Node):
     def publish_particles(self, particles):
         # publish the given particles as a PoseArray object
         pa = PoseArray()
-        pa.header.stamp = self.get_clock().now().to_msg()
+        pa.header.stamp = self.last_stamp
         pa.header.frame_id = self.MAP_FRAME
         pa.poses = Utils.particles_to_poses(particles)
         self.particle_pub.publish(pa)
@@ -408,8 +499,7 @@ class ParticleFiler(Node):
 
     def lidarCB(self, msg):
         '''
-        Initializes reused buffers, stores the latest laser scan, and updates
-        the filter once per fresh scan.
+        Preprocess a scan and replace any older scan waiting for PF work.
         '''
         if not isinstance(self.laser_angles, np.ndarray):
             self.get_logger().info('...Received first LiDAR message')
@@ -425,52 +515,61 @@ class ParticleFiler(Node):
         invalid = np.logical_or(~np.isfinite(downsampled_ranges), downsampled_ranges <= 0.0)
         downsampled_ranges[invalid] = self.MAX_RANGE_METERS
         np.clip(downsampled_ranges, 0.0, self.MAX_RANGE_METERS, out=downsampled_ranges)
-        self.downsampled_ranges = downsampled_ranges
+        stamp_ns = self.stamp_to_nanoseconds(msg.header.stamp)
+        if stamp_ns <= 0:
+            stamp_ns = self.get_clock().now().nanoseconds
+        if stamp_ns <= self.last_received_scan_stamp_ns:
+            backward_jump = self.last_received_scan_stamp_ns - stamp_ns
+            if backward_jump < 1_000_000_000:
+                self.scan_out_of_order_count += 1
+                return
+        self.last_received_scan_stamp_ns = stamp_ns
+
         self.lidar_initialized = True
-        self.update()
+        self.pending_scans.offer(ScanSample(
+            stamp_ns=stamp_ns,
+            received_monotonic=time.monotonic(),
+            ranges=downsampled_ranges,
+        ))
 
     def odomCB(self, msg):
         '''
-        Store deltas between consecutive odometry messages in the coordinate
-        space of the car and accumulate them until the next scan update.
-
-        Odometry data is accumulated via dead reckoning, so it is very inaccurate on its own.
+        Store one lightweight odom sample and publish a propagated PF pose.
         '''
-        position = np.array([
-            msg.pose.pose.position.x,
-            msg.pose.pose.position.y])
+        stamp_ns = self.stamp_to_nanoseconds(msg.header.stamp)
+        if stamp_ns <= 0:
+            stamp_ns = self.get_clock().now().nanoseconds
 
-        orientation = Utils.quaternion_to_angle(msg.pose.pose.orientation)
-        pose = np.array([position[0], position[1], orientation])
-        self.current_speed = msg.twist.twist.linear.x
-        self.current_odom_pose = pose
+        sample = OdomSample(
+            stamp_ns=stamp_ns,
+            x=msg.pose.pose.position.x,
+            y=msg.pose.pose.position.y,
+            yaw=Utils.quaternion_to_angle(msg.pose.pose.orientation),
+            linear_speed=msg.twist.twist.linear.x,
+            angular_speed=msg.twist.twist.angular.z,
+        )
+        reset_count = self.odom_buffer.time_reset_count
+        if not self.odom_buffer.append(sample):
+            self.odom_reject_log_count += 1
+            if self.odom_reject_log_count <= 3 or self.odom_reject_log_count % 50 == 0:
+                self.get_logger().warn(
+                    'Ignoring out-of-order odom timestamp (%d total)' %
+                    self.odom_reject_log_count
+                )
+            return
 
-        if isinstance(self.last_pose, np.ndarray):
-            # changes in x,y,theta in local coordinate system of the car
-            rot = Utils.rotation_matrix(-self.last_pose[2])
-            delta = np.array([position - self.last_pose[0:2]]).transpose()
-            local_delta = (rot*delta).transpose()
+        if self.odom_buffer.time_reset_count != reset_count:
+            self.get_logger().warn('Odom time moved backward; resetting PF time reference')
+            with self.state_lock:
+                self.reset_filter_reference(clear_transform=True)
+            self.last_published_odom_stamp_ns = 0
 
-            delta_pose = np.array([
-                local_delta[0,0],
-                local_delta[0,1],
-                self.wrap_angle(orientation - self.last_pose[2]),
-            ])
-            if abs(self.current_speed) < self.LOW_SPEED_THRESHOLD:
-                if np.hypot(delta_pose[0], delta_pose[1]) < \
-                        self.LOW_SPEED_ODOM_XY_DEADBAND:
-                    delta_pose[0] = 0.0
-                    delta_pose[1] = 0.0
-                if abs(delta_pose[2]) < self.LOW_SPEED_ODOM_YAW_DEADBAND:
-                    delta_pose[2] = 0.0
-                delta_pose *= self.LOW_SPEED_ODOM_SCALE
-            self.odometry_data = self.compose_pose_2d(self.odometry_data, delta_pose)
-            self.last_pose = pose
-            self.last_stamp = msg.header.stamp
-            self.odom_initialized = True
-        else:
+        if not self.odom_initialized:
             self.get_logger().info('...Received first Odometry message')
-            self.last_pose = pose
+        self.odom_initialized = True
+        if sample.stamp_ns > self.last_published_odom_stamp_ns:
+            self.publish_propagated_pose(sample)
+            self.last_published_odom_stamp_ns = sample.stamp_ns
 
     def clicked_pose(self, msg):
         '''
@@ -500,15 +599,17 @@ class ParticleFiler(Node):
         )
         self.get_logger().info('SETTING POSE')
         self.get_logger().info(str([base_pose[0], base_pose[1]]))
-        self.state_lock.acquire()
-        self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
-        self.particles[:,0] = laser_pose[0] + np.random.normal(loc=0.0,scale=0.5,size=self.MAX_PARTICLES)
-        self.particles[:,1] = laser_pose[1] + np.random.normal(loc=0.0,scale=0.5,size=self.MAX_PARTICLES)
-        self.particles[:,2] = self.wrap_angle(
-            laser_pose[2] + np.random.normal(loc=0.0,scale=0.4,size=self.MAX_PARTICLES))
-        self.inferred_pose = np.copy(laser_pose)
-        self.odometry_data[:] = 0.0
-        self.state_lock.release()
+        with self.state_lock:
+            self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
+            self.particles[:,0] = laser_pose[0] + np.random.normal(
+                loc=0.0, scale=0.5, size=self.MAX_PARTICLES)
+            self.particles[:,1] = laser_pose[1] + np.random.normal(
+                loc=0.0, scale=0.5, size=self.MAX_PARTICLES)
+            self.particles[:,2] = self.wrap_angle(
+                laser_pose[2] + np.random.normal(
+                    loc=0.0, scale=0.4, size=self.MAX_PARTICLES))
+            self.inferred_pose = np.copy(laser_pose)
+            self.reset_filter_reference(clear_transform=True)
 
     def initialize_global(self):
         '''
@@ -516,21 +617,21 @@ class ParticleFiler(Node):
         '''
         self.get_logger().info('GLOBAL INITIALIZATION')
         # randomize over grid coordinate space
-        self.state_lock.acquire()
-        permissible_x, permissible_y = np.where(self.permissible_region == 1)
-        indices = np.random.randint(0, len(permissible_x), size=self.MAX_PARTICLES)
+        with self.state_lock:
+            permissible_x, permissible_y = np.where(self.permissible_region == 1)
+            indices = np.random.randint(0, len(permissible_x), size=self.MAX_PARTICLES)
 
-        permissible_states = np.zeros((self.MAX_PARTICLES,3))
-        permissible_states[:,0] = permissible_y[indices]
-        permissible_states[:,1] = permissible_x[indices]
-        permissible_states[:,2] = np.random.random(self.MAX_PARTICLES) * np.pi * 2.0
+            permissible_states = np.zeros((self.MAX_PARTICLES,3))
+            permissible_states[:,0] = permissible_y[indices]
+            permissible_states[:,1] = permissible_x[indices]
+            permissible_states[:,2] = np.random.random(
+                self.MAX_PARTICLES) * np.pi * 2.0
 
-        Utils.map_to_world(permissible_states, self.map_info)
-        self.particles = permissible_states
-        self.weights[:] = 1.0 / self.MAX_PARTICLES
-        self.inferred_pose = None
-        self.odometry_data[:] = 0.0
-        self.state_lock.release()
+            Utils.map_to_world(permissible_states, self.map_info)
+            self.particles = permissible_states
+            self.weights[:] = 1.0 / self.MAX_PARTICLES
+            self.inferred_pose = None
+            self.reset_filter_reference(clear_transform=True)
 
     def precompute_sensor_model(self):
         '''
@@ -608,9 +709,31 @@ class ParticleFiler(Node):
         self.local_deltas[:,2] = action[2]
 
         proposal_dist[:,:] += self.local_deltas
-        proposal_dist[:,0] += np.random.normal(loc=0.0,scale=self.MOTION_DISPERSION_X,size=self.MAX_PARTICLES)
-        proposal_dist[:,1] += np.random.normal(loc=0.0,scale=self.MOTION_DISPERSION_Y,size=self.MAX_PARTICLES)
-        proposal_dist[:,2] += np.random.normal(loc=0.0,scale=self.MOTION_DISPERSION_THETA,size=self.MAX_PARTICLES)
+        translation = np.hypot(action[0], action[1])
+        normalized_motion = (
+            translation / self.MOTION_NOISE_REFERENCE_TRANSLATION +
+            abs(action[2]) / self.MOTION_NOISE_REFERENCE_YAW
+        )
+        noise_scale = np.clip(
+            np.sqrt(normalized_motion),
+            self.MOTION_NOISE_MIN_SCALE,
+            2.0,
+        )
+        proposal_dist[:,0] += np.random.normal(
+            loc=0.0,
+            scale=self.MOTION_DISPERSION_X * noise_scale,
+            size=self.MAX_PARTICLES,
+        )
+        proposal_dist[:,1] += np.random.normal(
+            loc=0.0,
+            scale=self.MOTION_DISPERSION_Y * noise_scale,
+            size=self.MAX_PARTICLES,
+        )
+        proposal_dist[:,2] += np.random.normal(
+            loc=0.0,
+            scale=self.MOTION_DISPERSION_THETA * noise_scale,
+            size=self.MAX_PARTICLES,
+        )
         proposal_dist[:,2] = self.wrap_angle(proposal_dist[:,2])
 
     def sensor_model(self, proposal_dist, obs, weights):
@@ -879,93 +1002,299 @@ class ParticleFiler(Node):
     def wrap_angle(theta):
         return np.arctan2(np.sin(theta), np.cos(theta))
 
-    def update(self):
-        '''
-        Apply the MCL function to update particle filter state. 
+    def _validate_sync_parameters(self):
+        """Reject unsafe synchronization settings before subscriptions start."""
+        if not 100 <= self.ODOM_BUFFER_SIZE <= 150:
+            raise ValueError('odom_buffer_size must be between 100 and 150')
+        if not 0.0 <= self.ODOM_SYNC_WAIT_SEC <= 0.2:
+            raise ValueError('odom_sync_wait_sec must be between 0.0 and 0.2')
+        if self.MAX_ODOM_INTERP_GAP_SEC <= 0.0:
+            raise ValueError('max_odom_interp_gap_sec must be positive')
+        if self.MAX_PENDING_SCAN_AGE_SEC <= 0.0:
+            raise ValueError('max_pending_scan_age_sec must be positive')
+        if self.MAX_UPDATE_RATE_HZ <= 0.0:
+            raise ValueError('max_update_rate_hz must be positive')
+        if self.SYNC_DIAGNOSTICS_PERIOD_SEC <= 0.0:
+            raise ValueError('sync_diagnostics_period_sec must be positive')
+        if self.MAX_LOCALIZATION_UPDATE_AGE_SEC <= 0.0:
+            raise ValueError('max_localization_update_age_sec must be positive')
+        if not 0.0 < self.MOTION_NOISE_MIN_SCALE <= 1.0:
+            raise ValueError('motion_noise_min_scale must be in (0.0, 1.0]')
+        if self.MOTION_NOISE_REFERENCE_TRANSLATION <= 0.0:
+            raise ValueError('motion_noise_reference_translation_m must be positive')
+        if self.MOTION_NOISE_REFERENCE_YAW <= 0.0:
+            raise ValueError('motion_noise_reference_yaw_rad must be positive')
 
-        Ensures the state is correctly initialized, and acquires the state lock before proceeding.
-        '''
+    def _filter_worker_loop(self):
+        """Process only the newest pending scan outside the ROS executor."""
+        minimum_period = 1.0 / self.MAX_UPDATE_RATE_HZ
+        next_allowed_start = 0.0
+
+        while not self.worker_stop.is_set():
+            rate_wait = next_allowed_start - time.monotonic()
+            if rate_wait > 0.0 and self.worker_stop.wait(rate_wait):
+                break
+
+            scan = self.pending_scans.take(timeout_sec=0.1)
+            if scan is None:
+                continue
+
+            if time.monotonic() - scan.received_monotonic > \
+                    self.MAX_PENDING_SCAN_AGE_SEC:
+                self.scan_stale_drop_count += 1
+                self._log_sync_diagnostics()
+                continue
+
+            with self.filter_reference_lock:
+                generation = self.filter_generation
+            lookup = self.odom_buffer.wait_for_interpolated(
+                scan.stamp_ns,
+                timeout_sec=self.ODOM_SYNC_WAIT_SEC,
+                max_gap_sec=self.MAX_ODOM_INTERP_GAP_SEC,
+            )
+            if self.worker_stop.is_set():
+                break
+            if lookup.status != LOOKUP_OK or lookup.sample is None:
+                self.scan_sync_drop_count += 1
+                self._log_sync_diagnostics()
+                continue
+            if time.monotonic() - scan.received_monotonic > \
+                    self.MAX_PENDING_SCAN_AGE_SEC:
+                self.scan_stale_drop_count += 1
+                self._log_sync_diagnostics()
+                continue
+
+            started = time.monotonic()
+            try:
+                processed = self._process_synchronized_scan(
+                    scan,
+                    lookup.sample,
+                    generation,
+                )
+            except Exception as error:
+                self.worker_error_count += 1
+                if self.worker_error_count <= 3 or self.worker_error_count % 20 == 0:
+                    self.get_logger().error(
+                        'PF worker error (%d total): %s' % (
+                            self.worker_error_count,
+                            error,
+                        )
+                    )
+                continue
+
+            if not processed:
+                continue
+
+            finished = time.monotonic()
+            compute_ms = (finished - started) * 1000.0
+            self.compute_time_ms.append(compute_ms)
+            self.scan_turnaround_ms.append(
+                (finished - scan.received_monotonic) * 1000.0)
+            self.smoothing.append(1000.0 / max(compute_ms, 1e-6))
+            self.scan_processed_count += 1
+            next_allowed_start = started + minimum_period
+            self._log_sync_diagnostics()
+
+    def _process_synchronized_scan(self, scan, odom_sample, generation):
+        """Run one PF update using odom interpolated at this exact scan time."""
         if self.laser_to_base_pose is None and not self.lookup_laser_to_base_pose():
-            return
+            return False
+        if not (self.lidar_initialized and self.odom_initialized and self.map_initialized):
+            return False
 
-        if self.lidar_initialized and self.odom_initialized and self.map_initialized:
-            if self.state_lock.locked():
-                self.get_logger().info('Concurrency error avoided')
+        with self.state_lock:
+            with self.filter_reference_lock:
+                if generation != self.filter_generation:
+                    return False
+                previous_odom = self.previous_filter_odom
+
+            odom_pose = self.odom_sample_to_pose(odom_sample)
+            if previous_odom is None:
+                action = np.zeros(3)
             else:
-                self.state_lock.acquire()
-                self.timer.tick()
-                self.iters += 1
+                previous_pose = self.odom_sample_to_pose(previous_odom)
+                action = self.compose_pose_2d(
+                    self.inverse_pose_2d(previous_pose),
+                    odom_pose,
+                )
+            action = self.filter_low_speed_action(action, odom_sample.linear_speed)
 
-                t1 = time.time()
-                observation = np.copy(self.downsampled_ranges).astype(np.float32)
-                action = np.copy(self.odometry_data)
-                self.odometry_data = np.zeros(3)
-                prior_particles = np.copy(self.particles)
-                prior_weights = np.copy(self.weights)
-                prior_pose = None if self.inferred_pose is None else np.copy(self.inferred_pose)
+            self.current_speed = odom_sample.linear_speed
+            self.downsampled_ranges = scan.ranges
+            self.last_stamp = self.nanoseconds_to_stamp(scan.stamp_ns)
+            self.timer.tick()
+            self.iters += 1
 
-                # run the MCL update algorithm
-                sensor_update_ok = self.MCL(action, observation)
+            prior_particles = np.copy(self.particles)
+            prior_weights = np.copy(self.weights)
+            prior_pose = None
+            if self.inferred_pose is not None:
+                prior_pose = np.copy(self.inferred_pose)
 
-                if sensor_update_ok:
-                    candidate_pose = self.expected_pose()
-                    if self.POSE_JUMP_GUARD_ENABLED and prior_pose is not None:
-                        predicted_pose = self.compose_pose_2d(prior_pose, action)
-                        reject, correction_xy, correction_yaw = self.should_reject_pose_update(
-                            predicted_pose, candidate_pose)
-                        # 연속 거부가 한계에 닿으면 이번 보정은 받아들인다.
-                        # 거부는 odom 전파 포즈를 유지하므로 오차가 줄지 않고,
-                        # 그래서 다음 보정량은 더 커진다 — 탈출구가 없으면
-                        # 가드가 스캔 업데이트를 영구 차단해 PF가 데드레커닝이
-                        # 된다 (run_0803_204743: 업데이트의 24%가 연속 거부,
-                        # 그 사이 포즈 10m 점프).
-                        if (reject and self.MAX_CONSECUTIVE_JUMP_REJECTS > 0
-                                and self.consecutive_jump_rejects + 1
-                                >= self.MAX_CONSECUTIVE_JUMP_REJECTS):
+            sensor_update_ok = self.MCL(action, scan.ranges)
+            if sensor_update_ok:
+                candidate_pose = self.expected_pose()
+                if self.POSE_JUMP_GUARD_ENABLED and prior_pose is not None:
+                    predicted_pose = self.compose_pose_2d(prior_pose, action)
+                    reject, correction_xy, correction_yaw = self.should_reject_pose_update(
+                        predicted_pose, candidate_pose)
+                    if (reject and self.MAX_CONSECUTIVE_JUMP_REJECTS > 0
+                            and self.consecutive_jump_rejects + 1
+                            >= self.MAX_CONSECUTIVE_JUMP_REJECTS):
+                        self.get_logger().warn(
+                            'PF jump guard 연속 거부 %d회 - 예측이 어긋난 것으로 '
+                            '보고 보정 %.2fm, %.1fdeg 수용(재동기화)' % (
+                                self.consecutive_jump_rejects + 1,
+                                correction_xy,
+                                np.degrees(correction_yaw),
+                            )
+                        )
+                        reject = False
+                    if reject:
+                        self.jump_reject_count += 1
+                        self.consecutive_jump_rejects += 1
+                        if (self.jump_reject_count <= 5 or
+                                self.jump_reject_count % 20 == 0):
                             self.get_logger().warn(
-                                'PF jump guard 연속 거부 %d회 — 예측이 어긋난 것으로 '
-                                '보고 보정 %.2fm, %.1fdeg 수용(재동기화)' % (
-                                    self.consecutive_jump_rejects + 1,
+                                'Rejected PF scan update: correction %.2fm, %.1fdeg '
+                                'exceeds guard; keeping odom-propagated pose (연속 %d회)' % (
                                     correction_xy,
                                     np.degrees(correction_yaw),
+                                    self.consecutive_jump_rejects,
                                 )
                             )
-                            reject = False
-                        if reject:
-                            self.jump_reject_count += 1
-                            self.consecutive_jump_rejects += 1
-                            if self.jump_reject_count <= 5 or self.jump_reject_count % 20 == 0:
-                                self.get_logger().warn(
-                                    'Rejected PF scan update: correction %.2fm, %.1fdeg exceeds guard; '
-                                    'keeping odom-propagated pose (연속 %d회)' % (
-                                        correction_xy,
-                                        np.degrees(correction_yaw),
-                                        self.consecutive_jump_rejects,
-                                    )
-                                )
-                            self.restore_motion_only_pose(prior_particles, prior_weights, action)
-                        else:
-                            self.consecutive_jump_rejects = 0
-                            self.inferred_pose = candidate_pose
+                        self.restore_motion_only_pose(
+                            prior_particles, prior_weights, action)
                     else:
+                        self.consecutive_jump_rejects = 0
                         self.inferred_pose = candidate_pose
                 else:
-                    self.get_logger().warn(
-                        'PF sensor update produced invalid weights; keeping odom-propagated pose')
-                    self.restore_motion_only_pose(prior_particles, prior_weights, action)
-                self.state_lock.release()
-                t2 = time.time()
+                    self.inferred_pose = candidate_pose
+            else:
+                self.get_logger().warn(
+                    'PF sensor update produced invalid weights; '
+                    'keeping odom-propagated pose')
+                self.restore_motion_only_pose(
+                    prior_particles, prior_weights, action)
 
-                # publish transformation frame based on inferred pose
-                self.publish_tf(self.inferred_pose, self.last_stamp)
+            covariance = self.pose_covariance_6x6()
+            self.set_localization_transform(
+                self.inferred_pose,
+                odom_sample,
+                covariance,
+            )
+            with self.filter_reference_lock:
+                self.previous_filter_odom = odom_sample
 
-                # this is for tracking particle filter speed
-                ips = 1.0 / (t2 - t1)
-                self.smoothing.append(ips)
-                if self.iters % 10 == 0:
-                    self.get_logger().info(str(['iters per sec:', int(self.timer.fps()), ' possible:', int(self.smoothing.mean())]))
+        self.visualize()
+        return True
 
-                self.visualize()
+    def filter_low_speed_action(self, action, speed):
+        """Apply the existing low-speed deadband to a scan-to-scan action."""
+        filtered = np.copy(action)
+        if abs(speed) >= self.LOW_SPEED_THRESHOLD:
+            return filtered
+        if np.hypot(filtered[0], filtered[1]) < self.LOW_SPEED_ODOM_XY_DEADBAND:
+            filtered[0] = 0.0
+            filtered[1] = 0.0
+        if abs(filtered[2]) < self.LOW_SPEED_ODOM_YAW_DEADBAND:
+            filtered[2] = 0.0
+        filtered *= self.LOW_SPEED_ODOM_SCALE
+        return filtered
+
+    def pose_covariance_6x6(self):
+        """Expand PF [x, y, yaw] covariance into an odometry covariance."""
+        covariance = np.zeros((6, 6))
+        covariance3 = self.pose_covariance_3x3()
+        indices = [0, 1, 5]
+        for source_row, target_row in enumerate(indices):
+            for source_column, target_column in enumerate(indices):
+                covariance[target_row, target_column] = covariance3[
+                    source_row, source_column]
+        return covariance
+
+    def reset_filter_reference(self, clear_transform=False):
+        """Start scan-to-scan odom integration again after a state reset."""
+        with self.filter_reference_lock:
+            self.previous_filter_odom = None
+            self.filter_generation += 1
+        if clear_transform:
+            with self.transform_lock:
+                self.map_to_odom = None
+                self.map_to_odom_updated_monotonic = 0.0
+                self.localized_covariance = np.zeros((6, 6))
+            self.localization_output_stale_active = False
+
+    def _log_sync_diagnostics(self):
+        now = time.monotonic()
+        if now - self.last_sync_diagnostic_time < self.SYNC_DIAGNOSTICS_PERIOD_SEC:
+            return
+        offered, overwritten, _ = self.pending_scans.counts()
+        overwrite_ratio = 100.0 * overwritten / max(offered, 1)
+        rate_hz = self.timer.fps() if self.timer.arr.num_els else 0.0
+        compute_ms = (
+            self.compute_time_ms.mean()
+            if self.compute_time_ms.num_els else 0.0
+        )
+        turnaround_ms = (
+            self.scan_turnaround_ms.mean()
+            if self.scan_turnaround_ms.num_els else 0.0
+        )
+        estimated_core_load = rate_hz * compute_ms / 10.0
+        with self.transform_lock:
+            correction_updated = self.map_to_odom_updated_monotonic
+        correction_age_ms = -1.0
+        if correction_updated > 0.0:
+            correction_age_ms = (now - correction_updated) * 1000.0
+        self.get_logger().info(
+            'PF sync: %.1fHz, compute %.1fms, scan turnaround %.1fms, '
+            'correction-age %.0fms, CPU-core %.0f%%, scans %d/%d, '
+            'latest-overwrite %d (%.0f%%), '
+            'sync/stale/order-drop %d/%d/%d, worker-error %d, '
+            'odom-buffer %d/%d' % (
+                rate_hz,
+                compute_ms,
+                turnaround_ms,
+                correction_age_ms,
+                estimated_core_load,
+                self.scan_processed_count,
+                offered,
+                overwritten,
+                overwrite_ratio,
+                self.scan_sync_drop_count,
+                self.scan_stale_drop_count,
+                self.scan_out_of_order_count,
+                self.worker_error_count,
+                len(self.odom_buffer),
+                self.ODOM_BUFFER_SIZE,
+            )
+        )
+        self.last_sync_diagnostic_time = now
+
+    @staticmethod
+    def stamp_to_nanoseconds(stamp):
+        """Convert a ROS stamp message to an integer without floating error."""
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+    @staticmethod
+    def nanoseconds_to_stamp(stamp_ns):
+        """Convert integer nanoseconds back to a ROS stamp message."""
+        return RosTime(nanoseconds=int(stamp_ns)).to_msg()
+
+    @staticmethod
+    def odom_sample_to_pose(sample):
+        """Convert a lightweight odom sample to the PF planar pose format."""
+        return np.array([sample.x, sample.y, sample.yaw])
+
+    def destroy_node(self):
+        """Stop the PF worker before destroying ROS publishers and handles."""
+        self.worker_stop.set()
+        self.pending_scans.close()
+        self.odom_buffer.close()
+        if (self.filter_worker is not None and self.filter_worker.is_alive()
+                and current_thread() is not self.filter_worker):
+            self.filter_worker.join(timeout=2.0)
+        return super().destroy_node()
 
 # import argparse
 # import sys
@@ -991,7 +1320,18 @@ class ParticleFiler(Node):
 def main(args=None):
     rclpy.init(args=args)
     pf = ParticleFiler()
-    rclpy.spin(pf)
+    try:
+        rclpy.spin(pf)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            pf.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        except KeyboardInterrupt:
+            # Launch may forward a second SIGINT while rclpy handles the first.
+            pass
 
 if __name__ == '__main__':
     main()

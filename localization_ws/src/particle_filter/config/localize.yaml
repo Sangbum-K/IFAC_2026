@@ -31,6 +31,22 @@ particle_filter:
     motion_dispersion_x: 0.05
     motion_dispersion_y: 0.025
     motion_dispersion_theta: 0.08
+    # Timestamp synchronization for the Jetson Orin Nano. The PF worker is
+    # capped at 25 Hz while /pf/pose/odom is propagated at the odom input rate.
+    odom_buffer_size: 150
+    odom_sync_wait_sec: 0.04
+    max_odom_interp_gap_sec: 0.06
+    max_pending_scan_age_sec: 0.10
+    max_update_rate_hz: 25.0
+    sync_diagnostics_period_sec: 1.0
+    # Stop publishing fresh-looking poses if LiDAR correction has actually
+    # stalled; downstream odom timeouts then trigger the race safety stop.
+    max_localization_update_age_sec: 0.50
+    # Scale process noise with scan-to-scan motion. At zero action only 8% of
+    # the old fixed noise is injected, avoiding artificial stopped-pose shake.
+    motion_noise_min_scale: 0.08
+    motion_noise_reference_translation_m: 0.25
+    motion_noise_reference_yaw_rad: 0.15
     # Reject scan updates that would snap the filter too far from its
     # odom-propagated prediction in a single frame.
     pose_jump_guard_enabled: true
