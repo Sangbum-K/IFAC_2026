@@ -1096,7 +1096,7 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
     // Tier2(스플라인) / Tier3(트레일링)가 그대로 받아낸다.
     // sigma_d는 여기서 빼둔다(장애물마다 다름) — 사전 필터는 낙관적이어야 한다.
     const double passable_width =
-        std::max(path_check_margin_, vehicle_half_width_m_) +
+        RequiredObstacleClearance(obs) +
         RequiredBoundaryMargin(active_bound_mindist_);
     // 설정값이 물리적 하한보다 작으면 검증기가 어차피 거부하므로 하한으로 올린다
     // (사전 필터만 통과시키고 매번 Tier3로 떨어지는 것을 막는다).
@@ -1132,23 +1132,28 @@ double SplinerNode::ApexFor(
     double wall_left, wall_right;
     MinWallInSpan(Mod(obs.s_start - 0.5, track_len_),
                   Mod(obs.s_end + 0.5, track_len_), wall_left, wall_right);
+    // 목표/하한 모두 검증기(CheckPathCollision)가 요구하는 간격 이상이어야
+    // 한다 — 아니면 계획한 회피를 자기 검증기가 매번 충돌로 거부한다.
+    const double need = RequiredObstacleClearance(obs);
+    const double dist_min = std::max(evasion_dist_min_, need);
+    const double dist_target = std::max(evasion_dist_, need);
     if (side == "left") {
         double wall = wall_left;
         double corridor = std::abs(wall_left - obs.d_left);
         double surplus =
-            std::max(corridor - evasion_dist_min_ - boundary_margin, 0.0);
+            std::max(corridor - dist_min - boundary_margin, 0.0);
         // corridor 여유를 장애물/벽에 반씩 배분한 지점 (넓으면 목표값이 더 작음)
-        double balanced = obs.d_left + evasion_dist_min_ + surplus / 2.0;
-        double target = obs.d_left + evasion_dist_;
+        double balanced = obs.d_left + dist_min + surplus / 2.0;
+        double target = obs.d_left + dist_target;
         return std::clamp(std::min(target, balanced), 0.0,
                           std::max(wall - boundary_margin, 0.0));
     }
     double wall = wall_right;
     double corridor = std::abs(wall_right + obs.d_right);
     double surplus =
-        std::max(corridor - evasion_dist_min_ - boundary_margin, 0.0);
-    double balanced = obs.d_right - evasion_dist_min_ - surplus / 2.0;
-    double target = obs.d_right - evasion_dist_;
+        std::max(corridor - dist_min - boundary_margin, 0.0);
+    double balanced = obs.d_right - dist_min - surplus / 2.0;
+    double target = obs.d_right - dist_target;
     return std::clamp(std::max(target, balanced),
                       -std::max(wall - boundary_margin, 0.0), 0.0);
 }
@@ -1187,15 +1192,17 @@ bool SplinerNode::TryLaneSwitch(
     // 조차 못 챙기면 그 레인은 막힌 것 → 스킵. 첫 성공 레인을 반환한다.
     for (const std::string &side : {first, second}) {
         double d_hold = ApexFor(side, closest_obs);
+        const double need_clear = std::max(
+            evasion_dist_min_, RequiredObstacleClearance(closest_obs));
         bool clears = (side == "left")
-            ? d_hold >= closest_obs.d_left + evasion_dist_min_
-            : d_hold <= closest_obs.d_right - evasion_dist_min_;
+            ? d_hold >= closest_obs.d_left + need_clear
+            : d_hold <= closest_obs.d_right - need_clear;
         if (!clears) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "LaneSwitch %s 레인 불가: d_hold=%.2f (필요 %.2f, 장애물 d[%.2f,%.2f])",
                 side.c_str(), d_hold,
-                (side == "left") ? closest_obs.d_left + evasion_dist_min_
-                                 : closest_obs.d_right - evasion_dist_min_,
+                (side == "left") ? closest_obs.d_left + need_clear
+                                 : closest_obs.d_right - need_clear,
                 closest_obs.d_right, closest_obs.d_left);
             continue;
         }
@@ -1277,7 +1284,10 @@ bool SplinerNode::BuildLaneSwitch(
                 "(v=%.1f, dd=%.2f)", need_in, hold_start, cur_vs_, d_hold - cur_d_);
             return false;
         } else {
-            blend_in = std::clamp(hold_start, need_in, blend_dist_max_m_);
+            // 필요한 만큼만 쓰고(여유 20%) 시작을 늦춘다 — 남은 거리 전부를
+            // 진입에 쓰면 상류의 좁은 구간을 오프셋 상태로 통과하게 된다.
+            blend_in = std::clamp(need_in * 1.2, need_in,
+                                  std::min(hold_start, blend_dist_max_m_));
         }
     }
     // 진입 블렌드가 hold 구간을 넘어가면 d 프로파일이 끊긴다.
@@ -1302,13 +1312,21 @@ bool SplinerNode::BuildLaneSwitch(
         std::max(closest_obs.vs, 0.0) /
         std::max(cmd_speed_scale_, 0.05) * dyn_pass_speed_ratio_;
 
-    // d 프로파일 생성기 (진입 블렌드 → hold → 복귀 블렌드).
+    // 진입 블렌드는 "가능한 한 늦게" 시작한다 (blend_start 이후). 예전에는
+    // 남은 거리 전체(hold_start)를 진입에 썼는데, 그러면 장애물과 무관한
+    // 상류 구간까지 오프셋 상태로 지나 그곳 벽에 걸린다 — 폭이 1.7~2.0m인
+    // 이 트랙에서는 그것만으로 좌우 레인이 모두 막혔다 (run_0806_155621).
+    // 늦게 시작하면 레이스라인을 더 오래 타므로 벽 여유와 속도 양쪽에 유리하다.
+    const double blend_start = std::max(hold_start - blend_in, 0.0);
+    // d 프로파일 생성기 (레이스라인 유지 → 진입 블렌드 → hold → 복귀 블렌드).
     auto build_profile = [&](double b_out) {
         std::vector<double> d_prof(n);
         for (int i = 0; i < n; ++i) {
             const double t = i * wpnt_dist_;
-            if (t < blend_in) {
-                double w = (blend_in > 1e-6) ? t / blend_in : 1.0;
+            if (t < blend_start) {
+                d_prof[i] = cur_d_;            // 아직 라인 유지
+            } else if (t < blend_start + blend_in) {
+                double w = (blend_in > 1e-6) ? (t - blend_start) / blend_in : 1.0;
                 w = w * w * (3.0 - 2.0 * w);   // smoothstep
                 d_prof[i] = cur_d_ * (1.0 - w) + d_hold * w;
             } else if (t < hold_end) {
@@ -1353,13 +1371,19 @@ bool SplinerNode::BuildLaneSwitch(
     // "복귀를 더 일찍 끝내는" 쪽을 먼저 시도한다. 하한은 그립 예산(need_out)
     // — 그보다 짧은 복귀는 횡가속을 넘긴다. 그래도 안 되면 전체 축소로
     // 마지막 시도를 하고, 축소 후 장애물 간격이 없으면 이 레인을 포기한다.
+    // 복귀 하한은 "현재 속도의 그립 예산"(need_out)이 아니라 속도와 무관한
+    // 조향 기하 하한(geom_out)이다 — 그보다 길게 필요한 부분은 그 구간에서
+    // 감속하면 만족시킬 수 있고, 실제로 아래에서 squeeze 감속을 건다.
+    // 복귀를 짧게 못 하면 좁아지는 코너에 걸려 회피 자체가 사라진다.
     const double need_out = BlendDist(d_hold, PlanSpeed());
+    const double geom_out = BlendDist(d_hold, 0.0);   // 조향 기하 하한만 남음
     bool width_bad = false;
     std::vector<double> lane_d = build_profile(blend_out);
     double fit = profile_fit(lane_d, &width_bad);
+    bool return_shortened = false;
     if (!width_bad && fit < 1.0 - 1e-6) {
         for (double shrink : {0.75, 0.5, 0.35, 0.25}) {
-            const double candidate = std::max(blend_out * shrink, need_out);
+            const double candidate = std::max(blend_out * shrink, geom_out);
             if (candidate >= blend_out - 1e-6) {
                 continue;
             }
@@ -1368,6 +1392,7 @@ bool SplinerNode::BuildLaneSwitch(
             const double trial_fit = profile_fit(trial, &bad);
             if (!bad && trial_fit > 1.0 - 1e-6) {
                 lane_d = std::move(trial);
+                return_shortened = candidate < need_out - 1e-6;
                 blend_out = candidate;
                 fit = 1.0;
                 break;
@@ -1386,9 +1411,11 @@ bool SplinerNode::BuildLaneSwitch(
         }
         // 축소된 오프셋으로도 장애물을 비켜 가는가 — 아니면 이 레인은 무의미
         const double d_fit = d_hold * fit;
+        const double need_clear2 = std::max(
+            evasion_dist_min_, RequiredObstacleClearance(closest_obs));
         const bool still_clears = (d_hold > 0.0)
-            ? d_fit >= closest_obs.d_left + evasion_dist_min_
-            : d_fit <= closest_obs.d_right - evasion_dist_min_;
+            ? d_fit >= closest_obs.d_left + need_clear2
+            : d_fit <= closest_obs.d_right - need_clear2;
         if (!still_clears) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "LaneSwitch 거부: 벽 때문에 오프셋 %.2f -> %.2f로 축소되어 "
@@ -1400,6 +1427,13 @@ bool SplinerNode::BuildLaneSwitch(
 
     out_wpnts.wpnts.reserve(n);
     std::vector<std::pair<double, double>> xy(n);
+    // 복귀를 그립 예산보다 짧게 줄였으면 그 구간 속도를 낮춰 물리를 맞춘다
+    // (6*A*v²/L² <= blend_lat_acc_max  ->  v <= L*sqrt(a/(6A))).
+    double return_speed_cap = -1.0;
+    if (return_shortened && d_hold > 1e-6) {
+        return_speed_cap = blend_out *
+            std::sqrt(blend_lat_acc_max_ / (6.0 * std::abs(d_hold)));
+    }
     const bool wpnt_d_clamped = lane_squeezed;
     for (int i = 0; i < n; ++i) {
         double t = i * wpnt_dist_;
@@ -1421,6 +1455,10 @@ bool SplinerNode::BuildLaneSwitch(
         double vx = std::min(gb_wpnts_[gi].vx_mps * active_speed_scale_, gb_vmax_);
         if (v_floor > 0.0) {
             vx = std::clamp(vx, std::min(v_floor, gb_vmax_), gb_vmax_);
+        }
+        if (return_speed_cap > 0.0 && t >= hold_end - blend_in) {
+            // 복귀(및 그 직전) 구간만 캡 — 접근 구간 속도는 유지한다
+            vx = std::min(vx, return_speed_cap / std::max(cmd_speed_scale_, 0.05));
         }
         wpnt.vx_mps = vx;
         wpnt.ax_mps2 = gb_wpnts_[gi].ax_mps2;
@@ -1722,10 +1760,12 @@ bool SplinerNode::DoSpline(
                 const double body_back = s_back - 0.5 + vehicle_half_length_m_;
                 bool in_obs_body = (evasion_s[i] > body_front) &&
                                    (evasion_s[i] < body_back);
+                const double need_clear = std::max(
+                    evasion_dist_min_, RequiredObstacleClearance(closest_obs));
                 bool cuts_obstacle = in_obs_body &&
                     ((more_space == "left")
-                         ? clamped < closest_obs.d_left + evasion_dist_min_
-                         : clamped > closest_obs.d_right - evasion_dist_min_);
+                         ? clamped < closest_obs.d_left + need_clear
+                         : clamped > closest_obs.d_right - need_clear);
                 if (cuts_obstacle) {
                     RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                         "Evasion trajectory too close to TRACKBOUNDS, aborting evasion");
@@ -2336,6 +2376,38 @@ void SplinerNode::ClassifyObstacles(
         tr.has_flag = true;
         tr.static_flag = st;
         obs.is_static = st;
+        // 관측 이력으로 위치 분산을 실측값으로 교체한다. perception 브릿지는
+        // 모든 장애물에 s_var/d_var를 상수(0.01 = σ 0.1m)로 붙이는데,
+        // CheckPathCollision이 3σ를 요구하므로 그것만으로 0.3m, 여기에
+        // path_check_margin까지 더하면 요구 간격이 0.5m를 넘는다 —
+        // 폭 1.7~2.0m 트랙에서는 회피 목표(evasion_dist 0.35)가 절대
+        // 이 값을 못 넘어 계획한 회피를 자기 검증기가 매번 거부했다
+        // (run_0806_155621: 정적 회피 성공 0건). 같은 자리에서 100프레임
+        // 관측된 정지물의 실측 std는 0.00~0.06m다. 하한은 스캔 격자/정합
+        // 오차(0.05m)로 두어 과소평가를 막는다.
+        constexpr double kMinPosStd = 0.05;
+        const double eff_std_s = std::max(std_s, kMinPosStd);
+        const double eff_std_d = std::max(std_d, kMinPosStd);
+        obs.s_var = eff_std_s * eff_std_s;
+        obs.d_var = eff_std_d * eff_std_d;
+        // 속도 분산도 같은 문제다 — 브릿지 상수 0.25는 σ_v 0.5 m/s로,
+        // "정지물"에 붙이면 도착시각 0.3s만으로도 3σ가 0.45m가 된다.
+        // 정적으로 분류된 물체는 관측된 속도 산포로 대체한다. 하한 0.1 m/s는
+        // 분류 오류(사실은 아주 느린 물체)에 대한 완충이고, 브릿지 값보다
+        // 크게 만들지는 않는다(std::min) — 보수적 방향은 항상 유지.
+        if (st) {
+            double vs_mean = 0.0;
+            for (double v : tr.vs_hist) vs_mean += v;
+            vs_mean /= static_cast<double>(tr.vs_hist.size());
+            double vs_sq = 0.0;
+            for (double v : tr.vs_hist) vs_sq += (v - vs_mean) * (v - vs_mean);
+            const double vs_std =
+                std::sqrt(vs_sq / static_cast<double>(tr.vs_hist.size()));
+            constexpr double kMinVelStd = 0.10;   // m/s
+            const double eff_vs = std::max(vs_std, kMinVelStd);
+            obs.vs_var = std::min(obs.vs_var, eff_vs * eff_vs);
+            obs.vd_var = std::min(obs.vd_var, kMinVelStd * kMinVelStd);
+        }
         if (st) {
             obs.vs = 0.0;   // 정지 상대를 trailing할 때 목표 속도 0
             obs.vd = 0.0;
@@ -2564,7 +2636,37 @@ double SplinerNode::BlendDist(double amplitude, double speed) const {
     if (a < 1e-3 || blend_lat_acc_max_ < 1e-3) {
         return 0.0;
     }
-    return std::min(v * std::sqrt(6.0 * a / blend_lat_acc_max_), blend_dist_max_m_);
+    double dist = v * std::sqrt(6.0 * a / blend_lat_acc_max_);
+    // 그립 예산은 저속에서 사실상 무한대가 된다(a_lat/v²) — 하지만 조향각
+    // 한계라는 순수 기하 제약은 속도와 무관하게 남는다. 피크 기하곡률
+    // 6A/L²이 조향 한계를 넘으면 ApplySpeedProfile이 경로를 통째로 거부하고,
+    // 저속/정지에서는 감속으로 살릴 수도 없다 (run_0806_155621 정지 라치).
+    // 0.8 여유는 실제 샘플 곡률이 smoothstep 근사보다 큰 것을 흡수한다.
+    const double kappa_steer_max =
+        std::tan(std::abs(vehicle_max_steering_rad_)) /
+        std::max(vehicle_wheelbase_m_, 1e-3);
+    if (kappa_steer_max > 1e-3) {
+        dist = std::max(dist, std::sqrt(6.0 * a / (0.8 * kappa_steer_max)));
+    }
+    return std::min(dist, blend_dist_max_m_);
+}
+
+double SplinerNode::RequiredObstacleClearance(
+    const f1tenth_planning_msgs::msg::Obstacle &obs) const {
+    // CheckPathCollision의 lateral_margin과 같은 식으로 계산한다:
+    //   max(path_check_margin, 차반폭) + collision_sigma * σ_d
+    // σ_d는 관측 분산 + (도착시각 x 속도분산). 도착시각은 여기서 알 수 없으므로
+    // 정적 장애물은 시간 성장 캡(static_time_uncertainty_cap_), 동적은 예측
+    // 시간(fixed_pred_time_)을 대표값으로 쓴다 — 검증기와 완전히 같지는 않지만
+    // 목표 간격이 요구치보다 작아 매번 자기 거부하는 상황은 없어진다.
+    const double d_var =
+        (std::isfinite(obs.d_var) && obs.d_var > 0.0) ? obs.d_var : 0.0;
+    const double vd_var =
+        (std::isfinite(obs.vd_var) && obs.vd_var > 0.0) ? obs.vd_var : 0.0;
+    const double t = obs.is_static ? static_time_uncertainty_cap_
+                                   : std::max(fixed_pred_time_, 0.0);
+    return std::max(path_check_margin_, vehicle_half_width_m_) +
+           collision_sigma_ * StdFromVariance(d_var + t * t * vd_var);
 }
 
 double SplinerNode::PlanSpeed() const {

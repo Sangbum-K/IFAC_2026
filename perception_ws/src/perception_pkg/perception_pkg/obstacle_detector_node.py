@@ -77,6 +77,16 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('lambda_angle_deg', 10.0)
         self.declare_parameter('sigma', 0.015)
         self.declare_parameter('min_cluster_size', 3)
+        # 벽에서 떨어진(열린 공간) 클러스터에만 적용하는 완화된 최소 크기.
+        # min_cluster_size를 8로 올린 이유는 벽 fringe(맵 필터를 통과한 벽
+        # 리턴 몇 점) 억제였는데, 그 대가로 벽에서 먼 작은 물체까지 함께
+        # 잘린다 — run_0806_155621에서 폭 0.2m 물체(스캔 4점)가 15프레임
+        # 미검출되어 하류에 0.48~0.63m짜리 '가짜 틈'이 생겼다. 실제로 막힌
+        # 통로를 열렸다고 판단하면 그 틈으로 회피를 시도하므로 위험하다.
+        # 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수
+        # 없으므로 이 값까지 허용한다. 0이면 비활성.
+        self.declare_parameter('min_cluster_size_open', 0)
+        self.declare_parameter('open_space_dist_m', 0.50)
 
         self.declare_parameter('gating_distance', 0.5)
         self.declare_parameter('track_timeout', 10)
@@ -170,6 +180,8 @@ class ObstacleDetectorNode(Node):
         self.lambda_angle = float(p('lambda_angle_deg').value) * np.pi / 180.0
         self.sigma = float(p('sigma').value)
         self.min_cluster_size = int(p('min_cluster_size').value)
+        self.min_cluster_size_open = int(p('min_cluster_size_open').value)
+        self.open_space_dist = float(p('open_space_dist_m').value)
 
         self.v_thresh = float(p('v_thresh').value)
         self.n_confirm = int(p('n_confirm').value)
@@ -245,6 +257,8 @@ class ObstacleDetectorNode(Node):
                 or not np.deg2rad(1.0) <= self.lambda_angle <= np.deg2rad(45.0)
                 or not 0.0 <= self.sigma <= 1.0
                 or not 1 <= self.min_cluster_size <= 100000
+                or not 0 <= self.min_cluster_size_open <= self.min_cluster_size
+                or not 0.0 <= self.open_space_dist <= 10.0
                 or not 0.001 <= gating_distance <= 100.0
                 or not 1 <= track_timeout <= 100000
                 or not 0.0 <= self.v_thresh <= 100.0
@@ -508,6 +522,24 @@ class ObstacleDetectorNode(Node):
                 self.wall_dist[rows[inside], cols[inside]] >= self.wall_dist_min)
         return keep
 
+    def wall_distance_at(self, xy):
+        """맵 벽까지의 거리 [m] (target_frame 좌표). 맵/EDT가 없으면 None.
+
+        wall_point_mask와 같은 인덱스 변환을 쓰되 값 자체를 돌려준다 —
+        클러스터가 '열린 공간'에 있는지(= 벽 fringe일 수 없는지) 판정용.
+        """
+        if self.wall_dist is None or self.map_res <= 0.0:
+            return None
+        dx = float(xy[0]) - self.map_origin[0]
+        dy = float(xy[1]) - self.map_origin[1]
+        c_yaw, s_yaw = np.cos(self.map_origin_yaw), np.sin(self.map_origin_yaw)
+        col = int(np.floor((c_yaw * dx + s_yaw * dy) / self.map_res))
+        row = int(np.floor((-s_yaw * dx + c_yaw * dy) / self.map_res))
+        h, w = self.wall_dist.shape
+        if not (0 <= row < h and 0 <= col < w):
+            return None            # 맵 밖 — 열린 공간으로 취급하지 않는다
+        return float(self.wall_dist[row, col])
+
     def on_scan(self, msg: LaserScan):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         source_frame = msg.header.frame_id.strip()
@@ -747,14 +779,38 @@ class ObstacleDetectorNode(Node):
                 'clustering will merge everything. Raise lambda_angle_deg.',
                 throttle_duration_sec=5.0,
             )
+        # 열린 공간 완화가 켜져 있으면 낮은 임계로 뽑은 뒤 벽 거리로 선별한다.
+        # (adaptive_cluster_points가 내부에서 잘라버리면 되살릴 수 없으므로
+        #  낮은 쪽으로 먼저 뽑아야 한다.)
+        open_relax = (0 < self.min_cluster_size_open < self.min_cluster_size
+                      and self.wall_dist is not None)
         clusters = adaptive_cluster_points(
             points,
             point_ranges,
             angle_increment=msg.angle_increment,
             lambda_angle=self.lambda_angle,
             sigma=self.sigma,
-            min_cluster_size=self.min_cluster_size,
+            min_cluster_size=(self.min_cluster_size_open if open_relax
+                              else self.min_cluster_size),
         )
+        if open_relax:
+            selected = []
+            for c in clusters:
+                if len(c.points) >= self.min_cluster_size:
+                    selected.append(c)
+                    continue
+                # 작은 클러스터는 벽에서 충분히 떨어져 있을 때만 살린다
+                wd = self.wall_distance_at(c.centroid)
+                if wd is not None and wd >= self.open_space_dist:
+                    selected.append(c)
+            if len(selected) != len(clusters):
+                self.get_logger().debug(
+                    f'열린공간 완화: {len(clusters)}개 중 {len(selected)}개 채택 '
+                    f'(min {self.min_cluster_size_open}->{self.min_cluster_size}, '
+                    f'벽거리 >= {self.open_space_dist:.2f}m)',
+                    throttle_duration_sec=5.0,
+                )
+            clusters = selected
 
         # ②.7 물리적으로 불가능한 크기의 클러스터 거부 (맵 필터 2차 방어선).
         # 트래킹 '전'에 버려야 한다 — 트래커에 들어가면 재식별/코스팅으로

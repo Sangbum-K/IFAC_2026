@@ -167,6 +167,13 @@ private:
   void MinWallInSpan(
     double s_from, double s_to, double & min_d_left, double & min_d_right) const;
 
+  // CheckPathCollision이 이 장애물에 대해 실제로 요구하는 횡 간격 [m].
+  // 회피 목표(evasion_dist)가 이 값보다 작으면 계획한 회피를 자기 검증기가
+  // 매번 충돌로 거부한다 — 정적 회피가 통째로 죽어 있던 원인이다
+  // (run_0806_155621: 목표 0.35 vs 요구 0.50).
+  double RequiredObstacleClearance(
+    const f1tenth_planning_msgs::msg::Obstacle & obs) const;
+
   // raceline에서 d만큼 오프셋된 경로의 실제 곡률.
   // 곡률 중심 쪽으로 붙으면 반경이 줄어 더 빨리 감속해야 한다.
   //   kappa' = kappa / (1 - d*kappa)      (d>0 = 진행방향 왼쪽)
