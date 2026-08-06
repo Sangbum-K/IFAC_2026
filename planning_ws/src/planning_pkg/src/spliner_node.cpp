@@ -75,6 +75,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/blend_lat_acc_max", 3.0);
     this->declare_parameter("spliner/blend_dist_max_m", 8.0);
     this->declare_parameter("spliner/path_lat_acc_max", 7.0);
+    this->declare_parameter("spliner/offset_grip_cap", true);
     this->declare_parameter("spliner/path_decel_max", 6.0);
     this->declare_parameter("spliner/path_accel_max", 3.0);
     this->declare_parameter("spliner/path_jerk_max", 8.0);
@@ -86,6 +87,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/path_check_margin", 0.15);
     this->declare_parameter("spliner/cluster_gap_s_m", 8.0);
     this->declare_parameter("spliner/evasion_dist_min", 0.35);
+    this->declare_parameter("spliner/evasion_side_space_min", 0.40);
     this->declare_parameter("spliner/squeeze_speed_scale", 0.35);
     this->declare_parameter("spliner/squeeze_brake_dist_m", 6.0);
     this->declare_parameter("spliner/trailing_engage_dist_m", 8.0);
@@ -136,6 +138,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     blend_lat_acc_max_ = this->get_parameter("spliner/blend_lat_acc_max").as_double();
     blend_dist_max_m_ = this->get_parameter("spliner/blend_dist_max_m").as_double();
     path_lat_acc_max_ = this->get_parameter("spliner/path_lat_acc_max").as_double();
+    offset_grip_cap_ = this->get_parameter("spliner/offset_grip_cap").as_bool();
     path_decel_max_ = this->get_parameter("spliner/path_decel_max").as_double();
     path_accel_max_ = this->get_parameter("spliner/path_accel_max").as_double();
     path_jerk_max_ = this->get_parameter("spliner/path_jerk_max").as_double();
@@ -150,6 +153,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     path_check_margin_ = this->get_parameter("spliner/path_check_margin").as_double();
     cluster_gap_s_m_ = this->get_parameter("spliner/cluster_gap_s_m").as_double();
     evasion_dist_min_ = this->get_parameter("spliner/evasion_dist_min").as_double();
+    evasion_side_space_min_ =
+        this->get_parameter("spliner/evasion_side_space_min").as_double();
     squeeze_speed_scale_ = this->get_parameter("spliner/squeeze_speed_scale").as_double();
     squeeze_brake_dist_m_ = this->get_parameter("spliner/squeeze_brake_dist_m").as_double();
     trailing_engage_dist_m_ =
@@ -208,6 +213,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         lookahead_m_ < 0.5 || lookahead_m_ > 100.0 ||
         evasion_dist_ <= 0.0 || evasion_dist_ > 5.0 ||
         evasion_dist_min_ <= 0.0 || evasion_dist_min_ > evasion_dist_ ||
+        evasion_side_space_min_ <= 0.0 || evasion_side_space_min_ > 2.0 ||
         obs_traj_tresh_ < 0.0 || obs_traj_tresh_ > 5.0 ||
         spline_bound_mindist_ < 0.0 || spline_bound_mindist_ > 2.0 ||
         fixed_pred_time_ < 0.0 || fixed_pred_time_ > 2.0 ||
@@ -1047,8 +1053,25 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
     // "공간 있음"으로 오판한다.
     double left_gap = gb_wpnts_[gb_idx].d_left - obs.d_left;
     double right_gap = gb_wpnts_[gb_idx].d_right + obs.d_right;
-    double min_space =
-        evasion_dist_min_ + RequiredBoundaryMargin(active_bound_mindist_);
+    // 판정 기준은 "그 한쪽 방향으로 실제로 지나갈 수 있는가" 하나다.
+    // 통과에 물리적으로 필요한 폭 = 장애물쪽 여유 + 벽쪽 여유이고, 이 둘은
+    // 아래 두 검증기가 이미 강제한다:
+    //   CheckPathCollision : max(path_check_margin, 차반폭)  (+ sigma_d)
+    //   WithinTrackBoundary: RequiredBoundaryMargin(...)
+    // 예전에는 여기서 evasion_dist_min(0.20)+경계여유(0.25)=0.45를 요구했는데,
+    // 검증기가 실제로 필요로 하는 값은 0.15+0.25=0.40이라 **5cm 더 엄격했다**.
+    // 그 5cm 때문에 통과 가능한 회피가 사전 필터에서 잘려 TRAILING으로 떨어졌다
+    // (실폭 1.2m 구간에서 중앙 장애물이 정확히 이 경계에 걸린다).
+    // 이제 사전 필터를 검증기와 같은 예산으로 맞추고, 최종 가부는 검증기가
+    // 판단한다 — 통과 가능성이 있으면 일단 회피를 시도한다. 실제로 불가능하면
+    // Tier2(스플라인) / Tier3(트레일링)가 그대로 받아낸다.
+    // sigma_d는 여기서 빼둔다(장애물마다 다름) — 사전 필터는 낙관적이어야 한다.
+    const double passable_width =
+        std::max(path_check_margin_, vehicle_half_width_m_) +
+        RequiredBoundaryMargin(active_bound_mindist_);
+    // 설정값이 물리적 하한보다 작으면 검증기가 어차피 거부하므로 하한으로 올린다
+    // (사전 필터만 통과시키고 매번 Tier3로 떨어지는 것을 막는다).
+    double min_space = std::max(evasion_side_space_min_, passable_width);
 
     double apex_left = ApexFor("left", obs, gb_idx);
     double apex_right = ApexFor("right", obs, gb_idx);
@@ -2355,6 +2378,14 @@ bool SplinerNode::ApplySpeedProfile(
     std::vector<double> curvature(n, 0.0);
     std::vector<double> speed(n, 0.0);  // 실제 차량 속도 단위
     std::vector<double> ds(n - 1, std::max(wpnt_dist_, 0.01));
+    // 기준선(레이스라인) 곡률과 그때 실제로 쓰이던 횡가속. 아래 "그립 일관성
+    // 캡"에서 쓴다. curvature[]/speed[]는 뒤에서 덮어써지므로 따로 보관한다.
+    std::vector<double> kappa_ref(n, 0.0);
+    std::vector<double> lat_ref(n, -1.0);
+    // 이보다 곧으면 kappa*v^2가 그 지점의 그립을 대표하지 못한다(직선에서는
+    // 0에 수렴). 직선 위 lane-change의 S자는 아래 기하곡률 + path_lat_acc_max가
+    // 담당하므로 여기서는 건드리지 않는다.
+    constexpr double kKappaRefMin = 0.02;  // 반경 50m
 
     for (size_t i = 0; i < n; ++i) {
         if (!std::isfinite(wpnts[i].vx_mps) || wpnts[i].vx_mps < 0.0 ||
@@ -2363,6 +2394,10 @@ bool SplinerNode::ApplySpeedProfile(
         }
         curvature[i] = OffsetKappa(wpnts[i].kappa_radpm, wpnts[i].d_m);
         speed[i] = wpnts[i].vx_mps * command_scale;
+        kappa_ref[i] = std::abs(wpnts[i].kappa_radpm);
+        if (kappa_ref[i] > kKappaRefMin) {
+            lat_ref[i] = kappa_ref[i] * speed[i] * speed[i];
+        }
         if (i + 1 < n) {
             ds[i] = std::max(std::hypot(
                 wpnts[i + 1].x_m - wpnts[i].x_m,
@@ -2399,6 +2434,35 @@ bool SplinerNode::ApplySpeedProfile(
             if (std::abs(curvature[src]) > std::abs(curvature[j])) {
                 curvature[j] = curvature[src];
             }
+        }
+    }
+
+    // ── 레이스라인 그립 일관성 캡 ────────────────────────────────────────
+    // 코너 안쪽으로 피하면 반경이 줄어 곡률이 커진다(OffsetKappa). 그 물리를
+    // 예전에는 inside_speed_scale이라는 **고정 배율**(실차 0.7 = 30% 감속)로
+    // 대신했는데, 이건 두 가지가 잘못돼 있었다:
+    //   1) 곡률이 얼마나 커졌는지와 무관하게 항상 같은 비율로 깎는다 —
+    //      완만한 코너에서 30%는 순손실이다.
+    //   2) OffsetKappa + path_lat_acc_max 캡이 이미 같은 물리를 반영하므로
+    //      이중 계산이다.
+    // 대신 "그 지점에서 레이스라인이 실제로 쓰던 횡가속(kappa*v^2)을 오프셋
+    // 경로에서도 넘지 않는다"로 바꾼다. 결과는 정확히
+    //     v_offset = v_raceline * sqrt(kappa_ref / kappa_offset)
+    // 즉 안쪽으로 d만큼 피하면 sqrt(1 - d*kappa_ref) 만큼만 감속한다.
+    //   R=2m, d=0.4 -> 0.894 (10.6% 감속. 기존 고정 0.7 대비 28% 빠름)
+    //   R=10m, d=0.4 -> 0.980 (2% 감속)  <- 완만한 코너에서 손실이 사라진다
+    // 곡률이 줄어드는 바깥쪽 회피는 캡하지 않는다(min이라 속도가 오르지도
+    // 않는다 — 아웃라인 여유 그립을 쓰려면 별도 결정이 필요, 지금은 보류).
+    if (offset_grip_cap_) {
+        for (size_t i = 0; i < n; ++i) {
+            if (lat_ref[i] <= 0.0) {
+                continue;             // 직선 구간: 기하곡률 캡이 담당
+            }
+            const double k_off = std::abs(curvature[i]);
+            if (!std::isfinite(k_off) || k_off <= kappa_ref[i]) {
+                continue;             // 바깥쪽(완만해짐) — 감속 근거 없음
+            }
+            speed[i] = std::min(speed[i], std::sqrt(lat_ref[i] / k_off));
         }
     }
 

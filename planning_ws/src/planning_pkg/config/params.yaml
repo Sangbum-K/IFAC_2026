@@ -79,6 +79,12 @@ spliner_node:
                                          # 좁은 트랙: 목표를 낮춰야 벽 클램프 전에 성립.
                                          # 벽이 좁으면 evasion_dist_min까지 줄여서라도 시도
     spliner/evasion_dist_min: 0.20       # 축소 허용 하한 [m] = 차 반폭 0.15 + 여유 0.05 (was 0.35)
+    # 회피 가부 판정: **회피할 한쪽 방향만** 이 폭이 나오면 시도한다 [m]
+    # (장애물 가장자리 -> 트랙 경계). 실제 하한은
+    #   max(이 값, max(path_check_margin, 차반폭) + RequiredBoundaryMargin)
+    # 이라 검증기가 통과시킬 수 없는 값을 줘도 조용히 무의미해지지 않는다.
+    # 0.40 = 장애물쪽 0.15(차반폭) + 벽쪽 0.25(차반폭 0.15 + 추적여유 0.10).
+    spliner/evasion_side_space_min: 0.40
     spliner/squeeze_speed_scale: 0.35    # 축소(squeeze) 회피 시 감속 배율 — 좁은 corridor를
                                          # 전속/부스트로 지나면 추적오차로 벽 접촉 (실측)
     # --- 접근 공격성: 감속은 장애물 직전에서만, 접근 구간은 기존 속도 유지 ---
@@ -96,7 +102,13 @@ spliner_node:
     spliner/post_apex_dists: [1.2, 1.8, 2.5]     # apex 뒤 스플라인 절점 [m] (was [2,3,4])
     spliner/fixed_pred_time: 0.15        # 동적 장애물 등속 전파 시간 [s]
     spliner/outside_spline_scale: 1.75   # 코너 바깥 추월 시 스플라인 완만화 배율
-    spliner/inside_speed_scale: 0.9      # 코너 안쪽 통과 시 속도 스케일
+    # 코너 안쪽 통과 시 **추가** 고정 배율. 1.0 = 사용 안 함(권장).
+    # 안쪽 회피의 물리적 감속은 offset_grip_cap이 담당한다 — 아래 참조.
+    spliner/inside_speed_scale: 1.0
+    # true면 오프셋으로 곡률이 커진 구간에서 그 지점 레이스라인이 쓰던
+    # 횡가속(kappa*v^2)을 넘지 않게 캡한다 -> v = v_gb*sqrt(kappa_ref/kappa_off).
+    # 곡률이 줄어드는 바깥쪽 회피는 캡하지 않는다(속도가 오르지도 않는다).
+    spliner/offset_grip_cap: true
     spliner/side_switch_d_tresh: 0.20    # |d|가 이보다 크면 추월 사이드 변경 금지 [m] (was 0.25)
     # perception 스트림 lease. 초과하면 마지막 장애물 유지도 클리어도 아닌
     # fail-safe 정지 궤적(전 점 vx=0)을 발행하므로, 반드시 detector 실측

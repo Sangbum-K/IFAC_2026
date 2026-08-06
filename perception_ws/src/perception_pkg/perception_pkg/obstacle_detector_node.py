@@ -41,6 +41,13 @@ except ImportError:      # scipy 없는 환경(다른 개발 PC 등)은 맵 필�
 
 from f1tenth_perception_msgs.msg import Obstacle, ObstacleArray
 
+try:
+    # 트랙 경계 필터 전용. planning_ws가 소스되지 않은 개발 환경에서도
+    # 나머지 파이프라인은 그대로 돌아야 하므로 임포트를 강제하지 않는다.
+    from f1tenth_planning_msgs.msg import WpntArray
+except ImportError:
+    WpntArray = None
+
 from perception_pkg.preprocessing import (
     preprocess_scan,
     transform_points,
@@ -50,6 +57,7 @@ from perception_pkg.preprocessing import (
 from perception_pkg.clustering import adaptive_cluster_points
 from perception_pkg.tracker import Tracker
 from perception_pkg.classifier import classify_track
+from perception_pkg.track_filter import TrackBounds
 
 
 class ObstacleDetectorNode(Node):
@@ -127,6 +135,21 @@ class ObstacleDetectorNode(Node):
         # 조용히 영구 침묵해 회피 자체를 못 하는 상태로 굳는 것을 막는다.
         # /map은 latched라 정상이면 1초 내에 온다(실측 브릿지 0.18s).
         self.declare_parameter('map_wait_timeout_sec', 10.0)
+        # ---- 트랙 경계(Frenet) 필터 ----
+        # ForzaETH race_stack의 Detect::laserPointOnTrack() 이식.
+        # 맵 벽거리(EDT)와 직교하는 두 번째 기준이다 — 근거는 track_filter.py 참고.
+        self.declare_parameter('use_track_filter', False)
+        self.declare_parameter('global_waypoints_topic', '/global_waypoints')
+        # 트랙 경계를 안쪽으로 줄이는 여유 [m] (ForzaETH boundaries_inflation).
+        # 경계에 바짝 붙은 벽 리턴을 확실히 빼되, 벽에 붙은 상대차의 트랙쪽
+        # 면 포인트는 남겨야 한다.
+        self.declare_parameter('track_bound_inflation_m', 0.10)
+        # 자차 기준 전방 s 시야창 [m] (ForzaETH max_viewing_distance).
+        # 실효 인지거리(run_0805 실측 ~4.5m)보다 약간 크게 잡는다. 이보다 먼
+        # 검출은 어차피 신뢰할 수 없는데 유령은 대부분 거기서 나온다.
+        self.declare_parameter('max_view_ahead_m', 6.0)
+        # 후방 s 시야창 [m]. 지나친 장애물의 트랙을 곧바로 끊지 않을 만큼만.
+        self.declare_parameter('max_view_behind_m', 2.0)
         # 물리적으로 불가능한 크기의 클러스터 거부. 0.0 = 비활성.
         # F1TENTH 차량은 0.30x0.55m -> 반경 ~0.32m. 맵 필터를 통과한 잔여
         # 벽/구조물이 이보다 크면 장애물이 아니다. 맵 필터가 PF 오차로 흔들려도
@@ -175,6 +198,18 @@ class ObstacleDetectorNode(Node):
         self.wall_dist_min = float(p('wall_dist_min_m').value)
         self.max_cluster_radius = float(p('max_cluster_radius_m').value)
         self.map_wait_timeout = float(p('map_wait_timeout_sec').value)
+        self.use_track_filter = bool(p('use_track_filter').value)
+        self.track_bound_inflation = float(p('track_bound_inflation_m').value)
+        self.max_view_ahead = float(p('max_view_ahead_m').value)
+        self.max_view_behind = float(p('max_view_behind_m').value)
+        if (not np.isfinite(self.track_bound_inflation)
+                or not 0.0 <= self.track_bound_inflation <= 1.0
+                or not np.isfinite(self.max_view_ahead)
+                or not 0.5 <= self.max_view_ahead <= 1000.0
+                or not np.isfinite(self.max_view_behind)
+                or not 0.0 <= self.max_view_behind <= 1000.0):
+            raise ValueError(
+                'invalid track_bound_inflation_m/max_view_ahead_m/max_view_behind_m')
         if (not np.isfinite(self.wall_dist_min)
                 or not 0.0 <= self.wall_dist_min <= 2.0
                 or not np.isfinite(self.max_cluster_radius)
@@ -310,6 +345,32 @@ class ObstacleDetectorNode(Node):
                     callback_group=self.map_cb_group)
                 self.awaiting_map = True
 
+        # ---- 트랙 경계(Frenet) 필터 구독 ----
+        # 맵 필터와 달리 발행을 보류하지 않는다: 이건 벽거리 필터 위에 얹는
+        # 2차 기준이라 없어도 파이프라인이 성립하고, 웨이포인트는 전역 플래너가
+        # 뜬 뒤에야 나오므로 보류하면 기동 순서에 묶인다.
+        self.track_bounds = None
+        if self.use_track_filter:
+            wpnt_topic = str(p('global_waypoints_topic').value).strip()
+            if not wpnt_topic:
+                raise ValueError(
+                    'global_waypoints_topic must not be empty when use_track_filter')
+            if WpntArray is None:
+                self.get_logger().error(
+                    'use_track_filter=true지만 f1tenth_planning_msgs를 임포트할 수 '
+                    '없음 — 트랙 필터 없이 동작한다.')
+            else:
+                # 전역 플래너가 타이머로 주기 재발행(~2Hz)하므로 latch가 필요 없다
+                # (브릿지도 같은 QoS로 받고 있다).
+                wpnt_qos = QoSProfile(
+                    depth=1, reliability=ReliabilityPolicy.RELIABLE)
+                # 맵과 같은 이유로 전용 Reentrant 그룹 — 기본 그룹에 두면
+                # 스캔 콜백이 큐를 채우는 동안 순번을 못 받는다.
+                self.wpnt_cb_group = ReentrantCallbackGroup()
+                self.create_subscription(
+                    WpntArray, wpnt_topic, self.cb_global_waypoints, wpnt_qos,
+                    callback_group=self.wpnt_cb_group)
+
         self.get_logger().info(
             f'obstacle_detector_node started: {scan_topic} -> {obstacle_topic} '
             f'(target_frame={self.target_frame})'
@@ -385,16 +446,55 @@ class ObstacleDetectorNode(Node):
             f'맵 벽거리 필터 활성: {msg.info.width}x{msg.info.height} '
             f'res={self.map_res:.3f} wall_dist_min={self.wall_dist_min:.2f}m')
 
-    def reject_wall_points(self, points):
-        """맵 벽에서 wall_dist_min 이내인 포인트를 제거한다 (target_frame 좌표).
+    def cb_global_waypoints(self, msg):
+        """전역 레이스라인 수신 -> Frenet 투영/트랙 폭 테이블 갱신.
 
-        scipy 부재/맵 영구 불가면 그대로 통과(fail-open)시킨다. 맵을 '아직'
+        전역 플래너는 주기적으로 재발행하지만 내용은 거의 항상 같으므로
+        웨이포인트 개수가 바뀔 때만 다시 만든다 (매번 만들면 2Hz로 297점
+        배열을 재할당하게 된다). 섹터 재계산으로 개수가 바뀌면 따라간다.
+        """
+        wpnts = msg.wpnts
+        if self.track_bounds is not None and self.track_bounds.n == len(wpnts):
+            return
+        frame = msg.header.frame_id.strip().lstrip('/')
+        if frame and frame != self.target_frame.lstrip('/'):
+            # 좌표계가 다르면 투영이 통째로 틀린다 — 켜지 않는 게 낫다.
+            self.get_logger().error(
+                f'웨이포인트 프레임({frame})이 target_frame({self.target_frame})과 '
+                '다름 — 트랙 필터 비활성',
+                throttle_duration_sec=10.0)
+            return
+        try:
+            bounds = TrackBounds(wpnts)
+        except ValueError as ex:
+            self.get_logger().error(
+                f'전역 웨이포인트가 트랙 필터에 부적합함 ({ex}) — 트랙 필터 비활성',
+                throttle_duration_sec=10.0)
+            return
+        first = self.track_bounds is None
+        self.track_bounds = bounds
+        if first:
+            self.get_logger().info(
+                f'트랙 경계 필터 활성: {bounds.n}점, 트랙길이 {bounds.length:.1f}m, '
+                f'inflation={self.track_bound_inflation:.2f}m, '
+                f'view={-self.max_view_behind:.1f}~+{self.max_view_ahead:.1f}m')
+
+    def wall_point_mask(self, points):
+        """맵 벽에서 wall_dist_min 이상 떨어진 포인트의 bool 마스크 (target_frame 좌표).
+
+        **마스크를 돌려주는 이유**: 호출부는 points와 point_ranges를 1:1로
+        유지해야 한다. 예전처럼 points만 잘라 돌려주면 클러스터링이
+        `len(ranges) != len(points)` ValueError로 죽고, MultiThreadedExecutor에서
+        콜백 예외는 spin() 밖으로 전파되므로 노드가 그대로 종료된다
+        (-> /perception/obstacles 끊김 -> spliner fail-safe 정지).
+
+        scipy 부재/맵 영구 불가면 전부 통과(fail-open)시킨다. 맵을 '아직'
         기다리는 동안은 on_scan이 발행 자체를 보류하므로(awaiting_map) 여기로
         오지 않는다 — fail-open 상태의 벽 파편 발행이 run_0803_213313에서
         TRAILING 정지 라치를 유발했기 때문.
         """
         if self.wall_dist is None or len(points) == 0:
-            return points
+            return np.ones(len(points), dtype=bool)
         dx = points[:, 0] - self.map_origin[0]
         dy = points[:, 1] - self.map_origin[1]
         c_yaw, s_yaw = np.cos(self.map_origin_yaw), np.sin(self.map_origin_yaw)
@@ -406,7 +506,7 @@ class ObstacleDetectorNode(Node):
         if np.any(inside):
             keep[inside] = (
                 self.wall_dist[rows[inside], cols[inside]] >= self.wall_dist_min)
-        return points[keep]
+        return keep
 
     def on_scan(self, msg: LaserScan):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -495,6 +595,9 @@ class ObstacleDetectorNode(Node):
 
         # ①.5 TF 변환: laser frame -> target_frame (보통 map)
         # 이 변환이 있어야 이후 boundary_polygon(map 기준)과 최종 publish 좌표가 실제로 맞음.
+        # sensor_xy는 트랙 필터의 s 원점(자차 위치, target_frame 기준). 변환이
+        # 없었다면 target_frame 기준 자차 위치를 알 수 없으므로 None으로 둔다.
+        sensor_xy = None
         if self.target_frame != source_frame:
             scan_time = Time.from_msg(msg.header.stamp)
             try:
@@ -584,6 +687,7 @@ class ObstacleDetectorNode(Node):
             )
             R = rotation_matrix_2d_from_quaternion(qx, qy, qz, qw)
             points = transform_points(points, [t.x, t.y], R)
+            sensor_xy = np.array([t.x, t.y], dtype=np.float64)
 
         # ②.5 경계 필터 (이제 target_frame 기준이므로 정적 폴리곤을 그대로 써도 됨)
         # point_ranges도 같은 마스크로 잘라야 포인트와 1:1 대응이 유지된다.
@@ -605,7 +709,35 @@ class ObstacleDetectorNode(Node):
                     throttle_duration_sec=5.0,
                 )
             else:
-                points = self.reject_wall_points(points)
+                keep = self.wall_point_mask(points)
+                points = points[keep]
+                point_ranges = point_ranges[keep]
+
+        # ②.65 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식.
+        # 벽거리(②.6)와 직교하는 기준이라 벽 fringe가 남아도 여기서 걸린다:
+        #  - 코리도 밖(트랙 폭 초과) 포인트 제거
+        #  - 자차보다 max_view_ahead_m 넘게 앞선 포인트 제거. 루프 트랙에서
+        #    반대편 벽은 유클리드로 가까워 range_max로는 못 자르지만 s로는
+        #    반 바퀴 밖이다 (rosbag_0801: 레이스라인을 막는 유령의 s가
+        #    p50 8.0m / p90 11.3m — 실효 인지거리 ~4.5m 밖).
+        # 웨이포인트 미수신 중에는 적용하지 않는다(fail-open) — 여기서 스캔을
+        # 버리면 스트림이 끊겨 spliner가 fail-safe 정지한다.
+        if self.use_track_filter and self.track_bounds is not None:
+            if sensor_xy is None:
+                self.get_logger().warn(
+                    'use_track_filter=true지만 target_frame이 스캔 프레임과 같아 '
+                    '자차 위치를 알 수 없음 — 트랙 필터 미적용',
+                    throttle_duration_sec=5.0,
+                )
+            else:
+                keep = self.track_bounds.on_track_mask(
+                    points, sensor_xy,
+                    inflation=self.track_bound_inflation,
+                    max_ahead=self.max_view_ahead,
+                    max_behind=self.max_view_behind,
+                )
+                points = points[keep]
+                point_ranges = point_ranges[keep]
 
         # ② 클러스터링
         if msg.angle_increment >= self.lambda_angle:

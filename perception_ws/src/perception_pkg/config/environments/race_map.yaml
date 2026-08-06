@@ -21,5 +21,13 @@ obstacle_detector_node:
     # 근거와 값 선정은 real_car.yaml 주석 참고.
     use_map_filter: true
     map_topic: /map
-    wall_dist_min_m: 0.15
-    max_cluster_radius_m: 0.60
+    wall_dist_min_m: 0.25
+    max_cluster_radius_m: 0.35
+    min_cluster_size: 8
+    # 트랙 경계(Frenet) 필터 — real_car.yaml과 동일한 이유·값.
+    # 전역 레이스라인이 있어야 동작하고, 없으면 조용히 미적용된다(fail-open).
+    use_track_filter: true
+    global_waypoints_topic: /global_waypoints
+    track_bound_inflation_m: 0.10
+    max_view_ahead_m: 6.0
+    max_view_behind_m: 2.0

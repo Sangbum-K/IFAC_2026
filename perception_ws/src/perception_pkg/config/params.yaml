@@ -47,6 +47,15 @@ obstacle_detector_node:
     # 필터 없이 진행 — 맵서버가 죽었을 때 조용히 영구 침묵하지 않게.
     map_wait_timeout_sec: 10.0
     max_cluster_radius_m: 0.0   # 0 = 비활성
+    # 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식.
+    # 맵 벽거리와 직교하는 2차 기준(근거는 track_filter.py). 전역 레이스라인
+    # (/global_waypoints)이 필요하므로 여기서도 기본 비활성이고, 실차/레이스
+    # 프로파일(environments/*.yaml)에서 켠다.
+    use_track_filter: false
+    global_waypoints_topic: /global_waypoints
+    track_bound_inflation_m: 0.10   # 트랙 경계를 안쪽으로 줄이는 여유 [m]
+    max_view_ahead_m: 6.0           # 자차 기준 전방 s 시야창 [m]
+    max_view_behind_m: 2.0          # 후방 s 시야창 [m]
 
 # 인지 결과 -> RViz 마커 (monitor.rviz "Obstacles" 디스플레이).
 # 순수 구독자라 인지/플래닝 동작에는 영향이 없다.

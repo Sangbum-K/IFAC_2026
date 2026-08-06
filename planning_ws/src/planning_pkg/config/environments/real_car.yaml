@@ -101,7 +101,11 @@ spliner_node:
     spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
                                         # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통
-    spliner/inside_speed_scale: 0.7     # 회피 구간 감속 강화
+    # 1.0 = 고정 배율 사용 안 함. 코너 안쪽 회피 감속은 offset_grip_cap이
+    # 물리 기반으로 대신한다 (레이스라인이 그 지점에서 쓰던 kappa*v^2를
+    # 오프셋 곡률에 그대로 적용 -> sqrt(1 - d*kappa)배). 예전 0.7은 곡률과
+    # 무관한 30% 고정 감속이라 완만한 코너에서 순손실이었다.
+    spliner/inside_speed_scale: 1.0
     spliner/path_check_margin: 0.15
     # recovery의 center-to-wall 0.25m 계약과 같은 경로만 생성.
     spliner/boundary_tracking_margin_m: 0.10

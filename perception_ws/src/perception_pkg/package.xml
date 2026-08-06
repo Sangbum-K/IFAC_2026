@@ -12,6 +12,12 @@
   <depend>f1tenth_perception_msgs</depend>
   <depend>tf2_ros_py</depend>
   <depend>python3-numpy</depend>
+  <!-- 트랙 경계(Frenet) 필터가 /global_waypoints(WpntArray)를 구독한다.
+       exec_depend인 이유: 임포트 실패 시 필터만 끄고 나머지는 계속 도는
+       가드가 있어(obstacle_detector_node.py) 빌드 의존은 아니다. -->
+  <exec_depend>f1tenth_planning_msgs</exec_depend>
+  <!-- 맵 벽거리(EDT) 필터. 없으면 필터만 비활성(fail-open). -->
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <export>

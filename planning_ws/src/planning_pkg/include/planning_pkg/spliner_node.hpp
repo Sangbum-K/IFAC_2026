@@ -207,6 +207,10 @@ private:
   double blend_lat_acc_max_{3.0};   // 횡 전환에 배정할 그립 [m/s^2]
   double blend_dist_max_m_{8.0};    // 전환 거리 상한 [m]
   double path_lat_acc_max_{7.0};    // 오프셋 경로 곡률 -> 속도 상한용 그립 [m/s^2]
+  // 레이스라인 그립 일관성 캡: 오프셋으로 곡률이 커진 구간에서, 그 지점의
+  // 레이스라인이 실제로 쓰던 횡가속(kappa*v^2)을 넘지 않도록 제한한다.
+  // inside_speed_scale 같은 고정 배율을 물리 기반으로 대체하는 장치.
+  bool offset_grip_cap_{true};
   double path_decel_max_{6.0};      // 회피 궤적 역방향 감속 한계 [m/s^2]
   double path_accel_max_{3.0};      // 회피 궤적 순방향 가속 한계 [m/s^2]
   double path_jerk_max_{8.0};       // 현재 상태 도달 가능성/ax 변화 한계 [m/s^3]
@@ -227,6 +231,9 @@ private:
   // 벽이 좁아 evasion_dist를 다 못 챙길 때 apex를 벽 마진 안으로 줄여서라도
   // 회피를 시도하는 최소 장애물 간격 (차 반폭 ~0.15 + 여유)
   double evasion_dist_min_{0.35};
+  // 회피 가부를 판정하는 "한쪽 방향" 최소 통과폭 [m] (장애물 가장자리 -> 트랙 경계).
+  // 실제 하한은 max(이 값, path_check_margin/차반폭 + RequiredBoundaryMargin).
+  double evasion_side_space_min_{0.40};
   // apex가 벽 마진으로 축소(squeeze)된 회피는 이 배율로 감속 — 좁은
   // corridor를 섹터 부스트 속도로 지나면 추적오차(속도비례)로 벽에 닿는다
   double squeeze_speed_scale_{0.35};
