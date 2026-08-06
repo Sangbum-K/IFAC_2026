@@ -22,7 +22,6 @@ F1TENTH 자율주행 전체 스택(perception → planning → control)을 **시
 ```bash
 cd ~/IFAC_ws
 ./build_all.sh  
-아니런아ㅐㄹ냐러ㅐ쟈ㅓ디라ㅓ;민아
 ```
 매핑하기
 ```bash

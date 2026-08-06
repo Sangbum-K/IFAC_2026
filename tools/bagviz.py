@@ -137,6 +137,22 @@ def dec_point_stamped(b):
     return x, y
 
 
+def dec_pose_array(b, pt_cap=0):
+    """geometry_msgs/PoseArray -> sampled [(x, y)] list."""
+    c = CDR(b)
+    c.header()
+    n = c.u32()
+    stride = 1
+    if pt_cap and n > pt_cap:
+        stride = int(math.ceil(n / pt_cap))
+    out = []
+    for i in range(n):
+        x, y, _z, _qx, _qy, _qz, _qw = c.f64n(7)
+        if i % stride == 0:
+            out.append((round(x, 3), round(y, 3)))
+    return out
+
+
 def dec_ackermann(b):
     c = CDR(b)
     c.header()
@@ -467,6 +483,25 @@ def extract(db_path):
         look["y"].append(round(y, 2))
     out["look"] = look
 
+    # --- particle filter cloud (/pf/viz/particles)
+    particles = []
+    for t, b in fetch("/pf/viz/particles", 500):
+        try:
+            pts = dec_pose_array(b, pt_cap=120)
+        except Exception:
+            continue
+        if not pts:
+            continue
+        mx = sum(x for x, _y in pts) / len(pts)
+        my = sum(y for _x, y in pts) / len(pts)
+        var = sum((x - mx) ** 2 + (y - my) ** 2 for x, y in pts) / len(pts)
+        particles.append({
+            "t": round(t, 3),
+            "p": [[x, y] for x, y in pts],
+            "spread": round(math.sqrt(var), 3),
+        })
+    out["particles"] = particles
+
     # --- 장애물 (laser frame → JS에서 차량 포즈로 변환)
     obs = []
     for t, b in fetch("/perception/obstacles", 600):
@@ -788,6 +823,7 @@ details#topicsBox[open] summary { border-bottom:1px solid var(--border); }
       <div class="tile"><div class="lb">명령 속도</div><div class="vl" id="stC">–<small> m/s</small></div></div>
       <div class="tile"><div class="lb">조향</div><div class="vl" id="stS">–<small> °</small></div></div>
       <div class="tile"><div class="lb">횡오차</div><div class="vl" id="stE">–<small> m</small></div></div>
+      <div class="tile"><div class="lb">PF Spread</div><div class="vl" id="stP">–<small> m</small></div></div>
     </div>
   </header>
 
@@ -855,7 +891,7 @@ let tCur=0, playing=false, playSpeed=1, lastTs=0;
 let vmax=1;                 // 속도 컬러 스케일 상한
 const view={s:40,cx:0,cy:0};        // scale px/m, 중심(월드)
 let follow=false;
-const show={scan:true,glb:true,loc:true,ot:false,look:true,traj:true};
+const show={scan:true,glb:true,loc:true,ot:false,look:true,traj:true,particles:true};
 const SPEEDS=[0.5,1,2,4,8];
 let mapImg=null;
 
@@ -1038,6 +1074,7 @@ function buildToggles(){
     ["ot","회피 경로", D.ot.length>0],
     ["scan","LiDAR", D.scans.length>0],
     ["look","룩어헤드", D.look.t.length>0],
+    ["particles","PF 파티클", D.particles.length>0],
   ];
   defs.forEach(([k,label,avail])=>{
     if(!avail){ show[k]=false; return; }
@@ -1062,6 +1099,7 @@ function buildLegend(){
   if(D.ot.length) rows.push(`<div class="row"><span class="sw" style="background:${C("violet")}"></span>회피 경로 otwpnts</div>`);
   if(D.scans.length) rows.push(`<div class="row"><span class="dot" style="background:${C("ink2")}"></span>LiDAR 스캔</div>`);
   if(D.look.t.length) rows.push(`<div class="row"><span class="dot" style="background:${C("yellow")}"></span>룩어헤드 점</div>`);
+  if(D.particles.length) rows.push(`<div class="row"><span class="dot" style="background:rgba(57,135,229,0.35)"></span>PF 파티클 구름</div>`);
   if(D.obs.length) rows.push(`<div class="row"><span class="dot" style="border:2px solid ${C("red")};background:none"></span>장애물</div>`);
   el.innerHTML=rows.join("");
 }
@@ -1137,6 +1175,28 @@ function drawTrack(){
       j?tctx.lineTo(X,Y):tctx.moveTo(X,Y); });
     tctx.stroke(); tctx.setLineDash([]);
   });
+  // PF 파티클 구름
+  if(show.particles&&D.particles.length){
+    const ts=D.particles.map(p=>p.t), i=bisect(ts,tCur);
+    if(i>=0&&Math.abs(tCur-ts[i])<1){
+      const cloud=D.particles[i];
+      tctx.fillStyle="rgba(57,135,229,0.22)";
+      for(let j=0;j<cloud.p.length;j++){
+        const q=cloud.p[j];
+        tctx.fillRect(W2SX(q[0])-2, W2SY(q[1])-2, 4, 4);
+      }
+      const spreadPx=Math.max(4, cloud.spread*view.s);
+      const cx=cloud.p.reduce((s,q)=>s+q[0],0)/cloud.p.length;
+      const cy=cloud.p.reduce((s,q)=>s+q[1],0)/cloud.p.length;
+      tctx.strokeStyle="rgba(57,135,229,0.78)";
+      tctx.lineWidth=1.5;
+      tctx.setLineDash([5,4]);
+      tctx.beginPath();
+      tctx.arc(W2SX(cx), W2SY(cy), spreadPx, 0, 6.283);
+      tctx.stroke();
+      tctx.setLineDash([]);
+    }
+  }
   // LiDAR 스캔 (차량 포즈 기준 변환)
   if(show.scan&&D.scans.length&&pi>=0){
     const ts=D.scans.map(s=>s.t), i=bisect(ts,tCur);
@@ -1384,6 +1444,7 @@ function updateStats(){
   g($("stC"),D.cmd.t,D.cmd.speed,2,"m/s");
   g($("stS"),D.cmd.t,D.cmd.steer,1,"°");
   g($("stE"),D.lat.t,D.lat.v,2,"m");
+  g($("stP"),D.particles.map(p=>p.t),D.particles.map(p=>p.spread),2,"m");
   $("clock").textContent=fmt(tCur)+" / "+fmt(D.duration);
 }
 function tick(ts){
@@ -1443,6 +1504,7 @@ def main():
         print("glb wpnts :", len(d["glb"]["x"]) if d["glb"] else None)
         print("loc msgs  :", len(d["loc"]), " ot msgs:", len(d["ot"]))
         print("look      :", len(d["look"]["t"]), "pts")
+        print("particles :", len(d["particles"]), "msgs")
         print("obstacles :", len(d["obs"]), "msgs")
         print("events    :", len(d["events"]))
         print("estop     :", d["estop"][:5], "..." if len(d["estop"]) > 5 else "")
