@@ -31,6 +31,8 @@
 #ifndef VESC_ACKERMANN__ACKERMANN_TO_VESC_HPP_
 #define VESC_ACKERMANN__ACKERMANN_TO_VESC_HPP_
 
+#include <cstdint>
+
 #include <ackermann_msgs/msg/ackermann_drive_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/float64.hpp>
@@ -58,6 +60,10 @@ private:
   double brake_decel_threshold_, brake_entry_speed_error_;
   double brake_overspeed_error_, brake_release_speed_error_;
   double brake_min_vehicle_speed_, vesc_state_timeout_;
+  bool launch_ramp_enabled_;
+  double launch_arm_speed_mps_, launch_exit_speed_mps_;
+  double launch_accel_limit_mps2_, drive_ramp_erpm_per_sec_;
+  double fault_clear_hold_sec_;
 
   /** @todo consider also providing an interpolated look-up table conversion */
 
@@ -72,8 +78,16 @@ private:
   // Latest VESC feedback and longitudinal mode state
   double actual_speed_;
   rclcpp::Time last_vesc_state_time_;
+  rclcpp::Time last_fault_time_;
+  rclcpp::Time last_drive_command_time_;
   bool has_vesc_state_;
   bool braking_active_;
+  bool fault_seen_;
+  bool launch_armed_;
+  bool launch_ramp_active_;
+  bool was_above_launch_arm_speed_;
+  double limited_drive_speed_;
+  int32_t fault_code_;
 
   // ROS callbacks
   void ackermannCmdCallback(const AckermannDriveStamped::SharedPtr cmd);
