@@ -154,6 +154,21 @@ spliner_node:
     spliner/vehicle_half_width_m: 0.15
     spliner/boundary_tracking_margin_m: 0.05
     spliner/collision_sigma: 3.0       # 위치/속도 분산의 3σ footprint 충돌검사
+    # 정적 장애물의 "속도 분산 x 도착시각" 성장 상한 [s].
+    # perception 브릿지가 모든 장애물에 vd_var/vs_var를 상수 0.25로 붙이는데,
+    # is_static에도 도착시각 t를 그대로 곱하면 3σ_d = 3*sqrt(t²*0.25) ≈ 1.5t다.
+    # run_0806_155621에서 정지 상태로 5.4 m 앞 장애물을 회피하려던 경로는
+    # 도달 t≈2 s -> 요구 횡여유 3 m > 트랙 폭 1.79 m 로 CheckPathCollision이
+    # 전부 거부했다 (어떤 정적 회피도 검증 통과 불가). 정적 물체는 시간이
+    # 지나도 안 움직이므로 성장분을 여기서 자른다 — 분류 오류 대비 완충만 남김.
+    spliner/static_time_uncertainty_cap: 0.3
+    # 회피 기하(BlendDist·절점 간격)를 계산할 때 쓰는 최소 속도 [m/s].
+    # v=0이면 BlendDist가 0이라 횡전환 거리가 붕괴하고, 기하곡률이 조향 한계
+    # (tan0.36/0.33 = 1.14 rad/m)를 넘어 ApplySpeedProfile이 경로를 조용히
+    # 버린다 — 한 번 멈춘 차가 회피를 다시 만들지 못하는 라치의 원인.
+    # 차는 회피 지점에 정지 상태로 도달하지 않으므로 "그때 낼 속도"로 짠다.
+    # 제동/속도 프로파일 등 실측 속도가 필요한 경로에는 적용하지 않는다.
+    spliner/plan_speed_floor: 1.5
     spliner/sp_mapping_max_residual_m: 0.50
     spliner/vehicle_wheelbase_m: 0.33
     spliner/vehicle_max_steering_rad: 0.36

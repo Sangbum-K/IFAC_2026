@@ -44,13 +44,13 @@ private:
     f1tenth_planning_msgs::msg::Obstacle obs) const;
   // 반환: {side("left"/"right"), d_apex}
   std::pair<std::string, double> MoreSpace(
-    const f1tenth_planning_msgs::msg::Obstacle & obs, int gb_idx) const;
+    const f1tenth_planning_msgs::msg::Obstacle & obs) const;
   // 해당 사이드의 apex d 계산: 목표는 장애물 가장자리 + evasion_dist지만,
   // corridor(장애물-벽)가 좁으면 여유를 장애물/벽 양쪽에 균등 배분한
   // 지점으로 축소 (벽에 최대한 붙이는 방식은 추적오차로 벽 접촉)
   double ApexFor(
     const std::string & side,
-    const f1tenth_planning_msgs::msg::Obstacle & obs, int gb_idx) const;
+    const f1tenth_planning_msgs::msg::Obstacle & obs) const;
   bool DoSpline(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
@@ -153,6 +153,20 @@ private:
   // 거리를 상수로 두면 횡가속이 v^2로 커져 그립을 넘는다 (6 m/s에서 1.5g 실측 계산).
   double BlendDist(double amplitude, double speed) const;
 
+  // 회피 기하를 짤 때 쓰는 계획 속도 [m/s]. 실측 속도가 아니라
+  // max(|cur_vs_|, plan_speed_floor_)다 — v=0이면 BlendDist가 0을 돌려주고
+  // 절점 스케일이 1.0으로 붕괴해, 정지한 차는 회피 기하 자체를 만들 수 없다
+  // (기하곡률이 조향 한계를 넘어 ApplySpeedProfile이 조용히 거부). 차는 회피
+  // 지점에 정지 상태로 도달하지 않으므로 "그때 낼 속도"로 기하를 짜야 한다.
+  // 제동/속도 프로파일 등 실측 속도가 필요한 곳에는 쓰지 말 것.
+  double PlanSpeed() const;
+
+  // [s_from, s_to] 구간(랩 wrap 허용)에서 가장 좁은 좌/우 벽 여유.
+  // apex를 한 점의 벽으로 정하면 그 구간 다른 지점에서 경계에 걸려 클램프되고,
+  // 클램프가 장애물 간격을 침범하면 회피가 통째로 포기된다 (run_0806_155621).
+  void MinWallInSpan(
+    double s_from, double s_to, double & min_d_left, double & min_d_right) const;
+
   // raceline에서 d만큼 오프셋된 경로의 실제 곡률.
   // 곡률 중심 쪽으로 붙으면 반경이 줄어 더 빨리 감속해야 한다.
   //   kappa' = kappa / (1 - d*kappa)      (d>0 = 진행방향 왼쪽)
@@ -219,11 +233,24 @@ private:
   double vehicle_half_width_m_{0.15};
   double boundary_tracking_margin_m_{0.05};
   double collision_sigma_{2.0};
+  // 정적 장애물의 시간 성장 불확실성 상한 [s]. 브릿지가 모든 장애물에
+  // vs_var/vd_var를 상수(0.25)로 붙이는데, CheckPathCollision/FilterObstacles가
+  // is_static에도 도착시각 t를 그대로 곱하면 3σ_d ≈ 1.5t가 된다 — 정지 출발
+  // (도달 ~2s)이면 요구 여유가 3m로 트랙 폭을 넘어 어떤 정적 회피도 검증을
+  // 통과할 수 없다 (run_0806_155621). 정적 물체는 시간이 지나도 안 움직이므로
+  // 시간 성장분을 이 값으로 자른다 (분류 오류 대비 완충만 남김).
+  double static_time_uncertainty_cap_{0.3};
+  // 회피 기하 계획에 쓰는 최소 속도 [m/s] — PlanSpeed() 참조
+  double plan_speed_floor_{1.5};
   bool trailing_active_{false};
   // 라인 스위치 (기본 maneuver)
   bool use_lane_switch_{true};       // false면 기존처럼 DoSpline을 1순위로
   double lane_blend_out_m_{5.0};     // raceline 복귀 블렌드 길이 [m]
   bool spline_fallback_active_{false};  // "모든 레인 막힘 -> 스플라인" 상승엣지 이벤트용
+  // "회피 포기(트랙경계)" 상승엣지 이벤트용. 이 사유는 매 사이클 재발생하므로
+  // (30Hz x 8초 = 207회 실측) 엣지에서만 발행하지 않으면 pitwall 로그가 묻힌다.
+  bool boundary_abort_active_{false};   // 직전 사이클에 경계 abort가 있었나
+  bool boundary_abort_now_{false};      // 이번 사이클 DoSpline이 경계 abort했나
   // 이중장애물 재계획 파라미터 (mina Task 2)
   double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
   double cluster_gap_s_m_{8.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
