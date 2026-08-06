@@ -1,56 +1,56 @@
 {
   "files": [
     {
-      "bytes": 33431,
+      "bytes": 33752,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0805_sp_max6.00ms_margin0.08m_mu0.65.csv",
       "role": "sp_0",
-      "sha256": "a1a16f1966779581434b67d028bf832357ae2ac29e30bbb9b62a95a5edf7c9ca"
+      "sha256": "218fd82b3274a676870182f588fce2603ac963686f97fa01c266c1201e25a722"
     },
     {
-      "bytes": 33431,
+      "bytes": 33752,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0805_sp_max6.00ms_margin0.08m_mu0.65.csv",
       "role": "sp_1",
-      "sha256": "a1a16f1966779581434b67d028bf832357ae2ac29e30bbb9b62a95a5edf7c9ca"
+      "sha256": "218fd82b3274a676870182f588fce2603ac963686f97fa01c266c1201e25a722"
     },
     {
-      "bytes": 83645,
+      "bytes": 58824,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0805_walls.csv",
       "role": "walls_output",
-      "sha256": "62e32a337a786a8e0cb423a70cced7723e44bbe4d5220b092135e9fa7f56883e"
+      "sha256": "37c33731131f2bddd26209aac52319c8d0a6fc27b10fa4449bbc626e3f669ab2"
     },
     {
-      "bytes": 83645,
+      "bytes": 58824,
       "path": "planning_ws/src/planning_pkg/config/centerline/my_track0805_walls.csv",
       "role": "walls_runtime",
-      "sha256": "62e32a337a786a8e0cb423a70cced7723e44bbe4d5220b092135e9fa7f56883e"
+      "sha256": "37c33731131f2bddd26209aac52319c8d0a6fc27b10fa4449bbc626e3f669ab2"
     },
     {
-      "bytes": 7952,
+      "bytes": 8006,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0805_centerline.csv",
       "role": "centerline_output",
-      "sha256": "b7ba8c971a2f95c0ba6bf6c3c7fd62157b2c6da9eb3c62b0da57d037b563d1c9"
+      "sha256": "a89cbb83c8aeab5abe11dd35985d175fc79be0bd8f44428d3af6979b77e6a14e"
     },
     {
-      "bytes": 7952,
+      "bytes": 8006,
       "path": "planning_ws/src/planning_pkg/config/centerline/my_track0805_centerline.csv",
       "role": "centerline_runtime",
-      "sha256": "b7ba8c971a2f95c0ba6bf6c3c7fd62157b2c6da9eb3c62b0da57d037b563d1c9"
+      "sha256": "a89cbb83c8aeab5abe11dd35985d175fc79be0bd8f44428d3af6979b77e6a14e"
     },
     {
-      "bytes": 33860,
+      "bytes": 34151,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0805_iqp_max6.00ms_margin0.08m_mu0.65.csv",
       "role": "main_output",
-      "sha256": "e6f8261d882be1db4d768c816124dbe445db2b23bd615bc45a92a2936a8d33d3"
+      "sha256": "d424981737c0c9e7f08e25bd2a8ca242efb31f2e4bedf6b870faf97214726ad9"
     },
     {
-      "bytes": 33860,
+      "bytes": 34151,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0805_iqp_max6.00ms_margin0.08m_mu0.65.csv",
       "role": "main_runtime",
-      "sha256": "e6f8261d882be1db4d768c816124dbe445db2b23bd615bc45a92a2936a8d33d3"
+      "sha256": "d424981737c0c9e7f08e25bd2a8ca242efb31f2e4bedf6b870faf97214726ad9"
     }
   ],
-  "generation_content_sha256": "55c1d6ada58863e06e2f114223b68fcffff25f151c0fe5806f2a7038fa0d34e6",
-  "generation_id": "65dfe232548f4b238c653cfecee00335",
+  "generation_content_sha256": "316e952d79a047261017e91bcbaebb7d4392feb65e1f3dcf960a4f0fd085d065",
+  "generation_id": "f5f96f04d6564bbda0a49d20a1f75f0f",
   "main": "my_track0805_iqp_max6.00ms_margin0.08m_mu0.65.csv",
   "map": "my_track0805",
   "schema_version": 1,
@@ -62,19 +62,19 @@
     "adaptive_safe_dist": {
       "enabled": true,
       "narrow_pts": 0,
-      "safe_max": 0.4500000000000001,
+      "safe_max": 0.45,
       "safe_median": 0.45,
-      "safe_min": 0.4050000000000001,
-      "total_pts": 66,
-      "width_max": 2.925,
-      "width_median": 1.8750000000000002,
-      "width_min": 1.35
+      "safe_min": 0.375,
+      "total_pts": 67,
+      "width_max": 2.825,
+      "width_median": 1.8250000000000002,
+      "width_min": 1.25
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 2,
+      "binding_pts": 7,
       "enabled": true,
-      "limited_pts": 3,
-      "total_pts": 334,
+      "limited_pts": 11,
+      "total_pts": 337,
       "v_min": 5.555555555555555
     },
     "advisory_profiles": [
@@ -92,9 +92,9 @@
       {
         "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
         "controller_speed_scale": 1.0,
-        "max_speed_mps": 5.5,
+        "max_speed_mps": 6.0,
         "name": "cpp_real_car",
-        "planner_speed_scale": 0.916666,
+        "planner_speed_scale": 1.0,
         "plant": "vesc"
       },
       {
