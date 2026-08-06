@@ -26,7 +26,7 @@
     brake_min: 0.0
     brake_max: 1.0
     speed_min: -26000.0
-    speed_max: 30000.0
+    speed_max: 26000.0
     position_min: 0.0
     position_max: 0.0
     servo_min: 0.05
