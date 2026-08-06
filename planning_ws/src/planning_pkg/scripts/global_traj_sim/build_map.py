@@ -173,19 +173,59 @@ SAFE_DIST_WIDTH_FRAC = 0.30
 SAFE_DIST_MIN = CAR_HALF_WIDTH + 0.07    # 0.22 m
 # 상한: 넓다고 무한정 벽을 피하면 라인이 중앙선으로 수렴해 곡률이 나빠진다.
 # 2026-07-27 실측표(위 SAFE_DIST 주석)에서 균일 0.50부터 조향 포화가 시작됐다.
-SAFE_DIST_MAX = 0.45
+#
+# 2026-08-06: 0.45 -> 0.55. 위 0.50 근거는 **균일** 이격 시절 것이라 적응형에는
+# 그대로 적용되지 않는다. 균일 0.50은 좁은 곳까지 0.50을 요구해 헤어핀을
+# 정중앙 고정으로 밀어넣어 조향이 포화했지만, 적응형은 폭에 비례하므로 상한을
+# 올려도 넓은 구간에만 작용한다. 실제로 0.45에서는 라인이 한쪽 벽에 정확히
+# 0.45 m로 붙어 달리면서 반대쪽에 1.0~1.3 m를 남기고 있었고(하단 직선 s23~26),
+# 그 0.45가 폭 연동 속도상한의 입력이라 직선 속도까지 같이 눌렀다.
+# 5개 맵 게이트 비교 (기울기 0.050/0.105 고정, 주행선여유는 차 반폭 제외분):
+#     map            0.45                    0.55
+#     0806      lap 10.30 v 4.84 R 1.12 +0.200 | 9.98 v 5.56 R 1.27 +0.175
+#     0806_1524 lap 10.85 v 5.06 R 1.24 +0.125 |10.33 v 5.28 R 1.32 +0.175
+#     0805      lap 11.53 v 5.13 R 1.17 +0.150 |10.30 v 5.67 R 1.30 +0.175
+#     0804      lap 13.90 v 4.60 R 0.81 +0.050 |13.73 v 4.59 R 0.82 +0.050
+#     0803      lap 10.33 v 4.65 R 1.12 +0.175 | 9.83 v 5.17 R 1.02 +0.175
+# 전 맵에서 랩타임·최고속이 좋아지거나 같고 여유는 유지된다. R_min 도 대부분
+# 개선된다 — 라인이 코너 진입 전에 더 바깥에서 준비할 수 있기 때문.
+# 0.65/0.75 는 더 안 좋아진다(0806 v_max 5.56 -> 5.39/5.38) → 0.55 가 최적.
+SAFE_DIST_MAX = 0.55
 # 이격 프로파일 rolling-min 창 [m]. 차 전장만큼 앞뒤로 미리 완화해 두지 않으면
 # 좁은 게이트 진입 직전에 바운드가 계단으로 변해 라인에 꺾임(곡률 스파이크)이 생긴다.
 SAFE_DIST_SMOOTH_M = 2.0 * CAR_HALF_LENGTH
 
-# 좁은 구간에서 이격을 줄인 만큼은 속도로 갚는다. 폐루프 횡추적오차는 속도에
-# 거의 비례한다 — 2026-08-01 게이트 실측 |lat err|max 0.202 m @ v_max 5.23 m/s
-# → 0.0386 s. 여유를 두고 0.045 s로 잡는다. 각 웨이포인트에서
-#   v_width = (실제 벽여유 - 차 반폭) / LAT_ERR_PER_MPS
+# 좁은 구간에서 이격을 줄인 만큼은 속도로 갚는다. 각 웨이포인트에서
+#   v_width = (실제 벽여유 - 차 반폭) / lat_err_slope(직전 곡률)
 # 를 속도 상한으로 걸면, 폭이 좁은 곳만 자동으로 느려지고 넓은 곳은 V_MAX 그대로다.
 # (감속 램프는 velocity_profile 의 backward pass 가 알아서 만들어 준다.)
+#
+# ⚠️ 예전에는 이 기울기가 단일 상수(LAT_ERR_PER_MPS)였다. 2026-08-06 실차 rosbag
+# 21k 샘플(0805~0806, /global_waypoints 에 /pf/pose/odom 투영, 회피 스플라이싱
+# 구간 제외) 실측 결과 **오차는 속도가 아니라 직전 곡률이 지배**한다:
+#
+#   직전 2 m 최대|k|   n     v p95   |d| p95   p99    max    비 p99
+#   0.00~0.05 (직선)  1798   5.26    0.196   0.373  0.603   0.121
+#   0.05~0.15         2224   5.08    0.170   0.360  0.609   0.135
+#   0.15~0.30         3911   4.79    0.296   0.497  0.610   0.117
+#   0.30~0.50         6441   4.33    0.317   0.458  0.625   0.111
+#   0.50~2.00         6780   3.60    0.153   0.240  0.574   0.093
+#   속도 5~6 m/s 구간만: |d| p95 0.179, p99 0.196, max 0.221 → 비 p99 0.038
+#
+# 즉 실차는 5.4 m/s 에서 오차가 0.18 m 로 가장 깨끗하고(직선), 4~5 m/s 코너
+# 탈출에서 0.36~0.50 m 로 가장 나쁘다. 단일 상수를 코너 기준(0.085)으로 잡으면
+# 직선까지 3.5 m/s 로 깎여 v_max 가 6.00 → 4.26 으로 무너진다. 그래서 직전
+# 곡률로 보간하는 2점 모델을 쓴다. 오차 최대는 코너 '안'이 아니라 코너를
+# 빠져나온 직후라 현재 곡률이 아니라 rolling-max(뒤로 2 m)를 쓴다.
+#
+# 플랜트 상수(A_ACC_MAX / A_DEC_PLANNED / BRAKE_DECEL_PER_AMP)나 제어기
+# lookahead(map/m_l1, map/q_l1)를 만지면 이 표를 반드시 다시 뽑을 것.
 ADAPTIVE_SPEED_BY_WIDTH = True
-LAT_ERR_PER_MPS = 0.045      # [s] 속도 1 m/s 당 예상 |횡추적오차| [m]
+LAT_ERR_STRAIGHT_S = 0.050   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
+LAT_ERR_CORNER_S = 0.105     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
+LAT_ERR_KAPPA_LOW = 0.05     # [1/m] 이하는 직선 취급 (R >= 20 m)
+LAT_ERR_KAPPA_HIGH = 0.30    # [1/m] 이상은 코너 취급 (R <= 3.3 m)
+LAT_ERR_KAPPA_WINDOW_M = 2.0  # 직전 곡률 rolling-max 창 [m] (코너 탈출 지연)
 WIDTH_SPEED_MIN_MPS = 1.5    # 폭 때문에 이보다 더 낮추지는 않는다 (정지 방지)
 
 # --- 차량/컨트롤러 배포 프로파일 ---------------------------------------------
@@ -928,14 +968,49 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     return v
 
 
-def width_speed_cap(d_left, d_right, v_max=V_MAX,
+def recent_max_kappa(s, kappa, window_m=LAT_ERR_KAPPA_WINDOW_M):
+    """각 점에서 '직전 window_m 안에 지나온' 최대 |kappa| (폐루프 방향 기준).
+
+    횡추적오차는 코너 안이 아니라 코너를 빠져나온 직후에 최대가 된다 — 조향을
+    풀면서 가속하는 구간이라 lookahead 가 라인 바깥쪽으로 끌린다. 그래서 현재
+    점의 곡률이 아니라 '방금 지나온' 곡률로 오차를 예측해야 한다. 배열은 닫힌
+    루프이므로 wrap 한다.
+    """
+    s = np.asarray(s, dtype=float)
+    k = np.abs(np.asarray(kappa, dtype=float))
+    n = len(k)
+    if n == 0:
+        return k
+    total = float(s[-1]) if s[-1] > 0 else float(n)
+    ds = total / max(n, 1)
+    back = int(np.clip(round(window_m / max(ds, 1e-6)), 1, n - 1))
+    # 뒤로 back 칸까지의 rolling max (wrap 포함)
+    stacked = np.stack([np.roll(k, shift) for shift in range(back + 1)])
+    return stacked.max(axis=0)
+
+
+def lat_err_slope(s, kappa):
+    """점별 |lat err|/v 기울기 [s] — 직전 곡률로 보간.
+
+    2026-08-06 실차 백 실측(21k 샘플, 회피 스플라이싱 제외)에서 이 기울기는
+    속도가 아니라 직전 곡률에 지배된다. 상수 블록 주석의 표 참조.
+    """
+    kr = recent_max_kappa(s, kappa)
+    t = np.clip((kr - LAT_ERR_KAPPA_LOW) /
+                max(LAT_ERR_KAPPA_HIGH - LAT_ERR_KAPPA_LOW, 1e-9), 0.0, 1.0)
+    return LAT_ERR_STRAIGHT_S + t * (LAT_ERR_CORNER_S - LAT_ERR_STRAIGHT_S)
+
+
+def width_speed_cap(d_left, d_right, s=None, kappa=None, v_max=V_MAX,
                     enabled=ADAPTIVE_SPEED_BY_WIDTH):
     """웨이포인트별 벽 여유에서 속도 상한 [m/s] 을 만든다.
 
     좁은 구간에서는 이격을 줄여 라인을 통과시키는 대신 속도를 깎아 갚는다.
-    폐루프 횡추적오차가 속도에 거의 비례하므로(LAT_ERR_PER_MPS), 남은 여유
-    (벽까지 거리 - 차 반폭)를 그 기울기로 나눈 값이 그 지점의 속도 상한이다.
+    남은 여유(벽까지 거리 - 차 반폭)를 그 지점의 예상 횡추적오차 기울기
+    (lat_err_slope, 직전 곡률로 결정)로 나눈 값이 그 지점의 속도 상한이다.
     감속 램프는 velocity_profile 의 backward pass 가 알아서 만들어 준다.
+
+    s/kappa 를 안 주면 보수적으로 코너 기울기를 전 구간에 쓴다.
 
     반환: (상한 배열, 진단 dict)
     """
@@ -945,13 +1020,20 @@ def width_speed_cap(d_left, d_right, v_max=V_MAX,
     if not enabled:
         return np.full(n, float(v_max)), {"enabled": False, "limited_pts": 0,
                                           "v_min": float(v_max), "total_pts": n}
+    if s is None or kappa is None:
+        slope = np.full(n, LAT_ERR_CORNER_S)
+    else:
+        slope = lat_err_slope(s, kappa)
     margin = np.maximum(clearance - CAR_HALF_WIDTH, 0.0)
-    cap = np.clip(margin / LAT_ERR_PER_MPS, WIDTH_SPEED_MIN_MPS, float(v_max))
+    cap = np.clip(margin / slope, WIDTH_SPEED_MIN_MPS, float(v_max))
     return cap, {
         "enabled": True,
         "limited_pts": int(np.sum(cap < float(v_max) - 1e-9)),
         "v_min": float(cap.min()) if n else float(v_max),
         "total_pts": n,
+        "slope_min": float(slope.min()),
+        "slope_max": float(slope.max()),
+        "corner_pts": int(np.sum(slope > LAT_ERR_STRAIGHT_S + 1e-9)),
     }
 
 
@@ -964,7 +1046,7 @@ def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
     # 폭에 따른 속도 상한은 MARGIN 을 빼기 전의 '물리적' 벽 여유로 계산한다.
     # MARGIN 은 CSV 보고값만 줄이는 회피용 마진이라 주행 안전과 무관하다.
     v_cap, width_speed_info = width_speed_cap(
-        geo["d_left"], geo["d_right"], v_max=v_max)
+        geo["d_left"], geo["d_right"], s=s, kappa=kappa, v_max=v_max)
     # '상한이 걸린 점'과 '실제로 프로파일을 바꾼 점'은 다르다. 대부분의 구간은
     # 곡률 상한이 이미 더 낮아서 폭 상한이 아무 것도 안 한다 — 그 구분을 남긴다.
     with np.errstate(divide="ignore"):
@@ -2103,8 +2185,10 @@ def main():
         print(f"      [폭 연동 속도] 벽 여유가 V_MAX {V_MAX:.2f} 를 못 받치는 점 "
               f"{width_info['limited_pts']}/{width_info['total_pts']} "
               f"(최저 {width_info['v_min']:.2f} m/s, 기울기 "
-              f"{LAT_ERR_PER_MPS:.3f} s) · 그중 곡률 상한보다 낮아 실제로 "
-              f"프로파일을 낮춘 점 {width_info.get('binding_pts', 0)} · "
+              f"{width_info.get('slope_min', float('nan')):.3f}~"
+              f"{width_info.get('slope_max', float('nan')):.3f} s · 코너 취급 "
+              f"{width_info.get('corner_pts', 0)}점) · 그중 곡률 상한보다 낮아 "
+              f"실제로 프로파일을 낮춘 점 {width_info.get('binding_pts', 0)} · "
               f"프로파일 v_max {traj['vx'].max():.2f} m/s")
     for line in report_speed_pairing(traj, profiles + advisory_profiles):
         print(line)

@@ -37,6 +37,18 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _existing(pattern):
+    """glob 결과 중 실제로 열리는 파일만. 끊어진 심볼릭 링크는 버린다.
+
+    colcon --symlink-install 은 install/ 에 소스 파일로 가는 링크를 만들어 두고,
+    소스에서 파일을 지워도 그 링크를 회수하지 않는다. glob 은 링크가 가리키는
+    대상을 확인하지 않으므로 이런 유령 항목까지 매칭한다. 그래서 궤적을 다시
+    뽑아 mu 값이 바뀐 파일명이 되면 옛 mu 링크가 남아 "여러 CSV가 매칭됩니다"로
+    launch 전체가 죽었다 (run 2026-08-06 21:56, my_track0806 mu0.65 잔재).
+    """
+    return [path for path in glob.glob(pattern) if os.path.isfile(path)]
+
+
 def _resolve_map_csvs(share_dir, map_name):
     """map 이름 -> (raceline, sp, centerline) 파일명. 노드가 config/ 하위 상대경로로
     여는 값이므로 basename만 돌려준다. 못 찾으면 (필수 항목만) 알아듣게 죽는다."""
@@ -45,7 +57,7 @@ def _resolve_map_csvs(share_dir, map_name):
     notes = []
 
     def pick(directory, pattern):
-        found = sorted(glob.glob(os.path.join(directory, pattern)))
+        found = sorted(_existing(os.path.join(directory, pattern)))
         if len(found) > 1:
             raise RuntimeError(
                 '여러 CSV가 %s에 매칭됩니다. 고속 주행에서 임의 선택하지 않습니다: %s\n'
@@ -57,7 +69,7 @@ def _resolve_map_csvs(share_dir, map_name):
     if raceline is None:
         available = sorted({
             os.path.basename(f).split('_iqp_')[0]
-            for f in glob.glob(os.path.join(traj_dir, '*_iqp_*.csv'))})
+            for f in _existing(os.path.join(traj_dir, '*_iqp_*.csv'))})
         raise RuntimeError(
             "map:=%s 의 raceline CSV(%s_iqp_*.csv)가 없습니다: %s\n"
             '  사용 가능한 맵: %s\n'
