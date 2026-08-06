@@ -89,6 +89,10 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('open_space_dist_m', 0.50)
 
         self.declare_parameter('gating_distance', 0.5)
+        # 크기 일관성 게이트: 트랙이 보던 반경 대비 후보 클러스터 반경의
+        # 비가 이 배수를 넘으면 매칭하지 않는다. 0/1 이하면 비활성.
+        # 근거는 tracker.py의 해당 게이트 주석 참조.
+        self.declare_parameter('radius_ratio_max', 4.0)
         self.declare_parameter('track_timeout', 10)
 
         self.declare_parameter('v_thresh', 0.25)
@@ -191,6 +195,7 @@ class ObstacleDetectorNode(Node):
         self.dynamic_release = int(p('dynamic_release').value)
         self.min_hits = int(p('min_hits').value)
         gating_distance = float(p('gating_distance').value)
+        radius_ratio_max = float(p('radius_ratio_max').value)
         track_timeout = int(p('track_timeout').value)
         reid_distance = float(p('reid_distance').value)
         reid_timeout = float(p('reid_timeout_sec').value)
@@ -244,7 +249,8 @@ class ObstacleDetectorNode(Node):
         continuous_values = (
             self.range_min, self.range_max, self.fov_min, self.fov_max,
             self.lambda_angle, self.sigma, self.v_thresh, self.static_pos_std,
-            self.dynamic_pos_std, gating_distance, reid_distance, reid_timeout,
+            self.dynamic_pos_std, gating_distance, radius_ratio_max,
+            reid_distance, reid_timeout,
         )
         if (not all(np.isfinite(v) for v in continuous_values)
                 or not 0.0 <= self.range_min < self.range_max <= 100.0
@@ -260,6 +266,7 @@ class ObstacleDetectorNode(Node):
                 or not 0 <= self.min_cluster_size_open <= self.min_cluster_size
                 or not 0.0 <= self.open_space_dist <= 10.0
                 or not 0.001 <= gating_distance <= 100.0
+                or not 0.0 <= radius_ratio_max <= 1000.0
                 or not 1 <= track_timeout <= 100000
                 or not 0.0 <= self.v_thresh <= 100.0
                 or not 1 <= self.n_confirm <= 100000
@@ -289,6 +296,7 @@ class ObstacleDetectorNode(Node):
             reid_distance=reid_distance,
             reid_timeout=reid_timeout,
             pos_hist_len=pos_hist_len,
+            radius_ratio_max=radius_ratio_max,
         )
 
         scan_topic = str(p('scan_topic').value).strip()

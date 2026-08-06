@@ -118,7 +118,8 @@ class Tracker:
     """
 
     def __init__(self, gating_distance=0.5, track_timeout=10,
-                 reid_distance=0.7, reid_timeout=1.0, pos_hist_len=20):
+                 reid_distance=0.7, reid_timeout=1.0, pos_hist_len=20,
+                 radius_ratio_max=0.0):
         self.tracks = {}          # id -> Track
         self._next_id = 0
         self.gating_distance = gating_distance  # 매칭 허용 최대 거리 [m]
@@ -126,6 +127,9 @@ class Tracker:
         self.reid_distance = reid_distance       # 재식별 허용 거리 [m]
         self.reid_timeout = reid_timeout         # 소멸 트랙 보관 시간 [s]
         self.pos_hist_len = pos_hist_len
+        # 크기 일관성 게이트: 트랙이 보던 반경과 후보 클러스터 반경의 비가
+        # 이 배수를 넘으면 같은 물체로 보지 않는다. 0이면 비활성.
+        self.radius_ratio_max = radius_ratio_max
         self.retired = []         # 최근 소멸 트랙 (재식별 후보): list[dict]
 
     def step(self, clusters, stamp):
@@ -156,8 +160,22 @@ class Tracker:
             for ci in unmatched_clusters:
                 cx, cy = clusters[ci].centroid
                 d = float(np.hypot(tx - cx, ty - cy))
-                if d <= self.gating_distance:
-                    pairs.append((d, tid, ci))
+                if d > self.gating_distance:
+                    continue
+                # ── 크기 일관성 게이트 ────────────────────────────────────
+                # 거리만 보면 근처의 작은 노이즈 클러스터가 진짜 물체보다
+                # 가깝다는 이유로 트랙 ID를 가져간다. rosbag_0806 run_234734
+                # #53 실측: 반경 0.157m 실물(2.05,0.13)과 반경 0.005m 파편
+                # (2.35,0.10) 사이를 같은 ID가 왕복해 KF 속도가 0.47 m/s로
+                # 튀었고 정지 물체가 "동적"으로 분류됐다 (전체 검출의
+                # 30%가 동적, 자차 정지 중에도 centroid 산포 p90 0.16~0.55m).
+                # 같은 물체라면 반경이 프레임 간 몇 배씩 변하지 않는다.
+                if self.radius_ratio_max > 1.0:
+                    r_t = max(float(track.radius), 1e-3)
+                    r_c = max(float(clusters[ci].radius), 1e-3)
+                    if max(r_t / r_c, r_c / r_t) > self.radius_ratio_max:
+                        continue
+                pairs.append((d, tid, ci))
         pairs.sort(key=lambda p: p[0])
 
         used_clusters = set()

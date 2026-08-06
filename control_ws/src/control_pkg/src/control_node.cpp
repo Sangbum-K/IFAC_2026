@@ -335,6 +335,15 @@ public:
     speed_lookahead_for_steer_ = this->declare_parameter<double>(
       "map/speed_lookahead_for_steer", 0.0);
     max_lateral_error_ = this->declare_parameter<double>("map/max_lateral_error_m", 0.5);
+    // 추종 실패 백스톱 (근거는 사용처 주석 참조).
+    backstop_enabled_ = this->declare_parameter<bool>(
+      "map/backstop_enabled", true);
+    backstop_err_m_ = this->declare_parameter<double>(
+      "map/backstop_path_error_m", 0.25);
+    backstop_sat_ratio_ = this->declare_parameter<double>(
+      "map/backstop_steer_sat_ratio", 0.85);
+    backstop_min_speed_ = this->declare_parameter<double>(
+      "map/backstop_min_speed_mps", 1.5);
     max_curvature_reference_ = this->declare_parameter<double>(
       "map/max_curvature_reference", 0.8);
     velocity_steer_gain_max_ = this->declare_parameter<double>(
@@ -413,7 +422,7 @@ public:
 private:
   void validate_parameters()
   {
-    const std::array<double, 33> finite_values = {
+    const std::array<double, 36> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       recovery_command_timeout_, recovery_pair_max_skew_,
@@ -422,6 +431,7 @@ private:
       lat_err_coeff_, acc_scaler_for_steer_, dec_scaler_for_steer_,
       start_scale_speed_, end_scale_speed_, downscale_factor_,
       speed_lookahead_for_steer_, max_lateral_error_,
+      backstop_err_m_, backstop_sat_ratio_, backstop_min_speed_,
       max_curvature_reference_, velocity_steer_gain_max_,
       nearest_search_horizon_, wheelbase_, max_speed_, max_steering_angle_,
       max_steering_rate_, max_acceleration_, max_deceleration_, speed_scale_};
@@ -451,6 +461,9 @@ private:
       end_scale_speed_ > 30.0 ||
       downscale_factor_ < 0.0 || downscale_factor_ > 1.0 ||
       max_lateral_error_ <= 0.0 || max_lateral_error_ > 5.0 ||
+      backstop_err_m_ <= 0.0 || backstop_err_m_ > 5.0 ||
+      backstop_sat_ratio_ <= 0.0 || backstop_sat_ratio_ > 1.0 ||
+      backstop_min_speed_ < 0.0 || backstop_min_speed_ > 10.0 ||
       max_curvature_reference_ <= 0.0 || max_curvature_reference_ > 5.0 ||
       velocity_steer_gain_max_ < 1.0 || velocity_steer_gain_max_ > 3.0 ||
       nearest_search_horizon_ < 0.5 || nearest_search_horizon_ > 20.0 ||
@@ -876,6 +889,60 @@ private:
         std::min(max_speed_, recovery_max_forward_override_));
     } else {
       speed_command = std::clamp(speed_command * speed_scale_, 0.0, max_speed_);
+      // ── 추종 실패 백스톱 ────────────────────────────────────────────────
+      // 플래너의 속도 계획은 smoothstep 기하 + 가정한 그립(a_lat)으로 나온다.
+      // 그 모델이 틀리면(먼지/타이어 온도/배터리 새그, 또는 계획 자체의
+      // 오버슛) 계획은 성립하는데 차가 못 따라간다. rosbag_0806 run_235014
+      // 42~44s가 그 경우다 — 계획 apex는 d=-0.59였는데 차는 d=-1.16까지
+      // 밀려 우벽(-0.80)을 0.26m 관통했다. 추종 오차 0.57m.
+      //
+      // 트리거를 조향각(>10deg)으로 잡으면 안 된다: 같은 4런에서 장애물이
+      // 없을 때도 27~32% 발화하고(레이스라인 기하만으로 10deg를 넘는 구간은
+      // 9%뿐인데 pure pursuit 룩어헤드+추종오차가 나머지를 만든다), 정작
+      // 35초 정지가 난 run_234734에서는 직선 제동이라 조향이 내내 0이었다.
+      //
+      // 실제로 앞서는 신호는 **경로 추종 오차**다. 위 구간 실측:
+      //   41.43s  조향 0.00deg  오차 0.22   <- 이미 벌어지는 중
+      //   41.62s  조향 0.00deg  오차 0.40
+      //   41.84s  조향 11.5deg  오차 0.67   <- 조향 트리거는 여기서야 발화
+      //   42.42s  조향 15.2deg  오차 1.17   <- 벽 관통
+      // 오차가 조향보다 0.4s / 0.45m 앞선다.
+      //
+      // 주의: 여기서 쓰는 오차는 raceline 기준 d(frenet_odom.y)가 아니라
+      // **지금 따라가는 로컬 경로**까지의 거리다. 회피 중에는 d가 커지는 게
+      // 정상이므로 d로 트리거하면 회피할 때마다 오발화한다.
+      if (backstop_enabled_) {
+        const std::size_t near_i = nearest_waypoint(position, waypoints);
+        const double path_err = std::hypot(
+          position.x - waypoints[near_i].x_m,
+          position.y - waypoints[near_i].y_m);
+        const double sat = std::abs(steering_angle) /
+          std::max(max_steering_angle_, 1e-3);
+        double backstop_cap = max_speed_;
+        if (std::isfinite(path_err) && path_err > backstop_err_m_) {
+          // 오차가 임계를 넘은 만큼 선형으로 감속. 오차가 임계의 2배면
+          // 하한까지 내려간다.
+          const double over = std::min(
+            (path_err - backstop_err_m_) / std::max(backstop_err_m_, 1e-3), 1.0);
+          backstop_cap = std::min(
+            backstop_cap, speed_now - over * (speed_now - backstop_min_speed_));
+        }
+        if (sat > backstop_sat_ratio_) {
+          // 조향이 포화면 이미 기하를 못 만든다 — 하한까지 즉시 캡.
+          backstop_cap = std::min(backstop_cap, backstop_min_speed_);
+        }
+        // 하한을 두는 이유: BlendDist의 조향 기하 하한 때문에 약 2.4 m/s
+        // 아래로는 필요 조주거리가 더 이상 줄지 않는다. 무한정 깎으면 회피는
+        // 안 쉬워지고 조우 시간만 길어져 정지 라치 영역으로 들어간다.
+        backstop_cap = std::max(backstop_cap, backstop_min_speed_);
+        if (backstop_cap < speed_command) {
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 1000,
+            "추종 백스톱: 경로오차 %.2fm / 조향포화 %.0f%% -> 속도 %.2f -> %.2f",
+            path_err, 100.0 * sat, speed_command, backstop_cap);
+          speed_command = backstop_cap;
+        }
+      }
     }
     // 정상 TRACK/ALIGN 명령은 물리 가감속 한계 안에서만 바뀐다. E-stop,
     // stale, recovery STOP은 위에서 publish_stop()으로 이 limiter를 우회해 즉시 0.
@@ -1191,6 +1258,10 @@ private:
   double downscale_factor_{0.5};
   double speed_lookahead_for_steer_{0.0};
   double max_lateral_error_{0.5};
+  bool backstop_enabled_{true};
+  double backstop_err_m_{0.25};
+  double backstop_sat_ratio_{0.85};
+  double backstop_min_speed_{1.5};
   double max_curvature_reference_{0.8};
   double velocity_steer_gain_max_{1.0};
   double nearest_search_horizon_{3.0};

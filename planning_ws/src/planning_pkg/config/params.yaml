@@ -124,7 +124,21 @@ spliner_node:
     # 고속 안전 기본값: 해가 없으면 raceline 전속 복귀가 아니라 감속/정지.
     spliner/use_trailing: true
     spliner/trailing_gap_m: 1.5   # (use_trailing=true일 때만) 정지 시 장애물 뒤 간격 [m]
-    spliner/trailing_decel: 2.5
+    # 2.5 -> 1.0: 2.5는 실제로 낼 수 없는 감속도다. VESC는 속도 명령만 받고
+    # 능동 제동을 안 하므로(0806 4런에서 /commands/motor/brake 83~507개뿐)
+    # 정지 직전에는 사실상 타행이다. 명령 0 하강엣지 3건 실측:
+    #   v0=1.37 -> 0.72m/0.94s (1.30 m/s²)
+    #   v0=1.06 -> 0.72m/0.79s (0.79 m/s²)
+    #   v0=0.95 -> 0.50m/0.67s (0.92 m/s²)
+    # 2.5로 두면 프로파일이 rem = v²/5 까지 감속을 시작하지 않아
+    # trailing_gap 1.5m를 0.8~1.3m 오버슛했고(실제 정지 간격 0.24~0.68m),
+    # 그 거리에서는 탈출 기동의 조향 기하 하한(1.51m)을 못 채워 영구 정지
+    # 라치가 됐다 (run_0806_234734 35초 / 235014 20초 / 234247 7.7초).
+    spliner/trailing_decel: 1.0
+    # 속도 명령 -> 실제 감속 시작까지의 구동계 지연 [s]. 정지 조건을
+    # rem >= v·T + (v²-v_target²)/(2a) 로 만들어 지연 중 굴러간 거리를 보상한다.
+    # 위 실측의 정지 시간(0.67~0.94s)에서 순수 감속분을 뺀 보수치.
+    spliner/trailing_lag_sec: 0.3
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.35, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30

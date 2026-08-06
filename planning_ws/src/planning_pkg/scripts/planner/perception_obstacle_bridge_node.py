@@ -16,8 +16,9 @@ spliner·recovery는 f1tenth_planning_msgs/ObstacleArray(map 프레임 + frenet 
 
 is_static은 perception의 is_dynamic을 초기값으로 쓰되, 최종 판정은
 spliner의 재분류(cls_* 파라미터, std 투표)가 담당한다.
-velocity는 ego 이동이 섞인 laser 프레임 값이라 그대로 쓰지 않고
-map 프레임 위치의 시간차분으로 다시 추정한다.
+velocity는 map 프레임 위치의 시간차분으로 다시 추정한다. 첫 관측이라
+차분이 아직 없는 프레임에서는 detector의 KF 속도(현재 target_frame=map이라
+ego 이동이 섞여 있지 않다)를 Frenet으로 투영해 시드로 쓴다.
 
 sim에서는 virtual_obstacle_node가 f1tenth_planning_msgs 타입을 직접 발행하므로
 이 노드는 실차 launch(planner_stack env:=real_car)에서만 뜬다.
@@ -64,6 +65,10 @@ class PerceptionObstacleBridgeNode(Node):
         self.declare_parameter('bridge/max_abs_vd_mps', 4.0)
         self.declare_parameter('bridge/position_var_floor', 0.01)
         self.declare_parameter('bridge/velocity_var_floor', 0.25)
+        # 속도를 아직 유한차분으로 못 잰 첫 프레임의 속도 표준편차 prior [m/s].
+        # max_abs_v(클립 한계)를 분산으로 쓰던 것을 대체한다 — 근거는 아래
+        # obs.vs_var 계산부 주석 참조.
+        self.declare_parameter('bridge/init_vel_std_mps', 0.5)
         self.declare_parameter('bridge/track_forget_sec', 2.0)
         self.declare_parameter('bridge/tf_timeout_sec', 0.1)
         self.declare_parameter('bridge/tf_allow_latest_fallback', False)
@@ -97,6 +102,7 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/position_var_floor').value)
         self.velocity_var_floor = float(
             p('bridge/velocity_var_floor').value)
+        self.init_vel_std = float(p('bridge/init_vel_std_mps').value)
         self.forget_sec = float(p('bridge/track_forget_sec').value)
         self.tf_timeout = float(p('bridge/tf_timeout_sec').value)
         self.tf_allow_latest = bool(
@@ -119,7 +125,7 @@ class PerceptionObstacleBridgeNode(Node):
         finite_values = (
             self.min_confidence, self.wall_margin, self.max_extent,
             self.lpf_alpha, self.max_abs_vs, self.max_abs_vd,
-            self.position_var_floor, self.velocity_var_floor,
+            self.position_var_floor, self.velocity_var_floor, self.init_vel_std,
             self.forget_sec, self.tf_timeout, self.tf_max_age,
             self.max_source_age, self.source_future_tolerance,
             self.projection_reacquire_distance, self.wall_dist_min,
@@ -135,6 +141,7 @@ class PerceptionObstacleBridgeNode(Node):
                 or not 0.1 <= self.max_abs_vd <= 20.0
                 or not 1e-6 <= self.position_var_floor <= 100.0
                 or not 1e-6 <= self.velocity_var_floor <= 2500.0
+                or not 0.0 <= self.init_vel_std <= 50.0
                 or not 0.1 <= self.forget_sec <= 10.0
                 or not 0.001 <= self.tf_timeout <= 1.0
                 or not 0.0 <= self.tf_max_age <= self.max_source_age
@@ -516,11 +523,8 @@ class PerceptionObstacleBridgeNode(Node):
                     # 진짜 차량(0.30m 폭)은 벽에 붙어도 중심이 >=0.15m 떨어진다.
                     continue
 
-            # id별 시간차분으로 map 기준 vs/vd 추정 (laser 프레임 속도는
-            # ego 이동이 섞여 있어 신뢰 불가)
+            # id별 시간차분으로 map 기준 vs/vd 추정.
             vs, vd = 0.0, 0.0
-            # 첫 관측/재획득은 속도를 아직 측정하지 못했으므로 큰 분산을 준다.
-            # vs=0을 확정값처럼 내보내면 고속 상대를 정적 물체로 과신한다.
             velocity_valid = False
             if prev is not None:
                 dt = now_sec - prev['t']
@@ -531,6 +535,26 @@ class PerceptionObstacleBridgeNode(Node):
                     vs = a * (ds / dt) + (1.0 - a) * prev['vs']
                     vd = a * ((d - prev['d']) / dt) + (1.0 - a) * prev['vd']
                     velocity_valid = True
+            if not velocity_valid:
+                # 첫 관측/재획득: detector의 칼만필터 속도를 Frenet으로 투영해
+                # 시드로 쓴다. detector는 target_frame(=map)에서 트래킹하므로
+                # 이 속도에는 ego 이동이 섞여 있지 않다 — "laser 프레임이라
+                # 신뢰 불가"라던 옛 주석은 target_frame이 base_link였던 시절
+                # 것이고 지금은 성립하지 않는다. 게다가 detector는 min_hits(3)
+                # 관측을 채운 트랙만 발행하므로 이 시점의 KF 속도는 이미
+                # 3프레임 이상의 근거를 갖는다.
+                vx_m, vy_m = float(src.velocity.x), float(src.velocity.y)
+                if tf is not None:
+                    vx_m, vy_m = (cos_y * vx_m - sin_y * vy_m,
+                                  sin_y * vx_m + cos_y * vy_m)
+                psi = float(self.wpnts[wi, 3])
+                c_psi, s_psi = math.cos(psi), math.sin(psi)
+                seed_vs = vx_m * c_psi + vy_m * s_psi
+                seed_vd = -vx_m * s_psi + vy_m * c_psi
+                if (math.isfinite(seed_vs) and math.isfinite(seed_vd)
+                        and abs(seed_vs) <= self.max_abs_vs
+                        and abs(seed_vd) <= self.max_abs_vd):
+                    vs, vd = seed_vs, seed_vd
             if abs(vs) > self.max_abs_vs or abs(vd) > self.max_abs_vd:
                 velocity_valid = False
                 vs = float(np.clip(vs, -self.max_abs_vs, self.max_abs_vs))
@@ -554,13 +578,22 @@ class PerceptionObstacleBridgeNode(Node):
             confidence = max(float(src.confidence), 1e-3)
             pos_var = max(self.position_var_floor,
                           (half * (1.0 - confidence)) ** 2)
-            vel_var = self.velocity_var_floor if velocity_valid else \
-                max(self.velocity_var_floor, self.max_abs_vs ** 2)
+            # 속도 미확정 프레임의 분산으로 max_abs_v(=클립 한계)의 제곱을
+            # 쓰면 안 된다. 그건 유한차분 추정치를 자르는 위생 한계지 물체가
+            # 실제로 낼 수 있는 속도가 아니다. vs_var=100 / vd_var=16이 되어
+            # 하류 spliner의 3σ footprint가 종 9.0m / 횡 3.6m로 부풀고,
+            # 폭 1.1~2.1m 트랙에서는 좌우 어느 쪽도 통과 불가로 판정돼 매번
+            # TRAILING(정지)으로 떨어졌다 (rosbag_0806 4런 68회 = 장애물
+            # 획득 1회당 1회, 요구 간격이 전부 3.76~3.88m로 동일).
+            # 대신 detector KF 속도의 실측 노이즈를 prior로 쓴다 — 정지
+            # 물체에 대해 |v| p50 0.06~0.11 / p90 0.24~0.48 / max 1.20 m/s
+            # (rosbag_0806 4런). init_vel_std 0.5는 그 p90 위쪽이다.
+            init_vel_var = max(self.velocity_var_floor, self.init_vel_std ** 2)
+            vel_var = self.velocity_var_floor if velocity_valid else init_vel_var
             obs.s_var = pos_var
             obs.d_var = pos_var
             obs.vs_var = vel_var
-            obs.vd_var = self.velocity_var_floor if velocity_valid else \
-                max(self.velocity_var_floor, self.max_abs_vd ** 2)
+            obs.vd_var = vel_var
             obs.size = 2.0 * half
             obs.is_static = not src.is_dynamic  # 초기값 — spliner cls_*가 재분류
             obs.is_visible = True

@@ -151,7 +151,27 @@ private:
   //   d(t) = A*s(w), w = t/L, s(w) = 3w^2-2w^3
   //   |d''|_max = 6*A*v^2/L^2  ->  L >= v*sqrt(6A/a_max)
   // 거리를 상수로 두면 횡가속이 v^2로 커져 그립을 넘는다 (6 m/s에서 1.5g 실측 계산).
-  double BlendDist(double amplitude, double speed) const;
+  // lat_acc <= 0 이면 blend_lat_acc_max_(또는 마찰원 잔여)를 쓴다.
+  double BlendDist(double amplitude, double speed, double lat_acc = -1.0) const;
+
+  // 속도와 무관한 조향 기하 하한 [m]. smoothstep 횡이동 amplitude의 피크
+  // 곡률 6A/L²이 조향 한계를 넘지 않는 최소 L. 가용 거리가 이보다 짧으면
+  // "어떤 속도로도 회피 불가"이고, 그때만 정지가 정당하다.
+  double BlendGeomFloor(double amplitude) const;
+
+  // 가용 거리 available 안에서 amplitude만큼 횡이동할 수 있는 최대 속도 [m/s].
+  // 기하 하한을 못 채우면 0(= 어떤 속도로도 불가), 횡이동이 0에 가까우면 무한대.
+  // 회피 가부를 "지금 속도에서 되나?"(이진 거부)가 아니라 "되는 속도는
+  // 얼마인가?"로 바꾸는 함수다 — 정적 장애물은 속도가 자유 변수이므로
+  // 감속으로 성립시킬 수 있는데도 매번 Tier3(정지)로 떨어지고 있었다.
+  double BlendSpeedCap(double amplitude, double available,
+                       double lat_acc = -1.0) const;
+
+  // [s_from, s_to] 구간에서 횡 전환에 쓸 수 있는 그립 [m/s²].
+  // 마찰원 잔여 sqrt(path_lat_acc_max² - (kappa_ref·v_ref)²)의 구간 최소값.
+  // 직선에서는 레이스라인이 횡그립을 거의 안 쓰므로 예산 전체를 쓸 수 있고,
+  // 코너에서는 남는 만큼만 쓴다. blend_use_spare_grip_=false면 고정값 사용.
+  double BlendLatAcc(double s_from, double s_to) const;
 
   // 회피 기하를 짤 때 쓰는 계획 속도 [m/s]. 실측 속도가 아니라
   // max(|cur_vs_|, plan_speed_floor_)다 — v=0이면 BlendDist가 0을 돌려주고
@@ -173,6 +193,10 @@ private:
   // (run_0806_155621: 목표 0.35 vs 요구 0.50).
   double RequiredObstacleClearance(
     const f1tenth_planning_msgs::msg::Obstacle & obs) const;
+
+  // 관측 분산 -> footprint 팽창량 [m] (3σ), max_uncertainty_m_로 클램프.
+  // pos_var는 위치 분산, vel_var는 속도 분산, t는 그 속도가 작용하는 시간.
+  double UncertaintyMargin(double pos_var, double vel_var, double t) const;
 
   // raceline에서 d만큼 오프셋된 경로의 실제 곡률.
   // 곡률 중심 쪽으로 붙으면 반경이 줄어 더 빨리 감속해야 한다.
@@ -226,7 +250,10 @@ private:
   double cmd_speed_scale_{1.0};
   // 고속 회피 기하/속도 예산 (BlendDist / ApplySpeedProfile)
   double blend_lat_acc_max_{3.0};   // 횡 전환에 배정할 그립 [m/s^2]
-  double blend_dist_max_m_{8.0};    // 전환 거리 상한 [m]
+  double blend_dist_max_m_{8.0};
+  // 횡 전환 그립 예산을 고정값 대신 마찰원 잔여로 계산할지 (BlendLatAcc).
+  // 실차에서 문제가 생기면 false로 즉시 되돌릴 수 있게 파라미터로 둔다.
+  bool blend_use_spare_grip_{true};    // 전환 거리 상한 [m]
   double path_lat_acc_max_{7.0};    // 오프셋 경로 곡률 -> 속도 상한용 그립 [m/s^2]
   // 레이스라인 그립 일관성 캡: 오프셋으로 곡률이 커진 구간에서, 그 지점의
   // 레이스라인이 실제로 쓰던 횡가속(kappa*v^2)을 넘지 않도록 제한한다.
@@ -247,9 +274,26 @@ private:
   // 통과할 수 없다 (run_0806_155621). 정적 물체는 시간이 지나도 안 움직이므로
   // 시간 성장분을 이 값으로 자른다 (분류 오류 대비 완충만 남김).
   double static_time_uncertainty_cap_{0.3};
+  // 관측 불확실성 팽창(3σ)의 상한 [m]. 브릿지는 속도를 아직 측정하지 못한
+  // 첫 프레임에 vs_var/vd_var를 "클립 한계의 제곱"으로 붙인다
+  // (max_abs_vs²=100, max_abs_vd²=16). 그러면 3σ가 종방향 9.0m / 횡방향
+  // 3.6m가 되어, 폭 1.1~2.1m 트랙에서는 좌우 어느 쪽도 통과 불가로 판정되고
+  // 매번 Tier3 TRAILING(v_target=0, 정지)으로 떨어졌다.
+  //   rosbag_0806 4런 실측: 68회 발생 = 장애물을 새로 획득할 때마다 1회.
+  //   로그의 요구 간격이 전부 3.76~3.88m로 동일했다.
+  // 코리도 반폭을 넘는 팽창은 "통과 불가"라는 오답만 만들 뿐 안전에 기여하지
+  // 않는다 — 실제 안전은 CheckPathCollision의 차량 footprint 검사와
+  // RequiredBoundaryMargin이 담당하므로 여기서 자른다.
+  double max_uncertainty_m_{0.25};
   // 회피 기하 계획에 쓰는 최소 속도 [m/s] — PlanSpeed() 참조
   double plan_speed_floor_{1.5};
   bool trailing_active_{false};
+  // "정적 장애물 정지" 이벤트 상승엣지용 (Tier3 정적/동적 분리)
+  bool static_stop_active_{false};
+  // 이 속도 이하에서만 크리프 탈출(진입 블렌드가 hold 구간까지 연장)을
+  // 허용한다 [m/s]. 주행 중 허용하면 장애물 옆에서 횡전환이 끝나는
+  // 위험한 기하가 나온다 — 정지 라치를 푸는 용도로만 쓴다.
+  double creep_escape_speed_{0.6};
   // 라인 스위치 (기본 maneuver)
   bool use_lane_switch_{true};       // false면 기존처럼 DoSpline을 1순위로
   double lane_blend_out_m_{5.0};     // raceline 복귀 블렌드 길이 [m]
@@ -274,6 +318,10 @@ private:
   // 공격성 파라미터: 접근 구간은 감속하지 않고 장애물 직전에서만 제동한다
   double squeeze_brake_dist_m_{6.0};      // squeeze 감속을 시작하는 s_front 앞 거리 [m]
   double trailing_engage_dist_m_{8.0};    // trailing 감속을 시작하는 정지점 앞 거리 [m]
+  // 속도 명령 -> 실제 감속 사이의 구동계 지연 [s]. 정지 프로파일이
+  // v²/(2a)만 보면 이 지연 동안 굴러간 거리만큼 정지점을 넘는다
+  // (rosbag_0806 실측: trailing_gap 1.5m 대비 0.24~0.68m에 정지).
+  double trailing_lag_sec_{0.3};
   double dyn_pass_speed_ratio_{1.4};     // 동적 상대 추월 중 최소 속도 = 상대 x 이 배율
 
   // 정적/동적 분류 파라미터 (unicorn opponent_tracker_params.yaml 기본값)
