@@ -51,16 +51,8 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
 : Node("ackermann_to_vesc_node", options),
   actual_speed_(0.0),
   last_vesc_state_time_(0, 0, RCL_ROS_TIME),
-  last_fault_time_(0, 0, RCL_ROS_TIME),
-  last_drive_command_time_(0, 0, RCL_ROS_TIME),
   has_vesc_state_(false),
-  braking_active_(false),
-  fault_seen_(false),
-  launch_armed_(true),
-  launch_ramp_active_(false),
-  was_above_launch_arm_speed_(false),
-  limited_drive_speed_(0.0),
-  fault_code_(0)
+  braking_active_(false)
 {
   // get conversion parameters
   speed_to_erpm_gain_ = declare_parameter<double>("speed_to_erpm_gain");
@@ -78,12 +70,6 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
   brake_release_speed_error_ = declare_parameter<double>("brake_release_speed_error");
   brake_min_vehicle_speed_ = declare_parameter<double>("brake_min_vehicle_speed");
   vesc_state_timeout_ = declare_parameter<double>("vesc_state_timeout");
-  launch_ramp_enabled_ = declare_parameter<bool>("launch_ramp_enabled");
-  launch_arm_speed_mps_ = declare_parameter<double>("launch_arm_speed_mps");
-  launch_exit_speed_mps_ = declare_parameter<double>("launch_exit_speed_mps");
-  launch_accel_limit_mps2_ = declare_parameter<double>("launch_accel_limit_mps2");
-  drive_ramp_erpm_per_sec_ = declare_parameter<double>("drive_ramp_erpm_per_sec");
-  fault_clear_hold_sec_ = declare_parameter<double>("fault_clear_hold_sec");
 
   if (
     speed_to_erpm_gain_ == 0.0 || ackermann_brake_max_ <= 0.0 ||
@@ -91,12 +77,9 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
     brake_entry_speed_error_ < 0.0 || brake_overspeed_error_ < 0.0 ||
     brake_release_speed_error_ < 0.0 ||
     brake_release_speed_error_ >= brake_entry_speed_error_ ||
-    brake_min_vehicle_speed_ < 0.0 || vesc_state_timeout_ <= 0.0 ||
-    launch_arm_speed_mps_ < 0.0 || launch_exit_speed_mps_ <= launch_arm_speed_mps_ ||
-    launch_accel_limit_mps2_ <= 0.0 || drive_ramp_erpm_per_sec_ <= 0.0 ||
-    fault_clear_hold_sec_ < 0.0)
+    brake_min_vehicle_speed_ < 0.0 || vesc_state_timeout_ <= 0.0)
   {
-    throw std::invalid_argument("Invalid VESC control parameters");
+    throw std::invalid_argument("Invalid VESC braking parameters");
   }
 
   // create publishers to VESC motor and servo commands
@@ -114,29 +97,9 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
 
 void AckermannToVesc::vescStateCallback(const VescStateStamped::SharedPtr state)
 {
-  const auto state_time = now();
   actual_speed_ = (state->state.speed - speed_to_erpm_offset_) / speed_to_erpm_gain_;
-  last_vesc_state_time_ = state_time;
+  last_vesc_state_time_ = now();
   has_vesc_state_ = std::isfinite(actual_speed_);
-
-  fault_code_ = state->state.fault_code;
-  if (fault_code_ != 0) {
-    fault_seen_ = true;
-    last_fault_time_ = state_time;
-    launch_armed_ = true;
-    launch_ramp_active_ = false;
-  }
-
-  if (has_vesc_state_) {
-    const bool above_arm_speed = std::abs(actual_speed_) > launch_arm_speed_mps_;
-    if (was_above_launch_arm_speed_ && !above_arm_speed) {
-      // Re-arm only after the car actually crosses from moving to nearly
-      // stopped. A zero command at boot does not consume the launch ramp.
-      launch_armed_ = true;
-      launch_ramp_active_ = false;
-    }
-    was_above_launch_arm_speed_ = above_arm_speed;
-  }
 }
 
 void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPtr cmd)
@@ -175,20 +138,6 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPt
       return;
     }
 
-    const double time_since_fault = fault_seen_ ?
-      (now() - last_fault_time_).seconds() : fault_clear_hold_sec_ + 1.0;
-    const bool fault_clear_hold_active =
-      fault_seen_ && time_since_fault >= 0.0 && time_since_fault <= fault_clear_hold_sec_;
-    if (fault_code_ != 0 || fault_clear_hold_active) {
-      // Do not keep re-applying a speed command while the VESC is faulted or
-      // immediately after it clears. Re-entry goes through the launch ramp.
-      braking_active_ = false;
-      launch_armed_ = true;
-      launch_ramp_active_ = false;
-      current_pub_->publish(current_msg);
-      return;
-    }
-
     // Preserve the legacy speed path for reverse commands. The explicit brake
     // controller is intended for forward autonomous driving only.
     if (cmd->drive.speed < 0.0 || actual_speed_ < 0.0) {
@@ -223,60 +172,6 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPt
       // neither explicit-brake entry condition is active.
       current_pub_->publish(current_msg);
     } else {
-      if (launch_ramp_enabled_ && launch_armed_) {
-        const auto command_time = now();
-        if (cmd->drive.speed <= launch_arm_speed_mps_) {
-          // Stay armed while stopped; start the ramp only on a real launch
-          // command so background zero commands cannot consume it.
-          launch_ramp_active_ = false;
-          limited_drive_speed_ =
-            std::max(0.0, static_cast<double>(cmd->drive.speed));
-          last_drive_command_time_ = command_time;
-          erpm_pub_->publish(erpm_msg);
-          return;
-        }
-
-        if (!launch_ramp_active_) {
-          launch_ramp_active_ = true;
-          limited_drive_speed_ = std::max(0.0, actual_speed_);
-          last_drive_command_time_ = command_time;
-        }
-
-        const double raw_dt = (command_time - last_drive_command_time_).seconds();
-        const double drive_dt =
-          std::min(vesc_state_timeout_, std::max(0.0, raw_dt));
-        last_drive_command_time_ = command_time;
-
-        if (cmd->drive.speed <= limited_drive_speed_) {
-          // Never delay a requested reduction; the existing BRAKE/COAST
-          // arbitration remains authoritative for deceleration.
-          limited_drive_speed_ = cmd->drive.speed;
-        } else {
-          const double normal_accel_limit =
-            drive_ramp_erpm_per_sec_ / std::abs(speed_to_erpm_gain_);
-          const double accel_limit = actual_speed_ < launch_exit_speed_mps_ ?
-            launch_accel_limit_mps2_ : normal_accel_limit;
-          limited_drive_speed_ = std::min(
-            static_cast<double>(cmd->drive.speed),
-            limited_drive_speed_ + accel_limit * drive_dt);
-          // Do not command below the measured speed and accidentally request
-          // regenerative deceleration from the VESC speed PID.
-          limited_drive_speed_ = std::max(
-            limited_drive_speed_,
-            std::min(actual_speed_, static_cast<double>(cmd->drive.speed)));
-        }
-
-        Float64 limited_erpm_msg;
-        limited_erpm_msg.data =
-          speed_to_erpm_gain_ * limited_drive_speed_ + speed_to_erpm_offset_;
-        erpm_pub_->publish(limited_erpm_msg);
-
-        if (limited_drive_speed_ >= static_cast<double>(cmd->drive.speed)) {
-          launch_armed_ = false;
-          launch_ramp_active_ = false;
-        }
-        return;
-      }
       erpm_pub_->publish(erpm_msg);
     }
   }
