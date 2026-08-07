@@ -1,18 +1,6 @@
 {
   "files": [
     {
-      "bytes": 31445,
-      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_asrun_sp_max7.00ms_margin0.08m_mu0.68.csv",
-      "role": "sp_0",
-      "sha256": "04596a538093542055664fa09de830abf73e3340b594b1c8bf8185ec69e2d93c"
-    },
-    {
-      "bytes": 31445,
-      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0806_asrun_sp_max7.00ms_margin0.08m_mu0.68.csv",
-      "role": "sp_1",
-      "sha256": "04596a538093542055664fa09de830abf73e3340b594b1c8bf8185ec69e2d93c"
-    },
-    {
       "bytes": 53751,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_asrun_walls.csv",
       "role": "walls_output",
@@ -37,26 +25,26 @@
       "sha256": "c2c4d1160bed175a166e2c870329009b0160e192097648ae9df817e3a85c30e8"
     },
     {
-      "bytes": 31535,
+      "bytes": 31569,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_asrun_iqp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "main_output",
-      "sha256": "2d0b8cf85d0c3dd265523f9c235c02f3f99b06e445a7278ccecd35f202f349c6"
+      "sha256": "9159dcfae3083c8c0c5c9560f41b303ca8a813ca676649ec1773b2d6178b1df7"
     },
     {
-      "bytes": 31535,
+      "bytes": 31569,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0806_asrun_iqp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "main_runtime",
-      "sha256": "2d0b8cf85d0c3dd265523f9c235c02f3f99b06e445a7278ccecd35f202f349c6"
+      "sha256": "9159dcfae3083c8c0c5c9560f41b303ca8a813ca676649ec1773b2d6178b1df7"
     }
   ],
-  "generation_content_sha256": "93b5584e5e338eda5d30a669a517f749900a1de24f0bbda1f06f1ccccb015d1d",
-  "generation_id": "356f2cf0c55143c689d31974c27c727f",
+  "generation_content_sha256": "2413d825e7b8891b778c2435321d512b6539e5a934a1569722ef300e799e5dbb",
+  "generation_id": "56917b47b4914a7096cc273afac082cf",
   "main": "my_track0806_asrun_iqp_max7.00ms_margin0.08m_mu0.68.csv",
   "map": "my_track0806_asrun",
   "schema_version": 1,
-  "sp": "my_track0806_asrun_sp_max7.00ms_margin0.08m_mu0.68.csv",
-  "sp_disabled_reason": "",
-  "sp_enabled": true,
+  "sp": null,
+  "sp_disabled_reason": "SP closed-loop validation failed: SP  /cpp_real_car: [FAIL] \uc81c\uc5b4 \uc694\uad6c \ud569\uc131\uac00\uc18d\ub3c4 7.46 m/s\u00b2 > mu*g=7.36 (1 step, \ucd5c\ucd08 t=6.63s, s=23.11m) \u2014 \ubb3c\ub9ac \ubaa8\ub378\uc740 \ud3ec\ud654\ud588\uc9c0\ub9cc \uc774 \ud504\ub85c\ud30c\uc77c\uc740 \uc2b9\uc778\ud558\uc9c0 \uc54a\uc74c",
+  "sp_enabled": false,
   "sp_expected": "my_track0806_asrun_sp_max7.00ms_margin0.08m_mu0.68.csv",
   "validation": {
     "adaptive_safe_dist": {
@@ -83,14 +71,14 @@
     "advisory_profiles": [
       "python_sim_tracker"
     ],
-    "brake_decel_per_amp": 0.15,
+    "brake_decel_per_amp": 0.12,
     "gate_profiles": [
       "cpp_real_car"
     ],
     "gate_target": "real",
     "mu_profile": 0.68,
-    "plant_accel_mps2": 1.8,
-    "plant_decel_planned_mps2": 1.8499999999999999,
+    "plant_accel_mps2": 3.5,
+    "plant_decel_planned_mps2": 2.0,
     "profile_settings": [
       {
         "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
