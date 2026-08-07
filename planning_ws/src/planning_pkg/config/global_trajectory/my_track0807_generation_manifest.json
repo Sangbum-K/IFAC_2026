@@ -1,16 +1,16 @@
 {
   "files": [
     {
-      "bytes": 31759,
-      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0807_sp_max6.00ms_margin0.08m_mu0.68.csv",
+      "bytes": 31727,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0807_sp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "sp_0",
-      "sha256": "8073fe152c312af6e2619016f792d5b1de110495a60d588ee69d36de333802b7"
+      "sha256": "544aacefe56651325819dca34d25efbbd1f22d0b3b525a4e7e9732e5c6850361"
     },
     {
-      "bytes": 31759,
-      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0807_sp_max6.00ms_margin0.08m_mu0.68.csv",
+      "bytes": 31727,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0807_sp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "sp_1",
-      "sha256": "8073fe152c312af6e2619016f792d5b1de110495a60d588ee69d36de333802b7"
+      "sha256": "544aacefe56651325819dca34d25efbbd1f22d0b3b525a4e7e9732e5c6850361"
     },
     {
       "bytes": 57484,
@@ -37,27 +37,27 @@
       "sha256": "dcc90afb413653a467ed2babd0bb1debb8854527e425ec2da60ad0d8a69324ac"
     },
     {
-      "bytes": 31874,
-      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0807_iqp_max6.00ms_margin0.08m_mu0.68.csv",
+      "bytes": 31839,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "main_output",
-      "sha256": "86387a19c026b4298bdfddcfcf4b72b12470d6042ba66e43c05dfbbd448f4895"
+      "sha256": "d079028c1889cbd7fc8cf17024107eb3e8926ef0605daccaeb439c2053735f96"
     },
     {
-      "bytes": 31874,
-      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0807_iqp_max6.00ms_margin0.08m_mu0.68.csv",
+      "bytes": 31839,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "main_runtime",
-      "sha256": "86387a19c026b4298bdfddcfcf4b72b12470d6042ba66e43c05dfbbd448f4895"
+      "sha256": "d079028c1889cbd7fc8cf17024107eb3e8926ef0605daccaeb439c2053735f96"
     }
   ],
-  "generation_content_sha256": "3161e72c51a67d1e99ecc30d13a8d599ea1c90b14b78f899e3040951337df6a3",
-  "generation_id": "d0772d612b364d088356082b22c54472",
-  "main": "my_track0807_iqp_max6.00ms_margin0.08m_mu0.68.csv",
+  "generation_content_sha256": "2794e56396494497550b04de307ee35b5721868c5a19fc8efefa63c03ef72a33",
+  "generation_id": "a30af293278445d09bc65251f124af57",
+  "main": "my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv",
   "map": "my_track0807",
   "schema_version": 1,
-  "sp": "my_track0807_sp_max6.00ms_margin0.08m_mu0.68.csv",
+  "sp": "my_track0807_sp_max7.00ms_margin0.08m_mu0.68.csv",
   "sp_disabled_reason": "",
   "sp_enabled": true,
-  "sp_expected": "my_track0807_sp_max6.00ms_margin0.08m_mu0.68.csv",
+  "sp_expected": "my_track0807_sp_max7.00ms_margin0.08m_mu0.68.csv",
   "validation": {
     "adaptive_safe_dist": {
       "enabled": true,
@@ -71,10 +71,10 @@
       "width_min": 1.225
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 145,
+      "binding_pts": 149,
       "corner_pts": 274,
       "enabled": true,
-      "limited_pts": 221,
+      "limited_pts": 233,
       "slope_max": 0.105,
       "slope_min": 0.05,
       "total_pts": 314,
@@ -89,26 +89,26 @@
     ],
     "gate_target": "real",
     "mu_profile": 0.68,
-    "plant_accel_mps2": 2.4,
-    "plant_decel_planned_mps2": 1.5499999999999998,
+    "plant_accel_mps2": 1.8,
+    "plant_decel_planned_mps2": 1.8499999999999999,
     "profile_settings": [
       {
-        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
         "controller_speed_scale": 1.0,
-        "max_speed_mps": 6.0,
+        "max_speed_mps": 7.0,
         "name": "cpp_real_car",
         "planner_speed_scale": 1.0,
         "plant": "vesc"
       },
       {
-        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
         "controller_speed_scale": 0.3,
-        "max_speed_mps": 6.0,
+        "max_speed_mps": 7.0,
         "name": "python_sim_tracker",
         "planner_speed_scale": 0.6667,
         "plant": "ideal"
       }
     ],
-    "raceline_v_max_mps": 6.0
+    "raceline_v_max_mps": 7.0
   }
 }

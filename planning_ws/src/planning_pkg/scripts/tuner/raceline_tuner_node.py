@@ -62,10 +62,14 @@ class RacelineTunerNode(Node):
         # slew 한계가 아니라). deployment_profiles.A_ACC_MAX / A_DEC_PLANNED 가
         # 기준이며, 여기 기본값은 그것과 같게 유지할 것 — 어긋나면 튜너가
         # build_map 보다 낙관적인 속도를 계획하고 그 CSV가 그대로 실차로 나간다.
-        # (2026-07-31 실측: 가속 2.2 = 30 A 전류 포화, 감속 1.3 = 코스팅 항력만.
-        #  VESC 제동 크레딧을 실측하면 A_DEC_PLANNED 와 함께 올릴 것.)
-        self.declare_parameter('tuner/a_acc_max', 2.2)
-        self.declare_parameter('tuner/a_dec_max', 1.3)
+        # test_tuner_longitudinal_defaults_match_measured_plant 가 이 동기화를
+        # 강제한다. 그 테스트는 AST 로 리터럴을 읽으므로 import 로 대체할 수 없다
+        # — deployment_profiles 를 고치면 여기도 손으로 같이 고쳐야 한다.
+        # 2026-08-07 동기화: 2.2/1.3 이 07-31 실측(30 A 포화) 시절 값으로 남아
+        # 있어 0805~0806 재실측(A_ACC 1.8) 및 브레이크 크레딧 반영(A_DEC_PLANNED
+        # 1.4 + 0.15*3.0 = 1.85) 과 어긋나 있었다.
+        self.declare_parameter('tuner/a_acc_max', 1.8)
+        self.declare_parameter('tuner/a_dec_max', 1.85)
         self.declare_parameter('tuner/wheelbase_m', 0.33)
         self.declare_parameter('tuner/max_steer_rad', 0.36)
         self.declare_parameter('tuner/validation_tolerance', 0.03)
