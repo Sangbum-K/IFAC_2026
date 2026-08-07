@@ -16,3 +16,8 @@ log/
 # (db3 하나가 수백 MB라 GitHub 파일 한도 100MB를 넘는다)
 yaw_baseline_*/
 run_*/
+# 압축해서 올리고 싶은 유혹이 생기는데, 그것도 안 된다.
+# rosbag0807_obs.zip이 69MB — GitHub 경고 한도(50MB)를 넘고
+# 한번 푸시하면 히스토리에서 지우기가 매우 번거롭다.
+rosbag*.zip
+rosbag*.tar.*

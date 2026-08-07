@@ -77,6 +77,14 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
+  // 커밋된 정적 회피 경로를 **무효화할 자격이 있는** 장애물만 남긴다.
+  // 관측 이력(cls_tracks_)이 commit_break_min_obs_ 이상인 트랙만 통과시킨다.
+  // 갓 뜬 1~2프레임짜리 유령이 이미 성립한 회피를 파기하고 정지 궤적으로
+  // 떨어뜨리는 것을 막는다 (0807 run_164819 인과 3중 확인).
+  // 재계획 경로의 검증에는 쓰지 않는다 — 거기서는 fail-closed가 맞다.
+  std::vector<f1tenth_planning_msgs::msg::Obstacle> StableObstacles(
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
+
   // 경로를 lookahead 내 장애물들과 (s,d,t) 충돌 검사 (정적 커밋 유효성,
   // 모든 회피 후보 검증에 사용). 차량 반길이/반폭, 장애물 분산, 경로
   // 도착시각에서의 등속 이동을 포함하며 목표 장애물도 절대 제외하지 않는다.
@@ -103,10 +111,16 @@ private:
 
   // 회피 불가 시 폴백: raceline 유지 + 장애물 뒤 trailing_gap에서
   // 장애물 속도까지 감속하는 궤적 (ForzaETH 상태머신 TRAILING 대응)
+  //
+  // allow_stop=false면 목표 속도를 trailing_retry_speed_ 아래로 내리지
+  // 않는다. Tier1/2가 "조향 기하 하한 초과"가 아닌 일시적 사유로 실패한
+  // 경우에 쓴다 — 정지가 정당하지 않고, 감속만 해도 다음 사이클의
+  // BlendDist가 줄어 회피가 성립한다.
   bool BuildTrailing(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks);
+    visualization_msgs::msg::MarkerArray & out_mrks,
+    bool allow_stop = true);
 
   // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
   // 아닌(|kappa| <= ot_max_kappa) s 구간을 raceline에서 자동 산출.
@@ -152,12 +166,21 @@ private:
   //   |d''|_max = 6*A*v^2/L^2  ->  L >= v*sqrt(6A/a_max)
   // 거리를 상수로 두면 횡가속이 v^2로 커져 그립을 넘는다 (6 m/s에서 1.5g 실측 계산).
   // lat_acc <= 0 이면 blend_lat_acc_max_(또는 마찰원 잔여)를 쓴다.
-  double BlendDist(double amplitude, double speed, double lat_acc = -1.0) const;
+  // kappa_track: 그 구간 레이스라인 곡률 [1/m] (BlendGeomFloor로 전달).
+  double BlendDist(double amplitude, double speed, double lat_acc = -1.0,
+                   double kappa_track = 0.0) const;
 
   // 속도와 무관한 조향 기하 하한 [m]. smoothstep 횡이동 amplitude의 피크
   // 곡률 6A/L²이 조향 한계를 넘지 않는 최소 L. 가용 거리가 이보다 짧으면
   // "어떤 속도로도 회피 불가"이고, 그때만 정지가 정당하다.
-  double BlendGeomFloor(double amplitude) const;
+  //
+  // kappa_track: 그 구간에서 레이스라인 자체가 이미 쓰고 있는 곡률 [1/m].
+  // 조향은 트랙 곡률과 기동 곡률을 **합쳐서** 내야 하므로 실제 조건은
+  //   6A/L² + kappa_track <= 0.8*kappa_steer_max
+  // 이다. 이 항을 빼면 헤어핀에서 하한을 과소평가한다 — 0807 run_164216
+  // (kappa 0.74, A 0.49)의 참 하한은 1.80m가 아니라 2.23~2.45m였고, 그
+  // 차이만큼 "성립한다고 판정했지만 실제로는 못 도는" 경로가 나왔다.
+  double BlendGeomFloor(double amplitude, double kappa_track = 0.0) const;
 
   // 가용 거리 available 안에서 amplitude만큼 횡이동할 수 있는 최대 속도 [m/s].
   // 기하 하한을 못 채우면 0(= 어떤 속도로도 불가), 횡이동이 0에 가까우면 무한대.
@@ -165,7 +188,20 @@ private:
   // 얼마인가?"로 바꾸는 함수다 — 정적 장애물은 속도가 자유 변수이므로
   // 감속으로 성립시킬 수 있는데도 매번 Tier3(정지)로 떨어지고 있었다.
   double BlendSpeedCap(double amplitude, double available,
-                       double lat_acc = -1.0) const;
+                       double lat_acc = -1.0, double kappa_track = 0.0) const;
+
+  // [s_from, s_to] 구간 레이스라인 |kappa|의 최대값 [1/m]. BlendGeomFloor에
+  // 넘길 트랙 곡률항. 최대값을 쓰는 이유는 기하 하한이 구간 내 가장 조향이
+  // 빡빡한 지점에서 성립해야 하기 때문이다.
+  double BlendKappaMax(double s_from, double s_to) const;
+
+  // "회피 중이라 사이드를 유지해야 하는가". |cur_d_|가 문턱을 넘는 것만으로는
+  // 부족하다 — 그 d의 **부호가 last_ot_side_와 같아야** 실제로 그 사이드로
+  // 회피 중인 것이다. 0807 run_164216에서 차가 오른쪽(d=-0.27)으로 밀려
+  // 있는데 last_ot_side_="left"라 왼쪽을 고집해 회피가 전패했다.
+  // (문턱 0.20m는 정상 추종오차보다 작아 |d| 조건만으로는 38~96%의 시간
+  //  동안 참이 된다 — 사실상 상시 라치였다.)
+  bool SideKeepActive() const;
 
   // [s_from, s_to] 구간에서 횡 전환에 쓸 수 있는 그립 [m/s²].
   // 마찰원 잔여 sqrt(path_lat_acc_max² - (kappa_ref·v_ref)²)의 구간 최소값.
@@ -212,6 +248,7 @@ private:
   // require_current_feasible=false는 충돌 회피보다 최대 제동 명령 발행이
   // 우선인 trailing에만 사용한다. 반환 false면 현재 상태에서 물리적으로
   // 도달할 수 없는 회피 경로다.
+  // bypass_speed_profile_ = true면 이 함수 전체가 no-op이다 (임시 테스트용).
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible = true) const;
@@ -240,6 +277,16 @@ private:
   double fixed_pred_time_{0.15};
   double outside_spline_scale_{1.75};
   double inside_speed_scale_{0.9};
+  // ── 임시 테스트 스위치 ───────────────────────────────────────────────
+  // true면 회피 경로(lane switch / free spline / SP lane change / SP exit)의
+  // 모든 감속 요소를 끄고 글로벌 레이스라인 속도를 그대로 쓴다:
+  //   inside/squeeze/OT 배율, 진입·복귀 속도 캡, v_floor,
+  //   ApplySpeedProfile 전체(오프셋 곡률 캡·조향률 캡·역방향 감속·
+  //   순방향 가속 envelope·jerk shaping·현재상태 feasibility 거부).
+  // trailing(장애물 뒤 감속/정지 폴백)은 회피가 아니라 충돌 방지이므로
+  // 이 스위치의 영향을 받지 않는다.
+  // 물리 성립성을 검증하지 않으므로 실차 상시 사용 금지 — 테스트 후 false.
+  bool bypass_speed_profile_{false};
   double spline_resolution_{0.1};
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
@@ -322,6 +369,14 @@ private:
   // v²/(2a)만 보면 이 지연 동안 굴러간 거리만큼 정지점을 넘는다
   // (rosbag_0806 실측: trailing_gap 1.5m 대비 0.24~0.68m에 정지).
   double trailing_lag_sec_{0.3};
+  // 정지 프로파일 램프의 최대 감속률 [m/s^2]. 계단 대신 현재 속도에서
+  // 이 비율로 내려오는 곡선을 하한으로 깐다 (params.yaml에 근거).
+  double trailing_ramp_decel_{2.0};
+  // 기하 하한 초과가 **아닌** 사유로 회피가 실패했을 때의 목표 속도 [m/s].
+  double trailing_retry_speed_{1.5};
+  // ApexFor의 목표 간격을 검증기 요구치보다 이만큼 더 준다 [m].
+  // 동률(목표 == 충돌박스 경계)이면 수 mm 오차로 매 사이클 자기 거부한다.
+  double apex_clearance_eps_m_{0.05};
   double dyn_pass_speed_ratio_{1.4};     // 동적 상대 추월 중 최소 속도 = 상대 x 이 배율
 
   // 정적/동적 분류 파라미터 (unicorn opponent_tracker_params.yaml 기본값)
@@ -343,6 +398,8 @@ private:
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
   std::map<int32_t, ObsClsTrack> cls_tracks_;
+  // 커밋된 회피를 파기할 수 있는 최소 관측 수 (StableObstacles).
+  int commit_break_min_obs_{3};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
@@ -397,6 +454,18 @@ private:
   bool has_gb_wpnts_{false};
   bool has_frenet_odom_{false};
   std::string last_ot_side_{""};
+  // 이번 사이클에 Tier1/Tier2가 "조향 기하 하한을 못 채움"(= 어떤 속도로도
+  // 불가)으로 거부했는가. 매 Run() 시작에 false로 리셋한다.
+  //
+  // Trailing(v_target=0 정지 궤적)은 **이 경우에만** 정당하다. 예전 코드는
+  // `if (!evasion_valid && use_trailing_)` 로 실패 사유를 구분하지 않아,
+  // 충돌검사 거부·벽 축소·"이미 장애물 구간 내부"·스팬 초과 같은 일시적
+  // 사유에도 전 점 vx=0 궤적을 발행했다 (주석 :935-950은 원래부터 사유를
+  // 구분하겠다고 선언하고 있었다 — 코드가 주석을 따라간다).
+  // vx=0은 MAP 컨트롤러에서 조향 0을 유발하므로(control_node.cpp:1057)
+  // 이 구분이 안전에 직결된다.
+  bool lane_switch_geom_infeasible_{false};
+  bool free_spline_geom_infeasible_{false};
   std::mutex mutex_obstacles_;
   std::mutex mutex_gb_wpnts_;
   std::mutex mutex_frenet_odom_;
