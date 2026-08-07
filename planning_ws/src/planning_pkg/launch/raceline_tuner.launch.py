@@ -1,7 +1,7 @@
 """RViz 인터랙티브 레이스라인 튜너 (HMCL raceline_tuner의 ROS2 구현).
 
 맵 + 튜너 노드 + RViz를 띄운다. 코너별로 라인/속도를 드래그로 조절:
-  ros2 launch planning_pkg raceline_tuner.launch.py                  # 기본 = my_track
+  ros2 launch planning_pkg raceline_tuner.launch.py                  # 기본 = my_track0807
   ros2 launch planning_pkg raceline_tuner.launch.py map:=Spielberg_map
   ros2 launch planning_pkg raceline_tuner.launch.py csv:=<다른 raceline>.csv
 
@@ -96,7 +96,7 @@ def _track_length(csv_path):
 def _auto_stride(length_m):
     """핸들 간격 [wpt]. 간격 1.0~2.5 m 안에서 핸들이 ~30개 되도록.
 
-    my_track(29.3 m) -> 1.0 m = 10 wpt, Spielberg(339 m) -> 2.5 m = 25 wpt.
+    my_track0807(31.3 m) -> 1.0 m = 10 wpt, Spielberg(339 m) -> 2.5 m = 25 wpt.
     README의 권장값 두 개를 그대로 재현한다.
     """
     spacing_m = min(max(length_m / 30.0, 1.0), 2.5)
@@ -106,7 +106,7 @@ def _auto_stride(length_m):
 def _auto_falloff(length_m):
     """드래그 영향 반경 [m]. 전장의 10%, 3~8 m로 클램프.
 
-    my_track(29.3 m) -> 3.0, Spielberg(339 m) -> 8.0. 좁은 트랙에서 ±8 m로
+    my_track0807(31.3 m) -> 3.13, Spielberg(339 m) -> 8.0. 좁은 트랙에서 ±8 m로
     끌면 트랙 절반이 딸려오는 문제(README ⚠️ 2)를 전장에 맞춰 자동으로 막는다.
     """
     return round(min(max(0.1 * length_m, 3.0), 8.0), 2)
@@ -191,6 +191,14 @@ def launch_setup(context, *args, **kwargs):
     min_wall = _explicit('min_wall')
     if min_wall is not None:
         tuner_params['tuner/min_wall_dist_m'] = min_wall
+    free_speed = LaunchConfiguration('free_speed').perform(context).strip().lower()
+    if free_speed in ('true', '1'):
+        tuner_params['tuner/free_speed'] = True
+        print('[raceline_tuner] ⚠ free_speed=true — 속도 핸들을 한계로 투영하지 '
+              '않습니다. 저장 검사는 그대로 적용되므로 한계를 넘긴 프로파일은 '
+              '저장 단계에서 거부됩니다.')
+    elif free_speed not in ('', 'false', '0'):
+        raise RuntimeError('free_speed 는 true/false 만 받습니다: %s' % free_speed)
     print('[raceline_tuner] v_max=%s m/s  margin=%s m  mu=%s  (%s)'
           % (v_max, corridor_margin, mu,
              '파일명에서 자동' if _explicit('v_max') is None else '인자로 지정'))
@@ -231,9 +239,9 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'map',
-            default_value='my_track',
+            default_value='my_track0807',
             description='배경 맵 이름 (<이름>.yaml, 확장자 제외). '
-                        '~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾는다. 기본 = 대회맵'),
+                        '~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾는다. 기본 = 현행 실차 트랙'),
         DeclareLaunchArgument(
             'csv',
             default_value='',
@@ -243,12 +251,12 @@ def generate_launch_description():
             'stride',
             default_value='',
             description='핸들 간격 (wpt 수, 0.1m/wpt). 비우면 전장에서 자동 '
-                        '(간격 1.0~2.5 m). my_track -> 10, Spielberg -> 25'),
+                        '(간격 1.0~2.5 m). my_track0807 -> 10, Spielberg -> 25'),
         DeclareLaunchArgument(
             'falloff',
             default_value='',
             description='드래그 영향 반경 [m]. 비우면 전장의 10% (3~8 m 클램프). '
-                        'my_track(29.3 m) -> 3.0, Spielberg(339 m) -> 8.0'),
+                        'my_track0807(31.3 m) -> 3.13, Spielberg(339 m) -> 8.0'),
         DeclareLaunchArgument(
             'v_max',
             default_value='',
@@ -264,6 +272,13 @@ def generate_launch_description():
             default_value='',
             description='저장되는 d_left/d_right의 최소 여유 [m]. 비우면 0.20. '
                         '실제 벽 거리는 여기에 corridor_margin이 더해진다'),
+        DeclareLaunchArgument(
+            'free_speed',
+            default_value='false',
+            description='true 면 속도 핸들을 마찰/가감속 한계로 투영하지 않는다 '
+                        '(드래그한 값이 그대로 남는다). 저장 시 검사는 그대로라 '
+                        '한계를 넘으면 저장이 거부된다. 한계 자체를 올리려면 '
+                        'mu:= / v_max:= 와 런타임 global_trajectory/validation_mu 를 볼 것'),
         DeclareLaunchArgument(
             'corridor_margin',
             default_value='',

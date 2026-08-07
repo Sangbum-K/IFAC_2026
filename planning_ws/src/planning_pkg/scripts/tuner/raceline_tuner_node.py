@@ -65,11 +65,13 @@ class RacelineTunerNode(Node):
         # test_tuner_longitudinal_defaults_match_measured_plant 가 이 동기화를
         # 강제한다. 그 테스트는 AST 로 리터럴을 읽으므로 import 로 대체할 수 없다
         # — deployment_profiles 를 고치면 여기도 손으로 같이 고쳐야 한다.
-        # 2026-08-07 동기화: 2.2/1.3 이 07-31 실측(30 A 포화) 시절 값으로 남아
-        # 있어 0805~0806 재실측(A_ACC 1.8) 및 브레이크 크레딧 반영(A_DEC_PLANNED
-        # 1.4 + 0.15*3.0 = 1.85) 과 어긋나 있었다.
+        # 2026-08-07 동기화 (2차): a_dec 1.85 는 옛 vesc.yaml(ackermann_brake_max
+        # 3.0 A, 크레딧 0.15/A) 시점 값이었다. 현재 vesc.yaml 은 5.0 A 이고
+        # 크레딧도 0.12/A 로 재산정돼 A_DEC_PLANNED = 1.4 + 0.12*5.0 = 2.0 이다.
+        # a_acc 는 그대로 1.8 — deployment_profiles 가 이번에 3.5(미검증 외삽)
+        # 에서 이 값으로 되돌아왔다 (근거는 그 파일의 A_ACC_MAX 주석).
         self.declare_parameter('tuner/a_acc_max', 1.8)
-        self.declare_parameter('tuner/a_dec_max', 1.85)
+        self.declare_parameter('tuner/a_dec_max', 2.0)
         self.declare_parameter('tuner/wheelbase_m', 0.33)
         self.declare_parameter('tuner/max_steer_rad', 0.36)
         self.declare_parameter('tuner/validation_tolerance', 0.03)
@@ -79,6 +81,14 @@ class RacelineTunerNode(Node):
         self.declare_parameter('tuner/vehicle_width_m', 0.30)
         self.declare_parameter('tuner/vehicle_length_m', 0.55)
         self.declare_parameter('tuner/vel_handle_scale', 0.3) # 높이 = v * scale [m]
+        # 속도 핸들을 '상한 투영' 없이 끌고 간 그대로 두는 모드.
+        # 기본은 꺼짐 — 켜면 드래그가 튕겨 돌아오지 않는 대신, 마찰/가감속
+        # 한계를 넘는 값도 화면과 메모리에 그대로 남는다. 저장 시 검사는
+        # 그대로 살아 있으므로(한계 초과면 저장 거부), '보면서 정하는' 용도다.
+        # ⚠️ 이걸 켠다고 차가 빨라지지 않는다. 한계를 실제로 올리려면 그 근거를
+        #    가진 값을 바꿔야 한다: mu:= / v_max:= (튜너)와
+        #    global_trajectory/validation_mu (런타임 검증기)는 이미 파라미터다.
+        self.declare_parameter('tuner/free_speed', False)
 
         gp = lambda n: self.get_parameter(n).value
         self.csv_path = Path(gp('tuner/raceline_csv'))
@@ -100,6 +110,7 @@ class RacelineTunerNode(Node):
         self.vehicle_width = gp('tuner/vehicle_width_m')
         self.vehicle_length = gp('tuner/vehicle_length_m')
         self.z_scale = gp('tuner/vel_handle_scale')
+        self.free_speed = bool(gp('tuner/free_speed'))
         safety_values = (
             self.min_wall, self.v_max, self.mu, self.a_acc, self.a_dec,
             self.wheelbase, self.max_steer, self.ax_tolerance, self.z_scale,
@@ -134,6 +145,10 @@ class RacelineTunerNode(Node):
         self.map_origin_yaw = 0.0
         self._tracking_model = None
         self._tracking_model_error = ''
+        # 폐루프 게이트의 타이어 한계는 build_map 의 물리 MU 다. self.mu 는
+        # 파일명에서 온 '계획' mu(MU_PROFILE)라 이보다 낮다 — 둘을 섞으면
+        # 생성기가 승인한 CSV 를 튜너가 다시 거부해 저장이 잠긴다.
+        self.verification_mu = None
         self._tracking_profile_signature = ''
         self._workspace_root = None
         try:
@@ -165,6 +180,12 @@ class RacelineTunerNode(Node):
         self.menu.insert('실행취소 (undo)', callback=self.on_menu)          # id 2
         self.menu.insert('전체 리셋', callback=self.on_menu)                # id 3
         self.menu.insert('CSV 저장', callback=self.on_menu)                 # id 4
+
+        if self.free_speed:
+            self.get_logger().warn(
+                'free_speed=true: 속도 핸들이 마찰/가감속 한계로 투영되지 '
+                '않습니다. 화면 값은 물리적으로 불가능할 수 있고, 저장 시 '
+                '검사(마찰원/가감속/폐루프)에서 거부될 수 있습니다')
 
         self.anchor_idxs = list(range(0, n, self.stride))
         self._make_all_markers()
@@ -264,6 +285,14 @@ class RacelineTunerNode(Node):
             package_root / 'scripts' / 'global_traj_sim' / 'build_map.py')
         self._tracking_profile_signature = \
             module.assert_generator_profile_contract(generator_path)
+        verification_mu = module.generator_physical_mu(generator_path)
+        if verification_mu + 1e-9 < self.mu:
+            # 여기서 예외를 던지면 모델 자체가 안 실려 편집까지 막힌다.
+            # 게이트는 어차피 물리 MU 로 fail-closed 하므로 경고만 남긴다.
+            self.get_logger().warn(
+                f'계획 mu({self.mu:.3f})가 생성기 물리 MU({verification_mu:.3f})'
+                '보다 큽니다 — 이 CSV는 폐루프 마찰 게이트에서 걸릴 수 있습니다')
+        self.verification_mu = verification_mu
         self._workspace_root = package_root.parents[2]
         return module
 
@@ -474,7 +503,7 @@ class RacelineTunerNode(Node):
 
     def _closed_loop_tracking_is_safe(self):
         """build_map과 동일한 선택 배포 프로파일 모두로 1 lap을 검증한다."""
-        if self._tracking_model is None:
+        if self._tracking_model is None or self.verification_mu is None:
             return False, (
                 '폐루프 검증 모델이 없어 저장 불가: '
                 + (self._tracking_model_error or '알 수 없는 로드 오류'))
@@ -516,9 +545,10 @@ class RacelineTunerNode(Node):
                 log = model.PurePursuitSim(
                     trajectory, profile_name,
                     workspace_root=self._workspace_root,
-                    mu=self.mu).run(requested_laps=1)
+                    mu=self.verification_mu).run(requested_laps=1)
                 ok, messages = model.verify_simulation(
-                    self.out_path.name, log, grid, 1, profile_name, self.mu)
+                    self.out_path.name, log, grid, 1, profile_name,
+                    self.verification_mu)
                 # build_map 기본 차량보다 tuner 설정이 큰 경우까지 포함해,
                 # 실제 추종 pose마다 현재 설정 직사각 footprint를 다시 확인한다.
                 if len(log.get('x', ())) and len(log.get('theta', ())):
@@ -588,7 +618,13 @@ class RacelineTunerNode(Node):
             self.get_logger().error(f'저장 거부: {reason}')
             return
         try:
-            self._enforce_velocity_feasibility()
+            if self.free_speed:
+                # 수동 값을 저장 직전에 되돌리면 free_speed 가 무의미해진다.
+                # 대신 아래 _validation_errors() 가 마찰/가감속/ax 를 그대로
+                # 검사하므로, 한계를 넘는 프로파일은 여기서 걸려 거부된다.
+                self._refresh_ax_from_speed()
+            else:
+                self._enforce_velocity_feasibility()
         except (RuntimeError, ValueError) as exc:
             self.get_logger().error(f'저장 거부: 속도 안전 투영 실패: {exc}')
             return
@@ -640,6 +676,9 @@ class RacelineTunerNode(Node):
                   f'edited_role={role}\n'
                   f'# corridor_margin_m={self.corridor_margin:.7f}; '
                   f'min_wall_dist_m={self.min_wall:.7f}\n'
+                  f'# planning_mu={self.mu:.7f}; '
+                  f'verification_mu={self.verification_mu:.7f}; '
+                  f'free_speed={"true" if self.free_speed else "false"}\n'
                   '# s_m; x_m; y_m; d_right; d_left; psi_rad; kappa_radpm; vx_mps; ax_mps2\n')
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -708,6 +747,8 @@ class RacelineTunerNode(Node):
             'generator_manifest_status': 'stale_do_not_use',
             'controller_safety_model': self._tracking_model.MODEL_VERSION,
             'profile_signature': self._tracking_profile_signature,
+            'planning_mu': self.mu,
+            'verification_mu': self.verification_mu,
         }
         fd, temporary = tempfile.mkstemp(
             prefix=f'.{manifest_path.name}.', suffix='.tmp',
@@ -824,6 +865,25 @@ class RacelineTunerNode(Node):
         """현재 수동 속도를 상한으로 폐루프 segment 제약에 고정점 투영."""
         self._project_velocity_profile(
             speed_ceiling=np.maximum(self.wpts[:, 7], 0.0))
+
+    def _refresh_ax_from_speed(self):
+        """v 는 그대로 두고 ax 열만 폐루프 segment 기준으로 다시 만든다.
+
+        free_speed 모드에서 속도만 바꾸면 ax 열이 어긋난 채 남는데, 저장 검사도
+        런타임 로더도 ax 와 v 의 정합을 따로 확인하므로 여기서 맞춰 둔다.
+        """
+        xy = self.wpts[:, 1:3]
+        segment_ds = np.hypot(
+            np.roll(xy[:, 0], -1) - xy[:, 0],
+            np.roll(xy[:, 1], -1) - xy[:, 1])
+        if np.any(segment_ds <= 1e-6) or not np.isfinite(segment_ds).all():
+            raise RuntimeError('ax 재계산 거부: 폐루프 segment 길이가 비정상')
+        if self._tracking_model is None:
+            raise RuntimeError(
+                'ax 재계산 모델 없음: ' +
+                (self._tracking_model_error or '알 수 없는 로드 오류'))
+        self.wpts[:, 8] = self._tracking_model.closed_loop_ax(
+            self.wpts[:, 7], segment_ds)
 
     def _project_velocity_profile(self, speed_ceiling):
         if self._tracking_model is None:
@@ -1144,8 +1204,13 @@ class RacelineTunerNode(Node):
         # 단, 트랙 전체를 다시 풀면 다른 코너의 수동 속도 튜닝이 매번 사라지므로
         # 곡률이 바뀐 근방 + 제동거리 여유만 국소적으로 재계산한다.
         try:
-            half = self._recompute_velocity_window(idx)
-            self._enforce_velocity_feasibility()
+            if self.free_speed:
+                # 수동 속도를 건드리지 않는다. 기하가 바뀌었으니 ax 만 다시.
+                half = int(self.window_m / self.ds)
+                self._refresh_ax_from_speed()
+            else:
+                half = self._recompute_velocity_window(idx)
+                self._enforce_velocity_feasibility()
         except (RuntimeError, ValueError) as exc:
             self.wpts = self.undo_stack.pop()
             self._refresh_all_markers()
@@ -1176,11 +1241,30 @@ class RacelineTunerNode(Node):
             self.server.applyChanges()
             return
         self._snapshot()
+        previous_v = float(self.wpts[idx, 7])
 
         def apply(i, dv):
             self.wpts[i, 7] = float(np.clip(self.wpts[i, 7] + dv, 0.5, self.v_max))
 
         self._falloff_apply(idx, delta_v, apply)
+        if self.free_speed:
+            # 투영하지 않는다. 다만 ax 열은 v 에서 다시 만들어야 한다 —
+            # 안 그러면 CSV 가 자기모순이 되어 저장/런타임 양쪽에서 거부된다.
+            try:
+                self._refresh_ax_from_speed()
+            except (RuntimeError, ValueError) as exc:
+                self.wpts = self.undo_stack.pop()
+                self._refresh_all_markers()
+                self._publish_preview()
+                self.get_logger().error(f'속도 변경 거부 및 원복: {exc}')
+                return
+            self._refresh_markers_near(idx)
+            self._publish_preview()
+            self.get_logger().warn(
+                f'속도 조절(free_speed): idx {idx}, {previous_v:.2f} -> '
+                f'{self.wpts[idx, 7]:.2f} m/s — 한계 투영 안 함. '
+                '저장 시 마찰/가감속/폐루프 검사는 그대로 적용된다')
+            return
         try:
             self._enforce_velocity_feasibility()
         except (RuntimeError, ValueError) as exc:
@@ -1190,9 +1274,28 @@ class RacelineTunerNode(Node):
             self.get_logger().error(
                 f'속도 변경 거부 및 원복: 안전 투영 실패: {exc}')
             return
+        # 수동 속도는 상한으로만 쓰이므로, 올려 달라는 요청은 마찰/가감속
+        # 한계에 걸리면 그대로 잘린다. 게다가 투영은 단조가 아니라 상한을
+        # 올린 결과가 오히려 더 느려질 수도 있다. 요청이 실제로 반영되지
+        # 않았으면 편집을 남기지 않고 이유를 알린다 — 안 그러면 사용자는
+        # 반영된 줄 알고 계속 편집하게 된다.
+        achieved_v = float(self.wpts[idx, 7])
+        if delta_v > 0.0 and achieved_v <= previous_v + 1e-3:
+            self.wpts = self.undo_stack.pop()
+            self._refresh_all_markers()
+            self._publish_preview()
+            self.get_logger().warn(
+                f'속도 증가 불가: idx {idx}, {previous_v:.2f} m/s 요청 '
+                f'{new_v:.2f} m/s -> 투영 결과 {achieved_v:.2f} m/s. '
+                f'이 구간은 마찰(mu={self.mu:.2f}) 또는 가감속 한계'
+                f'(a_acc={self.a_acc:.2f}/a_dec={self.a_dec:.2f})가 잡고 '
+                '있습니다. 라인을 먼저 펴야 속도가 올라갑니다')
+            return
         self._refresh_markers_near(idx)
         self._publish_preview()
-        self.get_logger().info(f'속도 조절: idx {idx}, {new_v:.1f} m/s (Δ{delta_v:+.1f})')
+        self.get_logger().info(
+            f'속도 조절: idx {idx}, 요청 {new_v:.2f} -> 반영 {achieved_v:.2f} m/s '
+            f'(이전 {previous_v:.2f})')
 
     def on_menu(self, fb: InteractiveMarkerFeedback):
         eid = fb.menu_entry_id

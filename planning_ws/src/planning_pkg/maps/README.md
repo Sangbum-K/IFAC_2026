@@ -23,6 +23,20 @@ numpy 1.x로 컴파일돼 있어서 그대로 두면 `_ARRAY_API not found` /
 
 (같은 이유로 `make_raceline.sh`는 이 기계에서 안 된다 — venv에 pip이 없다.)
 
+`skimage`(중앙선 skeletonize)는 dist-packages에 없다. venv에 pip이 없으므로
+시스템 pip으로 **별도 폴더에** 받아서 `PYTHONPATH`로 얹는다. numpy를 딸려
+올리지 않도록 `--no-deps`로 버전을 고정할 것 (numpy 1.21.5 유지가 핵심):
+
+```bash
+pip install --target=~/IFAC_ws/.venv/skimage_target --no-deps \
+    "scikit-image==0.19.3" "imageio==2.19.3" "tifffile==2021.11.2" \
+    "PyWavelets==1.3.0" "networkx==2.6.3"
+
+# 이후 build_map 실행은 항상 이 두 변수를 같이:
+PYTHONNOUSERSITE=1 PYTHONPATH=~/IFAC_ws/.venv/skimage_target \
+    ~/IFAC_ws/.venv/bin/python build_map.py <맵> --dir ccw
+```
+
 ### 1. 맵 만들기 (SLAM) — `mapp <이름>`
 ```bash
 mapp my_track0727     # 조이스틱으로 한 바퀴 -> Ctrl+C

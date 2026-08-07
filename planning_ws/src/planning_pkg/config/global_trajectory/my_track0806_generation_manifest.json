@@ -1,6 +1,18 @@
 {
   "files": [
     {
+      "bytes": 31312,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_sp_max7.00ms_margin0.08m_mu0.68.csv",
+      "role": "sp_0",
+      "sha256": "fe397495402b2e5b3d8a648e6109810dd5232dec8078d7b7fa3ecbdbd53b7401"
+    },
+    {
+      "bytes": 31312,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0806_sp_max7.00ms_margin0.08m_mu0.68.csv",
+      "role": "sp_1",
+      "sha256": "fe397495402b2e5b3d8a648e6109810dd5232dec8078d7b7fa3ecbdbd53b7401"
+    },
+    {
       "bytes": 56260,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_walls.csv",
       "role": "walls_output",
@@ -25,26 +37,26 @@
       "sha256": "068a0b61b71ba95d03666eb276346915b5bdceb9d43253b92051b15ac623248f"
     },
     {
-      "bytes": 31783,
+      "bytes": 31740,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_iqp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "main_output",
-      "sha256": "2df415ca2ca5046e14d90d917325d4534c0c81e8720efd317797dde644c25c30"
+      "sha256": "5abb514825aa5fdc27f43b5f1421bccaa51eb0e30a37fa3962c7c19327c0bcc2"
     },
     {
-      "bytes": 31783,
+      "bytes": 31740,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0806_iqp_max7.00ms_margin0.08m_mu0.68.csv",
       "role": "main_runtime",
-      "sha256": "2df415ca2ca5046e14d90d917325d4534c0c81e8720efd317797dde644c25c30"
+      "sha256": "5abb514825aa5fdc27f43b5f1421bccaa51eb0e30a37fa3962c7c19327c0bcc2"
     }
   ],
-  "generation_content_sha256": "5db27a7c3e80300428ce157e9b83697f5e5b03a936d6488d1feb7fe635b789b9",
-  "generation_id": "91ad5dd4aa5b464cadfcb7eabf106006",
+  "generation_content_sha256": "c47fdd4e90e2f97dedd105752bc69e9eaf14d3649913ad9ea2f54dae8da45486",
+  "generation_id": "a372278345de4cdbad927f79e4242766",
   "main": "my_track0806_iqp_max7.00ms_margin0.08m_mu0.68.csv",
   "map": "my_track0806",
   "schema_version": 1,
-  "sp": null,
-  "sp_disabled_reason": "SP closed-loop validation failed: SP  /cpp_real_car: [FAIL] \uc81c\uc5b4 \uc694\uad6c \ud569\uc131\uac00\uc18d\ub3c4 7.58 m/s\u00b2 > mu*g=7.36 (2 step, \ucd5c\ucd08 t=5.83s, s=17.51m) \u2014 \ubb3c\ub9ac \ubaa8\ub378\uc740 \ud3ec\ud654\ud588\uc9c0\ub9cc \uc774 \ud504\ub85c\ud30c\uc77c\uc740 \uc2b9\uc778\ud558\uc9c0 \uc54a\uc74c",
-  "sp_enabled": false,
+  "sp": "my_track0806_sp_max7.00ms_margin0.08m_mu0.68.csv",
+  "sp_disabled_reason": "",
+  "sp_enabled": true,
   "sp_expected": "my_track0806_sp_max7.00ms_margin0.08m_mu0.68.csv",
   "validation": {
     "adaptive_safe_dist": {
@@ -77,11 +89,11 @@
     ],
     "gate_target": "real",
     "mu_profile": 0.68,
-    "plant_accel_mps2": 3.5,
+    "plant_accel_mps2": 1.8,
     "plant_decel_planned_mps2": 2.0,
     "profile_settings": [
       {
-        "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "config_sources": "/home/mina/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/mina/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/mina/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/mina/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
         "controller_speed_scale": 1.0,
         "max_speed_mps": 7.0,
         "name": "cpp_real_car",
@@ -89,7 +101,7 @@
         "plant": "vesc"
       },
       {
-        "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "config_sources": "/home/mina/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/mina/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/mina/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/mina/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
         "controller_speed_scale": 0.3,
         "max_speed_mps": 7.0,
         "name": "python_sim_tracker",

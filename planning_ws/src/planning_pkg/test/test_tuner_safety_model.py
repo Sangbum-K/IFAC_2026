@@ -259,6 +259,33 @@ def test_tuner_longitudinal_defaults_match_measured_plant():
     assert defaults['tuner/a_dec_max'] == pytest.approx(profiles.A_DEC_PLANNED)
 
 
+def test_free_speed_editing_is_opt_in_and_keeps_save_gates():
+    """free_speed 는 편집 감각만 바꾼다 — 저장 검사를 우회하면 안 된다."""
+    source = TUNER_NODE_PATH.read_text(encoding='utf-8')
+    tree = ast.parse(source, filename=str(TUNER_NODE_PATH))
+    defaults = {}
+    for call in (
+            node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        if isinstance(call.func, ast.Attribute) and \
+                call.func.attr == 'declare_parameter' and \
+                len(call.args) >= 2 and \
+                isinstance(call.args[0], ast.Constant):
+            defaults[call.args[0].value] = ast.literal_eval(call.args[1])
+    assert defaults['tuner/free_speed'] is False
+
+    save = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == '_save_csv')
+    called = {
+        node.func.attr for node in ast.walk(save)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    for gate in (
+            '_recompute_wall_distances_from_map', '_wall_clearance_is_safe',
+            '_validation_errors', '_footprint_is_free',
+            '_closed_loop_tracking_is_safe'):
+        assert gate in called, f'저장 게이트가 사라짐: {gate}'
+
+
 def test_velocity_projection_respects_manual_ceiling_and_wrap_segment():
     model = _load_model()
     count = 80

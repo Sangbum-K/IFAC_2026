@@ -170,6 +170,32 @@ def assert_generator_profile_contract(build_map_path):
     return PROFILE_SIGNATURE
 
 
+def generator_physical_mu(build_map_path):
+    """build_map.py 의 물리 마찰계수 MU (폐루프 검증의 타이어 한계).
+
+    생성기는 속도 프로파일을 MU_PROFILE(낮은 계획 mu)로 풀고, 폐루프 추종
+    검증은 MU(물리 한계)로 한다. 튜너가 계획 mu 하나로 둘 다 하면 생성기가
+    승인한 CSV 를 자기가 다시 거부해 저장이 영구히 잠긴다.
+    """
+    path = Path(build_map_path)
+    if not path.is_file():
+        raise FileNotFoundError(f'generator profile source missing: {path}')
+    tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+    value = None
+    for statement in tree.body:
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign)
+            else [statement.target] if isinstance(statement, ast.AnnAssign)
+            else [])
+        if any(isinstance(target, ast.Name) and target.id == 'MU'
+               for target in targets):
+            value = _restricted_ast_value(statement.value, {})
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or \
+            not math.isfinite(value) or not 0.0 < float(value) <= 1.5:
+        raise ValueError(f'generator physical MU is missing or invalid: {path}')
+    return float(value)
+
+
 def _max_segment_endpoint_speed(
         base_speed, base_kappa, candidate_kappa, segment_ds,
         longitudinal_limit, tire_limit, current_high):

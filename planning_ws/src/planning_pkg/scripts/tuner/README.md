@@ -41,7 +41,7 @@ RViz 설정은 [`rviz/sim_race.rviz`](../../rviz/sim_race.rviz) 하나로 통합
 source /opt/ros/humble/setup.zsh          # zsh에서 setup.bash는 깨짐
 source ~/IFAC_ws/planning_ws/install/setup.zsh
 
-# 1) 튜너 단독 — 맵 + 튜너 + RViz (gym 불필요). 인자 없이 = 대회맵 my_track
+# 1) 튜너 단독 — 맵 + 튜너 + RViz (gym 불필요). 인자 없이 = 현행 실차 트랙 my_track0807
 ros2 launch planning_pkg raceline_tuner.launch.py
 
 # 다른 맵도 map:= 하나면 끝. CSV·v_max·margin·mu·stride·falloff가 자동으로 정해진다
@@ -54,7 +54,7 @@ tune my_track0727 min_wall:=0.25  # 추가 인자는 그대로 전달
 tune --help                       # 사용법
 
 # 2) 시뮬과 함께 — 같은 RViz에서 주행 보면서 편집
-ros2 launch planning_pkg sim_race.launch.py map:=my_track tuner:=true
+ros2 launch planning_pkg sim_race.launch.py map:=my_track0807 tuner:=true
 ```
 
 `sim_race.launch.py tuner:=true` 도 파일명에서 v_max/margin/mu를 읽어 넘긴다.
@@ -67,13 +67,13 @@ launch가 편하다.
 
 | 인자 | 기본값 | 어디서 유도되나 |
 |---|---|---|
-| `map` | `my_track` | 배경 맵 (`<이름>.yaml`, 확장자 제외). `~/IFAC_ws/maps` → `planning_pkg/maps` 순으로 탐색 |
+| `map` | `my_track0807` | 배경 맵 (`<이름>.yaml`, 확장자 제외). `~/IFAC_ws/maps` → `planning_pkg/maps` 순으로 탐색 |
 | `csv` | `''` (자동) | 비우면 `<map>_iqp_*.csv` 를 glob으로 찾는다. sp 라인 편집 시엔 직접 지정 |
 | `v_max` | `''` (자동) | **CSV 파일명의 `max<...>ms`** — 그 라인을 뽑을 때 쓴 값이므로 항상 정확하다 |
 | `corridor_margin` | `''` (자동) | **CSV 파일명의 `margin<...>m`** — map raycast 실벽 거리에서 빼서 저장할 reserve |
 | `mu` | `''` (자동) | **CSV 파일명의 `mu<...>`** |
-| `stride` | `''` (자동) | **전장** → 핸들 간격 1.0~2.5 m (핸들 ~30개). 29.3 m → `10`, 339 m → `25` |
-| `falloff` | `''` (자동) | **전장의 10%**, 3~8 m 클램프. 29.3 m → `3.0`, 339 m → `8.0` |
+| `stride` | `''` (자동) | **전장** → 핸들 간격 1.0~2.5 m (핸들 ~30개). 31.3 m → `10`, 339 m → `25` |
+| `falloff` | `''` (자동) | **전장의 10%**, 3~8 m 클램프. 31.3 m → `3.13`, 339 m → `8.0` |
 | `min_wall` | `''` (0.20) | margin 차감 뒤 저장되는 가용 corridor의 최소 여유 [m] |
 
 띄울 때 터미널에 실제로 쓰인 값이 찍힌다:
@@ -94,7 +94,7 @@ v_max/margin/mu를 못 읽는다. v_max/mu는 속도 재계산에, margin은 저
 
 | 맵 | CSV (iqp) | 생성 조건 |
 |---|---|---|
-| `my_track` (대회맵) | `my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv` | 6 m/s · mu 0.75 |
+| `my_track0807` (현행 실차) | `my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv` | 7 m/s · 계획 mu 0.68 |
 | `my_map` | `my_map_iqp_max6.00ms_margin0.15m_mu0.75.csv` | 6 m/s · mu 0.75 |
 | `Spielberg_map` | `Spielberg_map_iqp_max15.00ms_margin0.15m_mu0.85.csv` | 15 m/s · mu 0.85 |
 | `Budapest_map` | `Budapest_map_iqp_max15.00ms_margin0.15m_mu0.85.csv` | 15 m/s · mu 0.85 |
@@ -110,24 +110,77 @@ v_max/margin/mu를 못 읽는다. v_max/mu는 속도 재계산에, margin은 저
    주면 속도가 반토막 난다). 이제 launch가 **CSV 파일명에서 읽으므로** 비워 두는 게
    항상 맞다. 넘길 이유는 "일부러 다른 조건으로 다시 풀어 보고 싶을 때"뿐이다.
 
-   **"속도 재계산"은 이제 `build_map.py` 와 같은 모델을 쓴다** (g-g 커플링 포함,
-   아래 참조). 예전에는 이 메뉴가 마찰한계를 넘는 프로파일을 만들어서 누르지 말라고
-   했지만, 지금은 라인을 옮긴 뒤 속도를 다시 푸는 정상 워크플로다.
+   "속도 재계산"은 `build_map.py` 와 **같은 마찰/가감속 모델**을 쓴다 (g-g 커플링
+   포함, 아래 참조). 예전처럼 마찰한계를 넘는 프로파일을 만들지는 않는다.
 
-2. **`falloff` / `stride` 도 자동이다.** my_track 전장이 **29.3 m** 뿐이라
+   ⚠️ **다만 `build_map` 의 폭 연동 속도 제한(`width_speed_cap`)은 아직 튜너에
+   없다.** build_map 은 벽 여유가 좁은 곳에서 `(여유 − 차 반폭) / 예상 횡추적오차
+   기울기` 로 속도를 따로 깎는다 (my_track0807 은 314점 중 233점이 이 규칙에
+   걸린다). 튜너의 투영은 곡률·마찰·가감속만 보므로 2026-08-07 실측 기준
+   **"속도 재계산" 한 번에 좁은 구간 속도가 최대 +2.12 m/s (평균 3.68 → 4.35)
+   부풀고, 폐루프 게이트도 그대로 통과한다** — 공칭 시뮬에서는 횡오차가 작은데,
+   폭 규칙이 사는 이유가 바로 그 공칭과 실제의 차이다. 같은 경로로 라인 드래그
+   (`_recompute_velocity_window`)도 편집 구간 속도를 부풀릴 수 있다.
+   그러므로 **속도를 올리는 방향의 편집을 저장했으면 실차 투입 전에
+   `build_map` 재생성으로 대조할 것.** 속도를 내리는 방향은 안전하다.
+
+2. **`falloff` / `stride` 도 자동이다.** my_track0807 전장이 **31.3 m** 뿐이라
    노드 기본값 ±8 m 로 드래그하면 트랙의 **절반 이상**이 끌려온다.
-   launch가 전장의 10%(3~8 m 클램프)로 잡으므로 my_track은 3.0,
+   launch가 전장의 10%(3~8 m 클램프)로 잡으므로 my_track0807은 3.13,
    Spielberg(339 m)는 8.0이 자동으로 나온다.
 
 3. **`min_wall`은 margin을 뺀 뒤의 가용 corridor 기준이다.**
-   기본 0.20 m와 my_track의 margin 0.08 m를 합치면 실제 center-to-wall은
+   기본 0.20 m와 my_track0807의 margin 0.08 m를 합치면 실제 center-to-wall은
    최소 0.28 m다. 차 반폭 0.15 m 및 recovery의 0.25 m 정지 계약보다
-   보수적이면서, 생성된 원본 my_track(저장 d 최소 약 0.28 m)을 수정하지
+   보수적이면서, 생성된 원본(저장 d 최소 약 0.28 m)을 수정하지
    않고 다시 저장할 수 있다. 이 값을 차 반폭 0.15 m 아래로 낮추면 안 되며,
    최종 직사각 footprint/폐루프 gate는 값과 무관하게 항상 수행된다.
 
 4. **드래그는 MOUSE_UP에서만 반영된다.** 끌고 있는 동안 라인이 안 움직여도 정상.
    놓는 순간 falloff 적용 + 스무딩 + `s/psi/kappa` 재계산이 한 번에 돈다.
+
+5. **mu는 두 개다 — 계획 mu와 검증 mu.** 파일명의 `mu<...>`는 `build_map.py`의
+   `MU_PROFILE`(계획용, 현재 0.68)이고, 폐루프 게이트의 타이어 한계는 물리
+   `MU`(현재 0.75)다. 튜너는 계획 mu를 파일명에서, 검증 mu를 `build_map.py`
+   에서 직접 AST로 읽는다 (`generator_physical_mu`). 예전에는 파일명 mu 하나로
+   둘 다 해서, **편집하지 않은 생성 직후의 CSV조차** `combined demand 7.58 >
+   mu*g 6.67` 로 저장이 거부됐다.
+
+6. **속도 핸들을 올려도 안 올라갈 수 있다 — 그건 정상이고, 이제 로그로 말해준다.**
+   수동 속도는 목표가 아니라 **상한**으로만 쓰인다 (`_enforce_velocity_feasibility`).
+   그 구간을 마찰이나 가감속 한계가 잡고 있으면 올린 만큼 그대로 잘리고,
+   투영이 단조가 아니라 상한을 올린 결과가 **오히려 더 느려질 수도** 있다.
+   요청이 실제로 반영되지 않으면 편집을 남기지 않고 원복한 뒤 이유를 찍는다:
+
+   ```
+   속도 증가 불가: idx 0, 5.97 m/s 요청 7.00 m/s -> 투영 결과 4.97 m/s.
+     이 구간은 마찰(mu=0.68) 또는 가감속 한계(a_acc=1.80/a_dec=1.85)가 잡고 있습니다.
+   ```
+
+   **속도를 올리고 싶으면 라인을 먼저 펴라.** 속도는 곡률의 함수다.
+   반영된 경우에도 로그는 요청값이 아니라 실제 반영값을 찍는다.
+
+7. **`free_speed:=true` — 핸들이 튕겨 돌아오지 않게 하기.**
+   투영을 끄면 드래그한 값이 그대로 남는다 (라인을 옮겨도 수동 속도를
+   덮어쓰지 않는다). ax 열은 v 에서 다시 만들어 CSV 자기모순은 막는다.
+
+   ```bash
+   ros2 launch planning_pkg raceline_tuner.launch.py free_speed:=true
+   ```
+
+   **저장 검사는 그대로다.** 실측 예 (my_track0807, 핸들 +2 m/s):
+
+   | | 화면 | 저장 |
+   |---|---|---|
+   | idx 0 | 4.97 → **6.97** 유지 | 거부 (합성 8.53 > 6.67, ax 7.92 > 1.80) |
+   | idx 60 | 3.63 → **5.63** 유지 | 거부 (합성 14.48 > 6.67) |
+
+   즉 이 모드는 "**보면서 정하는**" 용도지 한계를 푸는 스위치가 아니다.
+   한계를 실제로 올리려면 그 근거를 가진 값을 바꿔야 한다:
+   `mu:=` / `v_max:=` (튜너 계획), `deployment_profiles` 의 `A_ACC_MAX`
+   (재생성 필요), 그리고 런타임 `global_trajectory/validation_mu`.
+   ⚠️ 런타임 `global_trajectory_node` 는 CSV 를 읽을 때 마찰원을 **독립적으로
+   다시** 검사하고 넘으면 노드가 뜨지 않는다 — 튜너만 풀어도 차는 안 움직인다.
 
 ---
 
@@ -152,7 +205,7 @@ RViz에서 아무 핸들이나 **우클릭 → CSV 저장**. 그다음 리포 �
 경로를 따라가면:
 
 ```
-[튜너 저장]  src/planning_pkg/config/global_trajectory/my_track_iqp_*.csv
+[튜너 저장]  src/planning_pkg/config/global_trajectory/my_track0807_iqp_*.csv
                  │  ./build_all.sh  →  colcon build (install(DIRECTORY config))
                  ▼
 [빌드]       install/planning_pkg/share/planning_pkg/config/global_trajectory/…
@@ -167,6 +220,12 @@ RViz에서 아무 핸들이나 **우클릭 → CSV 저장**. 그다음 리포 �
 - `CMakeLists.txt` 의 `install(DIRECTORY config ...)` 가 **매 빌드마다 변경분을
   다시 복사**한다. 파일이 새로 생기든 내용만 바뀌든 `colcon build` 한 번이면 install에 반영된다
   (심링크가 아니므로 빌드를 건너뛰면 **옛 라인으로 주행한다**).
+- ⚠️ **복사만 하고 지우지는 않는다.** 소스에서 지운 CSV는 install에 그대로 남고,
+  launch 의 `<맵>_iqp_*.csv` glob 은 그 유령을 정상 파일로 집는다. 2026-08-07 에
+  실제로 그 상태였다 — b05264b 에서 삭제한 `my_track_iqp_*.csv` 로 시뮬이 계속
+  돌고 있었다. 라인을 지우거나 이름을 바꿨으면
+  `rm -rf install/planning_pkg/share/planning_pkg/config/{global_trajectory,centerline}`
+  후 재빌드해서 install 을 소스와 정확히 맞출 것.
 - `global_trajectory_node` 는 `get_package_share_directory("planning_pkg")` +
   `/config/global_trajectory/<파일명>` 을 읽는다
   ([global_trajectory_node.cpp:83](../../src/global_trajectory_node.cpp#L83)).
@@ -175,14 +234,31 @@ RViz에서 아무 핸들이나 **우클릭 → CSV 저장**. 그다음 리포 �
 
 **파일명이 바뀌지 않는 한** 추가 설정은 필요 없다 (튜너는 같은 파일에 덮어쓴다):
 
-- `ros2 launch integration_pkg real_car.launch.py map:=my_track` → `<맵>_iqp_*.csv`
+- `ros2 launch integration_pkg real_car.launch.py map:=my_track0807` → `<맵>_iqp_*.csv`
   를 glob으로 찾으므로 자동.
 - `map:=` 없이 실행 → [`config/params.yaml`](../../config/params.yaml) 의
-  `global_trajectory/trajectory_csv_file` 값(현재 `my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv`)
+  `global_trajectory/trajectory_csv_file` 값(현재 `my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv`)
   을 쓴다. `tuner/output_csv` 로 **다른 파일명에 저장했다면 여기도 같이 고쳐야 한다.**
 
-주행 중 로그에서 `Loading trajectory from: .../install/.../my_track_iqp_...csv` 를
+주행 중 로그에서 `Loading trajectory from: .../install/.../my_track0807_iqp_...csv` 를
 확인하면 확실하다.
+
+### 시뮬에서 "튜닝한 속도가 반영이 안 된 것 같을 때"
+
+CSV의 `vx_mps`는 시뮬 주행속도로 **그대로 나가지 않는다.** 기본 sim 경로
+(`sim_race.launch.py`, `tracker:=true`)의 배율은 다음과 같다:
+
+```
+CSV vx  ×  global_trajectory/velocity_scale (0.6667)  ×  tracker/speed_scale (0.30)
+        = 실효 0.20배      예) CSV 6.0 m/s -> 시뮬 약 1.2 m/s
+```
+
+`tracker:=false` 로 C++ `control_node` 를 쓰면 뒤쪽이
+`vehicle/speed_scale 0.30` + `vehicle/max_speed_mps 4.0` 클램프로 바뀔 뿐
+배율이 있는 건 같다 (`environments/sim.yaml`). 둘 다 이 트랙의 연속 헤어핀에서
+pure pursuit가 따라가도록 **의도적으로 낮춘 값**이므로, 튜닝 결과를 확인할 때는
+시뮬 속도계가 아니라 **RViz 속도곡선/텍스트(= CSV 값)** 를 보고,
+시뮬에서는 "비례해서 빨라졌는지"만 확인한다.
 
 백업 주의:
 
