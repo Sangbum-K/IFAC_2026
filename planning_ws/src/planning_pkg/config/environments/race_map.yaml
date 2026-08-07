@@ -12,7 +12,9 @@ global_trajectory_node:
   ros__parameters:
     # 현재 control race_map cap 1.0 m/s와 정합. 고속 승격 시 두 workspace를
     # 원자적으로 바꾸고 실제 속도 회귀시험을 통과시킬 것.
-    global_trajectory/velocity_scale: 0.1666
+    # 2026-08-07: 기본 raceline이 v-max 6.0 -> 7.0 (my_track0807)으로 바뀌어
+    # scale = 1.0/7.0 로 재계산. cap 1.0 m/s 자체는 그대로다.
+    global_trajectory/velocity_scale: 0.1429
 
 frenet_frame_node:
   ros__parameters:

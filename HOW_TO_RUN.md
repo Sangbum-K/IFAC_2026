@@ -51,7 +51,7 @@ cd ~/IFAC_ws && ./build_all.sh
 만든 맵으로 주행
 ```bash
 sa #전체 소스
-rc my_track0728   # mapp/mkcsv와 같은 이름 — 생략하면 옛 기본 맵(my_track)으로 돕니다
+rc my_track0728   # mapp/mkcsv와 같은 이름 — 생략하면 기본 맵(my_track0807)으로 돕니다
 # 맵 이름은 원하는대로 바꿔서 설정할 수 있음
 # 위 명령어들은 젯슨에 alias 설정함
 #   → RViz(monitor.rviz)가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
@@ -235,8 +235,8 @@ ros2 launch integration_pkg stack.launch.py
 ### 3-2. 다른 맵 / RViz 끄기
 
 ```bash
-# 실차 트랙(my_track)을 시뮬에서 — 실차와 동일한 spliner+SP 라인으로 주행
-ros2 launch integration_pkg stack.launch.py map:=my_track
+# 실차 트랙(my_track0807)을 시뮬에서 — 실차와 동일한 spliner+SP 라인으로 주행
+ros2 launch integration_pkg stack.launch.py map:=my_track0807
 
 # 헝가로링(코너 많은 맵)
 ros2 launch integration_pkg stack.launch.py map:=Budapest_map
@@ -245,10 +245,11 @@ ros2 launch integration_pkg stack.launch.py map:=Budapest_map
 ros2 launch integration_pkg stack.launch.py rviz:=false
 ```
 
-사용 가능한 시뮬 맵: `Spielberg_map`(기본), `Budapest_map`, `my_map`, **`my_track`(실차 트랙)**.
+사용 가능한 시뮬 맵: **`my_track0807`(실차 트랙, 기본)**, `Spielberg_map`, `Budapest_map`, `my_map`.
+(라인 CSV가 있는 맵만 뜹니다 — 없으면 launch가 가능한 맵 목록과 함께 즉시 에러)
 `map:=<이름>`형태로 원하는 맵 연결
 
-> ⚠️ **my_track은 19.5×10.5m로 작습니다.** 상대 차(gym 2번째 에이전트)를 LiDAR
+> ⚠️ **my_track0807은 16.1×8.1m로 작습니다.** 상대 차(gym 2번째 에이전트)를 LiDAR
 > 사거리(≈30m) 밖에 '주차'시킬 공간이 없어, 스폰 안 해도 상대/벽이 유령 장애물로
 > 몇 개 잡힙니다(`obs` 값이 큼). 주행 자체는 정상이며, **깨끗한 회피 데모는
 > `Publish Point`로 정적 장애물을 직접 놓아** 확인하는 걸 권장합니다.
@@ -299,7 +300,7 @@ scan:OK odom:OK perception:OK planning:OK control:OK | obs=2 wpnts=80 v=4.00 cmd
 > 🔑 **실차 PC에서도 오늘 `git pull` 했으면 실행 전에 반드시 다시 빌드하세요**
 > (특히 `planning_ws`·`perception_ws`). 안 그러면 install에 옛 맵/파라미터가 남아
 > **옛 맵으로 주행**하거나 `Cannot open CSV ...Spielberg_map_centerline.csv`로
-> 죽습니다. 현재 맵은 `my_track`입니다 — `colcon list`/로그로 `my_track_iqp...`가
+> 죽습니다. 현재 맵은 `my_track0807`입니다 — `colcon list`/로그로 `my_track0807_iqp...`가
 > 로드되는지 확인. (재빌드는 위 1장의 `./build_all.sh`.)
 
 실차는 **A(하드웨어) → B(위치추정) → C(자율스택)** 순서로 띄웁니다.
@@ -402,7 +403,7 @@ ros2 topic hz /odom     # VESC odom 이 나와야 함
 # 파티클 필터 (map→odom TF + /pf/pose/odom 발행)
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 #   ⚠️ backend:=particle_filter 를 반드시 명시! (기본값은 slam_toolbox)
-#   맵을 안 주면 localize.yaml 의 map: 을 따른다 (현재 my_track).
+#   맵을 안 주면 localize.yaml 의 map: 을 따른다 (현재 my_track0807).
 
 # 다른 맵을 쓰려면 map:=<이름> — ~/IFAC_ws/maps 를 먼저, 없으면
 # particle_filter/maps 를 찾는다. 매핑으로 만든 맵은 재빌드 없이 바로 쓰인다.
@@ -476,7 +477,7 @@ ros2 run tf2_ros tf2_echo map base_link   # map→base_link TF가 실제 차 위
 ```bash
 #   ※ 실차는 sim_ws source 하지 말 것
 #   ※ map:= 를 안 주면 planning_pkg/config/params.yaml의 trajectory/overtaking/
-#     centerline CSV 기본값을 읽는다 (현재 my_track 기준).
+#     centerline CSV 기본값을 읽는다 (현재 my_track0807 기준).
 ros2 launch integration_pkg stack.launch.py env:=real_car
 
 #   다른 맵이면 map:=<이름> 하나로 CSV 3종이 함께 바뀐다 (params.yaml 수정 불필요).
@@ -709,7 +710,7 @@ ros2 launch control_pkg control.launch.py env:=sim
 
 **코드/파라미터를 고쳤는데(또는 `git pull` 후) 실행하면 예전 동작 그대로**
 → 실행은 소스가 아니라 `install/`을 씁니다. **고친 뒤 반드시 다시 `colcon build`**
-  하세요. 예: 맵을 `my_track`으로 바꾼 뒤 재빌드를 안 하면 install엔 옛 맵이 남아
+  하세요. 예: 맵을 `my_track0807`로 바꾼 뒤 재빌드를 안 하면 install엔 옛 맵이 남아
   `Cannot open CSV .../Spielberg_map_centerline.csv` 같은 로드 실패가 납니다.
 → `perception_ws`는 `--base-paths src` 없이 빌드하면 조용히 안 잡힙니다
   (`build_all.sh`는 항상 이걸 씀). 수동 빌드했다면 `colcon list`로 `perception_pkg` 확인.

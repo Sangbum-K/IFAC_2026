@@ -22,6 +22,19 @@ sys.path.insert(0, str(SCRIPTS_ROOT))
 import deployment_profiles as profiles  # noqa: E402
 
 
+def _deployed_main_csv():
+    """The raceline the runtime actually loads, per params.yaml.
+
+    Hardcoding a filename here went stale once already: b05264b deleted the
+    my_track line but left this test (and the runtime default) pointing at it,
+    so the test failed for a year-zero reason instead of a safety one.
+    """
+    params, _ = profiles.runtime_params(
+        profiles.PKG_ROOT, 'global_trajectory_node', None)
+    name = params['global_trajectory/trajectory_csv_file']
+    return PACKAGE_ROOT / 'config' / 'global_trajectory' / name
+
+
 def _load_model():
     spec = importlib.util.spec_from_file_location(
         'planning_tuner_safety_test_model', MODEL_PATH)
@@ -222,9 +235,9 @@ def test_default_wall_contract_accepts_unchanged_deployed_main_csv():
     assert default_min_wall is not None
     model = _load_model()
     assert default_min_wall >= model.VEHICLE_HALF_WIDTH_M
-    csv_path = (
-        PACKAGE_ROOT / 'config' / 'global_trajectory' /
-        'my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv')
+    csv_path = _deployed_main_csv()
+    assert csv_path.is_file(), (
+        f'params.yaml이 없는 raceline을 가리킵니다: {csv_path}')
     trajectory = np.loadtxt(csv_path, delimiter=';', comments='#')
     assert np.min(trajectory[:, 3:5]) >= default_min_wall
 

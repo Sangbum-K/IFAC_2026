@@ -27,7 +27,7 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     // Parameters - declare and get values
     this->declare_parameter(
         "global_trajectory/trajectory_csv_file",
-        "my_track_iqp_max6.00ms_margin0.08m_mu0.75.csv");
+        "my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv");
     this->declare_parameter("global_trajectory/overtaking_csv_file", "");
     this->declare_parameter("global_trajectory/publish_rate_hz", 2.0);
     this->declare_parameter("global_trajectory/velocity_scale", 1.0);

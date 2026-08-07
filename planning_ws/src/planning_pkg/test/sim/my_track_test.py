@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""my_track (소형 트랙) 회피 검증.
+"""실차 소형 트랙 회피 검증 (기본 my_track0807).
 
-전제: sim_race.launch.py rviz:=false map:=my_track 가 이미 떠 있음.
+사용: python3 my_track_test.py [<맵>]
+전제: sim_race.launch.py rviz:=false map:=<맵> 이 이미 떠 있음 (맵 생략 시 기본값).
 검사:
   A. /planner/ot_sectors/markers 발행 (섹터 개수 > 0 — 소형 트랙 게이팅 통과)
   B. 솔로 주행 (ego odom 이동)
@@ -26,7 +27,8 @@ from std_msgs.msg import Empty
 from visualization_msgs.msg import MarkerArray
 from f1tenth_planning_msgs.msg import WpntArray
 
-MAP = 'my_track'
+# sim_race.launch.py 의 기본 맵과 같게 유지할 것 (인자로 덮어쓸 수 있다).
+MAP = sys.argv[1] if len(sys.argv) > 1 else 'my_track0807'
 GT = str(Path(__file__).resolve().parents[2] / 'config' / 'global_trajectory')
 csvs = sorted(glob.glob(os.path.join(GT, f'{MAP}_iqp_*.csv')))
 if not csvs:

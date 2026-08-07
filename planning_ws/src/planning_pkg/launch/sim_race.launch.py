@@ -3,9 +3,9 @@
 f1tenth_gym_ros 시뮬레이터(2-agent) + planning 스택 + pure pursuit 컨트롤러 +
 Pitwall 시뮬 노드들 + RViz를 한 번에 실행한다.
 
-  ros2 launch planning_pkg sim_race.launch.py                    # my_track (기본)
+  ros2 launch planning_pkg sim_race.launch.py                    # my_track0807 (기본)
   ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
-  ros2 launch planning_pkg sim_race.launch.py map:=my_track      # 실차 트랙 (suffix 자동)
+  ros2 launch planning_pkg sim_race.launch.py map:=my_track0807  # 실차 트랙 (suffix 자동)
   ros2 launch planning_pkg sim_race.launch.py rviz:=false
 
 맵 추가 방법: maps/에 <맵>_map.{png,yaml}을 넣고
@@ -54,6 +54,9 @@ PARK_POSES = {
     # (x:[-7.8,5.0] y:[-0.4,5.1]) 바깥 좌상단 구석 — 외벽에 가려지길 기대.
     # 상대가 유령 장애물로 보이면 정적 장애물(Publish Point)로 회피를 시험할 것.
     'my_track': (-12.0, 8.5),
+    # my_track0807도 16.1x8.1m로 같은 사정 (라인 x:[-6.4,6.8] y:[-0.7,4.7],
+    # 맵 x:[-7.8,8.3] y:[-2.1,5.9]). 같은 좌상단 바깥 구석을 쓴다.
+    'my_track0807': (-12.0, 8.5),
 }
 
 _CSV_PARAM_RE = re.compile(
@@ -113,7 +116,7 @@ def launch_setup(context, *args, **kwargs):
     if not suffix:
         # suffix 미지정 시 해당 맵의 iqp CSV를 찾아 접미사를 자동 추론한다.
         # 맵마다 raceline 파라미터가 달라 하나의 고정 접미사로는 안 맞기 때문
-        # (Spielberg/Budapest = max15..., my_track/my_map = max6...).
+        # (Spielberg/Budapest = max15..., my_track0807 = max7..., my_map = max6...).
         # symlink-install 이 install/ 에 남긴 끊어진 링크는 제외한다. glob 은
         # 링크 대상을 확인하지 않아 지워진 옛 CSV까지 매칭하고, 그러면 아래
         # 중복 검사에 걸려 launch 가 통째로 죽는다.
@@ -329,13 +332,13 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('map', default_value='my_track',
+        DeclareLaunchArgument('map', default_value='my_track0807',
                               description='맵 이름 (maps/<이름>.yaml, ' +
                                           ', '.join(PARK_POSES)),
         DeclareLaunchArgument('suffix', default_value='',
                               description='raceline CSV 접미사 (iqp/sp 공통). '
                                           '비워두면 맵의 iqp CSV에서 자동 추론 '
-                                          '(예: my_track=max6.00ms_margin0.15m_mu0.75). '
+                                          '(예: my_track0807=max7.00ms_margin0.08m_mu0.68). '
                                           '한 맵에 여러 raceline이 있을 때만 지정.'),
         DeclareLaunchArgument(
             'overtaking_csv_file', default_value='',
