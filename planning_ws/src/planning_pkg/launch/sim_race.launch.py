@@ -114,7 +114,12 @@ def launch_setup(context, *args, **kwargs):
         # suffix 미지정 시 해당 맵의 iqp CSV를 찾아 접미사를 자동 추론한다.
         # 맵마다 raceline 파라미터가 달라 하나의 고정 접미사로는 안 맞기 때문
         # (Spielberg/Budapest = max15..., my_track/my_map = max6...).
-        iqp_glob = sorted(glob.glob(os.path.join(gt_dir, f'{map_name}_iqp_*.csv')))
+        # symlink-install 이 install/ 에 남긴 끊어진 링크는 제외한다. glob 은
+        # 링크 대상을 확인하지 않아 지워진 옛 CSV까지 매칭하고, 그러면 아래
+        # 중복 검사에 걸려 launch 가 통째로 죽는다.
+        iqp_glob = sorted(
+            p for p in glob.glob(os.path.join(gt_dir, f'{map_name}_iqp_*.csv'))
+            if os.path.isfile(p))
         if not iqp_glob:
             raise RuntimeError(
                 f'raceline 없음: {gt_dir}/{map_name}_iqp_*.csv '

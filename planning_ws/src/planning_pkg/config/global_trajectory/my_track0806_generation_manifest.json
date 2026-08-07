@@ -1,56 +1,56 @@
 {
   "files": [
     {
-      "bytes": 32040,
+      "bytes": 31322,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_sp_max6.00ms_margin0.08m_mu0.68.csv",
       "role": "sp_0",
-      "sha256": "86451ae56ab9eb1cf1444cb055f34998cda2068297b5432982401dd440cc4584"
+      "sha256": "0f0e408e96fcf4bb4b136b8b37f047355548531df058b51e3d19a6db87db8086"
     },
     {
-      "bytes": 32040,
+      "bytes": 31322,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0806_sp_max6.00ms_margin0.08m_mu0.68.csv",
       "role": "sp_1",
-      "sha256": "86451ae56ab9eb1cf1444cb055f34998cda2068297b5432982401dd440cc4584"
+      "sha256": "0f0e408e96fcf4bb4b136b8b37f047355548531df058b51e3d19a6db87db8086"
     },
     {
-      "bytes": 54330,
+      "bytes": 56260,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_walls.csv",
       "role": "walls_output",
-      "sha256": "2f11d5af24fb2fc5fe854ff9af6ae870203600165e122d27bcd38153aac46454"
+      "sha256": "31427c759bb4a0ff1a8fcf81f53fc0a0c651c2f3cf8bed9adebf135cd12a6a39"
     },
     {
-      "bytes": 54330,
+      "bytes": 56260,
       "path": "planning_ws/src/planning_pkg/config/centerline/my_track0806_walls.csv",
       "role": "walls_runtime",
-      "sha256": "2f11d5af24fb2fc5fe854ff9af6ae870203600165e122d27bcd38153aac46454"
+      "sha256": "31427c759bb4a0ff1a8fcf81f53fc0a0c651c2f3cf8bed9adebf135cd12a6a39"
     },
     {
-      "bytes": 7576,
+      "bytes": 7515,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_centerline.csv",
       "role": "centerline_output",
-      "sha256": "cd3f72b6c27c0289b5f54dbb0de264534ca3013227ab1204a44319bbeaa16eef"
+      "sha256": "068a0b61b71ba95d03666eb276346915b5bdceb9d43253b92051b15ac623248f"
     },
     {
-      "bytes": 7576,
+      "bytes": 7515,
       "path": "planning_ws/src/planning_pkg/config/centerline/my_track0806_centerline.csv",
       "role": "centerline_runtime",
-      "sha256": "cd3f72b6c27c0289b5f54dbb0de264534ca3013227ab1204a44319bbeaa16eef"
+      "sha256": "068a0b61b71ba95d03666eb276346915b5bdceb9d43253b92051b15ac623248f"
     },
     {
-      "bytes": 32226,
+      "bytes": 31748,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0806_iqp_max6.00ms_margin0.08m_mu0.68.csv",
       "role": "main_output",
-      "sha256": "535c28de5a2477f734dab5e023952931d58b6c9e693a2ffa369b217f1dbdd367"
+      "sha256": "555d19706cf7c578f2a7d9951ddcaa2b3a06c3f5c80889063a915a183a748254"
     },
     {
-      "bytes": 32226,
+      "bytes": 31748,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0806_iqp_max6.00ms_margin0.08m_mu0.68.csv",
       "role": "main_runtime",
-      "sha256": "535c28de5a2477f734dab5e023952931d58b6c9e693a2ffa369b217f1dbdd367"
+      "sha256": "555d19706cf7c578f2a7d9951ddcaa2b3a06c3f5c80889063a915a183a748254"
     }
   ],
-  "generation_content_sha256": "905cb70b7fbe20671d69594ef02496f7241d488e420d013169b2899727e81d4c",
-  "generation_id": "a3ca9003fa454646b0cfadf63f3597ea",
+  "generation_content_sha256": "e6d283f4929801bf6e2e31020ac4fc9436c30dc79a836bb82fc715a5598e2f74",
+  "generation_id": "d4e9d14c4629474aad85c923b721313e",
   "main": "my_track0806_iqp_max6.00ms_margin0.08m_mu0.68.csv",
   "map": "my_track0806",
   "schema_version": 1,
@@ -62,20 +62,23 @@
     "adaptive_safe_dist": {
       "enabled": true,
       "narrow_pts": 0,
-      "safe_max": 0.45,
-      "safe_median": 0.4499999999999999,
-      "safe_min": 0.3675,
-      "total_pts": 63,
-      "width_max": 2.875,
-      "width_median": 1.725,
-      "width_min": 1.225
+      "safe_max": 0.5500000000000002,
+      "safe_median": 0.4833333333333334,
+      "safe_min": 0.38250000000000006,
+      "total_pts": 62,
+      "width_max": 3.575,
+      "width_median": 1.8125000000000002,
+      "width_min": 1.275
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 6,
+      "binding_pts": 156,
+      "corner_pts": 285,
       "enabled": true,
-      "limited_pts": 24,
-      "total_pts": 318,
-      "v_min": 4.4444444444444455
+      "limited_pts": 231,
+      "slope_max": 0.105,
+      "slope_min": 0.05,
+      "total_pts": 312,
+      "v_min": 2.6190476190476195
     },
     "advisory_profiles": [
       "python_sim_tracker"

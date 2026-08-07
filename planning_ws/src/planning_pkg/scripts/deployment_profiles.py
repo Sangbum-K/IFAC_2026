@@ -55,7 +55,7 @@ MAX_STEER_RATE = 2.0    # [rad/s] control 기본 steering-rate limit
 # ⚠️ 이 둘은 '컨트롤러가 명령할 수 있는 기울기'가 아니라 '차가 실제로 낼 수 있는
 #    가감속'이다. 명령 slew 한계(control vehicle/max_accel_mps2 5.5,
 #    max_decel_mps2 4.0)는 런타임 YAML에서 따로 읽어 컨트롤러 단에만 적용한다.
-A_ACC_MAX = 1.8         # 실제 가속 한계 [m/s²] (전류 포화 실측 p90. p50은 1.25)
+A_ACC_MAX = 2.4         # 실제 가속 한계 [m/s²] (전류 포화 실측 p90. p50은 1.25)
 A_DEC_MAX = 1.4         # 코스팅(무동력) 감속 [m/s²] — 실측 p50 1.5에 여유 0.1
 
 # 브레이크 전류 1 A 가 만드는 '추가' 감속 [m/s² per A] — 코스팅 위에 더해진다.
@@ -64,7 +64,7 @@ A_DEC_MAX = 1.4         # 코스팅(무동력) 감속 [m/s²] — 실측 p50 1.5
 #   p50 = -1.5 → 크레딧 실측 0.4~0.45 /A. 하한 잡아 0.35.
 #   ⚠️ vesc.yaml brake_max=1.0 A(드라이버·ackermann 양쪽 클램프)가 전제다.
 #   brake_max를 키우면 여기 크레딧 총량도 다시 실측할 것 (선형 보장 없음).
-BRAKE_DECEL_PER_AMP = 0.35
+BRAKE_DECEL_PER_AMP = 0.15
 
 # 레이스라인 생성 속도 상한. build_map.py 의 V_MAX 가 이 값을 그대로 쓴다
 # (python_sim_tracker 프로파일이 cap 으로 쓰기 때문에 여기 있어야 한다).
