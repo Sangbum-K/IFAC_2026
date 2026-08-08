@@ -928,8 +928,36 @@ private:
             backstop_cap, speed_now - over * (speed_now - backstop_min_speed_));
         }
         if (sat > backstop_sat_ratio_) {
-          // 조향이 포화면 이미 기하를 못 만든다 — 하한까지 즉시 캡.
-          backstop_cap = std::min(backstop_cap, backstop_min_speed_);
+          // 조향이 포화면 기하를 못 만들고 있다. 다만 경로오차 분기와 같은
+          // **비례 램프**로 깎는다. 0808 run_202157에서 하한 즉시 캡은
+          // 오발화했다: apex 5곳에서 경로오차가 3~7cm(= 추종은 완벽)인데
+          // 계획된 레이스라인이 20°를 요구해 포화만 87~96%로 떴고, 그때마다
+          // 2.2~2.5 m/s를 1.5로 통째로 잘랐다. 145s 중 109s가 발화 상태였고
+          // 그중 87%가 하한 클램프였다.
+          //
+          // 절벽이 특히 해로웠던 이유는 **이미 하한 근처인지를 무시**했기
+          // 때문이다. 6.5에서 자르는 것과 2.2에서 자르는 것을 같게 취급했다.
+          // 낙폭을 (speed_now - 하한)에 비례시키면 저속에서 감속이 자연히
+          // 소멸한다. 위 5개 apex 기준 평균 낙폭 0.74 -> 0.34 m/s.
+          //
+          // 부수 효과로 해제도 연속이 된다. 절벽일 때는 sat이 임계를 스치기만
+          // 해도 relay처럼 on/off가 뒤집혀 헤어핀에서 1.4s를 1.50에 붙어 있다
+          // 풀리자마자 1.5 -> 6.5로 튀었다. 램프에는 되돌아갈 계단이 없다.
+          //
+          // sat은 calc_steering_angle 말미의 ±max_steering_angle 클램프 때문에
+          // 1.0을 넘지 못한다. 그래서 램프 끝은 1.0 고정이고 별도 파라미터가
+          // 필요 없다. backstop_sat_ratio_의 의미만 '트리거점'에서 '램프
+          // 시작점'으로 바뀐다 (값은 그대로).
+          //
+          // 주의: 램프가 좁을수록(임계가 1.0에 가까울수록) 게인이 커진다.
+          // LUT가 speed_now를 받아 조향각을 내므로 감속 -> 요구조향 감소 ->
+          // sat 감소의 폐루프가 있다. apex 속도가 떨면 임계를 **낮춰서**
+          // 램프를 넓힐 것 — 직관과 반대 방향이다.
+          const double over_sat = std::min(
+            (sat - backstop_sat_ratio_) /
+            std::max(1.0 - backstop_sat_ratio_, 1e-3), 1.0);
+          backstop_cap = std::min(
+            backstop_cap, speed_now - over_sat * (speed_now - backstop_min_speed_));
         }
         // 하한을 두는 이유: BlendDist의 조향 기하 하한 때문에 약 2.4 m/s
         // 아래로는 필요 조주거리가 더 이상 줄지 않는다. 무한정 깎으면 회피는
