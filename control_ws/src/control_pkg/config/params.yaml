@@ -57,7 +57,10 @@ control:
 
     # Default to the temporary low-speed real-car LUT. Environment profiles
     # override this value where needed (for example, sim.yaml uses the SIM LUT).
-    "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
+    # 2026-08-08 NUC6_glc -> NUC2_hangar: 0807/0808 백 실측 15,386 쌍 채점에서
+    # NUC2 가 전 속도대에서 더 정합(근거는 environments/real_car.yaml 주석).
+    # 이제 mapping/race_map/real_car 가 모두 NUC2 로 일치한다.
+    "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
 
     # Vehicle geometry and command limits.
     "vehicle/wheelbase_m": 0.33

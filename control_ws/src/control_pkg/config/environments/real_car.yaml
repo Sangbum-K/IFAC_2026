@@ -5,7 +5,23 @@ control:
     ackermann_topic: /autonomy/ackermann_cmd
     autonomous_on_start: true
     "recovery/require_supervisor": false
-    "map/steering_lut_file": "NUC6_glc_pacejka_lookup_table.csv"
+    # 2026-08-08 NUC6_glc -> NUC2_hangar. 0807 백 6개 + 0808 백 6개에서
+    # (δ, v, 실측 a_lat) 15,386 쌍을 뽑아 두 표를 채점한 결과(IMU 자이로는
+    # 누적 요각으로 PF 대비 1.01~1.06 검증). 실측 a_lat / 표 예측 a_lat,
+    # 1.000 이 완벽:
+    #        전체      2~3      3~4      4~5     5~7 m/s
+    #   NUC2 0.897    0.909    0.893    0.872   0.835
+    #   NUC6 0.873    0.884    0.870    0.825   0.737
+    # 두 표 다 낙관적이지만 NUC6 은 레이싱 속도에서 26% 낙관이고, δ=0.20
+    # 부근에서 일찍 평탄해져 v=5 에서 조향 상한이 8.69°(NUC2 9.29°)로
+    # 막힌다 — 기계적 한계 20.7° 의 42%.
+    # my_track0808(mu 0.80) 요구 a_lat 대비 '표 상한 초과' 점 비율:
+    #   NUC2 0.6% / NUC6 5.6%  (실현율까지 곱하면 3.7% / 18.9%)
+    # 전 속도·전 조향각에서 NUC2 가 δ 를 더 크게 반환하므로 이 차의
+    # 언더스티어 방향과 일치한다. 단점 구간은 없다.
+    # ⚠️ 둘 다 다른 차량(ETH) 표다. 실측 재적합이 근본 해결이고, 그때
+    #    mu 0.80 도 같이 재평가할 것.
+    "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
 
     # Real-car speed cap. 2026-08-01: 5 m/s 단계(scale 0.83/cap 5.0) 실차 성공
     # 후 6 m/s 단계 승격 (planning velocity_scale 0.97과 한 변경으로 이동).
