@@ -49,9 +49,29 @@ def _existing(pattern):
     return [path for path in glob.glob(pattern) if os.path.isfile(path)]
 
 
-def _resolve_map_csvs(share_dir, map_name):
-    """map 이름 -> (raceline, sp, centerline) 파일명. 노드가 config/ 하위 상대경로로
-    여는 값이므로 basename만 돌려준다. 못 찾으면 (필수 항목만) 알아듣게 죽는다."""
+# 라인 변형 접미사. `map:=<맵>_tuned` 는 '다른 맵'이 아니라 '같은 맵의 다른 라인'을
+# 뜻한다 — 맵/센터라인/벽/PF 는 <맵> 을 쓰고 레이스라인 CSV 만 <맵>_tuned_ 를 쓴다.
+# ⚠️ integration_pkg/launch/real_car.launch.py 에 같은 목록의 사본이 있다
+#    (localization 에 넘길 맵 이름을 거기서 먼저 떼야 하므로). 하나를 늘리면 둘 다.
+LINE_VARIANTS = ('tuned',)
+
+
+def split_line_variant(name):
+    """'my_track0808_tuned' -> ('my_track0808', 'tuned'), 'my_track0808' -> (..., '')."""
+    for variant in LINE_VARIANTS:
+        suffix = '_' + variant
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[:-len(suffix)], variant
+    return name, ''
+
+
+def _resolve_map_csvs(share_dir, line_name, base_name):
+    """(raceline, sp, centerline) 파일명. 노드가 config/ 하위 상대경로로 여는 값이므로
+    basename만 돌려준다. 못 찾으면 (필수 항목만) 알아듣게 죽는다.
+
+    raceline 은 line_name(<맵>[_tuned])으로, centerline 은 base_name(<맵>)으로 찾는다 —
+    튜너는 레이스라인만 새로 쓰고 센터라인/벽은 build_map 원본을 그대로 쓴다.
+    """
     traj_dir = os.path.join(share_dir, 'config', 'global_trajectory')
     center_dir = os.path.join(share_dir, 'config', 'centerline')
     notes = []
@@ -65,17 +85,17 @@ def _resolve_map_csvs(share_dir, map_name):
                 % (pattern, ', '.join(os.path.basename(f) for f in found)))
         return os.path.basename(found[0]) if found else None
 
-    raceline = pick(traj_dir, map_name + '_iqp_*.csv')
+    raceline = pick(traj_dir, line_name + '_iqp_*.csv')
     if raceline is None:
         available = sorted({
             os.path.basename(f).split('_iqp_')[0]
             for f in _existing(os.path.join(traj_dir, '*_iqp_*.csv'))})
         raise RuntimeError(
             "map:=%s 의 raceline CSV(%s_iqp_*.csv)가 없습니다: %s\n"
-            '  사용 가능한 맵: %s\n'
-            '  (레이스라인을 아직 안 뽑았다면 '
-            'scripts/global_traj_sim/build_map.py <맵이름> 먼저)'
-            % (map_name, map_name, traj_dir, ', '.join(available) or '(없음)'))
+            '  사용 가능한 라인: %s\n'
+            '  (원본을 아직 안 뽑았다면 mkcsv <맵이름>, '
+            '_tuned 는 튜너에서 한 번 저장해야 생깁니다)'
+            % (line_name, line_name, traj_dir, ', '.join(available) or '(없음)'))
 
     # 파일 존재/같은 suffix만으로는 SP의 폐루프 안전 검증을 증명하지 못한다.
     # 현재 저장된 구형 SP 중에도 새 조향·마찰 검증을 실패하는 파일이 있으므로
@@ -92,7 +112,7 @@ def _resolve_map_csvs(share_dir, map_name):
             '메인과 suffix가 같은 SP(%s) 없음 — 메인 라인만 씁니다'
             % sp_candidate)
 
-    centerline = map_name + '_centerline.csv'
+    centerline = base_name + '_centerline.csv'
     if not os.path.isfile(os.path.join(center_dir, centerline)):
         notes.append('centerline(%s) 없음 — 시각화만 비게 됩니다' % centerline)
 
@@ -124,7 +144,19 @@ def launch_setup(context, *args, **kwargs):
     }
     # map:=<이름> — CSV 3종을 이름 하나로 해석한다. 개별 *_csv_file 인자가
     # 같이 오면 그쪽이 우선.
-    map_name = LaunchConfiguration('map').perform(context)
+    # map:=<맵>[_tuned] 를 (맵, 라인변형)으로 쪼갠다. line:=<태그>로도 줄 수 있다
+    # (LINE_VARIANTS 에 없는 임의 태그는 이쪽으로만 가능).
+    map_arg = LaunchConfiguration('map').perform(context)
+    line_arg = LaunchConfiguration('line').perform(context).strip()
+    map_name, line_variant = split_line_variant(map_arg)
+    if line_arg:
+        if line_variant and line_arg != line_variant:
+            raise RuntimeError(
+                'map:=%s 의 접미사(_%s)와 line:=%s 가 어긋납니다. 하나만 쓰세요.'
+                % (map_arg, line_variant, line_arg))
+        line_variant = line_arg
+    line_name = '%s_%s' % (map_name, line_variant) if line_variant else map_name
+
     trajectory_arg = LaunchConfiguration('trajectory_csv_file').perform(context)
     map_traj = map_sp = map_center = None
     map_notes = []
@@ -139,7 +171,22 @@ def launch_setup(context, *args, **kwargs):
                     'centerline(%s) 없음 — 시각화만 비게 됩니다' % map_center)
         else:
             map_traj, map_sp, map_center, map_notes = \
-                _resolve_map_csvs(share_dir, map_name)
+                _resolve_map_csvs(share_dir, line_name, map_name)
+    elif line_variant:
+        raise RuntimeError(
+            'line:=%s 는 map:= 없이 쓸 수 없습니다 (어느 맵의 라인인지 알 수 없음)'
+            % line_variant)
+
+    # 손으로 튜닝한 라인은 마찰원/조향 한계를 넘을 수 있다 — 그게 튜너의 목적이다.
+    # 그 라인으로 주행하려면 런타임 물리 검사를 경고로 내려야 한다. 원본(_tuned
+    # 없음) 경로는 어떤 경우에도 strict 로 남는다.
+    if line_variant:
+        overrides['global_trajectory_node'][
+            'global_trajectory/validation_mode'] = 'advisory'
+        map_notes.append(
+            '라인 변형 "%s": global_trajectory/validation_mode=advisory — '
+            '마찰원/조향 한계 위반을 거부하지 않습니다 (사람 튜닝 라인 시험용). '
+            '속도를 낮춰 시작하고 사람이 붙어 있을 때만 쓰십시오' % line_variant)
 
     traj_csv = trajectory_arg or map_traj
     if traj_csv:
@@ -254,8 +301,9 @@ def launch_setup(context, *args, **kwargs):
         # 있으면 주행 중엔 알아채기 어렵다.
         selected_sp = overrides['global_trajectory_node'].get(
             'global_trajectory/overtaking_csv_file', '')
-        info.append('map:=%s -> raceline=%s, sp=%s, centerline=%s'
-                    % (map_name, traj_csv, selected_sp or '(없음)', center_csv))
+        info.append('map:=%s (맵=%s, 라인=%s) -> raceline=%s, sp=%s, centerline=%s'
+                    % (map_arg, map_name, line_variant or '원본',
+                       traj_csv, selected_sp or '(없음)', center_csv))
     # trajectory_csv_file 단독 override 경고도 map:= 없이 반드시 보이게 한다.
     info += ['  주의: ' + n for n in map_notes]
     if info:
@@ -272,13 +320,20 @@ def generate_launch_description():
         DeclareLaunchArgument('map', default_value='',
                               description='맵 이름. CSV 3종(raceline/SP/centerline)을 '
                                           '이름으로 한꺼번에 해석한다. 빈 값이면 '
-                                          'params.yaml의 값을 그대로 사용'),
+                                          'params.yaml의 값을 그대로 사용. '
+                                          '<맵>_tuned 를 주면 맵/센터라인은 <맵>, '
+                                          '레이스라인만 <맵>_tuned_iqp_*.csv 를 쓰고 '
+                                          'validation_mode=advisory 가 된다'),
+        DeclareLaunchArgument('line', default_value='',
+                              description='라인 변형 태그 (map:=<맵>_<태그> 와 동등). '
+                                          '"tuned" 는 접미사로도 되고, 그 밖의 임의 '
+                                          '태그는 이 인자로만 줄 수 있다. 비우면 원본'),
         DeclareLaunchArgument('trajectory_csv_file', default_value='',
                               description='raceline CSV 파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('overtaking_csv_file', default_value='',
                               description='SP 추월 라인 CSV 파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('odom_mode', default_value='',
-                              description='sim_gt | sim_pf | real'),
+                              description='sim_gt | real'),
         DeclareLaunchArgument('centerline_csv_file', default_value='',
                               description='centerline CSV 파일명 (config/centerline/)'),
         DeclareLaunchArgument('pose_odom_topic', default_value='',

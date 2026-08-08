@@ -51,7 +51,9 @@ def test_default_profile_is_fail_safe():
     assert 0.0 < global_cfg["global_trajectory/min_velocity_scale"] <= \
         global_cfg["global_trajectory/velocity_scale"] <= \
         global_cfg["global_trajectory/max_velocity_scale"] <= 1.0
-    assert spliner["spliner/use_trailing"] is True
+    # (spliner/use_trailing 삭제: 생성자가 false 를 무조건 true 로 되돌려
+    #  스위치로 기능하지 않았다 — trailing 은 이제 항상 켜져 있다.)
+    assert "spliner/use_trailing" not in spliner
     assert spliner["spliner/sp_lane_change"] is False
     # perception lease. 짧을수록 "빨리 알아챈다"가 아니다 — 초과하면 spliner가
     # fail-safe 정지 궤적(vx=0)을 발행하므로, detector 실측 발행 주기보다
@@ -71,7 +73,9 @@ def test_default_profile_is_fail_safe():
     assert recovery.get("recovery/rear_coverage_confirmed", False) is False
     assert tracker["tracker/recovery_required"] is False
     assert tracker["tracker/recovery_allow_reverse"] is False
-    assert tracker["tracker/internal_stuck_recovery_enabled"] is False
+    # (tracker/internal_stuck_recovery_enabled 삭제: 자체 후진 상태머신을
+    #  통째로 제거해 tracker 는 STOP 래치만 한다. 후진은 supervisor 몫.)
+    assert "tracker/internal_stuck_recovery_enabled" not in tracker
 
 
 def test_default_main_trajectory_semantics():
@@ -115,11 +119,18 @@ def test_environment_nominal_speed_matches_control_cap():
     actual_csv_vmax = float(
         _load_trajectory(TRAJECTORIES / csv_name)[:, 7].max())
 
-    for env_name in ("real_car", "race_map"):
-        planning_env = _yaml(PKG / "config" / "environments" / f"{env_name}.yaml")
-        planning_scale = _ros_params(
-            planning_env, "global_trajectory_node"
-        )["global_trajectory/velocity_scale"]
+    # base(params.yaml) 프로파일도 검사한다. 예전엔 real_car/race_map 만 봐서
+    # base 의 velocity_scale 이 v-max 6.0 시절 값(0.6667)으로 남아 sim control
+    # cap 4.0 을 17% 초과하는 것을 못 잡았다 (integration stack env:=sim 경로).
+    for env_name in ("sim", "real_car", "race_map"):
+        if env_name == "sim":
+            planning_scale = global_base["global_trajectory/velocity_scale"]
+        else:
+            planning_env = _yaml(
+                PKG / "config" / "environments" / f"{env_name}.yaml")
+            planning_scale = _ros_params(
+                planning_env, "global_trajectory_node"
+            )["global_trajectory/velocity_scale"]
         control_env_path = (
             WORKSPACE / "control_ws" / "src" / "control_pkg" /
             "config" / "environments" / f"{env_name}.yaml"

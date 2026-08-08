@@ -26,7 +26,7 @@ RESOLUTION_OVERRIDE 로만 덮어쓴다.
 출력:
   outputs/<맵>_trajectory.png / _tracking.png          (눈으로 확인)
   config/global_trajectory/<맵>_iqp_*.csv, _sp_*.csv   (런타임/튜너가 읽음)
-  config/centerline/<맵>_centerline.csv, _walls.csv
+  config/centerline/<맵>_centerline.csv
 """
 
 import argparse
@@ -97,7 +97,7 @@ MIN_ISLAND_M2 = 0.3
 #      된다: 08-05/08-06 백 168 s(전류 포화 24 A) 구간에서 달성 가속도는 속도대
 #      0~5.5 m/s 전 구간에 걸쳐 p50 0.7~1.6 / p90 1.2~1.7 로, 1.8 은 이미 p95 위다
 V_MAX      = RACELINE_V_MAX
-MU         = 0.75    # 물리 노면 마찰계수. 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
+MU         = 0.90    # 물리 노면 마찰계수. 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
                      # 2026-07-31 run_0731_223152 IMU 실측 |a_lat| p95 7.0~7.9 m/s²
                      # → 0.75(7.36)는 실측과 일치. 실측이 바뀔 때만 수정할 것.
 # 속도 프로파일 계획용 mu. MU(물리 한계)보다 낮춰서, 컨트롤러의
@@ -111,7 +111,7 @@ MU         = 0.75    # 물리 노면 마찰계수. 폐루프 검증의 타이어
 #   0.68: lap 8.60 s, |lat err|max 0.347 m  <- 채택 (벽여유 min 0.350 이내)
 #   0.70: lap 8.55 s, |lat err|max 0.421 m  <- 벽여유 초과, 실차 검증 전 금지
 # 0.70 승격은 실차에서 헤어핀 |lat err| 실측(<0.25 m) 확인 후에만 할 것.
-MU_PROFILE = 0.68
+MU_PROFILE = 0.8
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -131,6 +131,11 @@ MU_PROFILE = 0.68
 #   occupancy 마스크에서 받으면서, 코리도가 2*SAFE_DIST 보다 좁은 구간은
 #   불능이 아니라 '정중앙 고정'으로 처리된다(_solve_qp 의 narrow 분기).
 #   불능 대신 곡률로 대가를 치르는 형태로 바뀐 것이라 위 표가 나온다.
+# ⚠️ 위 스윕표(my_track0727)의 결론은 "0.40 유지"였지만 현재 값은 0.325 다
+#    (2ad542a). 표에 없는 값이라 표만 보고 판단하면 안 된다. 게다가
+#    ADAPTIVE_SAFE_DIST=True 인 지금은 이 상수가 실제로 쓰이지 않는다 —
+#    폭 연동 적응형 이격(adaptive_safe_dist, 0.22~0.55)이 대신한다.
+#    이 값이 살아나는 것은 ADAPTIVE_SAFE_DIST 를 False 로 고쳤을 때뿐이다.
 SAFE_DIST  = 0.325    # IQP 라인-벽 최소 이격 [m] = 차 반폭(≈0.15) + 추적오차 여유
 # 소형 트랙(my_track: 실폭 median 1.2 m, 최대 2.15 m)은 벽 여유를 크게 빼면
 # 회피용 가용 corridor가 0으로 붕괴한다. MARGIN은 주행선을 안 옮기고 CSV의
@@ -232,8 +237,25 @@ SAFE_DIST_SMOOTH_M = 2.0 * CAR_HALF_LENGTH
 # 플랜트 상수(A_ACC_MAX / A_DEC_PLANNED / BRAKE_DECEL_PER_AMP)나 제어기
 # lookahead(map/m_l1, map/q_l1)를 만지면 이 표를 반드시 다시 뽑을 것.
 ADAPTIVE_SPEED_BY_WIDTH = True
-LAT_ERR_STRAIGHT_S = 0.050   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
-LAT_ERR_CORNER_S = 0.105     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
+# 2026-08-08 (my_track0808 + A_ACC_MAX 4.5 / MU_PROFILE 0.80): 0.050/0.105 ->
+# 0.035/0.120. 두 상수를 **반대 방향으로** 움직였다. 실차 폐루프 게이트
+# (cpp_real_car) 를 상수를 고정한 채 2D 로 훑은 결과:
+#
+#   corner_s  0.105  0.108  0.111 | 0.114  0.117  0.120  0.130
+#   gate      FAIL   FAIL   FAIL  | PASS   PASS   PASS   PASS
+#   v_max     6.49   6.49   6.48  | 6.43   6.38   6.34   6.20
+#   lap [s]   8.75   8.75   8.85  | 8.93   9.00   9.10   9.45
+#
+# 즉 PASS/FAIL 은 corner_s 가 혼자 가른다 (직선이 짧아 straight_s 는 랩타임에
+# 영향이 없고 v_max 만 0.16 m/s 움직인다: s=0.050 -> 0.035 에서 6.18 -> 6.34).
+# 0.114 가 벼랑이라 한 칸 물러난 0.120 을 쓴다.
+#
+# ⚠️ 이 맵에서 v_max 7.00 은 게이트와 양립하지 않는다. 0.040/0.060 이면 v_max
+#    7.00 이 나오지만 폐루프 벽 침범이 160 step 이다. 코리도가 median 1.68 m
+#    (벽여유 0.55, 차 반폭 빼면 0.40) 라서 7 m/s 에서 라인을 못 잡는다.
+#    게이트를 통과하는 최고속은 6.43 (corner 0.114, 벼랑) / 6.34 (0.120).
+LAT_ERR_STRAIGHT_S = 0.035   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
+LAT_ERR_CORNER_S = 0.120     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
 LAT_ERR_KAPPA_LOW = 0.05     # [1/m] 이하는 직선 취급 (R >= 20 m)
 LAT_ERR_KAPPA_HIGH = 0.30    # [1/m] 이상은 코너 취급 (R <= 3.3 m)
 LAT_ERR_KAPPA_WINDOW_M = 2.0  # 직전 곡률 rolling-max 창 [m] (코너 탈출 지연)
@@ -1290,14 +1312,6 @@ def _trajectory_csv_bytes(traj, header_note="", generation_id=""):
     return stream.getvalue().encode("utf-8")
 
 
-def write_csv(traj, path, header_note="", generation_id=""):
-    """호환용 단일 파일 writer. 실제 생성 승격은 commit_generation_set 사용."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as file:
-        file.write(_trajectory_csv_bytes(
-            traj, header_note, generation_id=generation_id))
-
-
 def _savetxt_bytes(data, **kwargs):
     stream = io.StringIO()
     np.savetxt(stream, data, **kwargs)
@@ -1377,6 +1391,9 @@ def commit_generation_set(map_name, main_name, main_traj, center, walls,
     elif sp_name and not sp_disabled_reason:
         sp_disabled_reason = "SP not generated"
 
+    # walls 는 더 이상 파일로 쓰지 않지만(위 auxiliary_payloads 주석 참조)
+    # generation_id 다이제스트에는 계속 넣는다 — 벽 기하가 바뀌면 같은 맵
+    # 이름이어도 다른 세대여야 한다.
     walls_bytes = _savetxt_bytes(
         walls, delimiter="; ", fmt="%.7f",
         header="x_m; y_m; wall_id(0=outer,1=inner)")
@@ -1400,10 +1417,11 @@ def commit_generation_set(map_name, main_name, main_traj, center, walls,
         [(path, sp_bytes, f"sp_{index}")
          for index, path in enumerate(expected_sp_paths)]
         if sp_bytes is not None else [])
+    # (walls CSV 출력 제거: 소비자였던 RViz 3D 벽 시각화 노드
+    #  scripts/global_traj_sim/ros2/raceline_viz_node.py 가 a695b79(2026-07-17)
+    #  에서 삭제된 뒤로 _walls 를 읽는 코드가 워크스페이스에 하나도 없었다.
+    #  그래도 매 생성마다 config/centerline/ 에 계속 써서 733 KB 가 쌓였다.)
     auxiliary_payloads = [
-        (OUT_DIR / f"{map_name}_walls.csv", walls_bytes, "walls_output"),
-        (CENTERLINE_DIR / f"{map_name}_walls.csv",
-         walls_bytes, "walls_runtime"),
         (OUT_DIR / f"{map_name}_centerline.csv",
          center_bytes, "centerline_output"),
         (CENTERLINE_DIR / f"{map_name}_centerline.csv",

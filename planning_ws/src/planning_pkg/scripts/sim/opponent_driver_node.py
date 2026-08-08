@@ -48,18 +48,21 @@ class OpponentDriverNode(Node):
         pitwall.init(self)
 
         self.declare_parameter('opponent/mode', 'path')          # path | ftg | manual
-        self.declare_parameter('opponent/max_speed_mps', 2.0)    # ± 버튼으로 조절되는 상한
-        self.declare_parameter('opponent/speed_scale', 0.3)      # path: raceline 속도 배율
-        self.declare_parameter('opponent/size_m', 0.4)
+        self.declare_parameter('opponent/max_speed_mps', 7.0)    # ± 버튼으로 조절되는 상한
+        self.declare_parameter('opponent/speed_scale', 0.255)    # path: raceline 속도 배율
+        self.declare_parameter('opponent/size_m', 0.3)
         self.declare_parameter('opponent/drive_rate_hz', 40.0)
         self.declare_parameter('opponent/wheelbase_m', 0.33)
-        self.declare_parameter('opponent/max_steer_rad', 0.4)
-        self.declare_parameter('opponent/park_x', -79.81)
-        self.declare_parameter('opponent/park_y', -31.26)
+        self.declare_parameter('opponent/max_steer_rad', 0.36)
+        # sim_race.launch.py 가 PARK_POSES[map] 로 항상 덮어쓴다. 아래 기본값은
+        # 단독 실행용이며, 옛 Spielberg 좌표(-79.81/-31.26)는 현행 기본 맵
+        # my_track0807 과 무관해서 제거했다.
+        self.declare_parameter('opponent/park_x', -12.0)
+        self.declare_parameter('opponent/park_y', 8.5)
         self.declare_parameter('opponent/park_radius_m', 5.0)    # 이 안이면 '주차됨'
         # FTG 파라미터
         self.declare_parameter('opponent/ftg_max_range_m', 8.0)
-        self.declare_parameter('opponent/ftg_bubble_m', 0.4)
+        self.declare_parameter('opponent/ftg_bubble_m', 0.3)
         self.declare_parameter('opponent/ftg_gap_min_m', 1.5)
         gp = lambda n: self.get_parameter(n).value
         self.mode = gp('opponent/mode')
@@ -155,6 +158,7 @@ class OpponentDriverNode(Node):
         self.lidar_enable = bool(msg.data)
 
     def cb_pmode(self, msg: String):
+        # 게이팅은 virtual_obstacle_node 가 담당한다. 여기서는 로그용으로만 둔다.
         self.perception_merge = (msg.data.strip().lower() != 'lidar_overlay')
 
     # ---------------- 상태 ----------------
@@ -227,7 +231,10 @@ class OpponentDriverNode(Node):
             else self.ftg_max_range
         speed = self.max_speed * (1.0 - 0.6 * abs(steer) / self.max_steer)
         speed = min(speed, 0.5 * d_front)
-        return max(speed, 0.5), steer
+        # 하한을 0.5 로 두면 d_front < 1.0 m 에서 위 감속식이 무엇을 내든
+        # 항상 0.5 가 되어, 정작 위험한 근접 구간에서 '가까울수록 감속'이
+        # 무력화된다. 아주 가까우면 실제로 멈추게 둔다.
+        return max(speed, 0.0), steer
 
     def drive_manual(self):
         if (self.manual_cmd is None or self.manual_stamp is None or
@@ -270,7 +277,11 @@ class OpponentDriverNode(Node):
         arr = ObstacleArray()
         arr.header.stamp = self.get_clock().now().to_msg()
         arr.header.frame_id = 'map'
-        if active and self.perception_merge and self.wpts is not None \
+        # perception 모드 게이팅은 유일한 구독자인 virtual_obstacle_node 가
+        # tracking_merge 일 때만 합치는 식으로 이미 하고 있다. 여기서 또 막으면
+        # 계층만 늘고, 실제로는 비대칭이었다 — virtual_obstacle 은 launch 가
+        # 초기 모드를 파라미터로 넣어 주는데 이쪽은 토픽 수신 전까지 True 였다.
+        if active and self.wpts is not None \
                 and self.odom is not None:
             cx, cy, yaw, v = self.pose_yaw_v()
             d2 = (self.wpts[:, 1] - cx) ** 2 + (self.wpts[:, 2] - cy) ** 2

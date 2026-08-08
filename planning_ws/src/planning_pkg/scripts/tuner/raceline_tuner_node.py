@@ -13,7 +13,6 @@
 
 실행: ros2 launch planning_pkg raceline_tuner.launch.py
 """
-import copy
 import importlib.util
 import json
 import math
@@ -272,12 +271,14 @@ class RacelineTunerNode(Node):
             sys.modules[module_name] = module
             try:
                 spec.loader.exec_module(module)
-                if not module.gate_controller_profiles():
-                    raise RuntimeError('배포 controller gate profile이 비어 있음')
             except Exception:
                 sys.modules.pop(module_name, None)
                 raise
-        module.gate_controller_profiles()
+        # 신규 로드/캐시 재사용 양쪽에서 같은 계약을 검사한다. 예전엔 신규 로드
+        # 경로에만 '비어 있음' 검사가 있고 캐시 경로는 반환값을 버리는 중복
+        # 호출뿐이라, 같은 상황을 두 경로가 다르게 처리했다.
+        if not module.gate_controller_profiles():
+            raise RuntimeError('배포 controller gate profile이 비어 있음')
         if package_root is None:
             raise RuntimeError(
                 'source planning_pkg root를 CSV 경로에서 찾을 수 없음')
@@ -1112,7 +1113,10 @@ class RacelineTunerNode(Node):
             win = int(self.window_m / self.ds)
         for idx in self.anchor_idxs:
             off = (idx - center_idx) % n
-            if min(off, n - off) > win and center_idx >= 0:
+            # (center_idx >= 0 조건 제거: 세 호출부 모두 마커 이름에서 파싱한
+            #  인덱스라 음수가 될 수 없어 상수 True 였다. 전체 갱신은
+            #  _refresh_all_markers 가 따로 담당한다.)
+            if min(off, n - off) > win:
                 continue
             self._reset_marker_pose(idx)
         self.server.applyChanges()

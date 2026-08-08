@@ -46,6 +46,13 @@ except ImportError:      # scipy 없는 환경(다른 개발 PC 등)은 맵 필�
     distance_transform_edt = None
 
 
+# 클러스터 반경이 이보다 크면 경고만 남긴다 [m]. 출력은 원본 반경을 그대로
+# 보존한다(잘라내면 큰 장애물의 실제 크기를 감춰 회피 폭이 모자라진다).
+# 예전엔 ROS 파라미터(bridge/max_extent_m)였는데 어떤 yaml 에도 없었고
+# 출력에 전혀 영향이 없어서 '크기 상한'으로 오해를 샀다 — 상수로 되돌린다.
+_LARGE_EXTENT_WARN_M = 1.50
+
+
 class PerceptionObstacleBridgeNode(Node):
     def __init__(self):
         super().__init__('perception_obstacle_bridge_node')
@@ -59,7 +66,6 @@ class PerceptionObstacleBridgeNode(Node):
         self.declare_parameter('bridge/wall_margin_m', 0.10)
         # 큰 extent를 축소/삭제하지 않고 진단하는 임계값. 유령 제거는
         # footprint-corridor overlap과 opt-in map filter가 담당한다.
-        self.declare_parameter('bridge/max_extent_m', 1.50)
         self.declare_parameter('bridge/vel_lpf_alpha', 0.3)
         self.declare_parameter('bridge/max_abs_vs_mps', 10.0)
         self.declare_parameter('bridge/max_abs_vd_mps', 4.0)
@@ -94,7 +100,6 @@ class PerceptionObstacleBridgeNode(Node):
         self.target_frame = str(p('bridge/target_frame').value).strip()
         self.min_confidence = float(p('bridge/min_confidence').value)
         self.wall_margin = float(p('bridge/wall_margin_m').value)
-        self.max_extent = float(p('bridge/max_extent_m').value)
         self.lpf_alpha = float(p('bridge/vel_lpf_alpha').value)
         self.max_abs_vs = float(p('bridge/max_abs_vs_mps').value)
         self.max_abs_vd = float(p('bridge/max_abs_vd_mps').value)
@@ -123,7 +128,7 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/map_filter_required').value)
 
         finite_values = (
-            self.min_confidence, self.wall_margin, self.max_extent,
+            self.min_confidence, self.wall_margin,
             self.lpf_alpha, self.max_abs_vs, self.max_abs_vd,
             self.position_var_floor, self.velocity_var_floor, self.init_vel_std,
             self.forget_sec, self.tf_timeout, self.tf_max_age,
@@ -135,7 +140,6 @@ class PerceptionObstacleBridgeNode(Node):
                 or not self.target_frame
                 or not 0.0 <= self.min_confidence <= 1.0
                 or not 0.0 <= self.wall_margin <= 2.0
-                or not 0.05 <= self.max_extent <= 20.0
                 or not 0.0 <= self.lpf_alpha <= 1.0
                 or not 0.1 <= self.max_abs_vs <= 50.0
                 or not 0.1 <= self.max_abs_vd <= 20.0
@@ -484,7 +488,7 @@ class PerceptionObstacleBridgeNode(Node):
             # 오판한다. 큰 wall cluster도 보수적으로 전부 유지해 정지시키며,
             # 유령 제거는 map filter가 담당한다.
             half = raw_half
-            if raw_half > self.max_extent:
+            if raw_half > _LARGE_EXTENT_WARN_M:
                 self.get_logger().warn(
                     f'large obstacle extent preserved: id={src.id}, '
                     f'radius={raw_half:.2f}m',

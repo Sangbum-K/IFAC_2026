@@ -39,6 +39,10 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     this->declare_parameter("global_trajectory/validation_max_steer_rad", 0.36);
     this->declare_parameter("global_trajectory/validation_tolerance", 0.03);
     this->declare_parameter("global_trajectory/validation_ax_tolerance", 1.0);
+    // "strict"(기본) | "advisory". advisory 는 마찰원/조향 한계 위반을 경고로만
+    // 남기고 노드를 띄운다 — 사람이 직감으로 손댄 <맵>_tuned_ 라인을 실차에서
+    // 시험하기 위한 것이다. 형식 검사는 어느 모드에서도 통과해야 한다.
+    this->declare_parameter("global_trajectory/validation_mode", "strict");
 
     trajectory_csv_file_ = this->get_parameter("global_trajectory/trajectory_csv_file").as_string();
     overtaking_csv_file_ = this->get_parameter("global_trajectory/overtaking_csv_file").as_string();
@@ -59,6 +63,18 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
         this->get_parameter("global_trajectory/validation_tolerance").as_double();
     validation_ax_tolerance_ =
         this->get_parameter("global_trajectory/validation_ax_tolerance").as_double();
+    const std::string validation_mode =
+        this->get_parameter("global_trajectory/validation_mode").as_string();
+    if (validation_mode == "advisory") {
+        validation_advisory_ = true;
+    } else if (validation_mode != "strict") {
+        // 오타를 조용히 strict 로 떨어뜨리지 않는다. 반대 방향(advisory 를 원했는데
+        // strict 가 되는 것)은 노드가 안 뜨는 것으로 드러나지만, 그 반대는
+        // 검증이 꺼진 채로 주행하는 것이라 반드시 여기서 죽어야 한다.
+        throw std::runtime_error(
+            "global_trajectory/validation_mode must be \"strict\" or \"advisory\", got \"" +
+            validation_mode + "\"");
+    }
 
     if (!(publish_rate_hz_ > 0.0) || !std::isfinite(publish_rate_hz_) ||
         !std::isfinite(velocity_scale_) ||
@@ -94,6 +110,17 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     RCLCPP_INFO(this->get_logger(), "trajectory_csv_file: %s", trajectory_csv_file_.c_str());
     RCLCPP_INFO(this->get_logger(), "publish_rate_hz: %f", publish_rate_hz_);
     RCLCPP_INFO(this->get_logger(), "velocity_scale: %f", velocity_scale_);
+    if (validation_advisory_) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "======================= validation_mode=advisory =======================\n"
+            "  마찰원/조향 한계 위반을 거부하지 않고 경고로만 남깁니다.\n"
+            "  사람이 손으로 튜닝한 라인(<맵>_tuned_)을 실차에서 시험하는 경로입니다.\n"
+            "  이 CSV 는 차가 물리적으로 따라갈 수 없는 구간을 포함할 수 있습니다 —\n"
+            "  속도를 낮춰 시작하고 사람이 붙어 있을 때만 쓰십시오.\n"
+            "  원본 라인으로 돌아가려면 map:= 에서 _tuned 접미사를 떼십시오.\n"
+            "========================================================================");
+    }
 
     // Load global trajectory from CSV
     if (LoadTrajectoryFromCSV(
@@ -292,7 +319,7 @@ bool GlobalTrajectoryNode::LoadTrajectoryFromCSV(const std::string& csv_filename
         }
 
         // 파일명/라인 종류와 무관하게 차량이 따라갈 수 없는 곡률은 거부한다.
-        if (!ValidateTrajectory(csv_filename, out_trajectory, true)) {
+        if (!ValidateTrajectory(csv_filename, out_trajectory)) {
             out_trajectory.clear();
             return false;
         }
@@ -308,8 +335,7 @@ bool GlobalTrajectoryNode::LoadTrajectoryFromCSV(const std::string& csv_filename
 
 bool GlobalTrajectoryNode::ValidateTrajectory(
     const std::string &name,
-    const std::vector<std::vector<double>> &trajectory,
-    bool strict_curvature) const {
+    const std::vector<std::vector<double>> &trajectory) const {
     if (trajectory.size() < 8) {
         RCLCPP_ERROR(this->get_logger(), "%s has fewer than 8 waypoints", name.c_str());
         return false;
@@ -320,6 +346,15 @@ bool GlobalTrajectoryNode::ValidateTrajectory(
         std::max(validation_wheelbase_m_, 1e-6);
     std::vector<double> spacings;
     spacings.reserve(trajectory.size() - 1);
+    // advisory 모드 물리 위반 집계. 행마다 경고를 뿜으면 314행 CSV 에서 로그가
+    // 쓸려 내려가므로 최악값만 모아 마지막에 한 번 보고한다. strict 모드에서는
+    // 예전과 똑같이 첫 위반 행에서 즉시 거부하므로 이 변수들은 쓰이지 않는다.
+    size_t steer_violations = 0;
+    size_t friction_violations = 0;
+    double worst_kappa = 0.0;
+    size_t worst_kappa_row = 0;
+    double worst_combined = 0.0;
+    size_t worst_combined_row = 0;
     for (size_t i = 0; i < trajectory.size(); ++i) {
         const auto &r = trajectory[i];
         if (r.size() != 9 ||
@@ -365,23 +400,36 @@ bool GlobalTrajectoryNode::ValidateTrajectory(
             }
         }
         const double abs_kappa = std::abs(r[6]);
-        if (strict_curvature &&
-            abs_kappa > kappa_limit * (1.0 + validation_tolerance_)) {
-            RCLCPP_ERROR(
-                this->get_logger(),
-                "%s row %zu requires |kappa| %.3f > steering limit %.3f",
-                name.c_str(), i, abs_kappa, kappa_limit);
-            return false;
+        if (abs_kappa > kappa_limit * (1.0 + validation_tolerance_)) {
+            if (!validation_advisory_) {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "%s row %zu requires |kappa| %.3f > steering limit %.3f",
+                    name.c_str(), i, abs_kappa, kappa_limit);
+                return false;
+            }
+            ++steer_violations;
+            if (abs_kappa > worst_kappa) {
+                worst_kappa = abs_kappa;
+                worst_kappa_row = i;
+            }
         }
         const double lat_acc = r[7] * r[7] * abs_kappa;
         const double combined_acc = std::hypot(lat_acc, r[8]);
         if (combined_acc > g_limit * (1.0 + validation_tolerance_)) {
-            RCLCPP_ERROR(
-                this->get_logger(),
-                "%s row %zu requires combined tire acceleration %.3f > %.3f "
-                "(lat %.3f, long %.3f)",
-                name.c_str(), i, combined_acc, g_limit, lat_acc, r[8]);
-            return false;
+            if (!validation_advisory_) {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "%s row %zu requires combined tire acceleration %.3f > %.3f "
+                    "(lat %.3f, long %.3f)",
+                    name.c_str(), i, combined_acc, g_limit, lat_acc, r[8]);
+                return false;
+            }
+            ++friction_violations;
+            if (combined_acc > worst_combined) {
+                worst_combined = combined_acc;
+                worst_combined_row = i;
+            }
         }
     }
     const auto [min_it, max_it] =
@@ -401,6 +449,30 @@ bool GlobalTrajectoryNode::ValidateTrajectory(
             this->get_logger(), "%s is not a closed loop (closure %.3f m)",
             name.c_str(), closure);
         return false;
+    }
+    // 형식 검사를 모두 통과한 뒤에만 보고한다. 형식 위반으로 어차피 죽는
+    // CSV 에 대해 물리 요약까지 찍으면 진짜 원인이 묻힌다.
+    // 위반이 없는 항목은 아예 찍지 않는다. 0행짜리 항목을 "최악 0.000 @ row 0"
+    // 으로 같이 출력하면 사람이 그걸 실제 위반으로 읽는다.
+    if (friction_violations > 0) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "%s: [advisory] 마찰원 초과 %zu행을 통과시켰습니다 — 최악 합성 가속도 "
+            "%.3f > mu*g %.3f m/s^2 (row %zu). 그 구간에서 타이어가 요구량을 못 내면 "
+            "라인 바깥으로 밀려납니다.",
+            name.c_str(), friction_violations,
+            worst_combined, g_limit, worst_combined_row);
+    }
+    if (steer_violations > 0) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "%s: [advisory] 조향 한계 초과 %zu행을 통과시켰습니다 — 최악 |kappa| "
+            "%.3f > %.3f 1/m (row %zu, 요구 R %.3f m < 실차 최소 %.3f m). "
+            "핸들을 끝까지 꺾어도 못 도는 구간이라 컨트롤러가 포화하고 "
+            "라인을 이탈합니다.",
+            name.c_str(), steer_violations,
+            worst_kappa, kappa_limit, worst_kappa_row,
+            1.0 / worst_kappa, 1.0 / kappa_limit);
     }
     return true;
 }
@@ -472,7 +544,11 @@ f1tenth_planning_msgs::msg::WpntArray GlobalTrajectoryNode::BuildWpntArray(
         f1tenth_planning_msgs::msg::Wpnt waypoint;
         waypoint.id = static_cast<int32_t>(i);  // Sequential ID starting from 0
         waypoint.s_m = row[0];     // s_m
-        waypoint.d_m = 0.0;        // d_m (set to 0 as requested)
+        // 이 스택의 Frenet 기준선은 센터라인이 아니라 레이스라인 자신이므로
+        // 전역 라인 위의 점은 정의상 d=0 이다. 하류가 이 규약에 의존한다:
+        // spliner 는 d_m 을 raceline 기준 오프셋으로 채우고, recovery 는
+        // (cur_d_ - w.d_m) 으로 경로 대비 횡이탈을 계산한다.
+        waypoint.d_m = 0.0;
         waypoint.x_m = row[1];     // x_m
         waypoint.y_m = row[2];     // y_m
         waypoint.d_right = row[3]; // d_right

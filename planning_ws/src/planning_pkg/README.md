@@ -29,7 +29,7 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 | `scripts/sim/` | 시뮬 전용 노드 3개 (tracker/obstacle/opponent) | 완성·검증됨 |
 | `scripts/tuner/`, `scripts/lib/` | 레이스라인 튜너, pitwall 텔레메트리 | 완성 |
 | `../pitwall_panel/` | RViz Pitwall 패널 (Qt 플러그인) | 완성 |
-| `../f1tenth_planning_msgs/` | 공용 메시지 (Wpnt/Obstacle/BehaviorState) | 이식됨 — perception/control도 이 타입 사용 권장 |
+| `../f1tenth_planning_msgs/` | 공용 메시지 (Wpnt/WpntArray/Obstacle/ObstacleArray) | 이식됨 — perception/control도 이 타입 사용 권장 |
 
 > **이식 노트**: 원본 `planning_ws/planner_pkg`(리포 최상위)는 헤더 4개,
 > CMakeLists.txt, planner_config.yaml, visualizer 콜백 구현 2개가 누락된
@@ -107,12 +107,11 @@ virtual_obstacle_node에 내장):
   전체 체인을 시뮬에서 검증. (상대 차량은 실제 gym 에이전트라 `/scan`에 이미
   물리적으로 찍힌다.)
 
-검증(headless): Spielberg 7/7 · Budapest 5/5 PASS — 섹터 마커 발행(13개/5개),
-속도 변화(실속 1.9~7.5 m/s), 비섹터 장애물 TRAILING 정지(3.0 m 앞, 관통 없음),
-제거 후 재가속, 상대 스폰 → 섹터 추월(최소 이격 0.51 m / 0.45 m).
-테스트: `test/sim/run_sector_test.sh [맵]` (시뮬을 직접 띄우고 검사 —
-주의: 러너 호출 명령줄에 "planning_pkg" 문자열이 있으면 cleanup pkill이
-자기 셸을 죽인다. 경로로만 실행할 것).
+검증: `test/sim/my_track_test.py` (이미 떠 있는 시뮬 sim_race.launch.py 에
+붙어 검사한다). 옛 `sector_test.py` / `run_sector_test.sh` 와 그 회귀 근거
+"Spielberg 7/7 · Budapest 5/5 PASS" 는 2026-08-08 에 제거했다 — 두 맵의
+raceline CSV 가 62fa0d0 에서 삭제돼 그 테스트는 첫 줄에서 exit(2) 했고,
+재현할 방법이 없는 근거였다.
 
 ### 추월 섹터 (sector gating)
 
@@ -121,7 +120,7 @@ raceline CSV의 좌우 벽 여유에서 **추월 가능 섹터를 자동 산출*
 (`clearance >= ot_min_clearance`, `ot_sector_min_len_m` 이상 연속 구간),
 
 - **섹터 안**: 경계·차체 footprint·조향·마찰원·가감속·jerk 검사를 모두
-  통과한 회피만 발행한다. 기본 `ot_bound_mindist=0.20`,
+  통과한 회피만 발행한다. 기본 `spline_bound_mindist=0.20`,
   `ot_speed_scale=1.0`으로 경계 여유를 줄이거나 검증된 속도 프로파일을
   런타임에서 부스트하지 않는다.
 - **섹터 밖**: 회피 자체를 시도하지 않고 **TRAILING**으로 따라붙어
@@ -232,7 +231,7 @@ ForzaETH `unicorn-racing-stack-main/planner/spliner`(ROS1 Python)의 C++ ROS2
 3. apex 전후 7개 절점을 자연 3차 스플라인으로 연결해 d(s) 생성, 0.1 m 샘플.
 4. 트랙 경계까지 `spline_bound_mindist` 미만이면 회피 포기(빈 배열 발행),
    raceline에서 벗어난 상태(|d| > `side_switch_d_tresh`)에선 사이드 변경 금지.
-5. 코너 안쪽 통과 시 속도 `inside_speed_scale`로 감속, 바깥 추월 시 스플라인
+5. 코너 안쪽 통과 시 `offset_grip_cap`(오프셋 곡률 기반)으로 감속, 바깥 추월 시 스플라인
    `outside_spline_scale`배 완만화.
 
 원본 대비 추가된 안전장치: perception 두절 시 유령 장애물을 계속 피하지
@@ -265,13 +264,15 @@ ForzaETH `unicorn-racing-stack-main/planner/spliner`(ROS1 Python)의 C++ ROS2
    15m (ego가 장애물 사이에 진입해도 클러스터가 쪼개지지 않게).
 2. **적응형 apex**: 목표 간격은 `evasion_dist`(0.65)지만 벽이 좁으면
    corridor 여유를 장애물/벽에 균등 배분한 지점까지 줄여서 시도, 하한
-   `evasion_dist_min`(0.35 = 차 반폭+여유). 벽 마진(`ot_bound_mindist`
+   `evasion_dist_min`(0.20 = 차 반폭+여유). 벽 마진(`spline_bound_mindist`
    0.25)은 차 반폭 포함 — 0.1로 깎으면 기하 판정은 통과인데 차 모서리가
    벽을 스친다 (실측).
-3. **squeeze 감속**: apex가 축소된 회피는 `squeeze_speed_scale`(0.35)로
-   감속 + 진입/복귀 절점 2배 연장 — 추적오차는 속도 비례라 전속 squeeze가
-   벽 접촉 원인이었다. apex는 점이 아니라 클러스터 s 구간 전체(±0.5m)에서
-   유지 (진입/이탈 대각선 커팅 방지).
+3. **apex 유지 구간**: apex는 점이 아니라 클러스터 s 구간 전체(±0.5m)에서
+   유지 (진입/이탈 대각선 커팅 방지). 좁은 corridor의 속도 제한은 오프셋
+   곡률 기반 물리 캡(`OffsetKappa` + `path_lat_acc_max` + `offset_grip_cap`)
+   이 담당한다 — 예전의 `squeeze_speed_scale` 고정 배율 감속은 제거됐다.
+   단 벽 여유(`RequiredBoundaryMargin`)는 아직 속도와 무관한 고정값이라
+   추적오차의 속도 의존분은 보상되지 않는다.
 4. **경로 커밋**: 정적 장애물 회피는 시작하면 경로 끝까지 유지 — 매 사이클
    재계획 + '장애물 지남' 판정으로 회피가 도중에 사라지면 복귀 중인 차가
    raceline 전속 경로로 순간 전환돼 반대편 벽을 친다 (실측). 새 장애물이
@@ -404,7 +405,8 @@ ros2 launch planning_pkg raceline_tuner.launch.py \
 3. **대안 플래너 비교** — `scripts/global_traj_sim`의 step7(path_selection) /
    step8(frenet) 플래너와 spliner 방식을 시뮬레이션으로 비교. unicorn 스택의
    sqp_planner / lane_change_planner도 참고 후보.
-4. **H2H 상태머신** — BehaviorState 메시지는 정의만 있고 발행 노드가 없다.
+4. **H2H 상태머신** — 상태머신 노드가 없다 (BehaviorState.msg 는 발행/구독
+   0이라 2026-08-08에 삭제했다. 다시 필요하면 그때 정의할 것).
    Spliner의 섹터·trailing·SP 전환은 구현돼 있지만, 독립적인 경기 규칙
    상태머신과 쿨다운은 추가 통합 항목이다. SP는 자동 활성화하지 않으며 메인과
    동일한 map/suffix로 생성·검증된 파일을 명시적으로 지정하고

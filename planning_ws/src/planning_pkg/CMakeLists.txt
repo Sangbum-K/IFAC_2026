@@ -94,7 +94,9 @@ install(FILES scripts/lib/pitwall.py
 )
 
 # 시뮬레이션 데모 노드 (rclpy): sim_race.launch.py에서 사용.
-# tracker는 control 팀 노드로 대체 예정.
+# tracker: control_pkg/control_node 가 이미 sim 프로파일까지 갖춘 대체
+# 구현이다 (integration stack env:=sim 은 그쪽을 쓴다). 이 노드는 gym 단독
+# 데모용으로만 남아 있으며 recovery lease 계약을 두 벌 유지해야 한다.
 # virtual_obstacle = 정적 장애물 + perception 주입(tracking merge / scan overlay).
 # opponent_driver = gym 2-agent 상대 조종 (path/ftg/manual).
 install(PROGRAMS
@@ -121,9 +123,11 @@ install(PROGRAMS
 install(PROGRAMS scripts/tuner/raceline_tuner_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
-install(FILES scripts/tuner/controller_safety_model.py
-  DESTINATION lib/${PROJECT_NAME}
-)
+# (controller_safety_model.py 는 install 하지 않는다: raceline_tuner_node 가
+#  CSV 경로에서 유도한 **소스 트리** 사본을 1순위로 로드하고, 같은 함수가
+#  scripts/global_traj_sim/build_map.py 도 요구하므로 튜너는 구조적으로
+#  소스 전용이다. 설치된 사본은 deployment_profiles.py 가 함께 설치되지
+#  않아 import 도 못 하면서 "설치본으로도 돈다"는 착시만 만들었다.)
 
 install(DIRECTORY rviz
   DESTINATION share/${PROJECT_NAME}
@@ -144,6 +148,16 @@ if(BUILD_TESTING)
     tuner_safety_model
     test/test_tuner_safety_model.py
     TIMEOUT 60
+  )
+  ament_add_pytest_test(
+    line_variant_routing
+    test/test_line_variant_routing.py
+    TIMEOUT 60
+  )
+  ament_add_pytest_test(
+    line_resolver
+    test/test_line_resolver.py
+    TIMEOUT 120
   )
 endif()
 

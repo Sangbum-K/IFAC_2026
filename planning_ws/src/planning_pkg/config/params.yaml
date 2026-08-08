@@ -17,20 +17,36 @@ global_trajectory_node:
     # 연결한다. 현재 기본 SP는 R_min 한계 위반이라 안전 기본값은 비활성.
     global_trajectory/overtaking_csv_file: ""
     global_trajectory/publish_rate_hz: 2.0
-    global_trajectory/velocity_scale: 0.6667   # 주행 중 안전 범위 0.1~1.0에서 slew 적용
+    # 0.6667 -> 0.5714: 이 기본값은 sim control cap 4.0 / 당시 v-max 6.0 이었다.
+    # eba6d2c 가 RACELINE_V_MAX 를 7.0 으로 올리면서 real_car/race_map 은 재계산됐지만
+    # base 만 남아 7.0*0.6667 = 4.67 로 sim cap 4.0 을 17% 초과했다 (control 이 전 구간
+    # 클램프 -> 조향 LUT 를 wpnt 속도로 조회하는 구조 때문에 조향 과다).
+    # 불변식: csv_vmax * velocity_scale == control 의 vehicle/max_speed_mps.
+    global_trajectory/velocity_scale: 0.5714   # 주행 중 안전 범위 0.1~1.0에서 slew 적용
     global_trajectory/min_velocity_scale: 0.10
     global_trajectory/max_velocity_scale: 1.0  # 1 초과는 v²κ 한계를 깨므로 CSV 재생성 필요
     global_trajectory/velocity_scale_slew_per_sec: 0.10
-    global_trajectory/validation_mu: 0.75
+    # 0.75 -> 0.68: 궤적 생성기의 계획 마찰계수(build_map MU_PROFILE, manifest
+    # validation.mu_profile)와 같은 값이어야 한다. 게이트만 0.75 로 두면 mu 0.75 를
+    # 가정해 만든 CSV 와 0.68 로 만든 CSV 를 구별하지 못한다 (현행 my_track0807 은
+    # max combined 6.671 < 0.68*9.81*1.03 = 6.87 이라 그대로 통과).
+    global_trajectory/validation_mu: 0.68
     global_trajectory/validation_wheelbase_m: 0.33
     global_trajectory/validation_max_steer_rad: 0.36
     global_trajectory/validation_tolerance: 0.03
     global_trajectory/validation_ax_tolerance: 1.0
+    # strict | advisory. strict 는 위 마찰원/조향 한계 위반을 거부해 노드를 안 띄운다.
+    # advisory 는 경고만 남기고 띄운다 — 레이스라인 튜너로 사람이 직감으로 손본
+    # 라인(<맵>_tuned_iqp_*.csv)을 실차에서 시험하기 위한 것이고, 형식 검사
+    # (NaN/s 단조/간격 균일/폐루프/ax↔v 정합)는 두 모드 모두 그대로 거부한다.
+    # ⚠️ 여기서 손으로 advisory 로 바꾸지 말 것. planner_stack.launch.py 가
+    #    map:=<맵>_tuned 일 때만 자동으로 덮어쓴다 — 원본 라인은 항상 strict 다.
+    global_trajectory/validation_mode: strict
 
 frenet_frame_node:
   ros__parameters:
     frenet_frame/loop_rate_hz: 40.0
-    frenet_frame/odom_mode: sim_gt          # sim_gt | sim_pf | real
+    frenet_frame/odom_mode: sim_gt          # sim_gt | real
     frenet_frame/odom_receive_timeout_sec: 0.20
     frenet_frame/odom_source_timeout_sec: 0.20
     frenet_frame/odom_future_tolerance_sec: 0.05
@@ -54,6 +70,10 @@ local_trajectory_node:
     local_trajectory/frenet_odom_timeout_sec: 0.20
     local_trajectory/frenet_odom_source_timeout_sec: 0.20
     local_trajectory/future_stamp_tolerance_sec: 0.05
+    # frenet_frame/min_frenet_jacobian 과 반드시 같은 값. 예전엔 local 쪽만 0.20
+    # 리터럴로 박혀 있어서, frenet 쪽을 내리면 frenet 은 계속 발행하는데 local 이
+    # 거부해 /local_waypoints 가 끊기고 control waypoint timeout 으로 차가 섰다.
+    local_trajectory/min_frenet_jacobian: 0.20
     local_trajectory/max_avoidance_step_m: 1.0
     local_trajectory/minimum_horizon_sec: 1.5
     local_trajectory/minimum_braking_decel_mps2: 2.5
@@ -80,35 +100,38 @@ spliner_node:
                                          # 좁은 트랙: 목표를 낮춰야 벽 클램프 전에 성립.
                                          # 벽이 좁으면 evasion_dist_min까지 줄여서라도 시도
     spliner/evasion_dist_min: 0.20       # 축소 허용 하한 [m] = 차 반폭 0.15 + 여유 0.05 (was 0.35)
-    # 회피 가부 판정: **회피할 한쪽 방향만** 이 폭이 나오면 시도한다 [m]
-    # (장애물 가장자리 -> 트랙 경계). 실제 하한은
-    #   max(이 값, max(path_check_margin, 차반폭) + RequiredBoundaryMargin)
-    # 이라 검증기가 통과시킬 수 없는 값을 줘도 조용히 무의미해지지 않는다.
-    # 0.40 = 장애물쪽 0.15(차반폭) + 벽쪽 0.25(차반폭 0.15 + 추적여유 0.10).
-    spliner/evasion_side_space_min: 0.40
-    spliner/squeeze_speed_scale: 0.35    # 축소(squeeze) 회피 시 감속 배율 — 좁은 corridor를
-                                         # 전속/부스트로 지나면 추적오차로 벽 접촉 (실측)
+    # (spliner/evasion_side_space_min 제거: cc22ca9 도입 당시엔 passable_width 와 같은
+    #  값(0.40)이었으나 ff8c934 가 첫 항을 RequiredObstacleClearance(= 같은 항 +
+    #  UncertaintyMargin>=0)로 바꾼 뒤로 max() 의 승자가 될 수 없었다. 회피 가부 판정의
+    #  실제 하한은 RequiredObstacleClearance + RequiredBoundaryMargin 이다.)
+    # (spliner/squeeze_speed_scale, squeeze_brake_dist_m 제거: apex 가 벽 마진으로
+    #  축소된 회피에 배율 감속을 걸던 장치. 좁은 corridor 의 속도 제한은 오프셋
+    #  곡률 기반 물리 캡(OffsetKappa + path_lat_acc_max + offset_grip_cap)이
+    #  담당하므로 임의 배율을 걷어냈다. 주의: 벽 여유(RequiredBoundaryMargin)는
+    #  아직 고정값이라 추적오차의 속도 의존분은 보상되지 않는다 — 좁은 구간
+    #  실차 검증 시 벽 최소거리를 반드시 계측할 것.)
     # --- 접근 공격성: 감속은 장애물 직전에서만, 접근 구간은 기존 속도 유지 ---
     # (감지 즉시 감속하면 접근 내내 느려져 상대를 못 따라잡고 꽁무니만 쫓는다)
-    spliner/squeeze_brake_dist_m: 3.0    # squeeze 감속 시작: 횡이동 시작점 앞 이 거리부터 [m] (was 6.0)
     spliner/trailing_engage_dist_m: 6.0  # trailing 감속 시작: 정지 목표점 앞 이 거리부터 [m] (was 12.0)
-                                         # 6 m/s 제동거리 v^2/2a = 36/(2*2.5) = 7.2 m지만 실차 캡
-                                         # 낮고 squeeze로 이미 감속. lookahead(10) 이하여야 함
-    spliner/dyn_pass_speed_ratio: 1.15   # 물리 cap 아래에서만 쓰는 soft 추월 목표
-                                         # 횡이동 후 이 부스트로 단숨에 옆을 지나가야 추월이
-                                         # 끝난다 (1.15에선 나란히 달리며 결정적 순간을 놓침)
+                                         # 6 m/s 제동거리 v^2/2a = 36/(2*2.5) = 7.2 m지만
+                                         # 실차 캡이 낮다. lookahead(10) 이하여야 함
+    # 880e01f 에서 1.4 -> 1.15. 아래 두 줄에 있던 "1.4 를 정당화하는" 옛 주석
+    # (1.15에선 나란히 달리며 결정적 순간을 놓친다)은 현재 값과 모순이라 제거했다.
+    # 1.15 는 물리 cap(마찰원·조향률) 아래에서만 쓰는 soft 목표라는 뜻이다.
+    spliner/dyn_pass_speed_ratio: 1.15   # 동적 상대 추월 중 최소 속도 = 상대 속도 x 이 배율
     spliner/obs_traj_tresh: 0.3          # raceline에서 이 이내 장애물만 대상 [m]
     spliner/spline_bound_mindist: 0.20   # center-to-wall 최소: 차반폭 0.15+추적여유 0.05
     spliner/pre_apex_dists: [-2.5, -1.8, -0.9]   # apex 앞 스플라인 절점 [m] (was [-4,-3,-1.5])
     spliner/post_apex_dists: [1.2, 1.8, 2.5]     # apex 뒤 스플라인 절점 [m] (was [2,3,4])
     spliner/fixed_pred_time: 0.15        # 동적 장애물 등속 전파 시간 [s]
     spliner/outside_spline_scale: 1.75   # 코너 바깥 추월 시 스플라인 완만화 배율
-    # 코너 안쪽 통과 시 **추가** 고정 배율. 1.0 = 사용 안 함(권장).
-    # 안쪽 회피의 물리적 감속은 offset_grip_cap이 담당한다 — 아래 참조.
-    spliner/inside_speed_scale: 1.0
+    # (spliner/inside_speed_scale 제거: cc22ca9 가 "고정 배율 -> 물리 기반"으로
+    #  offset_grip_cap 을 도입하며 대체한다고 명시했는데 DoSpline 의 곱셈만 남아
+    #  있었다. 배포 yaml 3개가 모두 1.0(항등)이라 실동작 변화는 없고, 코드 기본값
+    #  0.9 와의 불일치만 사라진다.)
     # ── 임시 테스트 스위치 (2026-08-07) ─────────────────────────────────
     # true면 회피 경로의 감속 요소를 전부 끄고 글로벌 레이스라인 속도를
-    # 그대로 따라간다: inside/squeeze/OT 배율, 진입·복귀 속도 캡, v_floor,
+    # 그대로 따라간다: OT 배율, 진입·복귀 속도 캡, v_floor,
     # ApplySpeedProfile 전체(오프셋 곡률 캡·조향률 캡·역방향 감속·
     # 순방향 가속 envelope·jerk shaping·현재상태 feasibility 거부).
     # trailing(회피 불가 시 장애물 뒤 감속/정지)은 회피가 아니라 충돌 방지라
@@ -140,8 +163,9 @@ spliner_node:
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속.
     # 고속 안전 기본값: 해가 없으면 raceline 전속 복귀가 아니라 감속/정지.
-    spliner/use_trailing: true
-    spliner/trailing_gap_m: 1.5   # (use_trailing=true일 때만) 정지 시 장애물 뒤 간격 [m]
+    # (spliner/use_trailing 제거: 880e01f 이후 생성자가 false 를 무조건 true 로
+    #  되돌려 스위치로서 기능하지 않았다. trailing 은 항상 켜져 있다.)
+    spliner/trailing_gap_m: 1.5   # 회피 불가 시 정지할 장애물 뒤 간격 [m]
     # 2.5 -> 1.0: 2.5는 실제로 낼 수 없는 감속도다. VESC는 속도 명령만 받고
     # 능동 제동을 안 하므로(0806 4런에서 /commands/motor/brake 83~507개뿐)
     # 정지 직전에는 사실상 타행이다. 명령 0 하강엣지 3건 실측:
@@ -186,7 +210,7 @@ spliner_node:
     # 3프레임은 perception min_hits와 같은 성격의 게이트다.
     # (재계획 경로의 충돌 검증에는 적용하지 않는다 — 거기선 fail-closed가 맞다.)
     spliner/commit_break_min_obs: 3
-    # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.35, 실차 1.0).
+    # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.30, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30
     # --- 고속 회피 예산 -----------------------------------------------------
@@ -201,6 +225,15 @@ spliner_node:
                                       # 과속 전환을 다시 눌러주므로 상향 여지가 생김
     spliner/blend_dist_max_m: 8.0     # 전환 거리 상한 [m] — 장애물을 너무 일찍
                                       # 피해 라인을 오래 벗어나지 않게
+    # true면 전환 거리 계산에 마찰원 잔여 그립(sqrt(path_lat_acc_max² - lat_ref²))을
+    # 쓰고, false면 blend_lat_acc_max 고정값만 쓴다. 코드 기본값이었는데 yaml에
+    # 없어서 params.yaml만 보면 존재를 알 수 없었다.
+    spliner/blend_use_spare_grip: true
+    # 진입 속도 캡이 0으로 접혔을 때 정지 라치를 벗어나기 위한 크리프 속도 [m/s].
+    spliner/creep_escape_speed: 0.6
+    # 위치/속도 분산 3σ footprint 팽창의 상한 [m]. collision_sigma를 올려도
+    # 여기서 잘리므로 두 값을 같이 봐야 한다.
+    spliner/max_uncertainty_m: 0.25
     # 회피 궤적은 raceline을 d만큼 옮긴 경로라 곡률이 kappa/(1-d*kappa)로 변한다.
     # 아래 두 값으로 (1) 오프셋 곡률 기반 속도 상한, (2) 역방향 감속 패스를
     # 적용한다. 직선(kappa~0)에서는 아무것도 깎지 않아 가속이 유지되고,
@@ -245,7 +278,7 @@ spliner_node:
     # RViz /planner/ot_sectors/markers (초록 라인)로 섹터 확인 가능.
     spliner/sector_gating: true
     spliner/ot_min_clearance: 0.50       # 섹터 판정 최소 벽 여유 [m] (was 0.95)
-                                         # = 장애물반폭(0.15)+evasion_dist_min(0.20)+ot_bound_mindist(0.15)
+                                         # = 장애물반폭(0.15)+evasion_dist_min(0.20)+경계여유(0.15)
                                          # my_track 넓은쪽 벽여유 mean 0.57/max 0.72라 0.95는 섹터 0개.
                                          # 0.50이면 직선부 3구간(~15 m, 랩의 47%)이 섹터로 잡힘
     spliner/ot_max_kappa: 0.4            # 섹터 판정 최대 곡률 [rad/m] (was 0.1, R>=2.5m)
@@ -261,9 +294,11 @@ spliner_node:
                                          # 31.5 m 랩엔 8 m 연속 직선이 없어 섹터 0개였음
     # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
                                          # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
-    spliner/ot_bound_mindist: 0.20       # 최종 요구값은 max(이 값, 차반폭+추적여유)
-                                         # = max(0.20, 0.15+0.05) = center-to-wall 0.20m.
-                                         # recovery 요구 여유와 같거나 더 커야 한다.
+    # (spliner/ot_bound_mindist 제거: 섹터 안/밖에서 경계 마진을 바꾸려던 장치였는데
+    #  spline_bound_mindist 와 같은 값(0.20)인 데다 모든 소비처가
+    #  RequiredBoundaryMargin() = max(요청, 차반폭 + boundary_tracking_margin_m) 를
+    #  거치므로 실차(0.15+0.10=0.25)에서는 어떤 경우에도 0.25 로 수렴했다.
+    #  섹터별 완화를 실제로 살리려면 boundary_tracking_margin_m 쪽을 나눠야 한다.)
     spliner/ot_speed_scale: 1.0          # 안전 프로파일 밖의 런타임 속도 부스트 금지
     spliner/path_check_margin: 0.20      # 차 반폭 0.15 + 최소 불확실성 여유
     # 장애물 클러스터링: 사이를 통과 못 하는 배치를 하나의 박스로 병합해
@@ -302,7 +337,12 @@ recovery_supervisor_node:
     recovery/vehicle_width_m: 0.30
     recovery/vehicle_length_m: 0.55
     recovery/boundary_reaction_time_sec: 0.20
-    recovery/boundary_braking_decel_mps2: 4.0
+    # 4.0 -> 2.0: 0806 실측 재계산으로 확정된 배포 상수는 코스팅 A_DEC_MAX 1.4,
+    # 브레이크 크레딧 포함 A_DEC_PLANNED 2.0 이다 (deployment_profiles.py).
+    # 4.0 은 실제의 2배라 제동 horizon 이 절반으로 짧아지는 fail-open 오차였다
+    # (5 m/s: 계산 4.4 m vs 실제 필요 7.5 m). horizon 이 2배가 되므로 recovery 를
+    # 다시 켤 때는 STOP 빈도부터 확인할 것.
+    recovery/boundary_braking_decel_mps2: 2.0
     recovery/require_boundary_horizon: true
     recovery/front_check_dist_m: 1.5
     recovery/rear_check_dist_m: 1.5
@@ -354,20 +394,18 @@ waypoint_tracker_node:
     tracker/recovery_allow_reverse: false
     tracker/recovery_max_reverse_speed_mps: 0.30
     tracker/recovery_max_forward_override_mps: 1.0
-    tracker/internal_stuck_recovery_enabled: false
+    # (tracker 자체 스턱-후진 상태머신 제거: internal_stuck_recovery_enabled 와
+    #  recovery_allow_reverse 두 게이트가 모두 false 로 고정돼 REVERSE 분기에 도달할
+    #  수 없었고, 관련 파라미터 6개(stuck_detect_sec / reverse_speed_mps /
+    #  reverse_max_sec / reverse_min_dist_m / resume_speed_cap_mps / resume_cap_sec)도
+    #  같이 죽어 있었다. 스턱 처리는 STOP 래치 + supervisor 의 RECOVER_REVERSE 경로만
+    #  남는다.)
     # 정상 TRACK/ALIGN 명령의 액추에이터 변화율 제한. 안전정지는 즉시 0.
     tracker/max_steering_rate_radps: 2.0
     tracker/max_accel_mps2: 5.5
     tracker/max_decel_mps2: 7.0
     tracker/min_command_dt_sec: 0.001
     tracker/max_command_dt_sec: 0.10
-    # 아래 값은 internal recovery를 명시 opt-in한 개발 시뮬에서만 사용.
-    tracker/stuck_detect_sec: 0.6        # 전진 명령인데 이 시간 동안 정지면 스턱 판정
-    tracker/reverse_speed_mps: 1.2       # 후진 속도
-    tracker/reverse_max_sec: 3.0         # 최대 후진 시간
-    tracker/reverse_min_dist_m: 0.3      # 최소 후진 거리
-    tracker/resume_speed_cap_mps: 2.0    # 복구 직후 임시 속도 제한
-    tracker/resume_cap_sec: 1.5
 
 virtual_obstacle_node:
   ros__parameters:
@@ -382,16 +420,21 @@ opponent_driver_node:
     opponent/mode: path              # path | ftg | manual (패널/토픽으로 런타임 변경)
     # 실제 F1TENTH 대회 페이스 기준 (ForzaETH, IROS 2024: 평균 ~5 m/s,
     # 직선 최고 7~10 m/s): ego 실속 1.9~7.5 평균 ~4는 대회 수준과 일치.
-    # opp는 ego의 ~85% 페이스(scale 0.42 vs tracker 0.5) — 살짝 느린 경쟁자.
-    # 이전 값(cap 2.0)은 opp를 상수 2 m/s로 눌러 추월 데모가 무의미했음.
-    opponent/max_speed_mps: 6.0      # my_track raceline v-max 6와 정합 (was 8.0)
-    opponent/speed_scale: 0.42       # path 모드: raceline 속도 대비 (ego의 ~85%)
+    # opp는 ego의 ~85% 페이스 — 살짝 느린 경쟁자.
+    # 0.42 -> 0.255: 0.42 는 tracker/speed_scale 이 0.5 이던 시절의 85% 였는데
+    # 9acf1e5 가 tracker 를 0.30 으로 내린 뒤로 0.42/0.30 = ego 의 140% 가 되어
+    # 상대를 애초에 따라잡을 수 없었다 (추월 시나리오·predictor 검증이 무의미).
+    # 두 노드가 같은 raceline vx 에 배율만 다르게 곱하므로 0.30*0.85 = 0.255.
+    opponent/max_speed_mps: 7.0      # raceline v-max 7.0과 정합 (was 8.0 -> 6.0)
+    opponent/speed_scale: 0.255      # path 모드: raceline 속도 대비 (ego의 ~85%)
     opponent/size_m: 0.3             # F1TENTH 실차 폭 (was 0.4)
     opponent/drive_rate_hz: 40.0
     opponent/wheelbase_m: 0.33
     opponent/max_steer_rad: 0.36     # 상대도 동급 F1TENTH -> 실차 조향 한계 동일
-    opponent/park_x: -79.81          # '제거' 시 주차 위치 (launch sx1/sy1과 일치)
-    opponent/park_y: -31.26
+    # (opponent/park_x, park_y 제거: sim_race.launch.py 가 PARK_POSES[map] 값을
+    #  params_file 뒤에 항상 덮어쓰고, opponent_driver 를 띄우는 launch 는 그것뿐이라
+    #  여기 값은 어떤 실행 경로에서도 쓰이지 않았다. 남아 있던 -79.81/-31.26 은
+    #  Spielberg_map 좌표라 현행 기본 맵과도 무관했다.)
     opponent/park_radius_m: 5.0
     opponent/ftg_max_range_m: 8.0    # FTG: 스캔 클리핑 거리
     opponent/ftg_bubble_m: 0.3       # FTG: 최근접점 safety bubble 반경 (was 0.4)
@@ -405,7 +448,8 @@ opponent_predictor_node:
     predictor/sample_min_ds: 0.15    # 관측 데시메이션 간격 [m]
     predictor/max_samples: 600
     predictor/gp_length_scale: 3.0   # RBF 길이 스케일 [m]
-    predictor/gp_sigma_n: 0.08
+    predictor/gp_sigma_n: 0.08      # 주행라인(d) GP 관측 노이즈
+    predictor/gp_sigma_n_v: 0.2     # 속도(vs) GP — 예측 튜브 크기를 지배
     predictor/refit_every: 20        # N 관측마다 GP 재학습
     predictor/horizon_sec: 6.0       # 따라잡기 탐색 호라이즌 (was 8.0, 소형 트랙)
     predictor/catch_gap_m: 0.8
@@ -416,6 +460,8 @@ opponent_predictor_node:
     predictor/obstacle_topic: /perception/obstacles
     predictor/odom_timeout_sec: 0.20
     predictor/obstacle_timeout_sec: 0.30
+    predictor/track_forget_sec: 2.0              # 사라진 상대의 버퍼/GP 폐기 (브릿지와 동일)
+    predictor/global_waypoints_timeout_sec: 2.0  # /global_waypoints(2 Hz) stale 검사
     predictor/require_source_stamp: true
     predictor/source_future_tolerance_sec: 0.05
     predictor/uncertainty_sigma: 3.0

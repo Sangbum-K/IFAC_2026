@@ -90,7 +90,12 @@ class OpponentPredictorNode(Node):
         self.declare_parameter('predictor/sample_min_ds', 0.15)  # 관측 간 최소 s 간격 [m]
         self.declare_parameter('predictor/max_samples', 600)
         self.declare_parameter('predictor/gp_length_scale', 3.0) # [m]
-        self.declare_parameter('predictor/gp_sigma_n', 0.08)
+        self.declare_parameter('predictor/gp_sigma_n', 0.08)      # 주행라인(d) GP
+        # 속도(vs) GP 의 관측 노이즈. predict_stats 의 분산 하한(sn2)이라
+        # v_sigma -> s_sigma -> requested_span -> uncertainty_capped 로
+        # spliner 가 보는 예측 튜브 크기를 사실상 지배한다. 예전엔 0.2 로
+        # 하드코딩돼 '예측이 너무 보수적'일 때 손댈 노브가 없었다.
+        self.declare_parameter('predictor/gp_sigma_n_v', 0.2)
         self.declare_parameter('predictor/refit_every', 20)      # N 관측마다 재학습
         self.declare_parameter('predictor/horizon_sec', 8.0)     # 따라잡기 탐색 시간
         self.declare_parameter('predictor/catch_gap_m', 0.8)     # 이 간격이면 충돌 임박
@@ -99,6 +104,11 @@ class OpponentPredictorNode(Node):
         self.declare_parameter('predictor/obstacle_topic', '/perception/obstacles')
         self.declare_parameter('predictor/odom_timeout_sec', 0.20)
         self.declare_parameter('predictor/obstacle_timeout_sec', 0.30)
+        # 사라진 상대의 관측 버퍼/GP를 폐기하기까지의 시간 [s].
+        # 브릿지의 bridge/track_forget_sec 와 같은 역할.
+        self.declare_parameter('predictor/track_forget_sec', 2.0)
+        # /global_waypoints 는 2 Hz 발행이므로 넉넉히 잡는다.
+        self.declare_parameter('predictor/global_waypoints_timeout_sec', 2.0)
         self.declare_parameter('predictor/require_source_stamp', True)
         self.declare_parameter('predictor/source_future_tolerance_sec', 0.05)
         self.declare_parameter('predictor/uncertainty_sigma', 3.0)
@@ -115,6 +125,7 @@ class OpponentPredictorNode(Node):
         self.max_samples = int(gp('predictor/max_samples'))
         self.gp_ls = gp('predictor/gp_length_scale')
         self.gp_sn = gp('predictor/gp_sigma_n')
+        self.gp_sn_v = gp('predictor/gp_sigma_n_v')
         self.refit_every = int(gp('predictor/refit_every'))
         self.horizon = gp('predictor/horizon_sec')
         self.catch_gap = gp('predictor/catch_gap_m')
@@ -122,6 +133,8 @@ class OpponentPredictorNode(Node):
         self.vs_reset = gp('predictor/vs_reset')
         self.odom_timeout = gp('predictor/odom_timeout_sec')
         self.obstacle_timeout = gp('predictor/obstacle_timeout_sec')
+        self.forget_sec = gp('predictor/track_forget_sec')
+        self.gb_timeout = gp('predictor/global_waypoints_timeout_sec')
         self.require_source_stamp = gp('predictor/require_source_stamp')
         self.source_future_tolerance = gp(
             'predictor/source_future_tolerance_sec')
@@ -304,7 +317,7 @@ class OpponentPredictorNode(Node):
                 track_len=self.track_len)
             gpd.fit(b['S'], b['D'])
             gpv = GP1D(
-                self.gp_ls, sigma_f=2.0, sigma_n=0.2,
+                self.gp_ls, sigma_f=2.0, sigma_n=self.gp_sn_v,
                 track_len=self.track_len)
             gpv.fit(b['S'], b['V'])
         except (np.linalg.LinAlgError, ValueError) as exc:
@@ -343,11 +356,28 @@ class OpponentPredictorNode(Node):
             if self.ego_stamp is not None else math.inf
         odom_fresh = (
             -self.source_future_tolerance <= odom_age <= self.odom_timeout)
-        if self.gb is not None and odom_fresh:
+        # 사라진 상대의 버퍼/GP를 정리한다. 예전엔 지우는 코드가 없어
+        # (a) opp_gap 텔레메트리가 이미 없어진 상대의 마지막 위치로 계속
+        # 발행됐고 (여러 id가 같은 토픽에 섞여 읽을 수 없었다)
+        # (b) buf(최대 600점x3) + GP(150x150 Cholesky)가 무한 누적됐다.
+        # 브릿지의 track_forget_sec 와 같은 성격의 정리다.
+        stale_ids = [
+            oid for oid, b in self.buf.items()
+            if b.get('source_ns') is None
+            or (now.nanoseconds - b['source_ns']) * 1e-9 > self.forget_sec]
+        for oid in stale_ids:
+            self.buf.pop(oid, None)
+            self.gp_d.pop(oid, None)
+            self.gp_v.pop(oid, None)
+
+        # /global_waypoints 신선도. 예전엔 gb_stamp 를 갱신만 하고 읽지 않아,
+        # global_trajectory_node 가 죽어도 predictor 는 마지막 raceline 으로
+        # 계속 예측했다 (ego/장애물은 이미 stale 검사를 한다).
+        gb_age = (now - self.gb_stamp).nanoseconds * 1e-9 \
+            if self.gb_stamp is not None else math.inf
+        gb_fresh = gb_age <= self.gb_timeout
+        if self.gb is not None and odom_fresh and gb_fresh:
             for oid, b in self.buf.items():
-                if b['last_s'] is not None:
-                    pitwall.log('opp_gap',
-                                (b['last_s'] - self.ego_s) % self.track_len)
                 if b['last_s'] is None or b['t_last'] is None:
                     continue
                 source_age = (
@@ -356,6 +386,9 @@ class OpponentPredictorNode(Node):
                 if (source_age > self.obstacle_timeout
                         or source_age < -self.source_future_tolerance):
                     continue
+                # 신선도 게이트를 통과한 상대만 텔레메트리에 싣는다.
+                pitwall.log('opp_gap',
+                            (b['last_s'] - self.ego_s) % self.track_len)
                 pred = self._predict_catch(oid, b) if oid in self.gp_v \
                     else self._predict_catch_cv(oid, b)
                 if pred is not None:

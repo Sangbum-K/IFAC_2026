@@ -49,9 +49,14 @@ perception_obstacle_bridge_node:
     # 2026-08-03 활성화 (real_car.yaml 동일 블록 주석 참조 — detector 포인트
     # 단위 맵 필터의 2차 방어선).
     # 2026-08-03(2차): centroid 벽거리 기준으로 판정식 수정 (real_car.yaml
-    # 동일 블록 주석 참조). 임계는 detector와 같은 0.15.
+    # 동일 블록 주석 참조).
+    # 2026-08-08: 0.15 -> 0.30. 대회 프로파일만 rosbag_0806 재측정 반영에서
+    # 누락돼 real_car(0.30)의 절반 임계로 돌고 있었다 — 0806 기준 0.15 는
+    # 유령 제거율 0%, 0.30 은 23%. "임계는 detector와 같은 0.15"라던 옛 주석은
+    # 사실도 아니었다(detector 의 real_car/race_map 값은 0.25이고, 그쪽은
+    # 개별 포인트 마스크라 centroid 거리인 이 값과 같을 이유도 없다).
     bridge/use_map_filter: true
-    bridge/wall_dist_min_m: 0.15
+    bridge/wall_dist_min_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
 
@@ -66,15 +71,21 @@ spliner_node:
     # (근거 수치는 real_car.yaml 동일 항목 주석 참조)
     spliner/lookahead_m: 12.0
     spliner/loop_rate_hz: 30.0          # 6 m/s에서 재계획 간 이동 0.30 -> 0.20 m
+    # 2026-08-08: 아래 5개는 real_car 에만 있고 여기엔 없어서, "real_car와 동일한
+    # 인터페이스"라고 선언한 대회 프로파일이 실제로는 params.yaml 기본값으로
+    # 떨어지고 있었다 (lane_blend_out_m 5.0->2.5, obs_traj_tresh 0.45->0.3 등
+    # 회피 기하가 실차에서 검증한 것과 달라짐). real_car 와 같은 값으로 정렬.
+    spliner/blend_lat_acc_max: 5.0      # 횡 전환에 배정할 그립 [m/s^2]
+    spliner/blend_dist_max_m: 8.0       # 전환 거리 상한 [m]
+    spliner/path_lat_acc_max: 6.6       # 오프셋 경로 횡그립 [m/s^2] (mu*g = 6.67)
+    spliner/path_decel_max: 6.0         # 회피 궤적 역방향 감속 한계 [m/s^2]
+    spliner/lane_blend_out_m: 5.0       # 복귀 블렌드 하한 [m] — 예산 계산값과 max 결합
+    spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     # 대회 맵 = my_track(실폭 median 1.25 m, min 1.0 m). 예전 대형 트랙 값 0.75는
     # 벽 클램프로 회피가 상시 abort → 소형 트랙 값 0.35로 정렬 (real_car.yaml과 동일).
     # 당일 맵이 확연히 넓으면 0.5~0.75로 다시 올릴 것.
     spliner/evasion_dist: 0.35
-    # 1.0 = 고정 배율 사용 안 함. 코너 안쪽 회피 감속은 offset_grip_cap이
-    # 물리 기반으로 대신한다 (레이스라인이 그 지점에서 쓰던 kappa*v^2를
-    # 오프셋 곡률에 그대로 적용 -> sqrt(1 - d*kappa)배). 예전 0.7은 곡률과
-    # 무관한 30% 고정 감속이라 완만한 코너에서 순손실이었다.
-    spliner/inside_speed_scale: 1.0
+    # (spliner/inside_speed_scale 제거: offset_grip_cap 이 대체. real_car.yaml 참조)
     # 좁은 코리도(폭~1.25 m)에서 0.20은 유효 회피경로를 과도히 배제 → 0.15로 정렬.
     spliner/path_check_margin: 0.15
     spliner/boundary_tracking_margin_m: 0.10

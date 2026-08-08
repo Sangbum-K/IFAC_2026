@@ -159,7 +159,9 @@ class MonitorNode : public rclcpp::Node {
         int lap_count_ = 0;
         double previous_s_ = 0.0;
         bool is_first_measurement_ = true;
-        bool is_race_started_ = false;  // Track if we started from proper position
+        // (is_race_started_ 제거: 쓰기만 하고 읽는 곳이 없었다. '중간 출발 랩은
+        //  통계에서 뺀다'는 의도가 있었다면 미구현으로 남아 있던 것이다 —
+        //  현재는 유효/무효 출발 모두 동일하게 카운트/타이밍한다.)
 
         // Lap time tracking variables
         rclcpp::Time lap_start_time_;
@@ -169,8 +171,7 @@ class MonitorNode : public rclcpp::Node {
         double previous_lap_time_ = 0.0;  // Store previous completed lap time
 
         // CTE tracking variables
-        std::vector<double> cte_values_;  // Store CTE values for current lap
-        double max_cte_ = 0.0;           // Maximum CTE across all laps
+              double max_cte_ = 0.0;           // Maximum CTE across all laps
         double current_lap_cte_sum_ = 0.0;
         int current_lap_cte_count_ = 0;
         double mean_cte_ = 0.0;          // Mean CTE for current lap
@@ -194,7 +195,8 @@ class MonitorNode : public rclcpp::Node {
         std::string trail_color_mode_;   // speed | cte | speed_error
         double trail_v_min_;
         double trail_v_max_;             // 0이면 레이스라인 최대속도에서 자동
-        double trail_cte_max_;
+        double trail_cte_max_;      // cte 색 스케일 [m]
+        double trail_v_err_max_;    // speed_error 색 스케일 [m/s]
         int trail_keep_previous_laps_;
         double trail_publish_rate_hz_;
         bool deviation_enabled_;
@@ -203,7 +205,6 @@ class MonitorNode : public rclcpp::Node {
         // Trail state
         std::vector<TrailPoint> trail_;                        // 현재 랩
         std::deque<std::vector<TrailPoint>> previous_trails_;  // 지난 랩 (고스트)
-        int previous_trail_ids_published_ = 0;
         double trail_publish_accum_ = 0.0;
         bool trail_published_this_tick_ = false;
 

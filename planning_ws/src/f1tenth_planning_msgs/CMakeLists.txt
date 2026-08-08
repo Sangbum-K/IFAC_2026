@@ -16,7 +16,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WpntArray.msg"
   "msg/Obstacle.msg"
   "msg/ObstacleArray.msg"
-  "msg/BehaviorState.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 

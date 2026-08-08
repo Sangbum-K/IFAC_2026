@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>raceline tuner</title>
+<style>
+:root{
+  --bg:#11151c; --panel:#171d26; --line:#2a3340; --ink:#e6ecf4; --dim:#8b98a9;
+  --accent:#5aa9ff; --warn:#ffb02e; --bad:#ff4d4d; --ok:#37d67a; --bag:#ff8c42;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg);color:var(--ink);
+  font:13px/1.45 ui-sans-serif,system-ui,"Noto Sans KR",sans-serif;
+  display:grid;grid-template-rows:auto auto 1fr;overflow:hidden;
+}
+button,select,input{
+  background:#1e2632;color:var(--ink);border:1px solid var(--line);
+  border-radius:6px;padding:5px 9px;font:inherit;
+}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:#1d3b5c;border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+#bar,#bar2{
+  display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);
+}
+#bar2{padding-top:6px;padding-bottom:6px;font-size:12px}
+.sep{width:1px;height:20px;background:var(--line);margin:0 2px}
+.badge{
+  padding:3px 8px;border-radius:999px;font-size:11.5px;font-weight:600;
+  border:1px solid transparent;white-space:nowrap;
+}
+.badge.ok{background:#173a28;color:var(--ok);border-color:#245b3d}
+.badge.warn{background:#3a2f12;color:var(--warn);border-color:#5c4a1c}
+.badge.bad{background:#3d1a1a;color:var(--bad);border-color:#5f2626}
+.badge.flat{background:#1e2632;color:var(--dim);border-color:var(--line)}
+label.sl{display:flex;align-items:center;gap:6px;color:var(--dim)}
+label.sl input[type=range]{width:110px}
+button.mini{padding:2px 7px;font-size:11.5px}
+button.mini.on{background:#1d3b5c;border-color:var(--accent)}
+#bar2>span:first-child,#bar2 b{color:var(--ink)}
+#bar2 b{font-variant-numeric:tabular-nums}
+#adv{position:relative}
+#adv>summary{
+  cursor:pointer;color:var(--dim);list-style:none;padding:3px 8px;
+  border:1px solid var(--line);border-radius:6px;
+}
+#adv>summary::-webkit-details-marker{display:none}
+#adv[open]>summary{border-color:var(--accent);color:var(--ink)}
+#adv .pop{
+  position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:420px;
+  background:#1b222d;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+  box-shadow:0 8px 24px #0008;
+}
+#adv code{background:#11151c;padding:1px 4px;border-radius:3px}
+#main{display:grid;grid-template-columns:1fr 430px;min-height:0}
+#trackwrap{position:relative;min-width:0}
+#track{width:100%;height:100%;display:block;cursor:crosshair}
+#track.pan{cursor:grabbing}
+#hint{
+  position:absolute;left:10px;bottom:10px;color:var(--dim);font-size:11.5px;
+  background:#11151ccc;padding:6px 9px;border-radius:6px;pointer-events:none;
+  border:1px solid var(--line);max-width:52ch;
+}
+#readout{
+  position:absolute;right:10px;top:10px;background:#11151ce6;padding:7px 10px;
+  border-radius:6px;border:1px solid var(--line);font-size:12px;min-width:180px;
+  pointer-events:none;font-variant-numeric:tabular-nums;
+}
+#side{
+  border-left:1px solid var(--line);display:grid;
+  grid-template-rows:repeat(3,1fr) auto;min-height:0;background:var(--panel);
+}
+.chart{position:relative;border-bottom:1px solid var(--line);min-height:0}
+.chart canvas{width:100%;height:100%;display:block}
+.chart .hd{
+  position:absolute;left:8px;top:5px;font-size:11.5px;color:var(--dim);
+  pointer-events:none;display:flex;gap:9px;align-items:center;flex-wrap:wrap;
+}
+.chart .hd b{color:var(--ink);font-weight:600}
+.chart .hd i{display:inline-block;width:9px;height:9px;border-radius:2px}
+#log{
+  max-height:150px;overflow:auto;padding:7px 10px;font-size:11.5px;
+  color:var(--dim);border-top:1px solid var(--line);white-space:pre-wrap;
+}
+#log .e{color:var(--bad)}
+#log .w{color:var(--warn)}
+#log .g{color:var(--ok)}
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <b style="color:var(--accent)">raceline tuner</b>
+  <span id="who" class="badge flat">…</span>
+  <div class="sep"></div>
+  <button id="save" class="primary">저장</button>
+  <button id="undo">되돌리기</button>
+  <select id="resetSel">
+    <option value="">리셋…</option>
+    <option value="reset_line">라인만 원본으로</option>
+    <option value="reset_speed">속도만 원본으로</option>
+    <option value="reset_all">전체 원본으로</option>
+  </select>
+  <div class="sep"></div>
+  <span id="badges" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+</div>
+
+<div id="bar2">
+  <span title="앵커 하나를 옮기면 그 앞뒤로 몇 m 까지 라인이 함께 따라오는지.
+좁게 = 그 코너만 · 넓게 = 진입·탈출까지 부드럽게">수정 범위</span>
+  <button class="mini" data-infl="1.5" title="그 코너만 — 짧은 헤어핀">좁게</button>
+  <button class="mini" data-infl="3" title="진입/탈출 포함 — 기본">보통</button>
+  <button class="mini" data-infl="6" title="긴 직선·완만한 코너">넓게</button>
+  <input id="infl" type="range" min="0.5" max="12" step="0.1" style="width:96px">
+  <b id="inflV"></b>
+  <div class="sep"></div>
+  <details id="adv"><summary>고급</summary>
+    <div class="pop">
+      <label class="sl" style="align-items:flex-start;flex-direction:column;gap:4px">
+        <span>라인 재계산 방식 <b id="biasV"></b></span>
+        <input id="bias" type="range" min="0" max="1" step="0.05" style="width:220px">
+        <span style="color:var(--dim);max-width:44ch;line-height:1.5">
+          <b>0 (권장)</b> — 앵커만 지키고 나머지는 원본 모양 그대로.<br>
+          <b>1</b> — 곡률만 최적화. 점 하나만 옮겨도 <b>트랙 전체가 다시 그려지고</b>
+          라인이 벽에 붙습니다 (실측: 랩 31.3→29.5 m, 벽 여유 0.40→0.18 m).
+          그런 라인이 필요하면 튜너가 아니라 <code>mkcsv</code> 를 쓰세요.
+        </span>
+      </label>
+    </div>
+  </details>
+  <div class="sep"></div>
+  <label class="sl">실주행
+    <select id="bagSel" style="max-width:230px"><option value="">— 백 선택 —</option></select>
+  </label>
+  <select id="lapSel" style="max-width:150px"><option value="all">전체</option></select>
+  <button id="bagClear">겹쳐보기 끄기</button>
+  <div class="sep"></div>
+  <label class="sl"><input id="showMap" type="checkbox" checked> 맵</label>
+  <label class="sl"><input id="showBase" type="checkbox" checked> 원본선</label>
+  <label class="sl"><input id="showBad" type="checkbox" checked> 위반표시</label>
+</div>
+
+<div id="main">
+  <div id="trackwrap">
+    <canvas id="track"></canvas>
+    <div id="readout"></div>
+    <div id="hint">
+      <b>라인 클릭</b> 앵커 만들기 · <b>앵커 드래그</b> 라인 안/밖으로 옮기기 ·
+      <b>Shift+클릭</b> 앵커 지우기<br>
+      <b>빈 곳 드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
+      회색 점선 = <b>mkcsv 원본</b>
+    </div>
+  </div>
+  <div id="side">
+    <div class="chart" id="cSpeed"><div class="hd">
+      <b>속도 [m/s]</b>
+      <span><i style="background:var(--accent)"></i> 현재</span>
+      <span style="color:#798394"><i style="background:#798394"></i> 원본</span>
+      <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실주행</span>
+      <span style="color:var(--dim)">· 세로 드래그로 편집</span>
+    </div><canvas></canvas></div>
+    <div class="chart" id="cGrip"><div class="hd">
+      <b>남은 그립</b>
+      <span style="color:var(--dim)">물리 mu − 요구 mu · 0 아래면 미끄러짐</span>
+      <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실주행</span>
+    </div><canvas></canvas></div>
+    <div class="chart" id="cWall"><div class="hd">
+      <b>벽 여유 [m]</b>
+      <span style="color:var(--dim)">차 반폭 기준선 아래면 접촉</span>
+      <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실측 횡오차</span>
+    </div><canvas></canvas></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+let D = null;            // 서버 스냅샷
+let LAYERS = null;       // 맵 배경
+let MAPIMG = null;
+let BAG = null, BAGLAP = "all";
+let busy = false;
+
+/* ------------------------------------------------------------ 로그 */
+function log(msg, cls) {
+  const el = $("log");
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = msg;
+  el.appendChild(div);
+  while (el.childNodes.length > 200) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ------------------------------------------------------------ 색 */
+function ramp(t) {                       // 0(느림) → 1(빠름)
+  const stops = [[0,[0,90,255]],[0.4,[0,225,205]],[0.72,[255,230,0]],[1,[255,40,0]]];
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0,c0] = stops[i], [t1,c1] = stops[i+1];
+    if (t <= t1) {
+      const f = (t - t0) / (t1 - t0);
+      return `rgb(${c0.map((c,k)=>Math.round(c+(c1[k]-c)*f)).join(",")})`;
+    }
+  }
+  return "rgb(255,40,0)";
+}
+function speedColor(v) {
+  const lo = D.report.speed.min, hi = Math.max(D.report.speed.max, lo + 0.1);
+  return ramp((v - lo) / (hi - lo));
+}
+
+/* ------------------------------------------------------------ 뷰 변환 */
+const view = { cx:0, cy:0, k:60 };
+function W2S(x, y, W, H) {
+  return [(x - view.cx) * view.k + W/2, H/2 - (y - view.cy) * view.k];
+}
+function S2W(sx, sy, W, H) {
+  return [(sx - W/2) / view.k + view.cx, view.cy - (sy - H/2) / view.k];
+}
+function fitView() {
+  const c = $("track"), W = c.clientWidth, H = c.clientHeight;
+  const xs = D.out.xy.map(p=>p[0]), ys = D.out.xy.map(p=>p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  view.cx = (x0+x1)/2; view.cy = (y0+y1)/2;
+  view.k = 0.88 * Math.min(W/Math.max(x1-x0,1e-3), H/Math.max(y1-y0,1e-3));
+}
+
+/* ------------------------------------------------------------ 캔버스 크기 */
+function sizeAll() {
+  for (const c of document.querySelectorAll("canvas")) {
+    const w = c.clientWidth, h = c.clientHeight;
+    c.width = Math.max(1, Math.round(w*DPR));
+    c.height = Math.max(1, Math.round(h*DPR));
+    c.getContext("2d").setTransform(DPR,0,0,DPR,0,0);
+  }
+}
+
+/* ------------------------------------------------------------ 트랙 */
+function drawTrack() {
+  const c = $("track"), ctx = c.getContext("2d");
+  const W = c.clientWidth, H = c.clientHeight;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+  if (!D) return;
+
+  // 배경 맵. row 0 = world y 최소로 이미 뒤집혀 오므로 그대로 그린다.
+  if ($("showMap").checked && MAPIMG && LAYERS) {
+    const e = LAYERS.extent;
+    const [sx, sy] = W2S(e.x0, e.y0 + e.height_m, W, H);
+    ctx.save();
+    ctx.translate(sx, sy);
+    if (e.yaw) ctx.rotate(-e.yaw);
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(MAPIMG, 0, 0, e.width_m*view.k, e.height_m*view.k);
+    ctx.restore();
+  } else if ($("showMap").checked && LAYERS && LAYERS.wall_px) {
+    const e = LAYERS.extent, r = e.res;
+    ctx.fillStyle = "#3a4453";
+    for (let i = 0; i < LAYERS.wall_px.cols.length; i++) {
+      const wx = e.x0 + (LAYERS.wall_px.cols[i]+0.5)*r;
+      const wy = e.y0 + (LAYERS.extent.height_m/r - LAYERS.wall_px.rows[i]-0.5)*r;
+      const [px,py] = W2S(wx, wy, W, H);
+      ctx.fillRect(px-1, py-1, 2, 2);
+    }
+  }
+
+  // 원본 라인 (회색 점선)
+  if ($("showBase").checked) {
+    ctx.setLineDash([5,4]); ctx.strokeStyle = "#6b7684"; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    D.base.xy.forEach((p,i)=>{ const [x,y]=W2S(p[0],p[1],W,H);
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+    ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // 실주행 궤적
+  const lap = bagLap();
+  if (lap) {
+    ctx.strokeStyle = "#ff8c42"; ctx.lineWidth = 1.6; ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    for (let i = 0; i < lap.x.length; i++) {
+      const [x,y] = W2S(lap.x[i], lap.y[i], W, H);
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+
+  // 현재 라인 — 속도색
+  const xy = D.out.xy, vx = D.out.vx;
+  ctx.lineWidth = Math.max(2, 0.07*view.k); ctx.lineCap = "round";
+  for (let i = 0; i < xy.length; i++) {
+    const j = (i+1) % xy.length;
+    const [ax,ay] = W2S(xy[i][0], xy[i][1], W, H);
+    const [bx,by] = W2S(xy[j][0], xy[j][1], W, H);
+    ctx.strokeStyle = speedColor(vx[i]);
+    ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+  }
+
+  // 위반 표시
+  if ($("showBad").checked) {
+    const hw = D.limits.half_width, mu = D.limits.mu_physical;
+    const rmin = D.limits.car_min_radius;
+    for (let i = 0; i < xy.length; i++) {
+      const wallBad = D.out.clearance[i] < hw;
+      const muBad = D.out.required_mu[i] > mu;
+      const rBad = D.out.radius[i] < rmin;
+      if (!wallBad && !muBad && !rBad) continue;
+      const [x,y] = W2S(xy[i][0], xy[i][1], W, H);
+      ctx.strokeStyle = wallBad || rBad ? "#ff4d4d" : "#ffb02e";
+      ctx.lineWidth = 2; const r = 4;
+      ctx.beginPath();
+      ctx.moveTo(x-r,y-r); ctx.lineTo(x+r,y+r);
+      ctx.moveTo(x+r,y-r); ctx.lineTo(x-r,y+r); ctx.stroke();
+    }
+  }
+
+  // 앵커
+  for (const key of Object.keys(D.anchors)) {
+    const i = +key, p = D.line.xy[i];
+    const [x,y] = W2S(p[0], p[1], W, H);
+    ctx.fillStyle = "#c77dff"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill(); ctx.stroke();
+  }
+
+  // 시작점 + 진행 방향
+  const [s0x,s0y] = W2S(xy[0][0], xy[0][1], W, H);
+  ctx.fillStyle = "#5aa9ff";
+  ctx.beginPath(); ctx.arc(s0x, s0y, 5, 0, 7); ctx.fill();
+
+  // 호버 십자선
+  if (hoverIdx >= 0 && hoverIdx < xy.length) {
+    const [x,y] = W2S(xy[hoverIdx][0], xy[hoverIdx][1], W, H);
+    ctx.strokeStyle = "#ffffff88"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, 9, 0, 7); ctx.stroke();
+  }
+}
+
+/* ------------------------------------------------------------ 그래프 */
+function chartGeom(canvas) {
+  return { W: canvas.clientWidth, H: canvas.clientHeight,
+           L: 42, R: 8, T: 22, B: 16 };
+}
+function drawChart(id, series, opts) {
+  const box = $(id), canvas = box.querySelector("canvas");
+  const ctx = canvas.getContext("2d");
+  const g = chartGeom(canvas);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,g.W,g.H);
+  if (!D) return;
+  const sMax = D.out.s[D.out.s.length-1];
+  let lo = opts.lo, hi = opts.hi;
+  for (const sr of series) for (const v of sr.y)
+    if (v != null && isFinite(v)) { lo = Math.min(lo,v); hi = Math.max(hi,v); }
+  // capHi/capLo: 데이터에 큰 값이 하나 섞여 있어도 축을 늘리지 않는다. 벽 여유는
+  // 넓은 구간에서 1.8 m 까지 가는데 정작 봐야 하는 건 차 반폭 근처(0.15~0.5 m)라,
+  // 자동 축을 그대로 두면 위험 구간이 바닥에 눌려 아무것도 안 보인다.
+  if (opts.capHi != null) hi = Math.min(hi, opts.capHi);
+  if (opts.capLo != null) lo = Math.max(lo, opts.capLo);
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const pad = 0.08*(hi-lo); lo -= pad; hi += pad;
+  const X = (s) => g.L + (s/sMax)*(g.W-g.L-g.R);
+  const Y = (v) => g.H-g.B - ((v-lo)/(hi-lo))*(g.H-g.B-g.T);
+
+  ctx.strokeStyle = "#232c38"; ctx.lineWidth = 1;
+  ctx.strokeRect(g.L, g.T, g.W-g.L-g.R, g.H-g.B-g.T);
+  ctx.fillStyle = "#798394"; ctx.font = "10px ui-sans-serif";
+  for (const v of [lo, (lo+hi)/2, hi]) {
+    ctx.fillText(v.toFixed(2), 4, Y(v)+3);
+    ctx.strokeStyle = "#1d2530";
+    ctx.beginPath(); ctx.moveTo(g.L, Y(v)); ctx.lineTo(g.W-g.R, Y(v)); ctx.stroke();
+  }
+  for (const ref of (opts.refs || [])) {
+    if (ref.v < lo || ref.v > hi) continue;
+    ctx.strokeStyle = ref.c; ctx.setLineDash([4,3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(g.L, Y(ref.v)); ctx.lineTo(g.W-g.R, Y(ref.v)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = ref.c; ctx.fillText(ref.t, g.W-g.R-ctx.measureText(ref.t).width-2, Y(ref.v)-3);
+  }
+  for (const sr of series) {
+    ctx.strokeStyle = sr.c; ctx.lineWidth = sr.w || 1.5;
+    if (sr.dash) ctx.setLineDash(sr.dash);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < sr.y.length; i++) {
+      const v = sr.y[i];
+      if (v == null || !isFinite(v)) { started = false; continue; }
+      const px = X(sr.x[i]), py = Y(v);
+      started ? ctx.lineTo(px,py) : ctx.moveTo(px,py);
+      started = true;
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  // pinned 표시 (속도 그래프만)
+  if (opts.pins) {
+    ctx.fillStyle = "#c77dff";
+    for (let i = 0; i < D.pinned.length; i++) {
+      if (!D.pinned[i]) continue;
+      const s = D.base.s[i];
+      ctx.beginPath(); ctx.arc(X(s), Y(D.speed[i]), 2.6, 0, 7); ctx.fill();
+    }
+  }
+  if (hoverIdx >= 0) {
+    const s = D.out.s[Math.min(hoverIdx, D.out.s.length-1)];
+    ctx.strokeStyle = "#ffffff55";
+    ctx.beginPath(); ctx.moveTo(X(s), g.T); ctx.lineTo(X(s), g.H-g.B); ctx.stroke();
+  }
+  box._geom = { g, X, Y, lo, hi, sMax };
+}
+
+function bagLap() {
+  if (!BAG) return null;
+  if (BAGLAP === "all") return BAG.all;
+  const i = +BAGLAP;
+  return BAG.laps[i] || BAG.all;
+}
+
+function drawCharts() {
+  const s = D.out.s, lap = bagLap();
+  drawChart("cSpeed", [
+    { x: D.base.s, y: D.base.vx, c: "#798394", w: 1.2, dash: [4,3] },
+    ...(lap ? [{ x: lap.s, y: lap.v, c: "#ff8c42", w: 1.3 }] : []),
+    { x: s, y: D.out.vx, c: "#5aa9ff", w: 1.9 },
+  ], { lo: 0, hi: D.limits.v_max, pins: true,
+       refs: [{ v: D.limits.v_max, c: "#4a5567", t: "v_max" }] });
+
+  const grip = D.out.required_mu.map(m => D.limits.mu_physical - m);
+  drawChart("cGrip", [
+    ...(lap ? [{ x: lap.s,
+                 y: lap.required_mu.map(m => D.limits.mu_physical - m),
+                 c: "#ff8c42", w: 1.2 }] : []),
+    { x: s, y: grip, c: "#37d67a", w: 1.7 },
+  ], { lo: -0.1, hi: D.limits.mu_physical, capLo: -0.4,
+       refs: [{ v: 0, c: "#ff4d4d", t: "미끄러짐" },
+              { v: D.limits.mu_physical - D.limits.mu_planning, c: "#4a5567",
+                t: "계획 여유" }] });
+
+  drawChart("cWall", [
+    ...(lap && BAG.has_lat_err ? [{ x: lap.s,
+        y: lap.lat_err.map(e => e == null ? null : Math.abs(e)),
+        c: "#ff8c42", w: 1.2 }] : []),
+    { x: s, y: D.out.clearance, c: "#5aa9ff", w: 1.7 },
+  ], { lo: 0, hi: 0.6, capHi: 0.9, capLo: -0.05,
+       refs: [{ v: D.limits.half_width, c: "#ff4d4d", t: "차 반폭" }] });
+}
+
+/* ------------------------------------------------------------ 배지 */
+function badges() {
+  const r = D.report, out = [];
+  const add = (cls, text) => out.push(`<span class="badge ${cls}">${text}</span>`);
+  if (!r.format.loadable) {
+    add("bad", "⛔ 차가 안 뜸: " + r.format.problems.join(", "));
+  } else {
+    add("ok", "형식 OK");
+  }
+  const w = r.wall;
+  add(w.violating_pts || w.footprint_violating_pts ? "bad" : "ok",
+      `벽 ${w.min_clearance_m.toFixed(3)} m` +
+      (w.violating_pts ? ` · 침범 ${w.violating_pts}점` : ""));
+  const st = r.steering;
+  add(st.violating_pts ? "bad" : "ok",
+      `R ${st.min_radius_m.toFixed(2)} m` +
+      (st.violating_pts ? ` · 조향포화 ${st.violating_pts}점` : ""));
+  const f = r.friction;
+  add(f.over_physical_pts ? "bad" : (f.over_planning_pts ? "warn" : "ok"),
+      `요구 mu ${f.max_required_mu.toFixed(2)}` +
+      (f.over_physical_pts ? ` · 물리초과 ${f.over_physical_pts}점`
+       : f.over_planning_pts ? ` · 계획초과 ${f.over_planning_pts}점` : ""));
+  const l = r.longitudinal;
+  add(l.over_accel_pts || l.over_decel_pts ? "warn" : "ok",
+      `ax ${l.ax_min.toFixed(2)}~${l.ax_max.toFixed(2)}`);
+  add("flat", `속도 ${r.speed.min.toFixed(2)}~${r.speed.max.toFixed(2)} ` +
+      `(평균 ${r.speed.mean.toFixed(2)}) · 핀 ${r.speed.pinned_pts}`);
+  add("flat", `앵커 ${Object.keys(D.anchors).length} · 랩 ${r.length_m.toFixed(2)} m`);
+  $("badges").innerHTML = out.join("");
+}
+
+function readout() {
+  if (!D) return;
+  const i = hoverIdx;
+  if (i < 0) { $("readout").textContent = ""; return; }
+  const j = Math.min(i, D.out.s.length-1);
+  const rows = [
+    ["s", D.out.s[j].toFixed(2) + " m"],
+    ["속도", D.out.vx[j].toFixed(2) + " m/s"],
+    ["요구 mu", D.out.required_mu[j].toFixed(3)],
+    ["남은 그립", (D.limits.mu_physical - D.out.required_mu[j]).toFixed(3)],
+    ["벽 여유", D.out.clearance[j].toFixed(3) + " m"],
+    ["R", D.out.radius[j].toFixed(2) + " m"],
+  ];
+  $("readout").innerHTML = rows.map(
+    ([k,v]) => `<div style="display:flex;justify-content:space-between;gap:12px">
+      <span style="color:var(--dim)">${k}</span><span>${v}</span></div>`).join("");
+}
+
+function redraw() { drawTrack(); drawCharts(); readout(); }
+
+/* ------------------------------------------------------------ 서버 */
+async function api(path, body) {
+  if (busy) return null;
+  busy = true;
+  try {
+    const res = await fetch(path, body ? {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    } : {});
+    const data = await res.json();
+    if (data.error) { log("서버 오류: " + data.error, "e"); return null; }
+    return data;
+  } catch (err) {
+    log("통신 실패: " + err, "e"); return null;
+  } finally { busy = false; }
+}
+
+function absorb(data) {
+  if (!data) return;
+  const first = !D;
+  const notes = (data.meta && data.meta.notes) || [];
+  D = data;
+  if (data.layers) LAYERS = data.layers;
+  $("who").textContent = `${D.meta.map} → ${D.meta.tuned_csv}`;
+  $("undo").disabled = !D.meta.undo_depth;
+  $("inflV").textContent = "±" + D.limits.influence_m.toFixed(1) + " m";
+  $("biasV").textContent = D.limits.curvature_bias < 0.025
+    ? "원본 모양 유지" : `${D.limits.curvature_bias.toFixed(2)} ⚠ 라인 전체가 바뀝니다`;
+  $("biasV").style.color = D.limits.curvature_bias < 0.025
+    ? "var(--ok)" : "var(--warn)";
+  markPresets(D.limits.influence_m);
+  if (first) {
+    $("infl").value = D.limits.influence_m;
+    $("bias").value = D.limits.curvature_bias;
+  }
+  for (const note of notes) log(note, note.startsWith("⚠") ? "w" : "g");
+  if (data.saved) log(
+    `저장 ${data.saved.csv}\n  generation ${data.saved.generation_id}` +
+    `  sha ${data.saved.sha256}`, "g");
+  if (first) { sizeAll(); fitView(); }
+  badges(); redraw();
+}
+
+async function edit(...ops) { absorb(await api("/api/edit", { ops })); }
+
+/* ------------------------------------------------------------ 마우스 */
+let hoverIdx = -1, drag = null;
+
+function nearestOut(wx, wy) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < D.out.xy.length; i++) {
+    const dx = D.out.xy[i][0]-wx, dy = D.out.xy[i][1]-wy;
+    const d = dx*dx + dy*dy;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return { index: best, dist: Math.sqrt(bd) };
+}
+function nearestBaseStation(wx, wy) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < D.base.xy.length; i++) {
+    const dx = D.line.xy[i][0]-wx, dy = D.line.xy[i][1]-wy;
+    const d = dx*dx + dy*dy;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return { index: best, dist: Math.sqrt(bd) };
+}
+function anchorAt(wx, wy, tol) {
+  for (const key of Object.keys(D.anchors)) {
+    const i = +key, p = D.line.xy[i];
+    if (Math.hypot(p[0]-wx, p[1]-wy) < tol) return i;
+  }
+  return -1;
+}
+
+const track = $("track");
+track.addEventListener("mousedown", (ev) => {
+  if (!D) return;
+  const rect = track.getBoundingClientRect();
+  const [wx,wy] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
+                      track.clientWidth, track.clientHeight);
+  const tol = 10 / view.k;
+  const hit = anchorAt(wx, wy, tol);
+  if (hit >= 0) {
+    if (ev.shiftKey) { edit({op:"anchor_clear", index:hit}); return; }
+    drag = { kind:"anchor", index:hit };
+    return;
+  }
+  const near = nearestBaseStation(wx, wy);
+  if (near.dist < tol) {                       // 라인 클릭 → 앵커 생성
+    drag = { kind:"anchor", index:near.index, fresh:true };
+    edit({op:"anchor_xy", index:near.index, x:wx, y:wy});
+    return;
+  }
+  drag = { kind:"pan", x:ev.clientX, y:ev.clientY, cx:view.cx, cy:view.cy };
+  track.classList.add("pan");
+});
+window.addEventListener("mousemove", (ev) => {
+  if (!D) return;
+  const rect = track.getBoundingClientRect();
+  const inside = ev.clientX >= rect.left && ev.clientX <= rect.right &&
+                 ev.clientY >= rect.top && ev.clientY <= rect.bottom;
+  if (drag && drag.kind === "pan") {
+    view.cx = drag.cx - (ev.clientX-drag.x)/view.k;
+    view.cy = drag.cy + (ev.clientY-drag.y)/view.k;
+    redraw(); return;
+  }
+  if (inside) {
+    const [wx,wy] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
+                        track.clientWidth, track.clientHeight);
+    if (drag && drag.kind === "anchor") { drag.wx = wx; drag.wy = wy; }
+    const near = nearestOut(wx, wy);
+    if (near.dist < 40/view.k) { hoverIdx = near.index; readout(); drawTrack(); drawCharts(); }
+  }
+});
+window.addEventListener("mouseup", () => {
+  if (drag && drag.kind === "anchor" && drag.wx !== undefined) {
+    edit({op:"anchor_xy", index:drag.index, x:drag.wx, y:drag.wy});
+  }
+  drag = null; track.classList.remove("pan");
+});
+track.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  if (!D) return;
+  const rect = track.getBoundingClientRect();
+  const W = track.clientWidth, H = track.clientHeight;
+  const [bx,by] = S2W(ev.clientX-rect.left, ev.clientY-rect.top, W, H);
+  view.k *= Math.exp(-ev.deltaY * 0.0015);
+  view.k = Math.max(4, Math.min(4000, view.k));
+  const [ax,ay] = S2W(ev.clientX-rect.left, ev.clientY-rect.top, W, H);
+  view.cx += bx-ax; view.cy += by-ay;
+  drawTrack();
+}, { passive: false });
+track.addEventListener("dblclick", () => { fitView(); redraw(); });
+track.addEventListener("contextmenu", (ev) => ev.preventDefault());
+
+/* ---- 속도 그래프 드래그 ---- */
+(function speedDrag() {
+  const box = $("cSpeed"), canvas = box.querySelector("canvas");
+  let active = false;
+  const apply = (ev) => {
+    if (!D || !box._geom) return;
+    const rect = canvas.getBoundingClientRect();
+    const { g, lo, hi, sMax } = box._geom;
+    const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    const s = ((sx - g.L) / (g.W-g.L-g.R)) * sMax;
+    const v = lo + ((g.H-g.B - sy) / (g.H-g.B-g.T)) * (hi-lo);
+    if (s < 0 || s > sMax) return;
+    // s -> 원본 격자 인덱스 (속도는 원본 격자 위에서 사람이 소유한다)
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < D.base.s.length; i++) {
+      const d = Math.abs(D.base.s[i] - s);
+      if (d < bd) { bd = d; best = i; }
+    }
+    edit({op:"speed", index:best, value:Math.max(0, v)});
+  };
+  canvas.addEventListener("mousedown", (ev) => {
+    if (ev.shiftKey) {                        // shift = 그 지점 핀 해제
+      if (!D || !box._geom) return;
+      const rect = canvas.getBoundingClientRect();
+      const { g, sMax } = box._geom;
+      const s = ((ev.clientX-rect.left - g.L) / (g.W-g.L-g.R)) * sMax;
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < D.base.s.length; i++) {
+        const d = Math.abs(D.base.s[i]-s); if (d<bd) { bd=d; best=i; }
+      }
+      edit({op:"speed_unpin", index:best});
+      return;
+    }
+    active = true; apply(ev);
+  });
+  window.addEventListener("mousemove", (ev) => { if (active) apply(ev); });
+  window.addEventListener("mouseup", () => { active = false; });
+})();
+
+/* ------------------------------------------------------------ 컨트롤 */
+$("save").addEventListener("click", async () => {
+  if (!D) return;
+  const r = D.report;
+  let warn = "";
+  if (!r.format.loadable) warn =
+    "⛔ 형식 위반이 있어 이 CSV 로는 차가 뜨지 않습니다:\n  " +
+    r.format.problems.join("\n  ") + "\n\n그래도 저장할까요?";
+  else if (r.unsafe_flags.length) warn =
+    "물리 한계를 넘긴 구간이 있습니다: " + r.unsafe_flags.join(", ") +
+    "\n(원본은 그대로 남고 튜닝본으로만 저장됩니다)\n\n저장할까요?";
+  if (warn && !confirm(warn)) return;
+  absorb(await api("/api/save", {}));
+});
+$("undo").addEventListener("click", () => edit({op:"undo"}));
+$("resetSel").addEventListener("change", (ev) => {
+  const op = ev.target.value; ev.target.value = "";
+  if (!op) return;
+  if (op === "reset_all" && !confirm("전체를 build_map 원본으로 되돌립니다.")) return;
+  edit({op});
+});
+function markPresets(value) {
+  for (const btn of document.querySelectorAll("button.mini[data-infl]"))
+    btn.classList.toggle("on", Math.abs(+btn.dataset.infl - value) < 0.06);
+}
+$("infl").addEventListener("input", (ev) => {
+  $("inflV").textContent = "±" + (+ev.target.value).toFixed(1) + " m";
+  markPresets(+ev.target.value);
+});
+$("infl").addEventListener("change", (ev) =>
+  edit({op:"params", influence_m:+ev.target.value}));
+for (const btn of document.querySelectorAll("button.mini[data-infl]"))
+  btn.addEventListener("click", () => {
+    $("infl").value = btn.dataset.infl;
+    $("inflV").textContent = "±" + (+btn.dataset.infl).toFixed(1) + " m";
+    markPresets(+btn.dataset.infl);
+    edit({op:"params", influence_m:+btn.dataset.infl});
+  });
+$("bias").addEventListener("input", (ev) => {
+  const v = +ev.target.value;
+  $("biasV").textContent = v < 0.025
+    ? "원본 모양 유지" : `${v.toFixed(2)} ⚠ 라인 전체가 바뀝니다`;
+  $("biasV").style.color = v < 0.025 ? "var(--ok)" : "var(--warn)";
+});
+$("bias").addEventListener("change", (ev) =>
+  edit({op:"params", curvature_bias:+ev.target.value}));
+for (const id of ["showMap","showBase","showBad"])
+  $(id).addEventListener("change", redraw);
+
+/* ------------------------------------------------------------ 백 */
+async function loadBags() {
+  const data = await api("/api/bags");
+  if (!data) return;
+  const sel = $("bagSel");
+  for (const bag of data.bags) {
+    const opt = document.createElement("option");
+    opt.value = bag.path;
+    opt.textContent = `${bag.name} (${bag.parent}, ${bag.size_mb} MB)`;
+    sel.appendChild(opt);
+  }
+  log(`실주행 백 ${data.bags.length}개 발견`);
+}
+$("bagSel").addEventListener("change", async (ev) => {
+  const path = ev.target.value;
+  if (!path) { BAG = null; redraw(); return; }
+  log("백 읽는 중…");
+  const data = await api("/api/bag?path=" + encodeURIComponent(path));
+  if (!data) return;
+  BAG = data; BAGLAP = "all";
+  const sel = $("lapSel");
+  sel.innerHTML = `<option value="all">전체 (${data.duration}s)</option>`;
+  data.laps.forEach((lap, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = `랩 ${i+1} — ${lap.lap_time}s`;
+    sel.appendChild(opt);
+  });
+  log(`${data.name}: 랩 ${data.laps.length}개, ${data.duration}s` +
+      (data.has_lat_err ? "" : " (횡오차 토픽 없음)"));
+  redraw();
+});
+$("lapSel").addEventListener("change", (ev) => { BAGLAP = ev.target.value; redraw(); });
+$("bagClear").addEventListener("click", () => {
+  BAG = null; $("bagSel").value = ""; $("lapSel").innerHTML =
+    '<option value="all">전체</option>'; redraw();
+});
+
+/* ------------------------------------------------------------ 시작 */
+window.addEventListener("resize", () => { if (D) { sizeAll(); redraw(); } });
+(async function boot() {
+  const data = await api("/api/open");
+  if (!data) { log("초기 로드 실패", "e"); return; }
+  if (data.layers && data.layers.png) {
+    MAPIMG = new Image();
+    MAPIMG.onload = () => redraw();
+    MAPIMG.src = data.layers.png;
+  }
+  absorb(data);
+  if (data.bags_available) loadBags();
+  else log("tools/bagviz.py 를 못 불러와 실주행 겹쳐보기가 비활성입니다", "w");
+})();
+</script>
+</body>
+</html>

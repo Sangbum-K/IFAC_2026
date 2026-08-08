@@ -1,7 +1,7 @@
 // 원본 planner_pkg에 헤더가 누락되어 있어 cpp 구현부로부터 복원 작성함.
 // odom(map 좌표)을 Frenet (s, d, vs, vd)로 변환해
 // /car_state/frenet/odom (nav_msgs/Odometry 재활용: pose.x=s, pose.y=d)으로 발행.
-// odom_mode: sim_gt=/ego_racecar/odom, sim_pf|real=/pf/pose/odom
+// odom_mode: sim_gt=/ego_racecar/odom, real=/pf/pose/odom
 #ifndef PLANNING_PKG__FRENET_FRAME_NODE_HPP_
 #define PLANNING_PKG__FRENET_FRAME_NODE_HPP_
 
@@ -64,7 +64,7 @@ private:
 
   // Parameters
   double loop_rate_hz_{40.0};
-  std::string odom_mode_;   // "sim_gt" | "sim_pf" | "real"
+  std::string odom_mode_;   // "sim_gt" | "real"
   double odom_receive_timeout_sec_{0.20};
   double odom_source_timeout_sec_{0.20};
   double odom_future_tolerance_sec_{0.05};
@@ -79,7 +79,6 @@ private:
   bool has_odom_{false};
   std::chrono::steady_clock::time_point odom_arrival_time_{};
   int64_t odom_source_stamp_ns_{0};
-  int64_t last_accepted_odom_stamp_ns_{0};
   int64_t last_published_odom_stamp_ns_{0};
   std::vector<std::vector<double>> global_trajectory_;
   bool has_trajectory_{false};

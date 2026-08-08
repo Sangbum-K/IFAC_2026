@@ -9,14 +9,15 @@ F1TENTH 자율주행 전체 스택(perception → planning → control)을 **시
 >
 > | 단계 | 어디서 | 이유 |
 > |---|---|---|
-> | 빌드 · `mapp` · `mkcsv` · `tune` | **NoMachine / 차량 모니터** (예전 그대로) | 조이스틱 저속 작업이라 부하 무관. `tune`은 마커를 드래그하는 GUI라 **화면이 필수** |
+> | 빌드 · `mapp` · `mkcsv` | **NoMachine / 차량 모니터** (예전 그대로) | 조이스틱 저속 작업이라 부하 무관 |
+> | `tune` (레이스라인 편집) | **아무 데나** — SSH + 포트포워딩이면 노트북 브라우저 | 웹앱이라 차량 화면이 필요 없다 |
 > | `rc` (주행) | **SSH + 노트북 RViz** | 주행 중 차량 렌더링 부하가 제어 주기를 흔든다 |
 >
 > 주행만 `ssh miru@10.1.1.250` → `sa` → `rc <맵> rviz:=false`, RViz는 노트북에서
 > 따로 띄웁니다. 셋업은 **[4-4](#4-4-노트북에서-원격-rviz로-주행-2026-08-03-이후-권장-구성)**.
 > alias·함수는 SSH로 접속해도 그대로 동작합니다(로그인 쉘이 zsh). 단 SSH 세션에는
-> 화면이 없으므로 RViz를 여는 `mapp`·`rc`는 `rviz:=false`가 필요하고, `tune`은
-> 끄는 인자 자체가 없어 SSH로는 못 씁니다.
+> 화면이 없으므로 RViz를 여는 `mapp`·`rc`는 `rviz:=false`가 필요합니다.
+> `tune`은 웹앱이라 `ssh -L 8770:localhost:8770` 만 걸면 노트북 브라우저로 그대로 씁니다.
 
 빌드 안했으면
 ```bash
@@ -37,16 +38,33 @@ mapp my_track0728   # 맵 이름 — 날짜 등으로 매번 새 이름을 쓸 �
 mkcsv my_track0728 ccw   # 맵과 같은 이름 (기본 CCW, 시계 트랙만 cw)
 cd ~/IFAC_ws && ./build_all.sh 
 ```
-레이스라인 손보기 (선택)
+레이스라인 손보기 (선택) — **실차로 한 번 달려 본 뒤에** 하는 작업입니다
 ```bash
-sa
-tune my_track0728   # mkcsv로 만든 맵 이름. v_max/mu/stride/falloff 전부 자동
-# RViz에서 라인을 드래그 → 우클릭 "CSV 저장"
-# 저장은 '소스 트리' CSV를 덮어쓰므로 반드시:
-cd ~/IFAC_ws && ./build_all.sh
+tune my_track0728          # 브라우저가 열린다 (http://127.0.0.1:8770)
+                           # ROS·RViz 불필요. sa 도 필요 없다 (맵 pgm 을 직접 읽음)
+# 라인 클릭 → 앵커 생성 · 앵커 드래그 → 라인 이동 · Shift+클릭 → 앵커 삭제
+# 우측 속도 그래프 세로 드래그 → 그 구간 속도 (넣은 값이 그대로 들어간다)
+# "실주행" 에서 로스백 고르면 그 주행이 겹쳐진다 → 코너별 남은 그립을 보고 판단
+# 저장 → 원본이 아니라 <맵>_tuned_iqp_*.csv 로 따로 저장된다
+cd ~/IFAC_ws && ./build_all.sh   # 저장은 '소스 트리' CSV라 빌드 필요
+rc my_track0728_tuned            # 튜닝한 라인으로 주행 (원본은 rc my_track0728)
 ```
-> `tune -h` 로 사용법 확인. 좁은 트랙에서 드래그가 안 먹으면 `tune my_track0728 min_wall:=0.25`,
-> 추월(sp) 라인을 편집하려면 `tune my_track0728 csv:=my_track0728_sp_max6.00ms_margin0.08m_mu0.75.csv`.
+> **원본은 절대 안 바뀝니다.** `mkcsv` 가 만든 `<맵>_iqp_*.csv` 는 그대로 남고 편집은
+> `<맵>_tuned_iqp_*.csv` 로만 나갑니다. `tune` 을 다시 열면 튜닝본을 이어서 편집하고,
+> 우상단 "리셋 → 전체 원본으로" 로 언제든 `mkcsv` 초안으로 되돌립니다.
+>
+> **이 도구는 사람 판단이 물리 모델보다 우선입니다.** 속도를 올리면 마찰원으로 되풀지
+> 않고, 앵커는 벽 여유로 깎지 않습니다. 한계를 넘으면 막는 대신 화면 상단 배지와
+> 트랙의 빨간 ✕ 로 알려줍니다. 그래서 `rc <맵>_tuned` 는 `global_trajectory_node` 가
+> **advisory 모드**(마찰원·조향 한계 위반을 경고만)로 뜹니다 — **속도를 낮춰 시작하고
+> 사람이 붙어 있을 때만 쓰세요.** `rc <맵>` (원본)은 언제나 strict 로 뜹니다.
+>
+> ⛔ 배지에 **"차가 안 뜸"** 이 보이면 그건 물리가 아니라 CSV 형식이 깨진 것이라
+> advisory 로도 통과하지 못합니다. 그 편집은 되돌리거나 완화해야 합니다.
+>
+> `tune --list` 로 편집 가능한 라인 목록, `tune -h` 로 사용법.
+> 원격이면 노트북에서 `ssh -L 8770:localhost:8770 miru@10.1.1.250` 후 브라우저로
+> `http://localhost:8770` — 차량 화면이 없어도 됩니다.
 
 만든 맵으로 주행
 ```bash
@@ -89,7 +107,7 @@ bagviz                       # 서버 시작 → 브라우저에서 http://127.0
 | `rc [맵] [인자...]` | 실차 원커맨드 (`real_car.launch.py`) |
 | `mapp <맵> [인자...]` | 매핑 (`mapping.launch.py`) |
 | `mkcsv <맵> [cw\|ccw]` | 레이스라인/센터라인 CSV 생성 |
-| `tune [맵] [인자...]` | 레이스라인 튜너 GUI (`raceline_tuner.launch.py`), 저장 후 `./build_all.sh` |
+| `tune [맵] [옵션...]` | 레이스라인 튜너 웹앱 (`tools/racelinetuner.py`). 원본 보존, `<맵>_tuned_*.csv` 로 저장 → `./build_all.sh` → `rc <맵>_tuned` |
 | `rosbag` | 전체 토픽 녹화 (marker류 제외) |
 | `bagviz` | 로스백 시각화 웹앱 (`tools/bagviz.py`, 드래그앤드롭·재생·차트) |
 | `hw` | 하드웨어 bringup만 (`rc hardware:=false`와 짝) |
@@ -631,7 +649,7 @@ alias·함수는 **전부 차량에서(SSH로) 실행**합니다. 하드웨어�
 | `hw` | ✅ | |
 | `mapp <맵>` | ⚠️ | 기본 `rviz:=true`. **`mapp <맵> rviz:=false`** 로 띄우고 RViz는 노트북에서 |
 | `rc <맵>` | ⚠️ | 마찬가지로 **`rviz:=false`** + 노트북 RViz |
-| `tune <맵>` | ❌ | **`rviz` 인자가 없어 RViz가 무조건 뜬다.** 아래 참고 |
+| `tune <맵>` | ✅ | 웹앱. `ssh -L 8770:localhost:8770` 후 노트북 브라우저. 아래 참고 |
 
 **매핑을 원격으로** — 노트북에서 맵이 그려지는 걸 보며 조이스틱으로 한 바퀴 돕니다.
 `mapp`이 쓰는 설정은 `particle_filter/rviz/pf.rviz`인데 노트북엔 그 패키지가 없으므로,
@@ -643,11 +661,26 @@ alias·함수는 **전부 차량에서(SSH로) 실행**합니다. 하드웨어�
 sa && mapp my_track0805 rviz:=false      rv
 ```
 
-**`tune`은 차량 화면이 필요합니다.** [raceline_tuner.launch.py](planning_ws/src/planning_pkg/launch/raceline_tuner.launch.py)가
-`rviz_node`를 조건 없이 띄우고 `rviz` 인자를 제공하지 않습니다. 게다가 인터랙티브
-마커를 드래그해 편집하고 저장이 차량 소스 트리로 가는 도구입니다. **주행 중에 쓰는
-게 아니므로 NoMachine(또는 차량 모니터)으로 하면 됩니다** — 부하가 문제되는 건 주행
-중일 때뿐입니다. `ssh -X`도 되지만 인터랙티브 마커 드래그가 매우 느립니다.
+**`tune`은 차량 화면이 필요 없습니다.** [tools/racelinetuner.py](tools/racelinetuner.py)는
+웹앱이라 차량에서 서버만 돌고 그림은 노트북 브라우저가 그립니다. ROS 도 RViz 도
+map_server 도 띄우지 않고 맵 `.pgm` 을 직접 읽습니다.
+
+```bash
+# 노트북 터미널 — 포트를 넘겨 접속하고 그 안에서 tune
+ssh -L 8770:localhost:8770 miru@10.1.1.250
+  tune my_track0805
+  # → "DISPLAY 가 없어 브라우저를 열지 않습니다" 라고만 뜬다 (정상)
+
+# 노트북 브라우저
+http://localhost:8770
+```
+
+SSH 세션은 화면이 없으므로 차량 쪽에서 브라우저를 열려고 하지 않습니다 (`--no-browser`
+를 따로 줄 필요 없음). 저장은 차량 소스 트리로 가므로 편집이 끝나면 차량에서
+`./build_all.sh` 를 해야 주행에 반영됩니다.
+
+`bagviz` 와 포트가 다르니(8770 vs 8998) 둘을 동시에 열어 두고 비교해도 됩니다 —
+다만 `tune` 안에 이미 "실주행 겹쳐보기"가 있어서 라인 튜닝 중에는 그쪽이 편합니다.
 
 `bagviz`는 차량에서 `bagviz --host 0.0.0.0`으로 띄우고 노트북 브라우저에서
 `http://10.1.1.250:8998`로 봅니다.

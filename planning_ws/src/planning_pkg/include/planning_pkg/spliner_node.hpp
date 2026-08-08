@@ -276,11 +276,10 @@ private:
   std::vector<double> post_apex_dists_{2.0, 3.0, 4.0};
   double fixed_pred_time_{0.15};
   double outside_spline_scale_{1.75};
-  double inside_speed_scale_{0.9};
   // ── 임시 테스트 스위치 ───────────────────────────────────────────────
   // true면 회피 경로(lane switch / free spline / SP lane change / SP exit)의
   // 모든 감속 요소를 끄고 글로벌 레이스라인 속도를 그대로 쓴다:
-  //   inside/squeeze/OT 배율, 진입·복귀 속도 캡, v_floor,
+  //   OT 배율, 진입·복귀 속도 캡, v_floor,
   //   ApplySpeedProfile 전체(오프셋 곡률 캡·조향률 캡·역방향 감속·
   //   순방향 가속 envelope·jerk shaping·현재상태 feasibility 거부).
   // trailing(장애물 뒤 감속/정지 폴백)은 회피가 아니라 충돌 방지이므로
@@ -291,7 +290,6 @@ private:
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
   bool use_prediction_{true};   // Predictive Spliner: 예측 장애물이 원시 관측을 대체
-  bool use_trailing_{true};     // false면 회피 불가 시 감속/정지(trailing) 안 함
   double trailing_gap_m_{2.5};
   double trailing_decel_{2.5};
   double cmd_speed_scale_{1.0};
@@ -321,16 +319,17 @@ private:
   // 통과할 수 없다 (run_0806_155621). 정적 물체는 시간이 지나도 안 움직이므로
   // 시간 성장분을 이 값으로 자른다 (분류 오류 대비 완충만 남김).
   double static_time_uncertainty_cap_{0.3};
-  // 관측 불확실성 팽창(3σ)의 상한 [m]. 브릿지는 속도를 아직 측정하지 못한
-  // 첫 프레임에 vs_var/vd_var를 "클립 한계의 제곱"으로 붙인다
-  // (max_abs_vs²=100, max_abs_vd²=16). 그러면 3σ가 종방향 9.0m / 횡방향
-  // 3.6m가 되어, 폭 1.1~2.1m 트랙에서는 좌우 어느 쪽도 통과 불가로 판정되고
-  // 매번 Tier3 TRAILING(v_target=0, 정지)으로 떨어졌다.
-  //   rosbag_0806 4런 실측: 68회 발생 = 장애물을 새로 획득할 때마다 1회.
-  //   로그의 요구 간격이 전부 3.76~3.88m로 동일했다.
-  // 코리도 반폭을 넘는 팽창은 "통과 불가"라는 오답만 만들 뿐 안전에 기여하지
-  // 않는다 — 실제 안전은 CheckPathCollision의 차량 footprint 검사와
-  // RequiredBoundaryMargin이 담당하므로 여기서 자른다.
+  // 관측 불확실성 팽창(3σ)의 상한 [m].
+  // 도입 근거(과거): 브릿지가 속도 미확정 첫 프레임에 vs_var/vd_var를 "클립
+  // 한계의 제곱"(max_abs_vs²=100, max_abs_vd²=16)으로 붙여 3σ가 종방향 9.0m /
+  // 횡방향 3.6m가 됐고, 폭 1.1~2.1m 트랙에서 좌우 어느 쪽도 통과 불가가 되어
+  // 매번 Tier3 TRAILING(v_target=0)으로 떨어졌다 (rosbag_0806 4런 68회).
+  // ⚠️ 그 브릿지 동작은 같은 커밋(b934d0e)에서 이미 폐기됐다 — 지금은
+  //    init_vel_std(0.5)² = 0.25를 쓴다. 즉 이 캡이 막던 9.0m/3.6m 케이스는
+  //    더 이상 발생하지 않고, 지금 잘리는 것은 정상 케이스다:
+  //    브릿지 position_var_floor=0.01 -> 3σ_d = 3*0.1 = 0.30 > 0.25.
+  //    결과적으로 collision_sigma를 올려도 여기서 잘려 효과가 없다.
+  //    (두 값을 함께 봐야 한다 — params.yaml의 collision_sigma 항목 참조.)
   double max_uncertainty_m_{0.25};
   // 회피 기하 계획에 쓰는 최소 속도 [m/s] — PlanSpeed() 참조
   double plan_speed_floor_{1.5};
@@ -356,14 +355,11 @@ private:
   // 벽이 좁아 evasion_dist를 다 못 챙길 때 apex를 벽 마진 안으로 줄여서라도
   // 회피를 시도하는 최소 장애물 간격 (차 반폭 ~0.15 + 여유)
   double evasion_dist_min_{0.35};
-  // 회피 가부를 판정하는 "한쪽 방향" 최소 통과폭 [m] (장애물 가장자리 -> 트랙 경계).
-  // 실제 하한은 max(이 값, path_check_margin/차반폭 + RequiredBoundaryMargin).
-  double evasion_side_space_min_{0.40};
-  // apex가 벽 마진으로 축소(squeeze)된 회피는 이 배율로 감속 — 좁은
-  // corridor를 섹터 부스트 속도로 지나면 추적오차(속도비례)로 벽에 닿는다
-  double squeeze_speed_scale_{0.35};
-  // 공격성 파라미터: 접근 구간은 감속하지 않고 장애물 직전에서만 제동한다
-  double squeeze_brake_dist_m_{6.0};      // squeeze 감속을 시작하는 s_front 앞 거리 [m]
+  // squeeze 감속(apex가 벽 마진으로 축소된 회피를 배율로 감속) 제거됨.
+  // 좁은 corridor에서의 속도 제한은 오프셋 곡률 기반 물리 캡
+  // (OffsetKappa + path_lat_acc_max + offset_grip_cap)이 담당한다.
+  // 주의: 벽 여유(RequiredBoundaryMargin)는 아직 속도와 무관한 고정값이므로
+  // 추적오차의 속도 의존분은 현재 어디에서도 보상하지 않는다.
   double trailing_engage_dist_m_{8.0};    // trailing 감속을 시작하는 정지점 앞 거리 [m]
   // 속도 명령 -> 실제 감속 사이의 구동계 지연 [s]. 정지 프로파일이
   // v²/(2a)만 보면 이 지연 동안 굴러간 거리만큼 정지점을 넘는다
@@ -406,7 +402,6 @@ private:
   double ot_min_clearance_{0.95};
   double ot_max_kappa_{0.1};         // 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m)
   double ot_sector_min_len_m_{8.0};
-  double ot_bound_mindist_{0.25};
   double ot_speed_scale_{1.0};
   std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
@@ -417,7 +412,6 @@ private:
   double committed_start_s_{-1.0};
   double committed_until_s_{-1.0};
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
-  double active_bound_mindist_{0.2};
   double active_speed_scale_{1.0};
 
   // SP 레인체인지 상태
@@ -458,7 +452,7 @@ private:
   // 불가)으로 거부했는가. 매 Run() 시작에 false로 리셋한다.
   //
   // Trailing(v_target=0 정지 궤적)은 **이 경우에만** 정당하다. 예전 코드는
-  // `if (!evasion_valid && use_trailing_)` 로 실패 사유를 구분하지 않아,
+  // `if (!evasion_valid)` 로 실패 사유를 구분하지 않아,
   // 충돌검사 거부·벽 축소·"이미 장애물 구간 내부"·스팬 초과 같은 일시적
   // 사유에도 전 점 vx=0 궤적을 발행했다 (주석 :935-950은 원래부터 사유를
   // 구분하겠다고 선언하고 있었다 — 코드가 주석을 따라간다).
@@ -468,7 +462,6 @@ private:
   bool free_spline_geom_infeasible_{false};
   std::mutex mutex_obstacles_;
   std::mutex mutex_gb_wpnts_;
-  std::mutex mutex_frenet_odom_;
 
   rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
   rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_predicted_obstacles_;

@@ -43,10 +43,12 @@ private:
     const nav_msgs::msg::Odometry & frenet_odom_copy);
   // 회피 궤적이 유효하면 로컬 윈도우의 겹치는 s 구간을 치환한다.
   // false는 입력 궤적이 비정상임을 뜻하며 이 주기의 local path를 발행하지 않는다.
+  // replaced_out 에는 실제로 치환된 웨이포인트 수가 담긴다 (pitwall 텔레메트리용).
   bool SpliceAvoidanceWaypoints(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & local_wpnts,
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & avoidance_wpnts,
-    double track_length);
+    double track_length,
+    int & replaced_out);
 
   // Parameters
   double loop_rate_hz_{40.0};
@@ -56,6 +58,10 @@ private:
   double frenet_odom_timeout_sec_{0.20};
   double frenet_odom_source_timeout_sec_{0.20};
   double future_stamp_tolerance_sec_{0.05};
+  // frenet_frame/min_frenet_jacobian 과 같은 값이어야 한다. 예전엔 여기만
+  // 리터럴 0.20 이라, frenet 쪽만 내리면 frenet 은 계속 발행하는데 local 이
+  // 거부해 /local_waypoints 가 끊겼다 (원인 노드를 특정하기 어려운 정지).
+  double min_frenet_jacobian_{0.20};
   double max_avoidance_step_m_{1.0};
   double minimum_horizon_sec_{1.5};
   double minimum_braking_decel_mps2_{2.5};
@@ -73,7 +79,6 @@ private:
   std::chrono::steady_clock::time_point avoidance_arrival_time_{};
   int64_t avoidance_source_stamp_ns_{0};
   int64_t last_avoidance_source_stamp_ns_{0};
-  int last_closest_index_{0};
   std::mutex mutex_global_waypoints_;
   std::mutex mutex_frenet_odom_;
   std::mutex mutex_avoidance_;

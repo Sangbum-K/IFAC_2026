@@ -26,6 +26,7 @@ monitor_node:
     monitor/trail/v_min: 0.0
     monitor/trail/v_max: 0.0            # 0 -> 레이스라인 최대 vx에서 자동 (색 스케일이 계획과 일치)
     monitor/trail/cte_max: 0.5          # cte 색상/이탈량 사다리의 빨강 기준 [m]
+    monitor/trail/v_err_max: 2.0        # speed_error 색상 빨강 기준 [m/s]
     monitor/trail/keep_previous_laps: 1 # 직전 랩을 회색 고스트로 남겨 랩 간 비교
     monitor/trail/publish_rate_hz: 5.0
 

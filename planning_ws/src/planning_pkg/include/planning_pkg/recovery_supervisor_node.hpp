@@ -32,10 +32,8 @@
 #ifndef PLANNING_PKG__RECOVERY_SUPERVISOR_NODE_HPP_
 #define PLANNING_PKG__RECOVERY_SUPERVISOR_NODE_HPP_
 
-#include <cmath>
 #include <mutex>
 #include <string>
-#include <vector>
 
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -134,7 +132,6 @@ private:
 
   double cur_s_{0.0};
   double cur_d_{0.0};
-  double cur_vs_{0.0};
   double cur_yaw_{0.0};
   double cur_speed_norm_{0.0};
   f1tenth_planning_msgs::msg::WpntArray local_wpnts_;

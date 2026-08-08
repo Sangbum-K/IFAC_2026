@@ -1,0 +1,102 @@
+{
+  "files": [
+    {
+      "bytes": 32450,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0808_sp_max7.00ms_margin0.08m_mu0.80.csv",
+      "role": "sp_0",
+      "sha256": "bd1c7090cf80d16d1213cabfae2bc85044541a15b385662bab4d0efef3dc1a2a"
+    },
+    {
+      "bytes": 32450,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0808_sp_max7.00ms_margin0.08m_mu0.80.csv",
+      "role": "sp_1",
+      "sha256": "bd1c7090cf80d16d1213cabfae2bc85044541a15b385662bab4d0efef3dc1a2a"
+    },
+    {
+      "bytes": 7691,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0808_centerline.csv",
+      "role": "centerline_output",
+      "sha256": "110b9d3a4d640ff0b03dccb513db31688d5d31e9074286dd4636c32b7b4a8b3c"
+    },
+    {
+      "bytes": 7691,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_track0808_centerline.csv",
+      "role": "centerline_runtime",
+      "sha256": "110b9d3a4d640ff0b03dccb513db31688d5d31e9074286dd4636c32b7b4a8b3c"
+    },
+    {
+      "bytes": 32871,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0808_iqp_max7.00ms_margin0.08m_mu0.80.csv",
+      "role": "main_output",
+      "sha256": "ad1a19e449a8576d55764d226f62f3d484ea3d4387139552ccdc03b1c171725e"
+    },
+    {
+      "bytes": 32871,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0808_iqp_max7.00ms_margin0.08m_mu0.80.csv",
+      "role": "main_runtime",
+      "sha256": "ad1a19e449a8576d55764d226f62f3d484ea3d4387139552ccdc03b1c171725e"
+    }
+  ],
+  "generation_content_sha256": "6d11ded3126072ac26fe4b15cd1a9315a03e529d3f6b619080aea36f95342591",
+  "generation_id": "f280cef32d374ab4887181634ab1f39c",
+  "main": "my_track0808_iqp_max7.00ms_margin0.08m_mu0.80.csv",
+  "map": "my_track0808",
+  "schema_version": 1,
+  "sp": "my_track0808_sp_max7.00ms_margin0.08m_mu0.80.csv",
+  "sp_disabled_reason": "",
+  "sp_enabled": true,
+  "sp_expected": "my_track0808_sp_max7.00ms_margin0.08m_mu0.80.csv",
+  "validation": {
+    "adaptive_safe_dist": {
+      "enabled": true,
+      "narrow_pts": 0,
+      "safe_max": 0.55,
+      "safe_median": 0.49124999999999974,
+      "safe_min": 0.38249999999999984,
+      "total_pts": 64,
+      "width_max": 2.8750000000000004,
+      "width_median": 1.6750000000000003,
+      "width_min": 1.2750000000000001
+    },
+    "adaptive_speed_by_width": {
+      "binding_pts": 209,
+      "corner_pts": 278,
+      "enabled": true,
+      "limited_pts": 260,
+      "slope_max": 0.12,
+      "slope_min": 0.035,
+      "total_pts": 323,
+      "v_min": 2.291666666666667
+    },
+    "advisory_profiles": [
+      "python_sim_tracker"
+    ],
+    "brake_decel_per_amp": 0.14,
+    "gate_profiles": [
+      "cpp_real_car"
+    ],
+    "gate_target": "real",
+    "mu_profile": 0.8,
+    "plant_accel_mps2": 4.5,
+    "plant_decel_planned_mps2": 2.38,
+    "profile_settings": [
+      {
+        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "controller_speed_scale": 1.0,
+        "max_speed_mps": 7.0,
+        "name": "cpp_real_car",
+        "planner_speed_scale": 1.0,
+        "plant": "vesc"
+      },
+      {
+        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "controller_speed_scale": 0.3,
+        "max_speed_mps": 7.0,
+        "name": "python_sim_tracker",
+        "planner_speed_scale": 0.5714,
+        "plant": "ideal"
+      }
+    ],
+    "raceline_v_max_mps": 7.0
+  }
+}

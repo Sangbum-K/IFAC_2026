@@ -33,10 +33,11 @@ private:
     const std::string & csv_filename,
     std::vector<std::vector<double>> & out_trajectory,
     std::string & out_generation_id);
+  // (strict_curvature 인자 제거: 호출처가 하나뿐이고 항상 리터럴 true 라
+  //  "곡률 검사를 건너뛰는 라인이 있다"는 잘못된 인상만 줬다.)
   bool ValidateTrajectory(
     const std::string & name,
-    const std::vector<std::vector<double>> & trajectory,
-    bool strict_curvature) const;
+    const std::vector<std::vector<double>> & trajectory) const;
   bool ValidateTrajectoryPair(
     const std::vector<std::vector<double>> & main_trajectory,
     const std::vector<std::vector<double>> & overtaking_trajectory) const;
@@ -58,6 +59,10 @@ private:
   double validation_max_steer_rad_{0.36};
   double validation_tolerance_{0.03};
   double validation_ax_tolerance_{1.0};
+  // validation_mode:=advisory 일 때만 true. 형식 검사(NaN/단조/간격/폐루프/ax↔v)는
+  // 그대로 fail 이고, 물리 검사(마찰원·조향 한계)만 경고로 내린다. 손으로 튜닝한
+  // <맵>_tuned_ 라인을 실차에서 시험하기 위한 경로이며 기본값은 strict 다.
+  bool validation_advisory_{false};
 
   // CSV rows: [s_m, x_m, y_m, d_right, d_left, psi_rad, kappa_radpm, vx_mps, ax_mps2]
   std::vector<std::vector<double>> global_trajectory_;

@@ -76,6 +76,7 @@ LocalTrajectoryNode::LocalTrajectoryNode(
   this->declare_parameter("local_trajectory/frenet_odom_timeout_sec", 0.20);
   this->declare_parameter("local_trajectory/frenet_odom_source_timeout_sec", 0.20);
   this->declare_parameter("local_trajectory/future_stamp_tolerance_sec", 0.05);
+  this->declare_parameter("local_trajectory/min_frenet_jacobian", 0.20);
   this->declare_parameter("local_trajectory/max_avoidance_step_m", 1.0);
   this->declare_parameter("local_trajectory/minimum_horizon_sec", 1.5);
   this->declare_parameter("local_trajectory/minimum_braking_decel_mps2", 2.5);
@@ -94,6 +95,8 @@ LocalTrajectoryNode::LocalTrajectoryNode(
     this->get_parameter("local_trajectory/frenet_odom_source_timeout_sec").as_double();
   future_stamp_tolerance_sec_ =
     this->get_parameter("local_trajectory/future_stamp_tolerance_sec").as_double();
+  min_frenet_jacobian_ =
+    this->get_parameter("local_trajectory/min_frenet_jacobian").as_double();
   max_avoidance_step_m_ =
     this->get_parameter("local_trajectory/max_avoidance_step_m").as_double();
   minimum_horizon_sec_ =
@@ -103,10 +106,11 @@ LocalTrajectoryNode::LocalTrajectoryNode(
   minimum_stop_buffer_m_ =
     this->get_parameter("local_trajectory/minimum_stop_buffer_m").as_double();
 
-  const std::array<double, 8> safety_values = {
+  const std::array<double, 9> safety_values = {
     loop_rate_hz_, avoidance_timeout_sec_, frenet_odom_timeout_sec_,
     frenet_odom_source_timeout_sec_, future_stamp_tolerance_sec_,
-    max_avoidance_step_m_, minimum_horizon_sec_, minimum_braking_decel_mps2_};
+    max_avoidance_step_m_, minimum_horizon_sec_, minimum_braking_decel_mps2_,
+    min_frenet_jacobian_};
   if (!std::all_of(
       safety_values.begin(), safety_values.end(),
       [](double value) {return std::isfinite(value);}) ||
@@ -282,9 +286,6 @@ int LocalTrajectoryNode::FindClosestWaypointIndex(
       best_index = static_cast<int>(i);
     }
   }
-  if (best_index >= 0) {
-    last_closest_index_ = best_index;
-  }
   return best_index;
 }
 
@@ -361,7 +362,7 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
   }
   const double jacobian =
     1.0 - global_waypoints_copy[start_idx].kappa_radpm * current_d;
-  if (!std::isfinite(jacobian) || jacobian <= 0.20) {
+  if (!std::isfinite(jacobian) || jacobian <= min_frenet_jacobian_) {
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), *get_clock(), 1000,
       "Unsafe Frenet Jacobian %.3f; local publish stopped", jacobian);
@@ -451,9 +452,10 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
     return;
   }
 
+  int spliced_count = 0;
   if (avoidance_is_fresh && !avoidance_copy.empty() &&
     !SpliceAvoidanceWaypoints(
-      local_waypoints.wpnts, avoidance_copy, track_length))
+      local_waypoints.wpnts, avoidance_copy, track_length, spliced_count))
   {
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), *get_clock(), 1000,
@@ -461,9 +463,10 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
     return;
   }
 
-  pitwall::Log(
-    "spliced_wpnts",
-    avoidance_is_fresh ? static_cast<double>(avoidance_copy.size()) : 0.0);
+  // 실제로 치환된 개수를 보고한다. 예전엔 수신한 회피 배열의 크기를 그대로
+  // 실었기 때문에, s 구간이 겹치지 않아 한 점도 치환되지 않은 사이클도
+  // "치환 130점"으로 기록돼 사후 rosbag 분석에서 인과를 뒤집었다.
+  pitwall::Log("spliced_wpnts", static_cast<double>(spliced_count));
   p_local_waypoints_->publish(local_waypoints);
 
   RCLCPP_DEBUG(
@@ -475,8 +478,10 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
 bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
   std::vector<f1tenth_planning_msgs::msg::Wpnt> & local_wpnts,
   const std::vector<f1tenth_planning_msgs::msg::Wpnt> & avoidance_wpnts,
-  double track_length)
+  double track_length,
+  int & replaced_out)
 {
+  replaced_out = 0;
   if (local_wpnts.size() < 2U || avoidance_wpnts.size() < 2U ||
     !(track_length > 0.0))
   {
@@ -513,16 +518,14 @@ bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
     avoidance_progress[i] = avoidance_progress[i - 1U] + ds;
   }
 
+  // local_wpnts 는 이 호출 직전에 PublishLocalWaypoints 가 global_waypoints_copy
+  // (ComputeTrackLength 에서 전 원소 IsFiniteWaypoint 통과)에서 복사해 만들고
+  // 그 자리에서 ds 단조성까지 검사한 것이다 — 여기서 다시 검증하지 않는다.
+  // 누적 progress 만 계산한다.
   std::vector<double> local_progress(local_wpnts.size(), 0.0);
   for (std::size_t i = 1; i < local_wpnts.size(); ++i) {
-    if (!IsFiniteWaypoint(local_wpnts[i])) {
-      return false;
-    }
     const double ds = PositiveModulo(
       local_wpnts[i].s_m - local_wpnts[i - 1U].s_m, track_length);
-    if (!(ds > kEpsilon) || ds > track_length * 0.5) {
-      return false;
-    }
     local_progress[i] = local_progress[i - 1U] + ds;
   }
 
@@ -593,6 +596,7 @@ bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
     ++replaced;
   }
 
+  replaced_out = replaced;
   if (replaced > 0) {
     RCLCPP_INFO_THROTTLE(
       this->get_logger(), *get_clock(), 2000,

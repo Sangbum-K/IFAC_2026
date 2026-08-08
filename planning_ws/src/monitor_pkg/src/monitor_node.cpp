@@ -72,9 +72,9 @@ MonitorNode::MonitorNode(const std::string &node_name, const rclcpp::NodeOptions
     auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10));
 
     // Parameters - declare and get values
-    this->declare_parameter("monitor/loop_rate_hz", 10.0);
+    this->declare_parameter("monitor/loop_rate_hz", 20.0);
     this->declare_parameter("monitor/start_zone_threshold", 1.0);
-    this->declare_parameter("monitor/text_size", 14);
+    this->declare_parameter("monitor/text_size", 18);
     // 환경별 토픽 (config/environments/*.yaml에서 override)
     // sim: /ego_racecar/odom, /drive
     // real_car: /pf/pose/odom, /ackermann_cmd
@@ -91,6 +91,8 @@ MonitorNode::MonitorNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("monitor/trail/v_min", 0.0);
     this->declare_parameter("monitor/trail/v_max", 0.0);  // 0 -> 레이스라인 최대속도에서 자동
     this->declare_parameter("monitor/trail/cte_max", 0.5);
+    // speed_error 색 스케일 [m/s]: 빨강 = 계획보다 이만큼 느림
+    this->declare_parameter("monitor/trail/v_err_max", 2.0);
     this->declare_parameter("monitor/trail/keep_previous_laps", 1);
     this->declare_parameter("monitor/trail/publish_rate_hz", 5.0);
     // 레이스라인 대비 이탈량 사다리 마커
@@ -116,6 +118,8 @@ MonitorNode::MonitorNode(const std::string &node_name, const rclcpp::NodeOptions
     trail_v_min_ = this->get_parameter("monitor/trail/v_min").as_double();
     trail_v_max_ = this->get_parameter("monitor/trail/v_max").as_double();
     trail_cte_max_ = this->get_parameter("monitor/trail/cte_max").as_double();
+    trail_v_err_max_ =
+        this->get_parameter("monitor/trail/v_err_max").as_double();
     trail_keep_previous_laps_ = static_cast<int>(this->get_parameter("monitor/trail/keep_previous_laps").as_int());
     trail_publish_rate_hz_ = this->get_parameter("monitor/trail/publish_rate_hz").as_double();
     deviation_enabled_ = this->get_parameter("monitor/deviation/enabled").as_bool();
@@ -277,14 +281,12 @@ void MonitorNode::UpdateLapInfo(const nav_msgs::msg::Odometry& frenet_odom) {
                              (current_s > (max_s_ - start_zone_threshold_));
 
         if (in_start_zone) {
-            is_race_started_ = true;
             lap_count_ = 0;  // Start from lap 0
             lap_start_time_ = this->get_clock()->now();  // Start timing
             RCLCPP_INFO(this->get_logger(),
                        "Race started from proper position. Current s: %.2f, threshold: %.2f",
                        current_s, start_zone_threshold_);
         } else {
-            is_race_started_ = false;
             lap_count_ = 0;  // Start counting from 0 even for invalid start
             lap_start_time_ = this->get_clock()->now();  // Start timing even for invalid start
             RCLCPP_WARN(this->get_logger(),
@@ -610,7 +612,10 @@ std_msgs::msg::ColorRGBA MonitorNode::TrailColor(const TrailPoint& p) const {
     if (trail_color_mode_ == "speed_error") {
         // 목표보다 얼마나 느린지 (레이스라인 정보가 없으면 0)
         const double err = p.has_ref ? std::max(0.0, p.v_plan - p.v) : 0.0;
-        return GreenRedColor(err / std::max(1e-3, trail_cte_max_ * 4.0), 1.0);
+        // 예전엔 trail_cte_max_(거리 [m]) * 4.0 을 속도오차 [m/s] 스케일로
+        // 재사용했다 — 단위가 다른 물리량이라 cte_max 를 만지면 speed_error
+        // 그림의 붉기 기준이 조용히 같이 바뀌었다.
+        return GreenRedColor(err / std::max(1e-3, trail_v_err_max_), 1.0);
     }
     // 기본: 속도 컬러맵 (시뮬 플롯과 같은 viridis)
     const double v_max = (trail_v_max_ > 0.0)
@@ -659,17 +664,11 @@ void MonitorNode::PublishTrailMarkers() {
             array.markers.push_back(m);
         }
     }
-    // 고스트 개수가 줄면 남은 id를 지운다
-    for (int i = ghost_id; i < previous_trail_ids_published_; ++i) {
-        visualization_msgs::msg::Marker m;
-        m.header.frame_id = map_frame_;
-        m.header.stamp = stamp;
-        m.ns = "driven_prev";
-        m.id = i;
-        m.action = visualization_msgs::msg::Marker::DELETE;
-        array.markers.push_back(m);
-    }
-    previous_trail_ids_published_ = ghost_id;
+    // (고스트 DELETE 루프 제거: previous_trails_ 는 FinalizeLap 의 push_back 과
+    //  상한 초과 시 pop_front 만 하므로 크기가 단조 비감소이고,
+    //  trail_keep_previous_laps_ 는 생성자에서 한 번만 읽는다 — ghost_id 가
+    //  직전 값보다 작아질 수 없어 루프 본문에 도달할 수 없었다.
+    //  trail_keep_previous_laps_ 를 동적 파라미터로 바꾸면 다시 필요해진다.)
 
     // 현재 랩 — 점마다 속도(또는 CTE) 색
     visualization_msgs::msg::Marker cur;

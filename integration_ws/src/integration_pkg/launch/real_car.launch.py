@@ -18,6 +18,12 @@ RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, �
 맵을 바꾸려면 (PF 맵 + planner CSV 3종이 한 번에 따라간다):
   ros2 launch integration_pkg real_car.launch.py map:=my_track2
 
+레이스라인 튜너로 손본 라인으로 달리려면 맵 이름에 _tuned 를 붙인다:
+  ros2 launch integration_pkg real_car.launch.py map:=my_track0808_tuned
+  → PF 맵/센터라인은 my_track0808 을 그대로 쓰고, 레이스라인만
+    my_track0808_tuned_iqp_*.csv 로 바뀐다. 그 라인은 마찰원/조향 한계를 넘을 수
+    있으므로 global_trajectory_node 가 advisory 모드로 뜬다 (경고만, 거부 안 함).
+
 부분 실행이 필요하면 인자로 끌 수 있다:
   hardware:=false      이미 A가 떠 있을 때
   localization:=false  이미 B가 떠 있을 때
@@ -46,6 +52,23 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+# 라인 변형 접미사 — planning_pkg/launch/planner_stack.launch.py 의 LINE_VARIANTS 와
+# 같은 목록이어야 한다. 여기서 필요한 이유는 localization(PF)에 넘길 맵 이름에서
+# 접미사를 먼저 떼야 하기 때문이다 (<맵>_tuned.yaml 은 존재하지 않는다).
+# 두 launch 는 서로 다른 워크스페이스라 import 할 수 없어 사본으로 둔다.
+# test/test_line_variant_routing.py 가 두 사본의 동기화를 강제한다.
+LINE_VARIANTS = ('tuned',)
+
+
+def split_line_variant(name):
+    """'my_track0808_tuned' -> ('my_track0808', 'tuned'), 'my_track0808' -> (..., '')."""
+    for variant in LINE_VARIANTS:
+        suffix = '_' + variant
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[:-len(suffix)], variant
+    return name, ''
+
+
 def _is_true(value):
     return str(value).lower() in ('true', '1', 'yes')
 
@@ -68,8 +91,22 @@ def launch_setup(context, *args, **kwargs):
     wait_timeout = LaunchConfiguration('wait_timeout').perform(context)
     # 빈 값이면 각 하위 launch의 기존 기본값(localize.yaml / params.yaml)을 쓴다.
     map_name = LaunchConfiguration('map').perform(context)
+    # map:=<맵>_tuned 는 '다른 맵'이 아니라 '같은 맵의 사람 튜닝 라인'이다.
+    # localization(PF)은 <맵>.yaml 만 있으므로 접미사를 떼고 넘겨야 한다.
+    # 레이스라인 CSV 선택은 planner_stack.launch.py 가 접미사를 보고 처리하므로
+    # 자율 스택에는 map_name 을 그대로 넘긴다.
+    map_base, line_variant = split_line_variant(map_name)
 
     actions = []
+
+    if line_variant:
+        actions.append(LogInfo(msg=(
+            '[real_car] 라인 변형 "%s" — PF 맵/센터라인은 "%s" 를 쓰고 '
+            '레이스라인만 "%s_iqp_*.csv" 를 씁니다.\n'
+            '           이 라인은 사람이 손으로 튜닝한 것이라 마찰원/조향 한계를 '
+            '넘을 수 있고, global_trajectory_node 가 advisory 로 뜹니다.\n'
+            '           원본으로 달리려면 map:=%s (접미사 없이).'
+            % (line_variant, map_base, map_name, map_base))))
 
     if hardware:
         actions.append(LogInfo(msg='[1/3] 하드웨어 bringup (LiDAR/VESC/joy/mux)...'))
@@ -91,8 +128,8 @@ def launch_setup(context, *args, **kwargs):
             'use_sim_time': 'false',
             'rviz': 'false',
         }
-        if map_name:
-            loc_args['map'] = map_name
+        if map_base:
+            loc_args['map'] = map_base
         actions.append(TimerAction(period=5.0, actions=[
             LogInfo(msg='[2/3] localization (particle_filter) + 모니터 RViz...'),
             IncludeLaunchDescription(

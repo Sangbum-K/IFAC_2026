@@ -265,7 +265,7 @@ void PitwallPanel::RefreshUi()
       opp_status.empty() ? "-" : opp_status));
 
   // STATE 배너: manual > RECOVERY > OVERTAKE > TRAILING > GB_TRACK
-  // (H2H 상태머신/BehaviorState가 생기면 /behavior_state 구독으로 교체)
+  // (H2H 상태머신이 생기면 그 상태 토픽 구독으로 교체)
   QString state;
   QString color;
   if (ego_status.find("manual") != std::string::npos) {

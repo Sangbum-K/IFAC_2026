@@ -114,17 +114,21 @@ spliner_node:
     spliner/blend_lat_acc_max: 5.0      # 6 m/s, d 0.42 -> 진입/복귀 4.3 m (3.0은 5.5 m
                                         # 로 반응 지연 — 상향 근거는 params.yaml 주석)
     spliner/blend_dist_max_m: 8.0
-    spliner/path_lat_acc_max: 7.0       # raceline은 7.36(0.75g)까지 씀 — 회피는 약간 보수적
+    # 7.0 -> 6.6: 4619e94 가 params.yaml 만 고치고 이 실차 오버레이를 빠뜨려서,
+    # env yaml 이 params.yaml 을 덮는 구조 때문에 정작 실차에서만 옛 값이 살아 있었다.
+    # 이 값은 마찰원 예산이라 mu*g 를 넘으면 안 된다 — my_track0807 manifest 의
+    # validation.mu_profile = 0.68 이므로 mu*g = 6.67. 7.0 은 5% 초과라
+    # BlendLatAcc 의 잔여 그립 sqrt(budget² - lat_ref²) 를 실제보다 크게 보고
+    # 진입 속도 캡이 물리적으로 못 내는 값으로 계산됐다.
+    # ("raceline은 7.36(0.75g)까지 씀"이라던 옛 주석은 mu 0.75 시절 값이라 폐기.)
+    spliner/path_lat_acc_max: 6.6       # 오프셋 경로 횡그립 [m/s^2] (mu*g = 6.67)
     spliner/path_decel_max: 6.0         # raceline 프로파일 최대 요구 6.27과 정합
     spliner/lane_blend_out_m: 5.0       # 하한. 위 예산 계산값과 max로 결합
     spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
                                         # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통
-    # 1.0 = 고정 배율 사용 안 함. 코너 안쪽 회피 감속은 offset_grip_cap이
-    # 물리 기반으로 대신한다 (레이스라인이 그 지점에서 쓰던 kappa*v^2를
-    # 오프셋 곡률에 그대로 적용 -> sqrt(1 - d*kappa)배). 예전 0.7은 곡률과
-    # 무관한 30% 고정 감속이라 완만한 코너에서 순손실이었다.
-    spliner/inside_speed_scale: 1.0
+    # (spliner/inside_speed_scale 제거: 코너 안쪽 회피 감속은 offset_grip_cap 이
+    #  물리 기반으로 담당한다. 고정 배율은 이미 1.0(항등)이라 코드에서 함께 삭제.)
     spliner/path_check_margin: 0.15
     # recovery의 center-to-wall 0.25m 계약과 같은 경로만 생성.
     spliner/boundary_tracking_margin_m: 0.10

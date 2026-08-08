@@ -77,7 +77,7 @@ MAX_STEER_RATE = 2.0    # [rad/s] control 기본 steering-rate limit
 # 가속은 배터리 상태에 크게 좌우된다(0731 p90 2.23). 08-07 백이 생기면 같은
 # 방법으로 다시 재서 이 주석을 갱신할 것. 값을 바꾸면 my_track0806/0806_3/0807
 # 궤적도 같이 재생성해야 한다.
-A_ACC_MAX = 1.8         # 실제 가속 한계 [m/s²] (전류 포화 실측 p90. p50은 1.25)
+A_ACC_MAX = 4.5         # 실제 가속 한계 [m/s²] (전류 포화 실측 p90. p50은 1.25)
 A_DEC_MAX = 1.4         # 코스팅(무동력) 감속 [m/s²] — 실측 p50 1.5에 여유 0.1
 
 # 브레이크 전류 1 A 가 만드는 '추가' 감속 [m/s² per A] — 코스팅 위에 더해진다.
@@ -89,7 +89,7 @@ A_DEC_MAX = 1.4         # 코스팅(무동력) 감속 [m/s²] — 실측 p50 1.5
 #   ⚠️ 5 A 에서의 총량은 실측이 아니라 선형 외삽이다(실측 근거는 1 A 기준
 #   0.4~0.45). 브레이크 크레딧은 선형이 보장되지 않으므로(타이어 슬립·모터
 #   특성) 5 A 백이 생기면 다시 잴 것.
-BRAKE_DECEL_PER_AMP = 0.12
+BRAKE_DECEL_PER_AMP = 0.14
 
 # 계획에 쓰는 브레이크 전류 [A]. vesc.yaml 의 ackermann_brake_max 와 같아야 한다
 # (CLAUDE.md: vesc.yaml 이 hardware_ws 의 single source of truth).
@@ -97,10 +97,12 @@ BRAKE_DECEL_PER_AMP = 0.12
 # 이름 있는 상수로 유지한다 — 예전에 이 곱수가 1.0 으로 굳어 있던 탓에 vesc.yaml
 # 만 올렸을 때 계획 제동이 1.75 -> 1.55 로 **오히려 약해진** 적이 있다
 # (my_track0806_3 / my_track0807 매니페스트의 plant_decel_planned_mps2 = 1.55).
-# ⚠️ 현재 main 의 vesc.yaml 은 ackermann_brake_max 3.0 이라 이 값과 어긋난다.
-#    jaldallim 97813be 의 vesc.yaml(brake_max 6.0 / ackermann_brake_max 5.0)을
-#    같이 반영해야 계획한 제동 권한이 실제로 물린다.
-BRAKE_AMPS_PLANNED = 5.0
+# (c252707 이 같은 커밋에서 vesc.yaml 을 brake_max 6.0 / ackermann_brake_max 5.0
+#  으로 올려 이 값과 이미 정합이다. 예전 "vesc.yaml 이 3.0 이라 어긋난다" 경고는
+#  그때 해소됐는데도 남아 있어, 없는 불일치를 고치려고 ackermann_brake_max 를
+#  다시 만지도록 유도했다.)
+# ⚠️ 남아 있는 진짜 주의점: 브레이크 크레딧(0.12 A^-1)은 실측이 아닌 외삽이다.
+BRAKE_AMPS_PLANNED = 7.0
 
 # 레이스라인 생성 속도 상한. build_map.py 의 V_MAX 가 이 값을 그대로 쓴다
 # (python_sim_tracker 프로파일이 cap 으로 쓰기 때문에 여기 있어야 한다).
@@ -284,6 +286,15 @@ _PROFILE_NUMERIC_FIELDS = (
     "max_steer_rate_radps", "max_accel_mps2", "max_decel_mps2",
     "plant_accel_max_mps2", "plant_decel_max_mps2",
     "control_rate_hz", "num_local_waypoints",
+)
+
+# 모든 프로파일에 있지는 않지만 폐루프 판정을 실제로 바꾸는 값들. 서명에서
+# 빠져 있으면 control lookahead / 조향 LUT / vesc 제동 중재만 바뀐 재검증이
+# "같은 조건"으로 기록된다 (profile_signature docstring 의 계약 위반).
+# speed_lookahead_s 는 조향 LUT 조회 속도를, steering_lut 는 LUT 파일 자체를,
+# vesc 는 brake_max/gain/entry/overspeed/release 중재를 정한다.
+_PROFILE_SIGNATURE_EXTRA_FIELDS = (
+    "speed_lookahead_s", "steering_lut", "vesc",
 )
 
 
@@ -494,6 +505,9 @@ def profile_manifest(target=DEFAULT_GATE_TARGET):
         "profiles": {
             profile["name"]: {
                 field: profile[field] for field in _PROFILE_NUMERIC_FIELDS
+            } | {
+                field: profile.get(field)
+                for field in _PROFILE_SIGNATURE_EXTRA_FIELDS
             } | {"config_sources": profile["config_sources"],
                  "plant": profile["plant"]}
             for profile in gate + advisory

@@ -18,7 +18,6 @@ generator's *algorithm* revision, which is still duplicated in this file.
 """
 
 import ast
-import copy
 import hashlib
 import json
 import math
@@ -30,14 +29,15 @@ import numpy as np
 # scripts/ 를 import 경로에 넣는다. 이 모듈은 튜너 노드가 파일 경로로 직접
 # 로드하므로 패키지 import 가 아니다.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-# gate_controller_profiles / advisory_controller_profiles /
-# selected_controller_profiles 는 여기서 안 쓰지만 재수출해야 한다 —
-# raceline_tuner_node 가 이 모듈을 파일 경로로 로드해 module.<name> 으로 부른다.
+# gate_controller_profiles / advisory_controller_profiles 는 여기서 안 쓰지만
+# 재수출해야 한다 — raceline_tuner_node 가 이 모듈을 파일 경로로 로드해
+# module.<name> 으로 부른다.
+# (selected_controller_profiles 는 재수출에서 뺐다: 튜너가 부른 적이 없고
+#  실제 소비자인 build_map.py / 테스트는 deployment_profiles 를 직접 import 한다.)
 from deployment_profiles import (          # noqa: E402,F401
     BRAKE_DECEL_PER_AMP, DEFAULT_GATE_TARGET, SIM_LOG_FIELDS,
     advisory_controller_profiles, controller_profile,
     gate_controller_profiles, make_longitudinal_plant, profile_brake_max,
-    selected_controller_profiles,
 )
 import deployment_profiles as _profiles     # noqa: E402
 
@@ -50,14 +50,6 @@ GENERATOR_MODEL_AST_SHA256 = (
     '8ee562c228d312efda07c96ed65427d2af1354cd499c15a55245586a01d7929a')
 VEHICLE_HALF_WIDTH_M = 0.15
 VEHICLE_HALF_LENGTH_M = 0.275
-
-
-def profile_manifest(target=DEFAULT_GATE_TARGET):
-    """Stable, test-visible manifest of the resolved deployment profiles."""
-    manifest = copy.deepcopy(_profiles.profile_manifest(target))
-    manifest['model_version'] = MODEL_VERSION
-    manifest['generator_model_ast_sha256'] = GENERATOR_MODEL_AST_SHA256
-    return manifest
 
 
 def profile_signature(target=DEFAULT_GATE_TARGET):
@@ -77,32 +69,23 @@ def profile_signature(target=DEFAULT_GATE_TARGET):
 PROFILE_SIGNATURE = profile_signature()
 
 
-def _restricted_ast_value(node, values):
-    """Evaluate only literals/names/containers/string-or-number addition."""
+def _restricted_ast_value(node):
+    """Evaluate a numeric literal (optionally signed) from build_map.py.
+
+    Originally this walked names/tuples/lists/dicts/string-addition so the
+    generator's ``CONTROLLER_PROFILE_LIBRARY`` dict could be reconstructed and
+    compared numerically.  2bb7e55 moved those profiles into
+    ``deployment_profiles`` and deleted the comparison, leaving one caller that
+    reads a single scalar (``MU``) -- so the extra branches were unreachable.
+    """
     if isinstance(node, ast.Constant):
         return node.value
-    if isinstance(node, ast.Name) and node.id in values:
-        return values[node.id]
-    if isinstance(node, ast.Tuple):
-        return tuple(_restricted_ast_value(item, values) for item in node.elts)
-    if isinstance(node, ast.List):
-        return [_restricted_ast_value(item, values) for item in node.elts]
-    if isinstance(node, ast.Dict):
-        return {
-            _restricted_ast_value(key, values):
-            _restricted_ast_value(value, values)
-            for key, value in zip(node.keys, node.values)
-        }
     if isinstance(node, ast.UnaryOp) and isinstance(
             node.op, (ast.UAdd, ast.USub)):
-        value = _restricted_ast_value(node.operand, values)
+        value = _restricted_ast_value(node.operand)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise ValueError('unsupported unary operand')
         return value if isinstance(node.op, ast.UAdd) else -value
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return (
-            _restricted_ast_value(node.left, values) +
-            _restricted_ast_value(node.right, values))
     raise ValueError(f'unsupported AST expression: {type(node).__name__}')
 
 
@@ -189,7 +172,7 @@ def generator_physical_mu(build_map_path):
             else [])
         if any(isinstance(target, ast.Name) and target.id == 'MU'
                for target in targets):
-            value = _restricted_ast_value(statement.value, {})
+            value = _restricted_ast_value(statement.value)
     if not isinstance(value, (int, float)) or isinstance(value, bool) or \
             not math.isfinite(value) or not 0.0 < float(value) <= 1.5:
         raise ValueError(f'generator physical MU is missing or invalid: {path}')

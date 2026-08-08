@@ -258,7 +258,6 @@ void RecoverySupervisorNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::S
     std::lock_guard<std::mutex> lock(mutex_);
     cur_s_ = msg->pose.pose.position.x;
     cur_d_ = msg->pose.pose.position.y;
-    cur_vs_ = msg->twist.twist.linear.x;
     frenet_receipt_stamp_ = this->now();
     frenet_source_stamp_ =
         rclcpp::Time(msg->header.stamp, this->get_clock()->get_clock_type());
@@ -298,7 +297,14 @@ void RecoverySupervisorNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs
             "global waypoints의 s 간격이 %.6f — 트랙 길이 갱신 불가", spacing);
         return;
     }
-    track_len_ = msg->wpnts.back().s_m + spacing;
+    // local_trajectory_node::ComputeTrackLength / frenet_frame_node / spliner 와
+    // 같은 정의를 쓴다: (마지막 s - 첫 s) + 폐합 구간 기하 거리.
+    // back_s + 균일 간격은 점간격이 비균일한 CSV 에서 갈라진다.
+    const double closure = std::hypot(
+        msg->wpnts.front().x_m - msg->wpnts.back().x_m,
+        msg->wpnts.front().y_m - msg->wpnts.back().y_m);
+    (void)spacing;
+    track_len_ = msg->wpnts.back().s_m - msg->wpnts.front().s_m + closure;
     has_global_ = std::isfinite(track_len_) && track_len_ > 0.0;
 }
 
@@ -399,7 +405,7 @@ bool RecoverySupervisorNode::InputsReady(
     }
 
     if (!std::isfinite(cur_s_) || !std::isfinite(cur_d_) ||
-        !std::isfinite(cur_vs_) || !std::isfinite(cur_yaw_) ||
+        !std::isfinite(cur_yaw_) ||
         !std::isfinite(cur_speed_norm_)) {
         return not_ready("odometry contains non-finite values");
     }
@@ -735,6 +741,12 @@ void RecoverySupervisorNode::Run() {
 
         case State::STOP:
             // 래치 상태. 사람 개입(/planner/recovery/reset true)으로만 해제.
+            // dwell 타이머는 reset 수신 여부와 무관하게 매 사이클 돌려야 한다.
+            // 예전에는 IsStoppedForDwell 이 reset 분기 안에서만 호출돼,
+            // 첫 reset 이 타이머를 "시작"만 시키고 (now-now)>=dwell 이 false 라
+            // 전이하지 못한 채 소비됐다 — 최소 2회(0.2 s 이상 간격) 눌러야
+            // 풀렸고, 운용자는 그걸 입력 stale 로 오진했다.
+            (void)IsStoppedForDwell(now_sec);
             if (reset_requested_ && !estop_) {
                 reset_requested_ = false;
                 recovery_attempts_ = 0;
@@ -746,6 +758,13 @@ void RecoverySupervisorNode::Run() {
                     TransitionTo(State::WAITING_FOR_INPUTS, "manual reset, inputs not ready");
                 } else if (IsStoppedForDwell(now_sec)) {
                     TransitionTo(State::DRIVING, "manual reset");
+                } else {
+                    // 아직 정지 dwell 이 안 찼다 — reset 을 버리지 않고 유지해
+                    // 다음 사이클에 자동으로 전이하게 한다.
+                    reset_requested_ = true;
+                    RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                        "[recovery] reset 접수 — 정지 dwell(%.2fs) 대기 중",
+                        stopped_dwell_sec_);
                 }
             }
             break;

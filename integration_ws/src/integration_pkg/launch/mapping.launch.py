@@ -31,7 +31,7 @@ planning_pkg/maps)과 같은 이름으로 저장하면 그 맵이 에러 없이 
 저장 후 그 맵으로 주행하려면 — **재빌드 불필요**:
   ros2 launch integration_pkg real_car.launch.py map:=track1
   (localization.launch.py 의 map:= 이 ~/IFAC_ws/maps 를 먼저 찾는다.
-   단 planner raceline CSV는 별도로 step4_main.py 로 뽑아야 한다)
+   단 planner raceline CSV는 별도로 scripts/global_traj_sim/build_map.py 로 뽑아야 한다)
 
 전제 source: ros humble -> integration_ws -> hardware_ws -> localization_ws
 """

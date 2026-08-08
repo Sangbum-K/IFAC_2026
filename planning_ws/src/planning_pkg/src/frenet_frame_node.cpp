@@ -125,13 +125,16 @@ FrenetFrameNode::FrenetFrameNode(
   if (odom_mode_ == "sim_gt") {
     s_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/ego_racecar/odom", qos_profile, odom_callback);
-  } else if (odom_mode_ == "sim_pf" || odom_mode_ == "real") {
+  } else if (odom_mode_ == "real") {
     s_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
       "/pf/pose/odom", qos_profile, odom_callback);
   } else {
+    // sim_pf 는 real 과 구독 토픽도 이후 경로도 완전히 같아서 이름만 다른
+    // 세 번째 모드였고, 지정하는 yaml/launch 도 없었다 — 조용히 real 로
+    // 도는 대신 명시적으로 거부한다.
     throw std::invalid_argument(
             "Invalid frenet_frame/odom_mode '" + odom_mode_ +
-            "' (expected sim_gt, sim_pf, or real)");
+            "' (expected sim_gt or real)");
   }
 
   s_global_waypoints_ =
@@ -174,21 +177,22 @@ void FrenetFrameNode::CallbackOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
 
   const int64_t source_stamp_ns = source_stamp.nanoseconds();
   std::lock_guard<std::mutex> lock(mutex_odom_);
-  if (last_accepted_odom_stamp_ns_ != 0 &&
-    source_stamp_ns <= last_accepted_odom_stamp_ns_)
+  if (odom_source_stamp_ns_ != 0 &&
+    source_stamp_ns <= odom_source_stamp_ns_)
   {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *get_clock(), 1000,
       "Rejecting duplicate/out-of-order odom timestamp (%ld <= %ld)",
       static_cast<long>(source_stamp_ns),
-      static_cast<long>(last_accepted_odom_stamp_ns_));
+      static_cast<long>(odom_source_stamp_ns_));
     return;
   }
 
   current_odom_ = *msg;
   odom_arrival_time_ = std::chrono::steady_clock::now();
+  // (last_accepted_odom_stamp_ns_ 제거: 이 한 곳에서만 쓰기가 일어나 절대
+  //  odom_source_stamp_ns_ 와 갈라지지 않는 중복 멤버였다 — 하나로 합쳤다.)
   odom_source_stamp_ns_ = source_stamp_ns;
-  last_accepted_odom_stamp_ns_ = source_stamp_ns;
   has_odom_ = true;
 }
 
@@ -470,7 +474,13 @@ FrenetFrameNode::FrenetCoordinates FrenetFrameNode::CartesianToFrenet(
 
   const double reacquire_distance_sq =
     projection_reacquire_distance_m_ * projection_reacquire_distance_m_;
-  if (best.segment < 0 || best.distance_sq > reacquire_distance_sq) {
+  // 투영을 아직 못 잡은 상태(시동 직후 / 궤적 재수신)에서는 위 else 가지가
+  // 이미 use_progress_continuity=false 로 전 세그먼트를 훑었다. 같은 인자로
+  // 한 번 더 돌면 비트 단위로 같은 결과가 나오고(중복 O(N) 스캔),
+  // 게다가 "pose jump" 이벤트가 매 시동마다 허위로 찍혔다.
+  if (has_projection_ &&
+    (best.segment < 0 || best.distance_sq > reacquire_distance_sq))
+  {
     Candidate global_best;
     for (int segment = 0; segment < size; ++segment) {
       evaluate_segment(segment, false, global_best);
@@ -487,6 +497,12 @@ FrenetFrameNode::FrenetCoordinates FrenetFrameNode::CartesianToFrenet(
       "Projection reacquired globally at segment %d (distance %.2fm)",
       best.segment, std::sqrt(best.distance_sq));
     pitwall::Event("pose jump - segment projection reacquired");
+  }
+  if (best.segment < 0) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "No valid segment in global trajectory");
+    return result;
   }
 
   result.s = best.s;

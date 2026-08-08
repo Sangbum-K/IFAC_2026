@@ -45,11 +45,11 @@ class WaypointTrackerNode(Node):
         pitwall.init(self)
 
         self.declare_parameter('tracker/t_lookahead', 0.5)     # [s] 속도 비례 lookahead
-        self.declare_parameter('tracker/min_lookahead_m', 1.2)
-        self.declare_parameter('tracker/max_lookahead_m', 3.0)
+        self.declare_parameter('tracker/min_lookahead_m', 0.6)
+        self.declare_parameter('tracker/max_lookahead_m', 1.2)
         self.declare_parameter('tracker/wheelbase_m', 0.33)
-        self.declare_parameter('tracker/max_steer_rad', 0.4)
-        self.declare_parameter('tracker/speed_scale', 0.5)
+        self.declare_parameter('tracker/max_steer_rad', 0.36)
+        self.declare_parameter('tracker/speed_scale', 0.30)
         self.declare_parameter('tracker/max_steering_rate_radps', 2.0)
         self.declare_parameter('tracker/max_accel_mps2', 5.5)
         self.declare_parameter('tracker/max_decel_mps2', 7.0)
@@ -76,15 +76,8 @@ class WaypointTrackerNode(Node):
         self.declare_parameter('tracker/recovery_max_reverse_speed_mps', 0.30)
         self.declare_parameter(
             'tracker/recovery_max_forward_override_mps', 1.0)
-        # 벽 충돌 복구
-        self.declare_parameter(
-            'tracker/internal_stuck_recovery_enabled', False)
+        # 벽 충돌 감지 (감지 후 동작은 STOP 래치 — 후진은 supervisor 몫)
         self.declare_parameter('tracker/stuck_detect_sec', 0.6)     # 이 시간 동안 못 움직이면 스턱
-        self.declare_parameter('tracker/reverse_speed_mps', 1.2)    # 후진 속도 (양수로 지정)
-        self.declare_parameter('tracker/reverse_max_sec', 3.0)      # 최대 후진 시간
-        self.declare_parameter('tracker/reverse_min_dist_m', 0.3)   # 최소 후진 거리
-        self.declare_parameter('tracker/resume_speed_cap_mps', 2.0) # 복구 직후 속도 제한
-        self.declare_parameter('tracker/resume_cap_sec', 1.5)
         gp = lambda n: self.get_parameter(n).value
         self.t_la = gp('tracker/t_lookahead')
         self.min_la = gp('tracker/min_lookahead_m')
@@ -139,20 +132,8 @@ class WaypointTrackerNode(Node):
             float(gp('tracker/recovery_max_forward_override_mps')), 0.0)
         if not math.isfinite(self.recovery_max_forward_override):
             self.recovery_max_forward_override = 0.0
-        self.internal_stuck_recovery_enabled = bool(
-            gp('tracker/internal_stuck_recovery_enabled'))
         self.stuck_detect_sec = max(
             float(gp('tracker/stuck_detect_sec')), 0.0)
-        self.reverse_speed = max(
-            float(gp('tracker/reverse_speed_mps')), 0.0)
-        self.reverse_max_sec = max(
-            float(gp('tracker/reverse_max_sec')), 0.1)
-        self.reverse_min_dist = max(
-            float(gp('tracker/reverse_min_dist_m')), 0.0)
-        self.resume_speed_cap = max(
-            float(gp('tracker/resume_speed_cap_mps')), 0.0)
-        self.resume_cap_sec = max(
-            float(gp('tracker/resume_cap_sec')), 0.0)
 
         self.wpnts = None        # np.array [N, 3]: x, y, v
         self.wpnts_stamp = None
@@ -174,11 +155,8 @@ class WaypointTrackerNode(Node):
         self.last_command_steer = 0.0
 
         # 복구 상태머신
-        self.mode = 'TRACK'      # TRACK | REVERSE | STOP
+        self.mode = 'TRACK'      # TRACK | STOP
         self.stuck_since = None      # 정지 감지 시작 시각
-        self.reverse_start_t = None
-        self.reverse_start_xy = None
-        self.resume_until = None     # 복구 직후 속도 제한 해제 시각
 
         # ego 제어 모드 (autonomous | manual)
         self.ego_mode = 'autonomous'
@@ -204,7 +182,6 @@ class WaypointTrackerNode(Node):
             'Waypoint tracker ready: recovery lease '
             f'required={self.recovery_required}, '
             f'reverse={"OPT-IN" if self.recovery_allow_reverse else "OFF"}, '
-            f'internal_recovery={self.internal_stuck_recovery_enabled}, '
             f'steer_rate={self.max_steering_rate:.2f}rad/s, '
             f'accel/decel={self.max_accel:.2f}/{self.max_decel:.2f}m/s^2')
         if not self.motion_limits_valid:
@@ -554,37 +531,10 @@ class WaypointTrackerNode(Node):
             self.publish_stop()
             return
 
-        if (self.mode == 'REVERSE' and
-                (not self.internal_stuck_recovery_enabled or
-                 not self.recovery_allow_reverse)):
-            self.mode = 'TRACK'
-            self.stuck_since = None
-
-        if self.mode == 'REVERSE':
-            reversed_dist = math.hypot(cx - self.reverse_start_xy[0],
-                                       cy - self.reverse_start_xy[1])
-            elapsed = t - self.reverse_start_t
-            done = (reversed_dist >= self.reverse_min_dist or
-                    elapsed >= self.reverse_max_sec)
-            if done:
-                self.mode = 'TRACK'
-                self.stuck_since = None
-                self.resume_until = t + self.resume_cap_sec
-                self.get_logger().info(
-                    f'legacy 복구 완료: {reversed_dist:.2f}m 직진 후진')
-                pitwall.event(f'복구 완료 ({reversed_dist:.2f}m 후진)')
-            else:
-                cmd.drive.steering_angle = 0.0
-                cmd.drive.speed = -min(
-                    self.reverse_speed, self.recovery_max_reverse_speed)
-                if not math.isfinite(cmd.drive.speed) or cmd.drive.speed >= 0.0:
-                    self.safety_log('Legacy reverse command invalid')
-                    self.publish_stop()
-                    self.mode = 'TRACK'
-                    return
-                if not self.publish_immediate_command(cmd, receipt_time):
-                    self.mode = 'TRACK'
-                return
+        # (tracker 자체 스턱-후진 상태머신 제거: internal_stuck_recovery_enabled 와
+        #  recovery_allow_reverse 두 게이트가 모두 false 로 고정돼 mode='REVERSE'
+        #  에 도달할 수 없었다. 스턱 처리는 아래의 STOP 래치와 supervisor 의
+        #  RECOVER_REVERSE 경로만 남는다 — self.mode 는 TRACK|STOP 2상태다.)
 
         # --- TRACK: pure pursuit ---
         la = float(np.clip(self.t_la * abs(v), self.min_la, self.max_la))
@@ -605,9 +555,6 @@ class WaypointTrackerNode(Node):
         speed = max(0.0, float(tv) * self.speed_scale)
         if recovery_directive == 'ALIGN':
             speed = float(recovery_target)
-        # 복구 직후에는 천천히 재가속
-        if self.resume_until is not None and t < self.resume_until:
-            speed = min(speed, self.resume_speed_cap)
 
         target_steer = float(np.clip(
             steer, -self.max_steer, self.max_steer))
@@ -637,22 +584,11 @@ class WaypointTrackerNode(Node):
                 self.stuck_since = t
             elif t - self.stuck_since > self.stuck_detect_sec:
                 self.stuck_since = None
-                if (self.internal_stuck_recovery_enabled and
-                        self.recovery_allow_reverse and
-                        self.recovery_max_reverse_speed > 0.0):
-                    self.mode = 'REVERSE'
-                    self.reverse_start_t = t
-                    self.reverse_start_xy = (cx, cy)
-                    self.get_logger().warn(
-                        f'legacy 스턱 감지 (cmd={speed:.1f} m/s, '
-                        f'실제={v:.2f} m/s) — opt-in 직진 후진 시작')
-                    pitwall.event('legacy 스턱 — opt-in 직진 후진 시작')
-                else:
-                    self.mode = 'STOP'
-                    self.publish_stop()
-                    self.get_logger().error(
-                        '스턱 감지 — blind reverse 비활성, STOP 래치')
-                    pitwall.event('스턱 — STOP-only 래치')
+                self.mode = 'STOP'
+                self.publish_stop()
+                self.get_logger().error(
+                    '스턱 감지 — blind reverse 비활성, STOP 래치')
+                pitwall.event('스턱 — STOP-only 래치')
         else:
             self.stuck_since = None
 
