@@ -7,7 +7,7 @@
 <style>
 :root{
   --bg:#11151c; --panel:#171d26; --line:#2a3340; --ink:#e6ecf4; --dim:#8b98a9;
-  --accent:#5aa9ff; --warn:#ffb02e; --bad:#ff4d4d; --ok:#37d67a; --bag:#ff8c42;
+  --accent:#5aa9ff; --warn:#ffb02e; --bad:#ff4d4d; --ok:#37d67a;
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -44,19 +44,6 @@ button.mini{padding:2px 7px;font-size:11.5px}
 button.mini.on{background:#1d3b5c;border-color:var(--accent)}
 #bar2>span:first-child,#bar2 b{color:var(--ink)}
 #bar2 b{font-variant-numeric:tabular-nums}
-#adv{position:relative}
-#adv>summary{
-  cursor:pointer;color:var(--dim);list-style:none;padding:3px 8px;
-  border:1px solid var(--line);border-radius:6px;
-}
-#adv>summary::-webkit-details-marker{display:none}
-#adv[open]>summary{border-color:var(--accent);color:var(--ink)}
-#adv .pop{
-  position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:420px;
-  background:#1b222d;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
-  box-shadow:0 8px 24px #0008;
-}
-#adv code{background:#11151c;padding:1px 4px;border-radius:3px}
 #main{display:grid;grid-template-columns:1fr 430px;min-height:0}
 #trackwrap{position:relative;min-width:0}
 #track{width:100%;height:100%;display:block;cursor:crosshair}
@@ -64,8 +51,9 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
 #hint{
   position:absolute;left:10px;bottom:10px;color:var(--dim);font-size:11.5px;
   background:#11151ccc;padding:6px 9px;border-radius:6px;pointer-events:none;
-  border:1px solid var(--line);max-width:52ch;
+  border:1px solid var(--line);max-width:62ch;
 }
+#hint code{background:#11151c;padding:1px 4px;border-radius:3px}
 #readout{
   position:absolute;right:10px;top:10px;background:#11151ce6;padding:7px 10px;
   border-radius:6px;border:1px solid var(--line);font-size:12px;min-width:180px;
@@ -73,10 +61,19 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
 }
 #side{
   border-left:1px solid var(--line);display:grid;
-  grid-template-rows:repeat(3,1fr) auto;min-height:0;background:var(--panel);
+  /* 속도 그래프가 유일한 편집 손잡이라 다른 둘보다 크게 준다 — 막대가 높아야
+     잡기 쉽고, 같은 m/s 를 더 많은 픽셀로 나눠 미세 조절이 된다. */
+  grid-template-rows:1.7fr 1fr 1fr auto;min-height:0;background:var(--panel);
 }
 .chart{position:relative;border-bottom:1px solid var(--line);min-height:0}
 .chart canvas{width:100%;height:100%;display:block}
+#cSpeed canvas{cursor:ns-resize}
+#cSpeed.grab canvas{cursor:grabbing}
+#tip{
+  position:absolute;pointer-events:none;background:#0c1016ee;color:var(--ink);
+  border:1px solid var(--accent);border-radius:5px;padding:3px 7px;font-size:12px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;display:none;z-index:5;
+}
 .chart .hd{
   position:absolute;left:8px;top:5px;font-size:11.5px;color:var(--dim);
   pointer-events:none;display:flex;gap:9px;align-items:center;flex-wrap:wrap;
@@ -111,19 +108,13 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
 </div>
 
 <div id="bar2">
-  <span title="막대 하나를 올리면 그 앞뒤로 몇 m 까지 속도가 함께 따라오는지.
-좁게 = 그 코너만 · 넓게 = 진입·탈출까지 부드럽게">속도 반영 범위</span>
+  <span title="막대 하나를 올리면 그 앞뒤로 몇 m 까지 옆 막대가 함께 따라오는지.
+좁게 = 그 코너만 · 넓게 = 진입·탈출까지 부드럽게">옆 막대 따라오는 범위</span>
   <button class="mini" data-infl="1.5" title="그 코너만 — 짧은 헤어핀">좁게</button>
   <button class="mini" data-infl="3" title="진입/탈출 포함 — 기본">보통</button>
   <button class="mini" data-infl="6" title="긴 직선·완만한 코너">넓게</button>
   <input id="infl" type="range" min="0.5" max="12" step="0.1" style="width:96px">
   <b id="inflV"></b>
-  <div class="sep"></div>
-  <label class="sl">실주행
-    <select id="bagSel" style="max-width:230px"><option value="">— 백 선택 —</option></select>
-  </label>
-  <select id="lapSel" style="max-width:150px"><option value="all">전체</option></select>
-  <button id="bagClear">겹쳐보기 끄기</button>
   <div class="sep"></div>
   <label class="sl"><input id="showMap" type="checkbox" checked> 맵</label>
   <label class="sl"><input id="showBase" type="checkbox" checked> 원본선</label>
@@ -135,9 +126,11 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
     <canvas id="track"></canvas>
     <div id="readout"></div>
     <div id="hint">
-      속도는 오른쪽 <b>속도 그래프의 막대</b>를 잡고 위/아래로 끌어 조절합니다
-      (라인 기하는 이 도구로 바꾸지 않습니다 — <code>mkcsv</code> 담당).<br>
-      <b>드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
+      속도는 오른쪽 <b>속도 막대</b>를 잡고 위/아래로 끕니다 — 잡은 막대는 좌우로
+      흔들려도 그 자리에 고정되고, 옆 막대가 설정한 범위만큼 따라옵니다.<br>
+      <b>휠</b> 커서 아래 막대 ±0.1 m/s · <b>Shift+클릭</b> 그 막대만 원본으로 ·
+      라인 기하는 이 도구로 바꾸지 않습니다 (<code>mkcsv</code> 담당)<br>
+      트랙: <b>드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
       회색 점선 = <b>mkcsv 원본</b>
     </div>
   </div>
@@ -146,18 +139,15 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
       <b>속도 [m/s]</b>
       <span><i style="background:var(--accent)"></i> 현재</span>
       <span style="color:#798394"><i style="background:#798394"></i> 원본</span>
-      <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실주행</span>
-      <span style="color:var(--dim)">· 막대를 잡고 위/아래 · Shift+클릭 = 원본으로</span>
-    </div><canvas></canvas></div>
+      <span style="color:var(--dim)">· 막대를 잡고 위/아래로 끄세요</span>
+    </div><canvas></canvas><div id="tip"></div></div>
     <div class="chart" id="cGrip"><div class="hd">
       <b>남은 그립</b>
       <span style="color:var(--dim)">물리 mu − 요구 mu · 0 아래면 미끄러짐</span>
-      <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실주행</span>
     </div><canvas></canvas></div>
     <div class="chart" id="cWall"><div class="hd">
       <b>벽 여유 [m]</b>
       <span style="color:var(--dim)">차 반폭 기준선 아래면 접촉</span>
-      <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실측 횡오차</span>
     </div><canvas></canvas></div>
     <div id="log"></div>
   </div>
@@ -170,23 +160,27 @@ const DPR = Math.min(window.devicePixelRatio || 1, 2);
 let D = null;            // 서버 스냅샷
 let LAYERS = null;       // 맵 배경
 let MAPIMG = null;
-let BAG = null, BAGLAP = "all";
 let busy = false;
 // 속도 막대: 원본 격자에서 고르게 뽑은 스테이션. 사람이 잡는 대상이자
 // set_speed 가 받는 인덱스라, 화면과 서버 상태가 같은 격자 위에 있다.
-let BARS = null, barHover = -1, barDrag = -1;
+let BARS = null, barHover = -1;
+// 드래그 중에만 채워지는 로컬 미리보기 속도 배열 (null 이면 서버 값이 진실).
+let PREVIEW = null;
 
 function makeBars() {
   const n = D.base.s.length;
   const box = $("cSpeed").querySelector("canvas");
-  // 막대 하나가 최소 7 px 은 되게 (마우스로 집을 수 있는 크기)
+  // 막대 하나가 최소 10 px 은 되게 — 마우스로 '잡는' 물건이라 얇으면 못 쓴다.
   const usable = Math.max(box.clientWidth - 50, 60);
-  const count = Math.max(8, Math.min(64, Math.floor(usable / 7)));
+  const count = Math.max(8, Math.min(48, Math.floor(usable / 10)));
   const stride = Math.max(1, Math.round(n / count));
   const idx = [];
   for (let i = 0; i < n; i += stride) idx.push(i);
-  BARS = { idx, stride, halfPx: Math.max(2, 0.5 * 0.72 * usable / idx.length) };
+  BARS = { idx, stride, halfPx: Math.max(3, 0.5 * 0.8 * usable / idx.length) };
 }
+
+/* 지금 그려야 할 속도 배열. 드래그 중이면 로컬 미리보기가 이긴다. */
+function speedNow() { return PREVIEW || D.speed; }
 
 /* ------------------------------------------------------------ 로그 */
 function log(msg, cls) {
@@ -285,20 +279,22 @@ function drawTrack() {
     ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
   }
 
-  // 실주행 궤적
-  const lap = bagLap();
-  if (lap) {
-    ctx.strokeStyle = "#ff8c42"; ctx.lineWidth = 1.6; ctx.globalAlpha = 0.85;
+  const xy = D.out.xy, vx = D.out.vx;
+  // 드래그로 지금 바뀌고 있는 구간을 라인 밑에 흰 테두리로 깔아 둔다 —
+  // "옆에 애들도 따라온다"를 그래프뿐 아니라 트랙 위에서도 보이게.
+  if (DRAG && D.speed.length === xy.length) {
+    ctx.strokeStyle = "#ffffffbb"; ctx.lineCap = "round";
+    ctx.lineWidth = Math.max(4, 0.13*view.k);
     ctx.beginPath();
-    for (let i = 0; i < lap.x.length; i++) {
-      const [x,y] = W2S(lap.x[i], lap.y[i], W, H);
-      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+    for (let k = -DRAG.win; k <= DRAG.win; k++) {
+      const i = ((DRAG.index + k) % xy.length + xy.length) % xy.length;
+      const [px,py] = W2S(xy[i][0], xy[i][1], W, H);
+      k === -DRAG.win ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
     }
-    ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.stroke();
   }
 
   // 현재 라인 — 속도색
-  const xy = D.out.xy, vx = D.out.vx;
   ctx.lineWidth = Math.max(2, 0.07*view.k); ctx.lineCap = "round";
   for (let i = 0; i < xy.length; i++) {
     const j = (i+1) % xy.length;
@@ -399,23 +395,35 @@ function drawChart(id, series, opts) {
   if (opts.bars && BARS) {
     const floor = g.H - g.B;
     const half = BARS.halfPx;
+    const speed = speedNow();
+    const held = DRAG ? DRAG.bar : -1;
     for (let k = 0; k < BARS.idx.length; k++) {
       const i = BARS.idx[k];
-      const v = D.speed[i];
+      const v = speed[i];
       const px = X(D.base.s[i]), py = Y(v);
       const top = Math.min(Math.max(py, g.T), floor);
-      ctx.fillStyle = speedColor(v, D.pinned[i] ? 0.55 : 0.3);
+      // 드래그 중 따라오는 옆 막대는 조금 진하게 — 어디까지 딸려오는지 보인다.
+      const following = DRAG && k !== held &&
+        Math.min(Math.abs(i - DRAG.index),
+                 D.n - Math.abs(i - DRAG.index)) <= DRAG.win;
+      ctx.fillStyle = speedColor(v, D.pinned[i] ? 0.55 : (following ? 0.45 : 0.3));
       ctx.fillRect(px - half, top, 2 * half, floor - top);
       ctx.fillStyle = speedColor(v, 1);            // 잡는 곳 (막대 머리)
-      ctx.fillRect(px - half, top, 2 * half, 3);
+      ctx.fillRect(px - half, top, 2 * half, 4);
       if (D.pinned[i]) {                            // 사람이 정한 값
         ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 1;
         ctx.strokeRect(px - half + 0.5, top + 0.5, 2 * half - 1, floor - top - 1);
       }
-      if (k === barHover || i === barDrag) {
+      if (k === held || (!DRAG && k === barHover)) {
         ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
         ctx.strokeRect(px - half - 1, top - 2, 2 * half + 2, floor - top + 2);
       }
+    }
+    if (DRAG) {          // 잡고 있는 값의 눈금선
+      const y = Y(speed[DRAG.index]);
+      ctx.strokeStyle = "#ffffff66"; ctx.setLineDash([3,3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(g.L, y); ctx.lineTo(g.W-g.R, y); ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
   if (hoverIdx >= 0) {
@@ -426,27 +434,19 @@ function drawChart(id, series, opts) {
   box._geom = { g, X, Y, lo, hi, sMax };
 }
 
-function bagLap() {
-  if (!BAG) return null;
-  if (BAGLAP === "all") return BAG.all;
-  const i = +BAGLAP;
-  return BAG.laps[i] || BAG.all;
-}
-
 function drawCharts() {
-  const s = D.out.s, lap = bagLap();
+  const s = D.out.s;
+  // 드래그 중에는 파란 곡선도 미리보기(기준 격자) 를 그린다 — 서버 왕복을
+  // 기다리면 막대만 손을 따라오고 곡선이 한 박자 늦게 따라와 어긋나 보인다.
+  const cur = PREVIEW ? { x: D.base.s, y: PREVIEW } : { x: s, y: D.out.vx };
   drawChart("cSpeed", [
     { x: D.base.s, y: D.base.vx, c: "#798394", w: 1.2, dash: [4,3] },
-    ...(lap ? [{ x: lap.s, y: lap.v, c: "#ff8c42", w: 1.3 }] : []),
-    { x: s, y: D.out.vx, c: "#5aa9ff", w: 1.9 },
+    { x: cur.x, y: cur.y, c: "#5aa9ff", w: 1.9 },
   ], { lo: 0, hi: D.limits.v_max, bars: true,
        refs: [{ v: D.limits.v_max, c: "#4a5567", t: "v_max" }] });
 
   const grip = D.out.required_mu.map(m => D.limits.mu_physical - m);
   drawChart("cGrip", [
-    ...(lap ? [{ x: lap.s,
-                 y: lap.required_mu.map(m => D.limits.mu_physical - m),
-                 c: "#ff8c42", w: 1.2 }] : []),
     { x: s, y: grip, c: "#37d67a", w: 1.7 },
   ], { lo: -0.1, hi: D.limits.mu_physical, capLo: -0.4,
        refs: [{ v: 0, c: "#ff4d4d", t: "미끄러짐" },
@@ -454,9 +454,6 @@ function drawCharts() {
                 t: "계획 여유" }] });
 
   drawChart("cWall", [
-    ...(lap && BAG.has_lat_err ? [{ x: lap.s,
-        y: lap.lat_err.map(e => e == null ? null : Math.abs(e)),
-        c: "#ff8c42", w: 1.2 }] : []),
     { x: s, y: D.out.clearance, c: "#5aa9ff", w: 1.7 },
   ], { lo: 0, hi: 0.6, capHi: 0.9, capLo: -0.05,
        refs: [{ v: D.limits.half_width, c: "#ff4d4d", t: "차 반폭" }] });
@@ -607,43 +604,192 @@ track.addEventListener("wheel", (ev) => {
 track.addEventListener("dblclick", () => { fitView(); redraw(); });
 track.addEventListener("contextmenu", (ev) => ev.preventDefault());
 
-/* ---- 속도 그래프 드래그 ---- */
-(function speedDrag() {
-  const box = $("cSpeed"), canvas = box.querySelector("canvas");
-  let active = false;
-  const apply = (ev) => {
-    if (!D || !box._geom) return;
-    const rect = canvas.getBoundingClientRect();
-    const { g, lo, hi, sMax } = box._geom;
-    const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
-    const s = ((sx - g.L) / (g.W-g.L-g.R)) * sMax;
-    const v = lo + ((g.H-g.B - sy) / (g.H-g.B-g.T)) * (hi-lo);
-    if (s < 0 || s > sMax) return;
-    // s -> 원본 격자 인덱스 (속도는 원본 격자 위에서 사람이 소유한다)
-    let best = 0, bd = Infinity;
-    for (let i = 0; i < D.base.s.length; i++) {
-      const d = Math.abs(D.base.s[i] - s);
-      if (d < bd) { bd = d; best = i; }
+/* ---- 속도 막대 잡기 ----------------------------------------------------
+   예전 RViz 튜너의 감각을 그대로 옮긴 부분이다: **막대 하나를 잡고 위/아래로**
+   끌면 그 값이 바뀌고 옆 막대가 falloff 만큼 따라온다. 잡은 뒤에는 커서의 x 를
+   무시하는 게 핵심이다 — 마우스로 위로 끌면 손은 반드시 좌우로도 흔들리는데,
+   x 를 계속 읽으면 지나간 스테이션마다 값이 찍혀서 '점을 하나씩 집어 올리는'
+   느낌이 된다 (이전 버전이 그랬다).
+
+   서버는 잡는 순간의 상태를 기억해 매 프레임 거기서 다시 푼다(speed_drag).
+   여기서 미리보기를 한 번 더 계산하는 이유는 오직 즉시성이다 — 왕복 ~30 ms 를
+   기다리면 막대가 손을 못 따라온다. 값의 진실은 언제나 서버 응답이고,
+   드래그가 끝나면 미리보기를 버린다. */
+let DRAG = null;                 // {bar, index, win, baseV, basePinned}
+let dragInflight = false, dragPending = null;
+// 놓자마자 다시 잡았을 때: 직전 드래그의 응답이 아직 안 왔으면 D 는 한 프레임
+// 뒤처져 있다. 그 상태를 기준으로 삼으면 새 드래그가 살짝 튄다.
+let PENDING_PIN = -1;
+
+function barAt(clientX) {        // 화면 x -> 막대 배열 위치 (가장 가까운 것)
+  const box = $("cSpeed");
+  if (!D || !BARS || !box._geom) return -1;
+  const rect = box.querySelector("canvas").getBoundingClientRect();
+  const { X } = box._geom;
+  const sx = clientX - rect.left;
+  let best = -1, bd = Infinity;
+  for (let k = 0; k < BARS.idx.length; k++) {
+    const d = Math.abs(X(D.base.s[BARS.idx[k]]) - sx);
+    if (d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+
+function valueAt(clientY) {      // 화면 y -> 속도 (막대 높이만 읽는다)
+  const box = $("cSpeed");
+  const rect = box.querySelector("canvas").getBoundingClientRect();
+  const { g, lo, hi } = box._geom;
+  const v = lo + ((g.H-g.B - (clientY - rect.top)) / (g.H-g.B-g.T)) * (hi-lo);
+  return Math.min(Math.max(v, D.limits.v_min), D.limits.v_max);
+}
+
+/* RacelineState.set_speed 와 같은 식 (line_resolver.py). 창 폭도 서버와 같은
+   influence_m / ds_base 를 쓰므로 드래그를 놓았을 때 화면이 튀지 않는다. */
+function previewSpeed(baseV, basePinned, index, value, win) {
+  const n = baseV.length, lo = D.limits.v_min, hi = D.limits.v_max;
+  const v = baseV.slice();
+  const delta = value - baseV[index];
+  v[index] = value;
+  for (const dir of [1, -1]) {
+    for (let off = 1; off <= win; off++) {
+      const j = ((index + dir*off) % n + n) % n;
+      if (basePinned[j] || j === index) break;
+      const w = 0.5 * (1 + Math.cos(Math.PI * off / win));
+      v[j] = Math.min(Math.max(v[j] + delta*w, lo), hi);
     }
-    edit({op:"speed", index:best, value:Math.max(0, v)});
+  }
+  return v;
+}
+
+/* 드래그 편집은 최신 값 하나만 보낸다 (요청이 밀리면 손보다 뒤처진다). */
+async function pumpDrag() {
+  if (dragInflight || !dragPending) return;
+  const op = dragPending; dragPending = null;
+  dragInflight = true;
+  try {
+    const res = await fetch("/api/edit", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ ops: [op] })});
+    const data = await res.json();
+    if (op.phase === "end") { PREVIEW = null; PENDING_PIN = -1; }
+    if (data.error) log("서버 오류: " + data.error, "e");
+    else absorb(data);
+  } catch (err) {
+    log("통신 실패: " + err, "e");
+    PREVIEW = null; PENDING_PIN = -1;
+  } finally { dragInflight = false; pumpDrag(); }
+}
+
+/* 막대 하나를 잡는다 (마우스 드래그든 휠이든 여기서 시작한다). */
+function startDrag(bar) {
+  const index = BARS.idx[bar];
+  // 직전 드래그의 응답이 아직이면 미리보기가 곧 서버 값이 된다 — 그걸 기준으로.
+  const baseV = (PREVIEW || D.speed).slice();
+  const basePinned = D.pinned.slice();
+  if (PENDING_PIN >= 0) basePinned[PENDING_PIN] = 1;
+  DRAG = {
+    bar, index, baseV, basePinned, value: baseV[index],
+    win: Math.max(Math.round(D.limits.influence_m / D.limits.ds_base), 1),
   };
+  dragPending = {op:"speed_drag", phase:"start", index, value: DRAG.value};
+  pumpDrag();
+}
+
+function setDragValue(value) {
+  value = Math.min(Math.max(value, D.limits.v_min), D.limits.v_max);
+  PREVIEW = previewSpeed(DRAG.baseV, DRAG.basePinned, DRAG.index, value,
+                         DRAG.win);
+  DRAG.value = value;
+  dragPending = {op:"speed_drag", phase:"move", index:DRAG.index, value};
+  pumpDrag();
+  redraw();
+  showTip();
+}
+
+function showTip() {
+  const tip = $("tip"), box = $("cSpeed");
+  if (!DRAG || !box._geom) { tip.style.display = "none"; return; }
+  const { X, Y } = box._geom;
+  const v = speedNow()[DRAG.index], was = DRAG.baseV[DRAG.index];
+  const delta = v - was;
+  tip.textContent = `${v.toFixed(2)} m/s  (${delta >= 0 ? "+" : ""}` +
+                    `${delta.toFixed(2)})`;
+  tip.style.display = "block";
+  tip.style.left = Math.max(4, X(D.base.s[DRAG.index]) -
+                            tip.offsetWidth/2) + "px";
+  tip.style.top = Math.max(2, Y(v) - tip.offsetHeight - 8) + "px";
+}
+
+(function speedBars() {
+  const box = $("cSpeed"), canvas = box.querySelector("canvas");
+  let wheelIdle = null;
   canvas.addEventListener("mousedown", (ev) => {
-    if (ev.shiftKey) {                        // shift = 그 지점 핀 해제
-      if (!D || !box._geom) return;
-      const rect = canvas.getBoundingClientRect();
-      const { g, sMax } = box._geom;
-      const s = ((ev.clientX-rect.left - g.L) / (g.W-g.L-g.R)) * sMax;
-      let best = 0, bd = Infinity;
-      for (let i = 0; i < D.base.s.length; i++) {
-        const d = Math.abs(D.base.s[i]-s); if (d<bd) { bd=d; best=i; }
-      }
-      edit({op:"speed_unpin", index:best});
+    if (!D || !box._geom) return;
+    ev.preventDefault();
+    const k = barAt(ev.clientX);
+    if (k < 0) return;
+    if (ev.shiftKey) {                    // shift = 그 막대만 원본으로
+      edit({op:"speed_unpin", index: BARS.idx[k]});
       return;
     }
-    active = true; apply(ev);
+    endDrag();                            // 휠 제스처가 열려 있으면 먼저 닫는다
+    startDrag(k);
+    box.classList.add("grab");
+    setDragValue(valueAt(ev.clientY));
   });
-  window.addEventListener("mousemove", (ev) => { if (active) apply(ev); });
-  window.addEventListener("mouseup", () => { active = false; });
+  // 호버는 캔버스 위에서만 본다 — window 에 걸면 트랙 캔버스의 호버(hoverIdx)를
+  // 매 이벤트 지워 버린다 (두 리스너가 같은 변수를 두고 싸운다).
+  canvas.addEventListener("mousemove", (ev) => {
+    if (!D || !BARS || DRAG) return;
+    const k = barAt(ev.clientX);
+    if (k === barHover) return;
+    barHover = k;
+    hoverIdx = k >= 0 ? BARS.idx[k] : -1;   // 트랙 쪽에도 같은 자리를 표시
+    redraw();
+  });
+  canvas.addEventListener("mouseleave", () => {
+    if (DRAG || barHover < 0) return;
+    barHover = -1; hoverIdx = -1; redraw();
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!DRAG) return;
+    // 버튼을 안 누른 채 움직이면 잡은 게 아니다: 창 밖에서 놓아 mouseup 을
+    // 놓쳤거나(그대로 두면 막대가 계속 커서를 따라다닌다), 휠 제스처가 열린
+    // 채로 손이 옮겨 간 것이다. 둘 다 거기서 확정한다.
+    if (ev.buttons === 0) { endDrag(); return; }
+    setDragValue(valueAt(ev.clientY));
+  });
+  function endDrag() {
+    if (!DRAG) return;
+    clearTimeout(wheelIdle);
+    dragPending = {op:"speed_drag", phase:"end", index:DRAG.index,
+                   value: DRAG.value};
+    pumpDrag();
+    log(`속도 ${DRAG.baseV[DRAG.index].toFixed(2)} → ` +
+        `${DRAG.value.toFixed(2)} m/s  (s=${D.base.s[DRAG.index].toFixed(1)} m, ` +
+        `±${D.limits.influence_m.toFixed(1)} m 따라옴)`);
+    PENDING_PIN = DRAG.index;
+    DRAG = null;
+    box.classList.remove("grab");
+    $("tip").style.display = "none";
+    redraw();
+  }
+  window.addEventListener("mouseup", endDrag);
+  // 휠 = 커서 아래 막대 미세 조절 (±0.1 m/s, Shift 면 ±0.5). 드래그와 같은
+  // 편집 세션을 쓴다 — 연달아 굴린 건 한 번의 조절로 묶여서 되돌리기 한 칸이
+  // 되고, 요청이 밀려도 노치가 버려지지 않는다. 손을 멈추면 확정.
+  canvas.addEventListener("wheel", (ev) => {
+    if (!D || !BARS || !box._geom) return;
+    if (ev.buttons !== 0) return;         // 잡고 끄는 중이면 휠은 무시
+    ev.preventDefault();
+    const k = barAt(ev.clientX);
+    if (k < 0) return;
+    if (!DRAG || DRAG.bar !== k) { endDrag(); startDrag(k); }
+    setDragValue(DRAG.value +
+                 (ev.deltaY < 0 ? 0.1 : -0.1) * (ev.shiftKey ? 5 : 1));
+    clearTimeout(wheelIdle);
+    wheelIdle = setTimeout(endDrag, 500);
+  }, { passive: false });
 })();
 
 /* ------------------------------------------------------------ 컨트롤 */
@@ -684,57 +830,16 @@ for (const btn of document.querySelectorAll("button.mini[data-infl]"))
     markPresets(+btn.dataset.infl);
     edit({op:"params", influence_m:+btn.dataset.infl});
   });
-$("bias").addEventListener("input", (ev) => {
-  const v = +ev.target.value;
-  $("biasV").textContent = v < 0.025
-    ? "원본 모양 유지" : `${v.toFixed(2)} ⚠ 라인 전체가 바뀝니다`;
-  $("biasV").style.color = v < 0.025 ? "var(--ok)" : "var(--warn)";
-});
-$("bias").addEventListener("change", (ev) =>
-  edit({op:"params", curvature_bias:+ev.target.value}));
 for (const id of ["showMap","showBase","showBad"])
   $(id).addEventListener("change", redraw);
 
-/* ------------------------------------------------------------ 백 */
-async function loadBags() {
-  const data = await api("/api/bags");
-  if (!data) return;
-  const sel = $("bagSel");
-  for (const bag of data.bags) {
-    const opt = document.createElement("option");
-    opt.value = bag.path;
-    opt.textContent = `${bag.name} (${bag.parent}, ${bag.size_mb} MB)`;
-    sel.appendChild(opt);
-  }
-  log(`실주행 백 ${data.bags.length}개 발견`);
-}
-$("bagSel").addEventListener("change", async (ev) => {
-  const path = ev.target.value;
-  if (!path) { BAG = null; redraw(); return; }
-  log("백 읽는 중…");
-  const data = await api("/api/bag?path=" + encodeURIComponent(path));
-  if (!data) return;
-  BAG = data; BAGLAP = "all";
-  const sel = $("lapSel");
-  sel.innerHTML = `<option value="all">전체 (${data.duration}s)</option>`;
-  data.laps.forEach((lap, i) => {
-    const opt = document.createElement("option");
-    opt.value = i;
-    opt.textContent = `랩 ${i+1} — ${lap.lap_time}s`;
-    sel.appendChild(opt);
-  });
-  log(`${data.name}: 랩 ${data.laps.length}개, ${data.duration}s` +
-      (data.has_lat_err ? "" : " (횡오차 토픽 없음)"));
-  redraw();
-});
-$("lapSel").addEventListener("change", (ev) => { BAGLAP = ev.target.value; redraw(); });
-$("bagClear").addEventListener("click", () => {
-  BAG = null; $("bagSel").value = ""; $("lapSel").innerHTML =
-    '<option value="all">전체</option>'; redraw();
-});
-
 /* ------------------------------------------------------------ 시작 */
-window.addEventListener("resize", () => { if (D) { sizeAll(); redraw(); } });
+window.addEventListener("resize", () => {
+  // 막대 격자는 캔버스 폭에서 나온다 — 다시 안 만들면 창을 줄였을 때
+  // 막대가 그래프 밖으로 나가고 잡는 자리도 어긋난다.
+  if (!D) return;
+  sizeAll(); makeBars(); redraw();
+});
 (async function boot() {
   const data = await api("/api/open");
   if (!data) { log("초기 로드 실패", "e"); return; }
@@ -744,8 +849,8 @@ window.addEventListener("resize", () => { if (D) { sizeAll(); redraw(); } });
     MAPIMG.src = data.layers.png;
   }
   absorb(data);
-  if (data.bags_available) loadBags();
-  else log("tools/bagviz.py 를 못 불러와 실주행 겹쳐보기가 비활성입니다", "w");
+  log("속도 막대를 잡고 위/아래로 끄세요 — 옆 막대가 따라옵니다. " +
+      "휠 = ±0.1 m/s, Shift+클릭 = 그 막대만 원본으로.");
 })();
 </script>
 </body>

@@ -4,10 +4,11 @@
 ROS 없이 동작 (sqlite3 + CDR 직접 디코딩, numpy만 필요).
 
     python3 tools/bagviz.py            # 서버 시작 + 브라우저 오픈
-    python3 tools/bagviz.py --inspect <bag_dir|.db3>   # 파싱 테스트
+    python3 tools/bagviz.py --inspect <bag_dir|.db3>   # 파싱 테스트 (랩·기각 사유 요약)
 
 브라우저에 .db3 파일(또는 백 폴더)을 드래그앤드롭하면 바로 시각화됨.
 로컬 백 목록에서 클릭해서 열 수도 있음 (업로드 없이 경로로 직접 파싱).
+`http://127.0.0.1:8998/?bag=<경로>` 로 특정 백을 바로 열 수도 있다.
 """
 import argparse
 import base64
@@ -15,6 +16,7 @@ import gzip
 import json
 import math
 import os
+import re
 import sqlite3
 import struct
 import sys
@@ -29,6 +31,29 @@ from pathlib import Path
 import numpy as np
 
 HOME = Path.home()
+VESC_YAML = Path(__file__).resolve().parent.parent / \
+    "hardware_ws/src/f1tenth_stack/config/vesc.yaml"
+
+
+def read_vesc_calib():
+    """vesc.yaml에서 서보 상수만 긁어온다 (PyYAML 없이 — bagviz는 의존성 numpy만).
+
+    servo value = gain * steering_angle(rad) + offset,  vesc_driver가 [min,max]로 클립.
+    """
+    cal = {"gain": -0.8206, "offset": 0.403, "servo_min": 0.05, "servo_max": 0.70,
+           "src": "기본값(vesc.yaml 없음)"}
+    try:
+        txt = VESC_YAML.read_text()
+    except OSError:
+        return cal
+    for key in ("steering_angle_to_servo_gain", "steering_angle_to_servo_offset",
+                "servo_min", "servo_max"):
+        m = re.search(r"^\s*%s\s*:\s*([-+0-9.eE]+)" % key, txt, re.M)
+        if m:
+            cal[key.replace("steering_angle_to_servo_", "")] = float(m.group(1))
+    cal["src"] = "vesc.yaml"
+    return cal
+
 
 # ---------------------------------------------------------------- CDR reader
 
@@ -286,6 +311,31 @@ def png_gray_alpha(gray, alpha):
 
 # ------------------------------------------------------------- bag extraction
 
+def detect_lap_crossings(s_v):
+    """진행거리 s 시계열 → 랩 경계 인덱스.
+
+    monitor_node는 `prev_s > max_s - 1.0 && s < 1.0`으로 판정하지만(monitor_node.cpp:305)
+    거기서 쓰는 max_s는 /global_waypoints에서 온다. 백에 그 토픽이 없는 경우가 많아
+    여기서는 관측 s의 최댓값을 L로 잡고 "L/2 이상 역방향 점프"로 본다 — L이 백마다
+    조금씩 달라도(32.27~32.30) 영향받지 않는다.
+    """
+    if len(s_v) < 10:
+        return [], 0.0
+    L = max(s_v)
+    if L <= 1.0:
+        return [], L
+    return [i for i in range(1, len(s_v)) if s_v[i] - s_v[i - 1] < -L * 0.5], L
+
+
+def _span(tarr, varr, t0, t1, absolute=False):
+    """[t0, t1) 구간 값들 → (mean, max). 값이 없으면 (None, None)."""
+    vals = [abs(v) if absolute else v
+            for t, v in zip(tarr, varr) if t0 <= t < t1]
+    if not vals:
+        return None, None
+    return sum(vals) / len(vals), max(vals)
+
+
 def _decimate(rows, cap):
     if cap and len(rows) > cap:
         stride = int(math.ceil(len(rows) / cap))
@@ -453,7 +503,8 @@ def extract(db_path):
     if g:
         wp = dec_wpnt_array(g[1])
         out["glb"] = {"x": [round(w[1], 3) for w in wp], "y": [round(w[2], 3) for w in wp],
-                      "vx": [round(w[3], 2) for w in wp]}
+                      "vx": [round(w[3], 2) for w in wp],
+                      "s": [round(w[0], 3) for w in wp]}
     else:
         out["glb"] = None
 
@@ -513,6 +564,120 @@ def extract(db_path):
             obs.append({"t": round(t, 3), "o": lst})
     out["obs"] = obs
 
+    # --- 랩: frenet s wrap (없으면 레이스라인 최근접 투영으로 s 복원)
+    s_t, s_v, lap_src = [], [], None
+    if count("/car_state/frenet/odom"):
+        for t, b in fetch("/car_state/frenet/odom"):
+            try:
+                s, _d, _yaw, _v = dec_odom(b)   # frenet odom: position.x=s, .y=d
+            except Exception:
+                continue
+            s_t.append(t)
+            s_v.append(s)
+        lap_src = "/car_state/frenet/odom"
+    elif out["glb"] and pose["t"]:
+        gx = np.asarray(out["glb"]["x"])
+        gy = np.asarray(out["glb"]["y"])
+        gs = np.asarray(out["glb"]["s"])
+        for i in range(len(pose["t"])):
+            j = int(np.argmin((gx - pose["x"][i]) ** 2 + (gy - pose["y"][i]) ** 2))
+            s_t.append(pose["t"][i])
+            s_v.append(float(gs[j]))
+        lap_src = "레이스라인 투영"
+
+    cross, track_len = detect_lap_crossings(s_v)
+    laps = []
+    for k in range(1, len(cross)):
+        a, b = s_t[cross[k - 1]], s_t[cross[k]]
+        v_mean, v_max = _span(pose["t"], pose["v"], a, b, absolute=True)
+        c_mean, c_max = _span(lat["t"], lat["v"], a, b, absolute=True)
+        laps.append({
+            "n": k, "t0": round(a, 2), "t1": round(b, 2), "dur": round(b - a, 2),
+            "vMean": round(v_mean, 2) if v_mean is not None else None,
+            "vMax": round(v_max, 2) if v_max is not None else None,
+            "cteMean": round(c_mean, 3) if c_mean is not None else None,
+            "cteMax": round(c_max, 3) if c_max is not None else None,
+        })
+    out["laps"] = laps
+    out["lapSrc"] = lap_src or "-"
+    out["trackLen"] = round(track_len, 2)
+
+    # 결승선(= s 0 지점) 표시용 포즈 — 첫 랩 경계 시각의 차량 자세
+    out["startLine"] = None
+    if cross and pose["t"]:
+        tc = s_t[cross[0]]
+        j = min(range(len(pose["t"])), key=lambda i: abs(pose["t"][i] - tc))
+        out["startLine"] = [pose["x"][j], pose["y"][j], pose["yaw"][j]]
+
+    # --- 회피 판정 사유: /pitwall/reject_* 는 1Hz 누적 카운터 → 구간 델타로 변환
+    #     (spliner_node.cpp:2882 PublishRejectCounts)
+    rejects = []
+    for name in topics:
+        if not name.startswith("/pitwall/reject_"):
+            continue
+        ts, dv, prev, total = [], [], None, 0
+        for t, b in fetch(name):
+            try:
+                v = dec_float32(b)
+            except Exception:
+                continue
+            if prev is None:
+                d = 0.0             # 백 시작 전 누적분은 알 수 없으니 버린다
+            elif v >= prev:
+                d = v - prev
+            else:
+                d = v               # 값이 줄었다 = 노드 재시작으로 카운터 리셋
+            prev = v
+            ts.append(round(t, 2))
+            dv.append(int(d))
+            total += int(d)
+        if not ts:
+            continue
+        key = name[len("/pitwall/reject_"):]
+        rejects.append({"name": key, "ok": key.startswith("ok_"),
+                        "t": ts, "d": dv, "total": total})
+    # 기각 먼저(발생 많은 순), 성공(ok_*)은 뒤로
+    rejects.sort(key=lambda r: (r["ok"], -r["total"]))
+    out["rejects"] = rejects
+
+    spliced = {"t": [], "v": []}
+    for t, b in _decimate(fetch("/pitwall/spliced_wpnts"), 2500):
+        try:
+            spliced["t"].append(round(t, 2))
+            spliced["v"].append(int(dec_float32(b)))
+        except Exception:
+            continue
+    out["spliced"] = spliced
+
+    apex = {"t": [], "v": []}
+    for t, b in fetch("/pitwall/evasion_d_apex"):
+        try:
+            apex["t"].append(round(t, 2))
+            apex["v"].append(round(dec_float32(b), 2))
+        except Exception:
+            continue
+    out["apex"] = apex
+
+    # --- 실제 서보 출력 → 조향각 역변환 (포화·명령 불일치 확인용)
+    cal = read_vesc_calib()
+    gain = cal["gain"] or 1.0
+    servo_topic = next((n for n in ("/sensors/servo_position_command",
+                                    "/commands/servo/position") if count(n)), None)
+    servo = {"t": [], "v": []}
+    if servo_topic:
+        for t, b in _decimate(fetch(servo_topic), 2500):
+            try:
+                p = dec_float64(b)
+            except Exception:
+                continue
+            servo["t"].append(round(t, 3))
+            servo["v"].append(round(math.degrees((p - cal["offset"]) / gain), 2))
+    out["servo"] = servo
+    out["servoTopic"] = servo_topic or "-"
+    out["steerRails"] = sorted(round(math.degrees((x - cal["offset"]) / gain), 2)
+                               for x in (cal["servo_min"], cal["servo_max"]))
+    out["calibSrc"] = cal["src"]
+
     # --- tf_static → base_link 대비 laser 오프셋
     laser_off = [0.0, 0.0]
     g = first("/tf_static")
@@ -540,8 +705,7 @@ def extract(db_path):
             events.append({"t": round(t, 2), "k": "WARN", "s": "[%s] %s" % (name, msg[:150])})
     events.sort(key=lambda e: e["t"])
     # 연속 중복 접기 — 숫자만 다른 반복 메시지(예: PF 경고 스팸)도 하나로 합침
-    import re as _re
-    norm = lambda s: _re.sub(r"[-+]?\d[\d.]*", "#", s)
+    norm = lambda s: re.sub(r"[-+]?\d[\d.]*", "#", s)
     folded = []
     for e in events:
         if folded and folded[-1]["k"] == e["k"] and folded[-1]["_key"] == norm(e["s"]):
@@ -720,27 +884,70 @@ button.on { color:var(--ink); background:#2e2e2b; border-color:var(--muted); }
 /* ---------- 대시보드 ---------- */
 #app { display:none; height:100%; flex-direction:column; }
 #app.show { display:flex; }
-header { display:flex; align-items:center; gap:14px; padding:8px 14px;
-  background:var(--surface); border-bottom:1px solid var(--border); flex:0 0 auto; }
+header { display:flex; align-items:center; gap:10px 14px; padding:8px 14px;
+  background:var(--surface); border-bottom:1px solid var(--border); flex:0 0 auto;
+  flex-wrap:wrap; }
 header .title { font-weight:700; font-size:15px; }
 header .title span { color:var(--blue); }
-header .sub { color:var(--muted); font-size:12px; }
-#stats { display:flex; gap:8px; margin-left:auto; }
+header .sub { color:var(--muted); font-size:12px; max-width:46vw;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 타일이 많아 좁은 화면에서 헤더를 밀어내던 문제 — 넘치면 줄바꿈시킨다 */
+#stats { display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end; }
 .tile { background:var(--surface2); border:1px solid var(--border); border-radius:8px;
-  padding:4px 12px; text-align:right; min-width:86px; }
+  padding:4px 10px; text-align:right; min-width:80px; }
 .tile .lb { font-size:10px; color:var(--muted); letter-spacing:.4px; }
 .tile .vl { font-size:16px; font-weight:650; font-variant-numeric:tabular-nums; }
 .tile .vl small { font-size:11px; color:var(--ink2); font-weight:400; }
 
-#main { flex:1; display:flex; min-height:0; }
-#trackWrap { flex:1; position:relative; min-width:0; }
+/* 위: 맵 | 그래프  ·  아래: 이벤트 로그(가로 전체) */
+#content { flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; }
+#main { flex:1 1 0; display:flex; min-height:120px; min-width:0; }
+#trackWrap { flex:1 1 0; position:relative; min-width:120px; }
+
+/* 경계 핸들 — 드래그로 폭/높이 조절 */
+#split, #hsplit { position:relative; background:var(--border); flex:0 0 5px; }
+#split { cursor:col-resize; }
+#hsplit { cursor:row-resize; }
+#split::before { content:""; position:absolute; top:0; bottom:0; left:-4px; right:-4px; }
+#hsplit::before { content:""; position:absolute; left:0; right:0; top:-4px; bottom:-4px; }
+#split::after { content:""; position:absolute; top:50%; left:1px; width:3px; height:26px;
+  margin-top:-13px; border-radius:2px; background:var(--muted); opacity:.5; }
+#hsplit::after { content:""; position:absolute; left:50%; top:1px; height:3px; width:26px;
+  margin-left:-13px; border-radius:2px; background:var(--muted); opacity:.5; }
+#split:hover, #split.drag, #hsplit:hover, #hsplit.drag { background:var(--blue); }
+#split:hover::after, #split.drag::after,
+#hsplit:hover::after, #hsplit.drag::after { opacity:0; }
 #track { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:grab; }
 #track.pan { cursor:grabbing; }
-#toggles { position:absolute; top:10px; left:10px; display:flex; flex-wrap:wrap;
-  gap:6px; max-width:70%; }
+#toggles { position:absolute; top:10px; left:10px; z-index:4; display:flex;
+  flex-wrap:wrap; gap:6px; max-width:calc(100% - 150px); }
 #toggles button { font-size:12px; padding:3px 9px; background:rgba(26,26,25,.85); }
-#fitBtn { position:absolute; right:10px; top:10px; font-size:12px;
-  background:rgba(26,26,25,.85); }
+#mapRight { position:absolute; right:10px; top:10px; z-index:5; display:flex;
+  flex-direction:column; align-items:flex-end; gap:8px; max-height:calc(100% - 20px); }
+#fitBtn { font-size:12px; background:rgba(26,26,25,.85); }
+
+/* 랩 타임 목록 — 랩이 끝날 때마다 아래로 한 줄씩 쌓인다 */
+#lapBox { display:none; background:rgba(26,26,25,.9); border:1px solid var(--border);
+  border-radius:8px; font-size:11px; min-width:150px; min-height:0; overflow:hidden; }
+#lapBox.show { display:flex; flex-direction:column; }
+#lapBox .hd { flex:0 0 auto; display:flex; gap:8px; padding:4px 10px; color:var(--muted);
+  border-bottom:1px solid var(--border); }
+#lapBox .hd b { color:var(--ink2); font-weight:600; }
+#lapList { flex:1 1 auto; min-height:0; max-height:32vh; overflow-y:auto; }
+#lapList .lp { display:flex; gap:8px; padding:2px 10px; cursor:pointer;
+  color:var(--ink2); font-variant-numeric:tabular-nums; }
+#lapList .lp:hover { background:var(--surface2); }
+#lapList .lp.cur { background:#26261f; color:var(--ink); }
+#lapList .lp .n { flex:0 0 28px; color:var(--muted); }
+#lapList .lp .tm { margin-left:auto; }
+#lapList .lp.best .tm { color:var(--violet); font-weight:650; }
+#lapList .lp.run .tm { color:var(--yellow); }
+#lapToast { position:absolute; left:50%; top:16%; transform:translateX(-50%);
+  padding:5px 16px; border-radius:10px; background:rgba(26,26,25,.92);
+  border:1px solid var(--blue); font-size:15px; font-weight:650;
+  pointer-events:none; opacity:0; white-space:nowrap;
+  font-variant-numeric:tabular-nums; }
+#lapToast small { color:var(--muted); font-weight:400; font-size:11px; margin-left:8px; }
 #legend { position:absolute; left:10px; bottom:10px; background:rgba(26,26,25,.88);
   border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:11px;
   color:var(--ink2); display:flex; flex-direction:column; gap:5px; }
@@ -749,19 +956,33 @@ header .sub { color:var(--muted); font-size:12px; }
 #legend .sw { width:16px; height:3px; border-radius:2px; }
 #legend .dot { width:9px; height:9px; border-radius:50%; }
 
-#side { flex:0 0 390px; display:flex; flex-direction:column; min-height:0;
-  border-left:1px solid var(--border); background:var(--surface); }
-.chart { flex:0 0 auto; padding:8px 10px 2px; }
-.chart .head { display:flex; align-items:baseline; gap:10px; margin:0 4px 2px; }
-.chart .head .t { font-size:12px; color:var(--ink2); font-weight:600; }
-.chart .head .lg { display:flex; gap:10px; font-size:11px; color:var(--muted); }
+/* 세로는 전부 비율 배분(flex-basis 0) — 창 높이가 바뀌어도 잘리거나
+   스크롤이 생기지 않고 각 칸이 같이 늘고 준다. */
+#side { flex:0 0 var(--sideW,560px); width:var(--sideW,560px); display:flex;
+  flex-direction:column; min-height:0; min-width:0; overflow-y:auto;
+  background:var(--surface); }
+.chart { flex:1 1 0; min-height:76px; min-width:0; padding:8px 10px 2px;
+  display:flex; flex-direction:column; }
+.chart .head { flex:0 0 auto; display:flex; align-items:baseline; gap:10px;
+  margin:0 4px 2px; min-width:0; }
+.chart .head .t { font-size:12px; color:var(--ink2); font-weight:600; white-space:nowrap; }
+.chart .head .lg { display:flex; gap:10px; font-size:11px; color:var(--muted);
+  min-width:0; overflow:hidden; }
+.chart .head .lg > span { white-space:nowrap; }
 .chart .head .lg i { display:inline-block; width:12px; height:3px; border-radius:2px;
   vertical-align:middle; margin-right:4px; }
-.chart canvas { width:100%; height:96px; display:block; cursor:crosshair; }
-#events { flex:1 1 0; min-height:60px; display:flex; flex-direction:column;
-  border-top:1px solid var(--border); }
-#events .head { padding:7px 14px 4px; font-size:12px; color:var(--ink2); font-weight:600; }
-#evlist { flex:1; overflow-y:auto; padding:0 8px 8px; font-size:12px; }
+.chart canvas { flex:1 1 0; width:100%; min-height:0; display:block; cursor:crosshair; }
+/* 회피 판정 레인 — 행 = 사유, 색 진하기 = 그 초에 발생한 횟수 */
+#rejBox { flex:2 1 0; min-height:86px; min-width:0; padding:8px 10px 4px;
+  display:flex; flex-direction:column; border-top:1px solid var(--border); }
+#rejWrap { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; }
+#rejWrap canvas { width:100%; display:block; cursor:crosshair; }
+#rejBox .head .lg i.sq { width:10px; height:10px; border-radius:2px; }
+#events { flex:0 0 var(--evH,190px); height:var(--evH,190px); min-height:0; min-width:0;
+  display:flex; flex-direction:column; background:var(--surface); }
+#events .head { flex:0 0 auto; padding:6px 14px 4px; font-size:12px;
+  color:var(--ink2); font-weight:600; }
+#evlist { flex:1 1 0; min-height:0; overflow-y:auto; padding:0 8px 8px; font-size:12px; }
 #evlist .ev { display:flex; gap:8px; padding:3px 6px; border-radius:5px; cursor:pointer;
   color:var(--ink2); align-items:baseline; }
 #evlist .ev:hover { background:var(--surface2); }
@@ -782,13 +1003,13 @@ header .sub { color:var(--muted); font-size:12px; }
 #clock { font-variant-numeric:tabular-nums; color:var(--ink2); min-width:118px;
   text-align:right; font-size:13px; }
 #openBtn { font-size:12px; }
-details#topicsBox { position:absolute; right:10px; top:44px; z-index:5;
-  background:rgba(26,26,25,.95); border:1px solid var(--border); border-radius:8px;
-  max-width:360px; font-size:12px; }
+details#topicsBox { flex:0 1 auto; min-height:0; background:rgba(26,26,25,.95);
+  border:1px solid var(--border); border-radius:8px; max-width:min(360px,60vw);
+  font-size:12px; overflow:hidden; }
 details#topicsBox summary { padding:5px 12px; cursor:pointer; color:var(--ink2);
   list-style:none; }
 details#topicsBox[open] summary { border-bottom:1px solid var(--border); }
-#topicsTable { max-height:44vh; overflow-y:auto; padding:6px 10px; }
+#topicsTable { max-height:min(44vh,340px); overflow:auto; padding:6px 10px; }
 #topicsTable table { border-collapse:collapse; width:100%; }
 #topicsTable td { padding:1px 8px 1px 0; color:var(--ink2); white-space:nowrap; }
 #topicsTable td.n { font-variant-numeric:tabular-nums; text-align:right; color:var(--muted); }
@@ -824,25 +1045,45 @@ details#topicsBox[open] summary { border-bottom:1px solid var(--border); }
       <div class="tile"><div class="lb">조향</div><div class="vl" id="stS">–<small> °</small></div></div>
       <div class="tile"><div class="lb">횡오차</div><div class="vl" id="stE">–<small> m</small></div></div>
       <div class="tile"><div class="lb">PF Spread</div><div class="vl" id="stP">–<small> m</small></div></div>
+      <div class="tile"><div class="lb">랩</div><div class="vl" id="stL">–<small> s</small></div></div>
     </div>
   </header>
 
+  <div id="content">
   <div id="main">
     <div id="trackWrap">
       <canvas id="track"></canvas>
       <div id="toggles"></div>
-      <button id="fitBtn">전체 보기 ⤢</button>
-      <details id="topicsBox"><summary>토픽 목록</summary><div id="topicsTable"></div></details>
+      <div id="mapRight">
+        <button id="fitBtn">전체 보기 ⤢</button>
+        <details id="topicsBox"><summary>토픽 목록</summary><div id="topicsTable"></div></details>
+        <div id="lapBox"><div class="hd"><b>랩 타임</b><span id="lapSrc"></span></div>
+          <div id="lapList"></div></div>
+      </div>
+      <div id="lapToast"></div>
       <div id="legend"></div>
     </div>
+    <div id="split" title="드래그해서 폭 조절 · 더블클릭 초기화"></div>
     <div id="side">
       <div class="chart" id="ch0"><div class="head"><span class="t">속도 (m/s)</span>
         <span class="lg"><span><i style="background:var(--blue)"></i>명령</span>
         <span><i style="background:var(--orange)"></i>실측</span></span></div><canvas></canvas></div>
-      <div class="chart" id="ch1"><div class="head"><span class="t">조향 명령 (°)</span></div><canvas></canvas></div>
+      <div class="chart" id="ch1"><div class="head"><span class="t">조향 (°)</span>
+        <span class="lg"><span><i style="background:var(--blue)"></i>명령</span>
+        <span><i style="background:var(--orange)"></i>서보 실측</span>
+        <span id="servoRms"></span></span></div><canvas></canvas></div>
       <div class="chart" id="ch2"><div class="head"><span class="t">횡오차 lat_err (m)</span></div><canvas></canvas></div>
-      <div id="events"><div class="head">이벤트 · 경고 로그</div><div id="evlist"></div></div>
+      <div id="rejBox"><div class="head" style="flex:0 0 auto;display:flex;align-items:baseline;gap:10px;margin:0 4px 4px;min-width:0;overflow:hidden">
+        <span class="t" style="font-size:12px;color:var(--ink2);font-weight:600">회피 판정 (회/s)</span>
+        <span class="lg" style="display:flex;gap:10px;font-size:11px;color:var(--muted)">
+          <span><i class="sq" style="display:inline-block;background:var(--orange);margin-right:4px;vertical-align:middle"></i>기각</span>
+          <span><i class="sq" style="display:inline-block;background:var(--aqua);margin-right:4px;vertical-align:middle"></i>성립</span>
+          <span><i class="sq" style="display:inline-block;background:var(--violet);margin-right:4px;vertical-align:middle"></i>회피 경로 활성</span>
+        </span></div><div id="rejWrap"><canvas></canvas></div></div>
     </div>
+  </div>
+  <div id="hsplit" title="드래그해서 높이 조절 · 더블클릭 초기화"></div>
+  <div id="events"><div class="head">이벤트 · 경고 로그</div><div id="evlist"></div></div>
   </div>
 
   <div id="bottom">
@@ -981,6 +1222,9 @@ function loadBagList(){
   });
 }
 loadBagList();
+// ?bag=<경로> 로 바로 열기 (스크린샷·북마크용)
+{ const q=new URLSearchParams(location.search).get("bag");
+  if(q) loadLocal(q, q.split("/").pop()); }
 
 /* ================= 데이터 수신 ================= */
 function onData(d){
@@ -1003,7 +1247,14 @@ function onData(d){
   $("bagSub").textContent=fmt(D.duration)+" · "+st.toLocaleString("ko-KR")
     +" · pose:"+D.poseTopic+" · cmd:"+D.cmdTopic+" · 파싱 "+D.parseSec+"s";
   buildTopics(); buildToggles(); buildLegend(); buildEvents();
-  fitView(); sizeCanvases(); buildChartData(); drawAll();
+  buildLaps(); buildRejects();
+  fitView(); sizeCanvases(); buildChartData();
+  const sm=servoMismatch();
+  $("servoRms").textContent=sm
+    ? "Δ rms "+sm.rms.toFixed(2)+"° · 최대 "+sm.max.toFixed(1)+"°" : "";
+  $("servoRms").title="서보 실측(" + D.servoTopic + ")과 명령의 차이. "
+    +"ackermann_to_vesc가 명령을 그대로 변환하므로 정상이면 0에 가깝다.";
+  drawAll();
 }
 
 /* ================= 뷰(지도) ================= */
@@ -1024,13 +1275,67 @@ const W2SX=x=>(x-view.cx)*view.s+track.width/2/DPR;
 const W2SY=y=>track.height/2/DPR-(y-view.cy)*view.s;
 let DPR=window.devicePixelRatio||1;
 
+/* ---------- 패널 경계 드래그 (맵|그래프, 위|이벤트로그) ---------- */
+const SIDE_DEF=560, SIDE_MIN=300, TRACK_MIN=220;
+const EV_MIN=60, TOP_MIN=200;
+// 이벤트 로그 기본 높이는 화면에 비례 — 작은 화면에서 차트를 덜 뺏는다
+const EV_DEF=Math.max(130,Math.min(210,Math.round(window.innerHeight*0.17)));
+function setSideW(w,save){
+  const total=$("main").getBoundingClientRect().width||window.innerWidth;
+  const v=Math.round(Math.max(SIDE_MIN,Math.min(Math.max(SIDE_MIN,total-TRACK_MIN),w)));
+  document.documentElement.style.setProperty("--sideW",v+"px");
+  if(save) try{ localStorage.setItem("bagviz.sideW2",String(v)); }catch(e){}
+  return v;
+}
+function setEvH(h,save){
+  const total=$("content").getBoundingClientRect().height||window.innerHeight;
+  const v=Math.round(Math.max(EV_MIN,Math.min(Math.max(EV_MIN,total-TOP_MIN),h)));
+  document.documentElement.style.setProperty("--evH",v+"px");
+  if(save) try{ localStorage.setItem("bagviz.evH2",String(v)); }catch(e){}
+  return v;
+}
+try{
+  setSideW(parseFloat(localStorage.getItem("bagviz.sideW2"))||SIDE_DEF,false);
+  setEvH(parseFloat(localStorage.getItem("bagviz.evH2"))||EV_DEF,false);
+}catch(e){ setSideW(SIDE_DEF,false); setEvH(EV_DEF,false); }
+
+function wireSplit(id,vertical,apply,reset){
+  const el=$(id);
+  el.addEventListener("mousedown",e=>{
+    e.preventDefault();
+    const p0=vertical?e.clientY:e.clientX;
+    const s0=(vertical?$("events").getBoundingClientRect().height
+                     :$("side").getBoundingClientRect().width);
+    el.classList.add("drag"); document.body.style.userSelect="none";
+    let queued=false;
+    const mv=ev=>{
+      apply(s0-((vertical?ev.clientY:ev.clientX)-p0),true);
+      if(!queued&&D){ queued=true;
+        requestAnimationFrame(()=>{ queued=false; sizeCanvases(); drawAll(); }); }
+    };
+    const up=()=>{
+      window.removeEventListener("mousemove",mv); window.removeEventListener("mouseup",up);
+      el.classList.remove("drag"); document.body.style.userSelect="";
+      if(D){ sizeCanvases(); drawAll(); }
+    };
+    window.addEventListener("mousemove",mv); window.addEventListener("mouseup",up);
+  });
+  el.addEventListener("dblclick",()=>{ apply(reset,true); if(D){ sizeCanvases(); drawAll(); } });
+}
+wireSplit("split",false,setSideW,SIDE_DEF);
+wireSplit("hsplit",true,setEvH,EV_DEF);
+
 function sizeCanvases(){
   DPR=window.devicePixelRatio||1;
+  // 창이 줄면 저장된 폭/높이를 현재 크기에 맞게 다시 클램프
+  setSideW($("side").getBoundingClientRect().width,false);
+  setEvH($("events").getBoundingClientRect().height,false);
   const r=$("trackWrap").getBoundingClientRect();
-  track.width=r.width*DPR; track.height=r.height*DPR;
+  track.width=Math.max(1,r.width*DPR); track.height=Math.max(1,r.height*DPR);
   tctx.setTransform(DPR,0,0,DPR,0,0);
   charts.forEach(c=>{
     const rc=c.cv.getBoundingClientRect();
+    if(rc.width<8||rc.height<8) return;
     c.cv.width=rc.width*DPR; c.cv.height=rc.height*DPR;
     c.ctx.setTransform(DPR,0,0,DPR,0,0);
     c.w=rc.width; c.h=rc.height; c.base=null;
@@ -1038,6 +1343,20 @@ function sizeCanvases(){
   const rt=tl.getBoundingClientRect();
   tl.width=rt.width*DPR; tl.height=rt.height*DPR;
   tlctx.setTransform(DPR,0,0,DPR,0,0);
+  if(rejC.cv){                       // 행 수만큼 세로로 늘리고 #rejWrap이 스크롤
+    const ch=(rejC.band?REJ_BAND:0)+rejC.rows.length*REJ_ROW+REJ_AXIS;
+    rejC.cv.style.height=ch+"px";
+    // 행 수보다 크게 늘어봐야 빈칸이므로 상한을 두고, 남는 높이는 차트가 가져간다
+    const rb=$("rejBox"), rhd=rb.querySelector(".head");
+    rb.style.maxHeight=(ch+(rhd?rhd.offsetHeight:20)+14)+"px";
+    const rr=rejC.cv.getBoundingClientRect();
+    if(rr.width>=8){
+      REJ_LABEL=Math.round(Math.max(58,Math.min(126,rr.width*0.34)));
+      rejC.cv.width=rr.width*DPR; rejC.cv.height=ch*DPR;
+      rejC.ctx.setTransform(DPR,0,0,DPR,0,0);
+      rejC.w=rr.width; rejC.h=ch; rejC.base=null;
+    }
+  }
 }
 window.addEventListener("resize",()=>{ if(D){ sizeCanvases(); drawAll(); }});
 
@@ -1101,6 +1420,7 @@ function buildLegend(){
   if(D.look.t.length) rows.push(`<div class="row"><span class="dot" style="background:${C("yellow")}"></span>룩어헤드 점</div>`);
   if(D.particles.length) rows.push(`<div class="row"><span class="dot" style="background:rgba(57,135,229,0.35)"></span>PF 파티클 구름</div>`);
   if(D.obs.length) rows.push(`<div class="row"><span class="dot" style="border:2px solid ${C("red")};background:none"></span>장애물</div>`);
+  if(D.startLine) rows.push(`<div class="row"><span class="sw" style="background:rgba(255,255,255,0.6)"></span>결승선 (s=0)</div>`);
   el.innerHTML=rows.join("");
 }
 function buildTopics(){
@@ -1126,6 +1446,15 @@ function drawTrack(){
     tctx.scale(view.s*D.map.res, -view.s*D.map.res);
     tctx.drawImage(mapImg,0,0);
     tctx.restore();
+  }
+  // 결승선 (frenet s=0 지점 — 물리적 결승선이 아니라 레이스라인 시작점)
+  if(D.startLine){
+    const [sx,sy,syaw]=D.startLine, nx=-Math.sin(syaw), ny=Math.cos(syaw), hl=0.7;
+    tctx.strokeStyle="rgba(255,255,255,0.55)"; tctx.lineWidth=2; tctx.setLineDash([4,3]);
+    tctx.beginPath();
+    tctx.moveTo(W2SX(sx-nx*hl),W2SY(sy-ny*hl));
+    tctx.lineTo(W2SX(sx+nx*hl),W2SY(sy+ny*hl));
+    tctx.stroke(); tctx.setLineDash([]);
   }
   // 글로벌 레이스라인 (목표속도 램프)
   if(show.glb&&D.glb){
@@ -1262,7 +1591,7 @@ const charts=[];
 function mkChart(id,series,opts){
   const box=$(id), cv=box.querySelector("canvas");
   const c={cv,ctx:cv.getContext("2d"),series,base:null,w:0,h:0,hover:null,
-           sym:opts&&opts.sym};
+           sym:opts&&opts.sym, rails:opts&&opts.rails};
   cv.addEventListener("mousemove",e=>{
     const r=cv.getBoundingClientRect(); c.hover=e.clientX-r.left;
     if(e.buttons&1) seekFromChart(c,e); drawCursor(c);
@@ -1282,9 +1611,24 @@ function buildChartData(){
   mkChart("ch0",[
     {t:D.cmd.t,v:D.cmd.speed,color:C("blue")},
     {t:D.act.t,v:D.act.v,color:C("orange")}]);
-  mkChart("ch1",[{t:D.cmd.t,v:D.cmd.steer,color:C("blue")}],{sym:true});
+  const steerSeries=[{t:D.cmd.t,v:D.cmd.steer,color:C("blue")}];
+  if(D.servo&&D.servo.t.length) steerSeries.push({t:D.servo.t,v:D.servo.v,color:C("orange")});
+  mkChart("ch1",steerSeries,{sym:true,rails:D.steerRails});
   mkChart("ch2",[{t:D.lat.t,v:D.lat.v,color:C("aqua")}],{sym:true});
   sizeCanvases();
+}
+/* 서보 실측 vs 명령 불일치 — ackermann_to_vesc가 명령을 그대로 변환하므로
+   정상이면 0에 가깝다. 값이 크면 노드 중복 실행이나 gain 불일치 의심. */
+function servoMismatch(){
+  if(!D.servo||!D.servo.t.length||!D.cmd.t.length) return null;
+  let n=0, ss=0, mx=0;
+  for(let i=0;i<D.servo.t.length;i++){
+    const j=bisect(D.cmd.t,D.servo.t[i]);
+    if(j<0) continue;
+    const e=D.servo.v[i]-D.cmd.steer[j];
+    ss+=e*e; if(Math.abs(e)>mx) mx=Math.abs(e); n++;
+  }
+  return n?{rms:Math.sqrt(ss/n),max:mx}:null;
 }
 function niceStep(range){
   const raw=range/4, p=Math.pow(10,Math.floor(Math.log10(raw||1)));
@@ -1296,6 +1640,7 @@ function drawChartBase(c){
   let lo=Infinity, hi=-Infinity;
   series.forEach(s=>s.v.forEach(v=>{ if(v<lo)lo=v; if(v>hi)hi=v; }));
   if(!isFinite(lo)){ lo=0; hi=1; }
+  if(c.rails) c.rails.forEach(r=>{ if(r<lo)lo=r; if(r>hi)hi=r; });
   if(c.sym){ const m=Math.max(Math.abs(lo),Math.abs(hi),0.1); lo=-m; hi=m; }
   if(hi-lo<1e-6){ hi+=0.5; lo-=0.5; }
   const pad=(hi-lo)*0.08; lo-=pad; hi+=pad;
@@ -1307,6 +1652,10 @@ function drawChartBase(c){
   // e-stop 음영
   ctx.fillStyle="rgba(208,59,59,0.13)";
   D.estop.forEach(([a,b])=>ctx.fillRect(X(a),4,Math.max(2,X(b)-X(a)),h-18));
+  // 랩 경계
+  ctx.strokeStyle="rgba(144,133,233,0.28)"; ctx.lineWidth=1;
+  lapEdges().forEach(t=>{ const x=X(t);
+    ctx.beginPath(); ctx.moveTo(x,4); ctx.lineTo(x,h-14); ctx.stroke(); });
   // 그리드+눈금
   ctx.font="10px system-ui"; ctx.fillStyle=C("muted"); ctx.textAlign="right";
   const step=niceStep(hi-lo);
@@ -1315,6 +1664,16 @@ function drawChartBase(c){
     ctx.strokeStyle=Math.abs(v)<1e-9?C("axis"):C("grid"); ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(w-4,y); ctx.stroke();
     ctx.fillText(v.toFixed(step<1?1:0), PADL-4, y+3);
+  }
+  // 서보 포화 레일 (vesc.yaml servo_min/max를 조향각으로 역변환한 값)
+  if(c.rails){
+    ctx.save(); ctx.setLineDash([4,3]); ctx.lineWidth=1;
+    ctx.strokeStyle="rgba(230,103,103,0.5)"; ctx.fillStyle="rgba(230,103,103,0.75)";
+    ctx.font="9px system-ui"; ctx.textAlign="left";
+    c.rails.forEach(r=>{ const y=Y(r);
+      ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(w-4,y); ctx.stroke();
+      ctx.fillText("서보 포화 "+r.toFixed(1)+"°", PADL+4, y+(r>0?9:-3)); });
+    ctx.restore();
   }
   // 시리즈
   series.forEach(s=>{
@@ -1367,6 +1726,117 @@ function drawCursor(c){
   ctx.textAlign="right"; ctx.fillText(fmt(D.duration),w-4,h-3);
 }
 
+/* ================= 회피 판정 레인 =================
+   /pitwall/reject_* 는 1Hz 누적 카운터라 서버에서 구간 델타로 바꿔뒀다.
+   행 = 사유, 색 진하기 = 그 1초에 몇 번 걸렸나. "왜 안 피했나"를 시간축으로 본다. */
+let REJ_LABEL=126;                  // 패널 폭에 맞춰 sizeCanvases에서 조정
+const REJ_ROW=13, REJ_BAND=16, REJ_AXIS=15;
+const rejC={cv:null,ctx:null,w:0,h:0,rows:[],band:false,hover:null,wired:false,base:null};
+function rejX(t){ return REJ_LABEL+(t/D.duration)*(rejC.w-REJ_LABEL-4); }
+function rejT(x){ return Math.max(0,Math.min(1,(x-REJ_LABEL)/(rejC.w-REJ_LABEL-4)))*D.duration; }
+function buildRejects(){
+  const box=$("rejBox");
+  rejC.rows=(D.rejects||[]).filter(r=>r.total>0);
+  rejC.band=!!(D.spliced&&D.spliced.t.length);
+  if(!rejC.rows.length&&!rejC.band){ box.style.display="none"; rejC.cv=null; return; }
+  box.style.display="";
+  rejC.cv=box.querySelector("canvas"); rejC.ctx=rejC.cv.getContext("2d");
+  rejC.base=null;
+  rejC.rows.forEach(r=>{ let m=1; r.d.forEach(v=>{ if(v>m)m=v; }); r._mx=m; });
+  if(!rejC.wired){
+    rejC.wired=true;
+    rejC.cv.addEventListener("mousemove",e=>{
+      const r=rejC.cv.getBoundingClientRect();
+      rejC.hover={x:e.clientX-r.left,y:e.clientY-r.top};
+      if(e.buttons&1) seek(rejT(rejC.hover.x)); else drawRejects();
+    });
+    rejC.cv.addEventListener("mouseleave",()=>{ rejC.hover=null; drawRejects(); });
+    rejC.cv.addEventListener("mousedown",e=>{
+      const r=rejC.cv.getBoundingClientRect(); seek(rejT(e.clientX-r.left)); });
+  }
+}
+/* 행이 많고 셀이 수천 개라 정적 부분은 오프스크린에 한 번만 그린다 */
+function drawRejectsBase(){
+  const w=rejC.w, h=rejC.h;
+  rejC.base=document.createElement("canvas");
+  rejC.base.width=rejC.cv.width; rejC.base.height=rejC.cv.height;
+  const ctx=rejC.base.getContext("2d");
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  const plotH=h-REJ_AXIS;
+  // 랩 경계
+  ctx.strokeStyle="rgba(144,133,233,0.22)"; ctx.lineWidth=1;
+  lapEdges().forEach(t=>{ const x=rejX(t);
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,plotH); ctx.stroke(); });
+  ctx.font="10px system-ui";
+  let y=0;
+  if(rejC.band){
+    ctx.textAlign="right"; ctx.fillStyle=C("violet");
+    ctx.fillText("회피 경로", REJ_LABEL-6, y+11);
+    const s=D.spliced;
+    ctx.fillStyle="rgba(144,133,233,0.85)";
+    for(let i=0;i<s.t.length;i++){
+      if(!s.v[i]) continue;
+      const x0=rejX(s.t[i]), x1=(i+1<s.t.length)?rejX(s.t[i+1]):x0+2;
+      ctx.fillRect(x0,y+2,Math.max(1.5,x1-x0),REJ_BAND-6);
+    }
+    if(D.apex) D.apex.t.forEach((t,i)=>{           // 회피 정점 d — 좌/우를 위아래로
+      ctx.fillStyle=D.apex.v[i]>=0?C("aqua"):C("yellow");
+      ctx.fillRect(rejX(t)-1.5, y+(D.apex.v[i]>=0?1:REJ_BAND-6), 3, 4); });
+    y+=REJ_BAND;
+  }
+  rejC.rows.forEach((r,ri)=>{
+    if(ri%2){ ctx.fillStyle="rgba(255,255,255,0.025)"; ctx.fillRect(0,y,w,REJ_ROW); }
+    ctx.textAlign="right"; ctx.fillStyle=r.ok?C("aqua"):C("ink2");
+    const cap=Math.max(6,Math.floor((REJ_LABEL-10)/5.4));
+    const nm=r.name.length>cap?r.name.slice(0,cap-1)+"…":r.name;
+    ctx.fillText(nm, REJ_LABEL-6, y+REJ_ROW-3);
+    const rgb=r.ok?"25,158,112":"217,89,38";
+    for(let i=0;i<r.t.length;i++){
+      const d=r.d[i]; if(!d) continue;
+      const x0=rejX(r.t[i]), x1=(i+1<r.t.length)?rejX(r.t[i+1]):x0+2;
+      ctx.fillStyle="rgba("+rgb+","+(0.2+0.8*Math.min(1,d/r._mx)).toFixed(3)+")";
+      ctx.fillRect(x0,y+1.5,Math.max(1.5,x1-x0),REJ_ROW-3);
+    }
+    y+=REJ_ROW;
+  });
+  // 시간축
+  ctx.fillStyle=C("muted"); ctx.textAlign="left"; ctx.fillText("0:00",REJ_LABEL,h-3);
+  ctx.textAlign="right"; ctx.fillText(fmt(D.duration),w-4,h-3);
+}
+function drawRejects(){
+  if(!rejC.cv||!D) return;
+  if(!rejC.base) drawRejectsBase();
+  const ctx=rejC.ctx, w=rejC.w, h=rejC.h, plotH=h-REJ_AXIS;
+  ctx.clearRect(0,0,w,h);
+  ctx.drawImage(rejC.base,0,0,w,h);
+  // 재생 커서
+  const cx=rejX(tCur);
+  ctx.strokeStyle=C("ink"); ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,plotH); ctx.stroke();
+  // 호버: 그 시각 그 행의 발생 횟수
+  if(rejC.hover&&rejC.hover.x>REJ_LABEL){
+    const hx=rejC.hover.x, t=rejT(hx);
+    ctx.strokeStyle="rgba(137,135,129,0.55)";
+    ctx.beginPath(); ctx.moveTo(hx,0); ctx.lineTo(hx,plotH); ctx.stroke();
+    const ri=Math.floor((rejC.hover.y-(rejC.band?REJ_BAND:0))/REJ_ROW);
+    let tx="t="+t.toFixed(1)+"s";
+    if(ri>=0&&ri<rejC.rows.length){
+      const r=rejC.rows[ri], i=bisect(r.t,t);
+      tx=r.name+"  "+(i>=0?r.d[i]:0)+"회/s  (총 "+r.total+")";
+    }else if(rejC.band&&rejC.hover.y<REJ_BAND){
+      const i=bisect(D.spliced.t,t);
+      tx="회피 경로 점 "+(i>=0?D.spliced.v[i]:0)+"개";
+    }
+    ctx.font="11px system-ui";
+    const tw=ctx.measureText(tx).width+10;
+    let bx=hx+8; if(bx+tw>w) bx=hx-tw-8;
+    const by=Math.min(plotH-20,Math.max(2,rejC.hover.y-20));
+    ctx.fillStyle="rgba(13,13,13,0.92)"; ctx.fillRect(bx,by,tw,16);
+    ctx.strokeStyle=C("border"); ctx.strokeRect(bx,by,tw,16);
+    ctx.fillStyle=C("ink"); ctx.textAlign="left"; ctx.fillText(tx,bx+5,by+12);
+  }
+}
+
 /* ================= 타임라인 ================= */
 const tl=$("timeline"), tlctx=tl.getContext("2d");
 function drawTimeline(){
@@ -1387,6 +1857,9 @@ function drawTimeline(){
   }
   tlctx.fillStyle="rgba(208,59,59,0.3)";
   D.estop.forEach(([a,b])=>tlctx.fillRect(X(a),10,Math.max(2,X(b)-X(a)),h-20));
+  // 랩 경계
+  tlctx.fillStyle="rgba(144,133,233,0.55)";
+  lapEdges().forEach(t=>tlctx.fillRect(X(t),10,1,h-20));
   // 이벤트 틱
   D.events.forEach(e=>{
     tlctx.fillStyle=e.k==="ERR"?C("crit"):e.k==="WARN"?C("warn"):C("blue");
@@ -1405,6 +1878,82 @@ tl.addEventListener("mousedown",e=>{ tlSeek(e);
   const mv=ev=>tlSeek(ev), up=()=>{ window.removeEventListener("mousemove",mv);
     window.removeEventListener("mouseup",up); };
   window.addEventListener("mousemove",mv); window.addEventListener("mouseup",up); });
+
+/* ================= 랩 =================
+   서버가 frenet s의 wrap으로 잘라둔 구간. 재생하면서 랩이 끝날 때마다
+   목록에 한 줄씩 쌓이고, 맵 위에 잠깐 랩 타임이 뜬다. */
+const TOAST_SEC=2.0;
+let bestLap=-1, lastDoneLap=-2;
+function lapEdges(){
+  if(!D.laps||!D.laps.length) return [];
+  const e=D.laps.map(l=>l.t0); e.push(D.laps[D.laps.length-1].t1); return e;
+}
+function buildLaps(){
+  const box=$("lapBox"), list=$("lapList");
+  list.innerHTML=""; bestLap=-1; lastDoneLap=-2;
+  if(!D.laps||!D.laps.length){ box.classList.remove("show"); return; }
+  box.classList.add("show");
+  $("lapSrc").textContent=D.trackLen.toFixed(1)+" m";
+  D.laps.forEach((lp,i)=>{ if(bestLap<0||lp.dur<D.laps[bestLap].dur) bestLap=i; });
+  D.laps.forEach((lp,i)=>{
+    const d=document.createElement("div");
+    d.className="lp"+(i===bestLap?" best":"");
+    d.style.display="none";
+    d.innerHTML=`<span class="n">${lp.n}랩</span><span class="tm">${lp.dur.toFixed(2)}s</span>`;
+    d.title=`평균 ${lp.vMean} m/s · 최고 ${lp.vMax} m/s\nCTE 평균 ${lp.cteMean} m · 최대 ${lp.cteMax} m`;
+    d.onclick=()=>seek(lp.t0+0.05);
+    list.appendChild(d);
+  });
+  const run=document.createElement("div");
+  run.className="lp run"; run.id="lapRun"; run.style.display="none";
+  list.appendChild(run);
+}
+function curLapIdx(){
+  if(!D.laps) return -1;
+  for(let i=0;i<D.laps.length;i++)
+    if(tCur>=D.laps[i].t0&&tCur<D.laps[i].t1) return i;
+  return -1;
+}
+function updateLaps(){
+  const el=$("lapToast");
+  if(!D.laps||!D.laps.length){ el.style.opacity=0; $("stL").innerHTML="–<small> s</small>"; return; }
+  const list=$("lapList"), run=$("lapRun");
+  let done=-1;
+  for(let i=0;i<D.laps.length;i++) if(tCur>=D.laps[i].t1) done=i;
+  if(done!==lastDoneLap){
+    for(let i=0;i<D.laps.length;i++){
+      const row=list.children[i];
+      row.style.display=(i<=done)?"flex":"none";
+      row.classList.toggle("cur",i===done);
+    }
+    lastDoneLap=done;
+    if(done>=0&&playing) list.children[done].scrollIntoView({block:"nearest"});
+  }
+  // 진행 중인 랩
+  const ci=curLapIdx(), last=D.laps[D.laps.length-1];
+  let label=null, el_t=0;
+  if(ci>=0){ label=D.laps[ci].n+"랩"; el_t=tCur-D.laps[ci].t0; }
+  else if(tCur>last.t1){ label=(last.n+1)+"랩"; el_t=tCur-last.t1; }
+  else if(tCur<D.laps[0].t0){ label="아웃랩"; el_t=tCur; }
+  if(label){ run.style.display="flex";
+    run.innerHTML=`<span class="n">${label}</span><span class="tm">${el_t.toFixed(1)}s</span>`; }
+  else run.style.display="none";
+  $("stL").innerHTML=(label?label.replace("랩","")+" · ":"")
+    +el_t.toFixed(1)+"<small> s</small>";
+  // 랩 완료 토스트
+  let hit=-1;
+  for(let i=0;i<D.laps.length;i++){
+    const age=tCur-D.laps[i].t1;
+    if(age>=0&&age<TOAST_SEC){ hit=i; break; }
+  }
+  if(hit<0){ el.style.opacity=0; return; }
+  const lp=D.laps[hit], age=tCur-lp.t1;
+  const dt=lp.dur-D.laps[bestLap].dur;
+  el.style.opacity=String(Math.max(0,1-age/TOAST_SEC));
+  el.style.borderColor=(hit===bestLap)?C("violet"):C("blue");
+  el.innerHTML=`${lp.n}랩 ${lp.dur.toFixed(2)}s`
+    +`<small>${hit===bestLap?"베스트":(dt>0?"+":"")+dt.toFixed(2)}</small>`;
+}
 
 /* ================= 이벤트 로그 ================= */
 function buildEvents(){
@@ -1432,7 +1981,8 @@ function highlightEvent(){
 function seek(t){ tCur=Math.max(0,Math.min(D.duration,t)); drawAll(); }
 function drawAll(){
   if(!D) return;
-  drawTrack(); charts.forEach(drawCursor); drawTimeline(); updateStats(); highlightEvent();
+  drawTrack(); charts.forEach(drawCursor); drawRejects(); drawTimeline();
+  updateStats(); updateLaps(); highlightEvent();
 }
 function updateStats(){
   $("stT").innerHTML=tCur.toFixed(1)+"<small> s</small>";
@@ -1506,6 +2056,16 @@ def main():
         print("look      :", len(d["look"]["t"]), "pts")
         print("particles :", len(d["particles"]), "msgs")
         print("obstacles :", len(d["obs"]), "msgs")
+        print("servo     :", d["servoTopic"], len(d["servo"]["t"]), "pts  rails",
+              d["steerRails"], "deg  (%s)" % d["calibSrc"])
+        print("laps      : %d개  src=%s  L=%.2fm" % (len(d["laps"]), d["lapSrc"], d["trackLen"]))
+        for lp in d["laps"]:
+            print("   %2d랩  %6.2fs  v̄=%s v̂=%s  cte̅=%s ĉte=%s"
+                  % (lp["n"], lp["dur"], lp["vMean"], lp["vMax"], lp["cteMean"], lp["cteMax"]))
+        print("rejects   :", len(d["rejects"]), "사유")
+        for r in d["rejects"]:
+            print("   %-42s %6d회  %s" % (r["name"], r["total"], "OK" if r["ok"] else ""))
+        print("spliced   :", len(d["spliced"]["t"]), "pts   apex:", len(d["apex"]["t"]))
         print("events    :", len(d["events"]))
         print("estop     :", d["estop"][:5], "..." if len(d["estop"]) > 5 else "")
         print("laser off :", d["laserOff"])

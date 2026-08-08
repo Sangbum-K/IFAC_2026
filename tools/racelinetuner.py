@@ -27,12 +27,9 @@
 """
 
 import argparse
-import glob
 import importlib.util
 import json
-import math
 import os
-import sqlite3
 import sys
 import threading
 import time
@@ -51,11 +48,6 @@ PARAMS_YAML = SRC_PKG / "config" / "params.yaml"
 # 화면은 파이썬 문자열이 아니라 실제 .html 파일로 둔다 — 중괄호/역슬래시 이스케이프
 # 사고가 없고, 편집기에서 JS/CSS 하이라이팅이 그대로 먹는다.
 PAGE_PATH = HERE / "racelinetuner.html"
-# 백을 찾을 곳 (한 단계 아래의 run_*/metadata.yaml 까지 본다).
-# bagviz.find_local_bags 는 HOME 과 HOME/IFAC_ws 바로 아래만 보므로
-# ~/IFAC_ws/rosbag/run_*/ 를 못 찾는다 — 그래서 여기 따로 둔다.
-BAG_ROOTS = (WORKSPACE_ROOT, WORKSPACE_ROOT / "rosbag", Path.home() / "bags")
-G = 9.81
 
 
 # ----------------------------------------------------------- 모듈 로딩
@@ -86,8 +78,11 @@ def load_resolver():
     return module
 
 
-def load_bagviz():
-    """CDR 리더/디코더를 재사용한다. 없으면 백 오버레이만 비활성."""
+def load_png_encoder():
+    """배경 맵 PNG 인코더를 bagviz 에서 빌려온다 (없으면 벽 셀 폴백).
+
+    이 도구가 bagviz 에 기대는 건 이제 이거 하나다 — 백 오버레이는 제거했다.
+    """
     path = HERE / "bagviz.py"
     if not path.is_file():
         return None
@@ -97,10 +92,7 @@ def load_bagviz():
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        for name in ("CDR", "dec_odom", "dec_float32", "png_gray_alpha"):
-            if not hasattr(module, name):
-                return None
-        return module
+        return getattr(module, "png_gray_alpha", None)
     except Exception:
         return None
 
@@ -198,6 +190,8 @@ class Session:
             v_max=parse_csv_vmax(base_csv))
         self.ds_out = ds_out
         self.undo_stack = []
+        # 막대를 잡고 있는 동안의 기준 상태 (speed_drag 참조). None 이면 안 잡음.
+        self.drag_base = None
         self.resumed = False
         self._resume()
 
@@ -247,6 +241,29 @@ class Session:
         return True
 
     # ------------------------------------------------------------ 편집
+    def drag_speed(self, operation):
+        """막대 하나를 잡고 끄는 동안 들어오는 연속 편집.
+
+        매 프레임을 독립 편집으로 처리하면 두 가지가 깨진다:
+          - 되돌리기 한 번이 마우스 1 px 이 된다 (드래그 하나를 못 무른다)
+          - 이전 프레임 결과 위에 falloff 를 또 얹어서 주변이 계단식으로 밀린다
+            (손은 제자리인데 옆 막대만 계속 올라간다)
+        그래서 잡는 순간의 v/pinned 를 기억해 두고 **매 프레임 거기서 다시**
+        set_speed 를 한 번만 건다. 결과는 커서 위치의 함수라 왔다 갔다 해도
+        같은 자리면 같은 값이다. 되돌리기 스냅샷은 잡을 때 딱 한 번 쌓는다.
+        """
+        phase = operation.get("phase", "move")
+        if phase == "start" or self.drag_base is None:
+            self.snapshot_undo()
+            self.drag_base = (self.state.v.copy(), self.state.pinned.copy())
+        base_speed, base_pinned = self.drag_base
+        self.state.v = base_speed.copy()
+        self.state.pinned = base_pinned.copy()
+        self.state.set_speed(int(operation["index"]),
+                             float(operation["value"]))
+        if phase == "end":
+            self.drag_base = None
+
     def apply(self, operations):
         state = self.state
         messages = []
@@ -254,9 +271,16 @@ class Session:
         for operation in operations:
             kind = operation.get("op")
             if kind == "undo":
+                self.drag_base = None
                 if not self.undo():
                     messages.append("되돌릴 편집이 없습니다")
                 continue
+            if kind == "speed_drag":
+                self.drag_speed(operation)
+                continue
+            # 드래그 도중에 다른 편집이 끼어들면(단축키 등) 기준 상태를 버린다 —
+            # 안 그러면 다음 프레임이 그 편집을 지운 상태에서 다시 시작한다.
+            self.drag_base = None
             self.snapshot_undo()
             if kind == "anchor_xy":
                 index = int(operation["index"]) % state.n
@@ -327,7 +351,7 @@ class Session:
         return snapshot
 
 
-def map_layers(track, bagviz):
+def map_layers(track, png_gray_alpha):
     """배경 occupancy PNG (없으면 벽 셀 좌표로 폴백).
 
     ⚠️ 행 순서를 건드리지 않는다. map_server 규약대로 **row 0 = world y 최대**다.
@@ -346,18 +370,17 @@ def map_layers(track, bagviz):
         "wall_px": None,
         "png": None,
     }
-    if bagviz is not None:
+    if png_gray_alpha is not None:
         # 주행 가능 = 밝게, 벽/unknown = 어둡게. ring 밖은 반투명으로 남겨
         # '트랙으로 인식되지 않은 free 공간'이 눈에 보이게 한다.
         gray = np.where(track.ring, 245, np.where(track.free_raw, 205, 70))
         alpha = np.where(track.ring, 255, np.where(track.free_raw, 90, 210))
-        png = bagviz.png_gray_alpha(
-            gray.astype(np.uint8), alpha.astype(np.uint8))
+        png = png_gray_alpha(gray.astype(np.uint8), alpha.astype(np.uint8))
         import base64
         layer["png"] = "data:image/png;base64," + \
             base64.b64encode(png).decode("ascii")
     else:
-        # PNG 를 못 만들면(bagviz 없음) 벽 셀을 좌표로 보낸다. 월드 좌표라
+        # PNG 를 못 만들면(인코더 없음) 벽 셀을 좌표로 보낸다. 월드 좌표라
         # 방향이 틀릴 여지가 없지만 26k 점이라 300 KB 쯤 된다 — 그래서 폴백.
         rows, cols = np.nonzero(~track.ring)
         layer["wall_px"] = {"cols": cols.tolist(), "rows": rows.tolist()}
@@ -395,178 +418,12 @@ def verify_map_layer_orientation(track):
     return agree == len(truth), f"배경 정합 {agree}/{len(truth)}"
 
 
-# ----------------------------------------------------------- 백 오버레이
-def find_bags(roots=BAG_ROOTS, limit=60):
-    """rosbag2 백 폴더를 찾는다 (`<root>/**/metadata.yaml`, 2단계까지)."""
-    found = {}
-    for root in roots:
-        root = Path(root)
-        if not root.is_dir():
-            continue
-        for pattern in ("*/metadata.yaml", "*/*/metadata.yaml"):
-            for meta in root.glob(pattern):
-                directory = meta.parent
-                databases = sorted(directory.glob("*.db3"))
-                if not databases:
-                    continue
-                key = str(directory.resolve())
-                if key in found:
-                    continue
-                found[key] = {
-                    "path": key,
-                    "name": directory.name,
-                    "parent": directory.parent.name,
-                    "mtime": databases[0].stat().st_mtime,
-                    "size_mb": round(sum(
-                        db.stat().st_size for db in databases) / 1e6, 1),
-                }
-    ordered = sorted(found.values(), key=lambda item: -item["mtime"])
-    return ordered[:limit]
-
-
-def decode_odom_with_yaw_rate(bagviz, blob):
-    """nav_msgs/Odometry → (x, y, yaw, speed, yaw_rate).
-
-    bagviz.dec_odom 은 twist 의 **선속도까지만** 읽고 (x, y, yaw, speed) 4개를
-    돌려준다. 남은 그립을 보려면 yaw rate 가 필요하다 (a_lat = yaw_rate * v).
-    그래서 bagviz 를 고치지 않고 그쪽 CDR 프리미티브로 여기서 한 번 더 읽는다.
-    필드 순서: pose(x,y,z,q×4) + 공분산 36 + twist linear 3 + angular 3.
-    """
-    cursor = bagviz.CDR(blob)
-    cursor.header()
-    cursor.string()                                   # child_frame_id
-    x, y, _z, qx, qy, qz, qw = cursor.f64n(7)
-    cursor.skip_f64(36)                               # pose covariance
-    vx, vy, _vz = cursor.f64n(3)
-    _wx, _wy, wz = cursor.f64n(3)
-    speed = math.hypot(vx, vy) * (1.0 if vx >= 0.0 else -1.0)
-    return x, y, bagviz.quat_yaw(qx, qy, qz, qw), speed, wz
-
-
-def read_bag(bagviz, bag_dir, line_xy, line_s, max_points=6000):
-    """실주행 궤적 + 실측 속도/횡가속/횡오차를 라인 위 s 로 정리한다.
-
-    새 디코더를 만들지 않는다 — bagviz 의 CDR/dec_odom/dec_float32 를 그대로
-    쓴다. 횡가속은 IMU 대신 odom 의 (yaw rate x 속도)로 만든다: IMU 장착
-    오프셋/바이어스와 무관하고 디코더도 이미 있다.
-    """
-    if bagviz is None:
-        raise ValueError("bagviz.py 가 없어 백을 읽을 수 없습니다")
-    databases = sorted(Path(bag_dir).glob("*.db3"))
-    if not databases:
-        raise ValueError(f"백에 .db3 가 없습니다: {bag_dir}")
-    poses = []
-    lateral_errors = []
-    for database in databases:
-        uri = "file:%s?mode=ro" % urllib.parse.quote(str(database))
-        connection = sqlite3.connect(uri, uri=True)
-        try:
-            topics = {
-                name: (tid, typ) for tid, name, typ in
-                connection.execute("SELECT id, name, type FROM topics")}
-            base = connection.execute(
-                "SELECT MIN(timestamp) FROM messages").fetchone()[0] or 0
-            for topic, sink, decoder in (
-                    ("/pf/pose/odom", poses,
-                     lambda blob: decode_odom_with_yaw_rate(bagviz, blob)),
-                    ("/pitwall/lat_err", lateral_errors, bagviz.dec_float32)):
-                if topic not in topics:
-                    continue
-                for stamp, blob in connection.execute(
-                        "SELECT timestamp, data FROM messages "
-                        "WHERE topic_id=? ORDER BY timestamp",
-                        (topics[topic][0],)):
-                    try:
-                        sink.append(((stamp - base) / 1e9, decoder(blob)))
-                    except Exception:
-                        continue
-        finally:
-            connection.close()
-    if not poses:
-        raise ValueError(
-            "/pf/pose/odom 이 없습니다 — 위치추정이 도는 상태로 딴 백이어야 합니다")
-
-    times = np.array([row[0] for row in poses], dtype=float)
-    decoded = [row[1] for row in poses]
-    x = np.array([item[0] for item in decoded], dtype=float)
-    y = np.array([item[1] for item in decoded], dtype=float)
-    speed = np.array([item[3] for item in decoded], dtype=float)
-    yaw_rate = np.array([item[4] for item in decoded], dtype=float)
-    if not np.any(np.abs(yaw_rate) > 1e-6):
-        # PF 가 twist.angular 을 안 채우는 설정도 있다. 그때는 yaw 를 시간으로
-        # 미분해서 쓴다 (노이즈는 크지만 0 으로 두면 그립 그래프가 통째로 거짓).
-        yaw = np.unwrap(np.array([item[2] for item in decoded], dtype=float))
-        stamps = np.array([row[0] for row in poses], dtype=float)
-        step = np.gradient(stamps)
-        yaw_rate = np.gradient(yaw) / np.where(step > 1e-6, step, np.nan)
-        yaw_rate = np.nan_to_num(yaw_rate)
-    keep = np.isfinite(x) & np.isfinite(y) & np.isfinite(speed)
-    times, x, y, speed, yaw_rate = (
-        times[keep], x[keep], y[keep], speed[keep], yaw_rate[keep])
-    if len(x) < 10:
-        raise ValueError("쓸 만한 pose 표본이 너무 적습니다")
-
-    # 라인 위 s 로 투영 (최근접 스테이션). 랩 분할과 그래프 x축이 s 여야
-    # 계획 프로파일과 나란히 비교된다.
-    line_xy = np.asarray(line_xy, dtype=float)
-    line_s = np.asarray(line_s, dtype=float)
-    track_length = float(line_s[-1] + np.hypot(*(line_xy[0] - line_xy[-1])))
-    station = np.argmin(
-        (x[:, None] - line_xy[None, :, 0]) ** 2 +
-        (y[:, None] - line_xy[None, :, 1]) ** 2, axis=1)
-    s = line_s[station]
-    lateral = yaw_rate * speed
-    if lateral_errors:
-        error_times = np.array([row[0] for row in lateral_errors], dtype=float)
-        error_values = np.array([row[1] for row in lateral_errors], dtype=float)
-        lateral_error = np.interp(times, error_times, error_values)
-    else:
-        lateral_error = np.full(len(times), np.nan)
-
-    laps = []
-    start = 0
-    for index in range(1, len(s)):
-        if s[index - 1] > 0.8 * track_length and s[index] < 0.2 * track_length:
-            laps.append((start, index))
-            start = index
-    laps.append((start, len(s)))
-    laps = [(a, b) for a, b in laps if b - a > 20]
-
-    def pack(a, b):
-        stride = max(1, (b - a) // max_points)
-        section = slice(a, b, stride)
-        return {
-            "t": np.round(times[section], 3).tolist(),
-            "x": np.round(x[section], 4).tolist(),
-            "y": np.round(y[section], 4).tolist(),
-            "s": np.round(s[section], 3).tolist(),
-            "v": np.round(speed[section], 3).tolist(),
-            "a_lat": np.round(lateral[section], 3).tolist(),
-            "required_mu": np.round(np.abs(lateral[section]) / G, 4).tolist(),
-            "lat_err": [
-                None if not math.isfinite(value) else round(value, 4)
-                for value in lateral_error[section]],
-            "lap_time": round(float(times[b - 1] - times[a]), 2),
-        }
-
-    return {
-        "name": Path(bag_dir).name,
-        "path": str(bag_dir),
-        "duration": round(float(times[-1] - times[0]), 2),
-        "has_lat_err": bool(lateral_errors),
-        "laps": [pack(a, b) for a, b in laps],
-        "all": pack(0, len(s)),
-    }
-
-
 # ----------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     server_version = "racelinetuner/1.0"
     session = None
     resolver = None
-    bagviz = None
     layers = None
-    bag_roots = BAG_ROOTS
     lock = threading.Lock()
 
     def log_message(self, fmt, *args):        # 요청 로그로 콘솔을 덮지 않는다
@@ -586,7 +443,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        query = urllib.parse.parse_qs(parsed.query)
         if parsed.path in ("/", "/index.html"):
             # 매 요청마다 읽는다 — 화면을 고치고 새로고침만 하면 반영된다.
             body = PAGE_PATH.read_bytes()
@@ -601,24 +457,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.lock:
                     payload = self.session.payload()
                 payload["layers"] = self.layers
-                payload["bags_available"] = self.bagviz is not None
                 self._send(payload)
-                return
-            if parsed.path == "/api/bags":
-                self._send({"bags": find_bags(self.bag_roots)})
-                return
-            if parsed.path == "/api/bag":
-                path = (query.get("path") or [""])[0]
-                allowed = any(
-                    Path(path).resolve().is_relative_to(Path(root).resolve())
-                    for root in self.bag_roots if Path(root).is_dir())
-                if not path or not allowed:
-                    self._fail("허용된 백 폴더가 아닙니다")
-                    return
-                with self.lock:
-                    out = self.session.state.output()
-                self._send(read_bag(
-                    self.bagviz, path, out["xy"], out["s"]))
                 return
         except Exception as exc:
             self._fail(f"{type(exc).__name__}: {exc}", 500)
@@ -670,16 +509,13 @@ def main():
     parser.add_argument("--port", type=int, default=8770)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
-        "--bag-dir", action="append", default=[],
-        help="백을 추가로 찾을 폴더 (여러 번 지정 가능)")
-    parser.add_argument(
         "--list", action="store_true", help="편집 가능한 라인만 출력하고 종료")
     arguments = parser.parse_args()
 
     if not PAGE_PATH.is_file():
         raise SystemExit(f"화면 파일이 없습니다: {PAGE_PATH}")
     resolver = load_resolver()
-    bagviz = load_bagviz()
+    png_encoder = load_png_encoder()
     if arguments.list:
         for name, entry in sorted(list_lines(resolver).items()):
             print("%-22s 원본=%s  튜닝본=%s" % (
@@ -690,7 +526,7 @@ def main():
     map_name, base_csv = resolve_target(resolver, arguments.map)
     session = Session(resolver, map_name, base_csv)
     ok, detail = verify_map_layer_orientation(session.track)
-    layers = map_layers(session.track, bagviz)
+    layers = map_layers(session.track, png_encoder)
 
     print(f"[racelinetuner] 맵      {session.map_yaml}")
     print(f"[racelinetuner] 원본    {session.base_path}")
@@ -701,18 +537,12 @@ def main():
           f"{session.state.corridor_margin:.2f} m, v_max "
           f"{session.state.v_max:.2f} m/s")
     print(f"[racelinetuner] 배경    {'OK' if ok else '⚠️ 확인 필요'} — {detail}")
-    if bagviz is None:
-        print("[racelinetuner] ⚠️ tools/bagviz.py 를 못 불러와 실주행 겹쳐보기가 "
-              "비활성입니다")
     for note in session.notes:
         print(f"[racelinetuner] {note}")
 
     Handler.session = session
     Handler.resolver = resolver
-    Handler.bagviz = bagviz
     Handler.layers = layers
-    Handler.bag_roots = tuple(BAG_ROOTS) + tuple(
-        Path(directory).expanduser() for directory in arguments.bag_dir)
 
     server = ThreadingHTTPServer(("127.0.0.1", arguments.port), Handler)
     url = f"http://127.0.0.1:{arguments.port}/"

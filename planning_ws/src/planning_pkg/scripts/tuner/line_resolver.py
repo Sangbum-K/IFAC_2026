@@ -1082,6 +1082,9 @@ class RacelineState:
                 if key != "per_point"},
             "limits": {
                 "v_min": self.v_min, "v_max": self.v_max,
+                # 기준 격자 간격. 브라우저가 드래그 중 미리보기를 그릴 때
+                # set_speed 와 같은 falloff 창(influence_m / ds_base)을 쓴다.
+                "ds_base": self.ds0,
                 "influence_m": self.influence_m,
                 "curvature_bias": self.curvature_bias,
                 "half_width": self.half_width,

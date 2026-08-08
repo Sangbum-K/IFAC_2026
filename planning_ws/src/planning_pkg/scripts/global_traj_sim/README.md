@@ -33,6 +33,11 @@ PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
 
 ### 옵션은 없다 — 상수를 고친다
 
+> 📄 **"CSV 속도가 왜 이 값인가"는 [SPEED_PARAMS.md](SPEED_PARAMS.md) 를 먼저 볼 것.**
+> 어느 상수가 속도를 정하고 어느 게 아무 효과도 없는지, 실차 백 실측 근거와
+> 게이트 스윕표까지 한 곳에 정리돼 있다. (요약: `V_MAX` 와 `MU_PROFILE` 은
+> 이 트랙에서 랩타임을 못 움직인다. `LAT_ERR_CORNER_S` 다.)
+
 **트랙 생성 파라미터**는 `build_map.py` 상단 `설정` 블록에 모여 있다
 (`MU` 0.75, `MU_PROFILE` 0.65, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP`
 True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
@@ -42,10 +47,12 @@ True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
 2배 넘게 변하는데(my_track 0.9~2.15 m) 균일 `SAFE_DIST` 하나로는 넓은 곳에서
 여유를 버리고 좁은 곳에서는 최적화가 '정중앙 고정'으로 꺼진다. 지금은
 `ADAPTIVE_SAFE_DIST=True`에서 각 지점의 코리도 폭 × `SAFE_DIST_WIDTH_FRAC`
-(0.30)을 `[SAFE_DIST_MIN 0.22, SAFE_DIST_MAX 0.45]`로 자른 값을 쓰고, 차 전장
+(0.30)을 `[SAFE_DIST_MIN 0.22, SAFE_DIST_MAX 0.55]`로 자른 값을 쓰고, 차 전장
 창으로 rolling-min 해서 좁은 게이트 앞에서 미리 완화한다. 좁혀서 얻은 여유는
 `ADAPTIVE_SPEED_BY_WIDTH`가 속도로 갚는다 —
-`v ≤ (벽여유 − 차 반폭) / LAT_ERR_PER_MPS(0.045 s)`.
+`v ≤ (벽여유 − 차 반폭) / lat_err_slope`. 이 기울기는 이제 단일 상수가 아니라
+직전 곡률로 `LAT_ERR_STRAIGHT_S`(0.030) ↔ `LAT_ERR_CORNER_S`(0.117) 사이를
+보간한 값이다 (옛 `LAT_ERR_PER_MPS` 는 없어졌다 — 자세한 건 SPEED_PARAMS.md).
 `ADAPTIVE_SAFE_DIST=False`로 두면 예전 균일 `SAFE_DIST` 동작이다.
 
 > **실차 첫 주행 팁:** 보수적으로 시작 → `V_MAX 5.0 / MU 0.6`. 잘 돌면
