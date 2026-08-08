@@ -33,7 +33,6 @@ RViz 사용법 (unicorn 튜토리얼과 동일):
 
 import glob
 import os
-import re
 import yaml
 
 from ament_index_python.packages import get_package_share_directory
@@ -58,11 +57,6 @@ PARK_POSES = {
     # 맵 x:[-7.8,8.3] y:[-2.1,5.9]). 같은 좌상단 바깥 구석을 쓴다.
     'my_track0807': (-12.0, 8.5),
 }
-
-_CSV_PARAM_RE = re.compile(
-    r'_max([0-9]+(?:\.[0-9]+)?)ms_.*?'
-    r'margin([0-9]+(?:\.[0-9]+)?)m_mu'
-    r'([0-9]+(?:\.[0-9]+)?)\.csv$')
 
 
 def _read_start_pose(csv_path):
@@ -217,7 +211,7 @@ def launch_setup(context, *args, **kwargs):
     if perception_mode not in ('ground_truth', 'lidar'):
         raise RuntimeError(
             f'perception:={perception_mode!r} 는 ground_truth | lidar 중 하나여야 합니다')
-    for bool_arg in ('rviz', 'tracker', 'tuner'):
+    for bool_arg in ('rviz', 'tracker'):
         value = LaunchConfiguration(bool_arg).perform(context).strip().lower()
         if value not in ('true', 'false'):
             raise RuntimeError(
@@ -275,26 +269,6 @@ def launch_setup(context, *args, **kwargs):
                     {'opponent/park_x': park_x, 'opponent/park_y': park_y}],
         output='screen',
     )
-    # 레이스라인 튜너 (tuner:=true 로 시뮬과 함께 실행 — 같은 RViz에서
-    # 보라 핸들 드래그로 라인/속도 편집. 소스 CSV를 편집하므로 저장 후 재빌드)
-    tuner_params = {'tuner/raceline_csv': os.path.expanduser(
-        '~/IFAC_ws/planning_ws/src/planning_pkg/config/global_trajectory/'
-        + traj_csv)}
-    csv_params = _CSV_PARAM_RE.search(traj_csv)
-    if csv_params:
-        tuner_params.update({
-            'tuner/v_max_mps': float(csv_params.group(1)),
-            'tuner/corridor_margin_m': float(csv_params.group(2)),
-            'tuner/mu': float(csv_params.group(3)),
-        })
-    tuner_node = Node(
-        package='planning_pkg',
-        executable='raceline_tuner_node.py',
-        name='raceline_tuner_node',
-        parameters=[tuner_params],
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('tuner')),
-    )
     # lidar 모드에선 raw frenet 관측이 /perception/obstacles_frenet으로 오므로 remap
     opponent_predictor_node = Node(
         package='planning_pkg',
@@ -322,7 +296,6 @@ def launch_setup(context, *args, **kwargs):
         opp_robot_publisher,
         planner_stack,
         tracker_node,
-        tuner_node,
         virtual_obstacle_node,
         opponent_driver_node,
         opponent_predictor_node,
@@ -348,8 +321,6 @@ def generate_launch_description():
                               description='RViz 실행 여부'),
         DeclareLaunchArgument('tracker', default_value='true',
                               description='Python 트래커 실행 여부 (false면 C++ control_node 사용)'),
-        DeclareLaunchArgument('tuner', default_value='false',
-                              description='레이스라인 튜너 함께 실행 (같은 RViz에서 편집)'),
         DeclareLaunchArgument('perception', default_value='ground_truth',
                               description='ground_truth: 가상 장애물 GT 직접 주입(기존), '
                                           'lidar: 실제 perception 체인 '

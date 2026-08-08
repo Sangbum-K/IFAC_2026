@@ -100,8 +100,10 @@ private:
   // d corridor < cluster_gap_d)을 하나의 (s,d) 박스로 병합.
   // 대각선 이중장애물을 개별로 보면 최근접 기준 고정 폭 회피만 시도하다
   // 트랙경계 abort로 포기한다 — 병합해야 "바깥으로 크게 도는" 해가 나온다.
+  // (non-const: 병합 보류 사유를 THROTTLE 로그로 남긴다. Node::get_clock()의
+  //  const 오버로드는 ConstSharedPtr을 돌려줘 RCLCPP_*_THROTTLE에 못 넣는다.)
   std::vector<f1tenth_planning_msgs::msg::Obstacle> ClusterObstacles(
-    std::vector<f1tenth_planning_msgs::msg::Obstacle> obstacles) const;
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> obstacles);
 
   // 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식):
   // 관측 이력의 위치 std 투표(min_std/max_std) + 정지 재분류(vs_reset)로
@@ -201,7 +203,40 @@ private:
   // 있는데 last_ot_side_="left"라 왼쪽을 고집해 회피가 전패했다.
   // (문턱 0.20m는 정상 추종오차보다 작아 |d| 조건만으로는 38~96%의 시간
   //  동안 참이 된다 — 사실상 상시 라치였다.)
-  bool SideKeepActive() const;
+  //
+  // 2026-08-08 추가: |cur_d_| 조건만으로는 **접근 구간**(아직 라인 위라
+  // |d|가 작음)에서 히스테리시스가 전혀 없었다. 0808 run_185049에서 같은
+  // 장애물의 관측 박스 폭이 0.28~1.25m로 흔들리며 left/right 판정이
+  // 프레임마다 뒤집혔고, 그 뒤집힘이 통과 직후 "사이드 전환"으로 이어져
+  // 로컬 경로를 반대편으로 점프시켰다(control 추종 백스톱 경로오차 0.5m).
+  // 그래서 "같은 장애물을 계속 회피하는 중"이면 |d|와 무관하게 유지한다.
+  // 장애물 id는 detector에서 초당 1.7개꼴로 갈리므로 id가 아니라 s 근접으로
+  // 판정한다. 유지는 **선호**일 뿐이고, 유지 사이드가 막히면 두 호출부가
+  // 모두 반대 사이드로 폴백하므로 데드락이 되지 않는다.
+  bool SideKeepActive(const f1tenth_planning_msgs::msg::Obstacle & obs) const;
+
+  // last_ot_side_ 와 사이드 잠금(대상 s + 시각)을 **함께** 갱신한다.
+  // 따로 갱신하면 잠금이 옛 장애물을 가리킨 채 남아, 다음 장애물의 사이드를
+  // 엉뚱하게 고정한다.
+  void CommitOtSide(
+    const std::string & side,
+    const f1tenth_planning_msgs::msg::Obstacle & obs);
+
+  // 두 장애물을 하나의 박스로 합치면 그 s 구간에서 통과 가능한 d가 하나도
+  // 남지 않는가. 남지 않으면 그 병합은 거의 항상 벽 리턴/유령과 실물이
+  // 합쳐진 산물이다 — 사전 필터는 낙관적이어야 하고 실제 가부는
+  // CheckPathCollision이 판정하므로 그런 병합은 하지 않는다.
+  bool MergeBlocksTrack(
+    const f1tenth_planning_msgs::msg::Obstacle & a,
+    const f1tenth_planning_msgs::msg::Obstacle & b,
+    double s_start, double s_end) const;
+
+  // 회피 거부 사유 누적 카운터. 거부 로그는 전부 THROTTLE(2000ms)인데 루프는
+  // 30Hz라 최대 1/60만 남는다 — 0808 run_185049 분석에서 "left가 왜 실패했나"가
+  // 대부분 지워져 있었다. 카운터는 전수를 세고 /pitwall/reject_<사유>로 낸다.
+  // const 경로(ClusterObstacles 등)에서도 세야 하므로 const + mutable 카운터.
+  void NoteReject(const char * reason) const;
+  void PublishRejectCounts();
 
   // [s_from, s_to] 구간에서 횡 전환에 쓸 수 있는 그립 [m/s²].
   // 마찰원 잔여 sqrt(path_lat_acc_max² - (kappa_ref·v_ref)²)의 구간 최소값.
@@ -343,6 +378,20 @@ private:
   // 라인 스위치 (기본 maneuver)
   bool use_lane_switch_{true};       // false면 기존처럼 DoSpline을 1순위로
   double lane_blend_out_m_{5.0};     // raceline 복귀 블렌드 길이 [m]
+  // ── 조기 라인 스위치 ──────────────────────────────────────────────────
+  // BuildLaneSwitch의 진입 블렌드는 "그립상 최소 전환거리 x 1.2"이고
+  // blend_start가 hold_start에서 딱 그만큼만 뒤로 물러나므로, 회피는 항상
+  // **최소 거리에서 최대 횡가속**으로 실행된다. 늦게 시작하는 근거는
+  // run_0806_155621 — 긴 진입 블렌드가 장애물과 무관한 상류의 좁은 구간을
+  // 오프셋 상태로 통과해 그 벽에 걸렸다 — 인데, 그 근거는 "상류가 좁을 때"만
+  // 성립한다. 상류가 넓고 곧으면 늦출 이유가 없다.
+  //   0808 run_185049: 장애물 s=31.7 앞 직선(kappa~0, 좌벽 1.07m)이 4.7m
+  //   비어 있는데 횡이동은 마지막 1.0~2.5m에서 일어났고, 6랩 중 4랩에서
+  //   조향이 하드웨어 한계(20.6도)에 포화하고 rate까지 clip됐다.
+  // 이 값보다 곡률이 작고, 진입 구간 내내 목표 오프셋이 벽 안에 들어가면
+  // 가용 거리를 다 써서 완만하게 옮긴다. 피크 횡가속은 6A/L²이므로 L을
+  // 1.8배로 늘리면 3분의 1이 된다. 0이면 이 완화를 끈다(옛 동작).
+  double early_switch_kappa_max_{0.10};   // [rad/m] 0.10 = 반경 10m
   bool spline_fallback_active_{false};  // "모든 레인 막힘 -> 스플라인" 상승엣지 이벤트용
   // "회피 포기(트랙경계)" 상승엣지 이벤트용. 이 사유는 매 사이클 재발생하므로
   // (30Hz x 8초 = 207회 실측) 엣지에서만 발행하지 않으면 pitwall 로그가 묻힌다.
@@ -448,6 +497,17 @@ private:
   bool has_gb_wpnts_{false};
   bool has_frenet_odom_{false};
   std::string last_ot_side_{""};
+  // 사이드 유지 잠금 (SideKeepActive 주석 참조). detector가 장애물 id를
+  // 자주 갈아치우므로 id가 아니라 "그때 그 장애물이 있던 s"로 동일성을
+  // 판정하고, 오래된 잠금은 시간으로 만료시킨다.
+  double ot_side_obs_s_{-1.0};
+  rclcpp::Time ot_side_stamp_{0, 0, RCL_ROS_TIME};
+  bool has_ot_side_obs_{false};
+  static constexpr double kOtSideLockDistM{1.5};   // 같은 장애물로 볼 s 오차
+  static constexpr double kOtSideLockSec{1.0};     // 잠금 유효 시간
+  // 거부 사유 카운터 (NoteReject/PublishRejectCounts).
+  mutable std::map<std::string, int> reject_counts_;
+  rclcpp::Time reject_publish_stamp_{0, 0, RCL_ROS_TIME};
   // 이번 사이클에 Tier1/Tier2가 "조향 기하 하한을 못 채움"(= 어떤 속도로도
   // 불가)으로 거부했는가. 매 Run() 시작에 false로 리셋한다.
   //

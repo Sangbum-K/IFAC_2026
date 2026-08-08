@@ -124,6 +124,10 @@ spliner_node:
     spliner/path_lat_acc_max: 6.6       # 오프셋 경로 횡그립 [m/s^2] (mu*g = 6.67)
     spliner/path_decel_max: 6.0         # raceline 프로파일 최대 요구 6.27과 정합
     spliner/lane_blend_out_m: 5.0       # 하한. 위 예산 계산값과 max로 결합
+    # 조기 라인 스위치 (근거는 params.yaml 주석). my_track은 R_min 1.35m /
+    # 평균 R 3.6m라 0.10(R>=10m)이면 s 27.5~32.2, 12~16 두 직선만 조기 전환
+    # 대상이 되고 헤어핀은 기존대로 늦게 전환한다.
+    spliner/early_switch_kappa_max: 0.10
     spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
                                         # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통

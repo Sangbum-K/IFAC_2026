@@ -113,6 +113,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     // 모든 레인이 막힐 때만 DoSpline을 폴백으로 호출한다. false면 기존 동작(DoSpline 우선).
     this->declare_parameter("spliner/use_lane_switch", true);
     this->declare_parameter("spliner/lane_blend_out_m", 5.0);
+    this->declare_parameter("spliner/early_switch_kappa_max", 0.10);
     this->declare_parameter("spliner/sp_lane_change", true);
     this->declare_parameter("spliner/sp_mapping_max_residual_m", 0.5);
     this->declare_parameter("spliner/vehicle_wheelbase_m", 0.33);
@@ -192,6 +193,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     ot_max_kappa_ = this->get_parameter("spliner/ot_max_kappa").as_double();
     use_lane_switch_ = this->get_parameter("spliner/use_lane_switch").as_bool();
     lane_blend_out_m_ = this->get_parameter("spliner/lane_blend_out_m").as_double();
+    early_switch_kappa_max_ =
+        this->get_parameter("spliner/early_switch_kappa_max").as_double();
     sp_lane_change_ = this->get_parameter("spliner/sp_lane_change").as_bool();
     sp_mapping_max_residual_m_ =
         this->get_parameter("spliner/sp_mapping_max_residual_m").as_double();
@@ -279,6 +282,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         ot_min_clearance_ <= 0.0 || ot_min_clearance_ > 10.0 ||
         ot_max_kappa_ <= 0.0 || ot_max_kappa_ > 5.0 ||
         lane_blend_out_m_ <= 0.0 || lane_blend_out_m_ > lookahead_m_ ||
+        early_switch_kappa_max_ < 0.0 || early_switch_kappa_max_ > 5.0 ||
         sp_mapping_max_residual_m_ < 0.05 || sp_mapping_max_residual_m_ > 1.0 ||
         vehicle_wheelbase_m_ < 0.1 || vehicle_wheelbase_m_ > 1.0 ||
         vehicle_max_steering_rad_ <= 0.0 || vehicle_max_steering_rad_ > 0.8 ||
@@ -1070,6 +1074,7 @@ void SplinerNode::Run() {
 
     p_evasion_wpnts_->publish(evasion_wpnts);
     p_markers_->publish(mrks);
+    PublishRejectCounts();
 }
 
 std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::FilterObstacles(
@@ -1278,7 +1283,7 @@ bool SplinerNode::TryLaneSwitch(
     // 장애물 사이로 끌려드는 충돌 원인 (DoSpline과 동일 정책).
     std::string more_side = MoreSpace(closest_obs).first;
     std::string first = more_side;
-    if (SideKeepActive()) {
+    if (SideKeepActive(closest_obs)) {
         first = last_ot_side_;
     }
     std::string second = (first == "left") ? "right" : "left";
@@ -1300,11 +1305,13 @@ bool SplinerNode::TryLaneSwitch(
                 (side == "left") ? closest_obs.d_left + need_clear
                                  : closest_obs.d_right - need_clear,
                 closest_obs.d_right, closest_obs.d_left);
+            NoteReject("lane_wall_no_room");
             continue;
         }
         if (BuildLaneSwitch(d_hold, closest_obs, all_ahead,
                             out_wpnts, out_mrks)) {
-            last_ot_side_ = side;
+            CommitOtSide(side, closest_obs);
+            NoteReject("ok_lane_switch");
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "LaneSwitch %s d_hold=%.2f s_apex=%.1f (%zu wpnts)",
                 side.c_str(), d_hold, Mod(s_apex, track_len_),
@@ -1467,6 +1474,7 @@ bool SplinerNode::BuildLaneSwitch(
                 "가용 %.2fm (v=%.1f, kappa=%.2f) — 어떤 속도로도 불가",
                 d_hold - cur_d_, BlendGeomFloor(d_hold - cur_d_, kappa_in),
                 available, cur_vs_, kappa_in);
+            NoteReject("lane_geom_floor");
             lane_switch_geom_infeasible_ = true;
             return false;
         }
@@ -1502,6 +1510,53 @@ bool SplinerNode::BuildLaneSwitch(
         blend_in = std::clamp(need_in * 1.2, need_in,
                               std::max(std::min(hold_start, blend_dist_max_m_),
                                        need_in));
+        // ── 조기 라인 스위치 ────────────────────────────────────────────
+        // 위 clamp 는 "최소 전환거리 x 1.2" 이고 아래 blend_start 가
+        // hold_start 에서 딱 그만큼만 물러나므로, 회피는 항상 **최소
+        // 거리에서 최대 횡가속**으로 실행된다. 늦게 시작하는 근거는
+        // run_0806_155621(긴 진입이 상류의 좁은 구간을 오프셋 상태로 통과해
+        // 벽에 걸림)인데, 그건 "상류가 좁을 때"만 성립한다.
+        //
+        // 상류가 넓고 곧으면 늦출 이유가 없다. 0808 run_185049 실측:
+        // 장애물 s=31.7 앞 직선(kappa~0, 좌벽 1.07m)이 4.7m 비어 있는데
+        // 횡이동은 마지막 1.0~2.5m 에서 일어났고, 6랩 중 4랩에서 조향이
+        // 하드웨어 한계(20.6도)에 포화하고 rate 까지 clip 됐다.
+        // d=0.55 / v=4.5 기준 피크 횡가속 6A/L²: 2.5m -> 5.3 m/s²,
+        // 4.5m -> 1.6 m/s². 같은 회피가 조향 20도에서 7도가 된다.
+        //
+        // 안전 조건 두 가지를 모두 만족할 때만 연장한다:
+        //  (1) 진입 구간 **내내**(MinWallInSpan) 목표 오프셋이 벽 안 —
+        //      즉 오프셋 상태로 통과해도 되는 구간이다. 이게 위 옛 사례가
+        //      요구하던 바로 그 조건이다.
+        //  (2) 그 구간 레이스라인 곡률이 early_switch_kappa_max_ 이하 —
+        //      코너에서는 오프셋이 곡률/그립을 흔들므로 기존대로 늦게.
+        // 속도 캡(entry_speed_cap)은 이미 available(= 장애물까지 전체 거리)
+        // 기준으로 계산됐으므로 여기서 더 느려지지 않는다.
+        if (early_switch_kappa_max_ > 0.0) {
+            const double early_span =
+                std::max(std::min(hold_start, blend_dist_max_m_), 0.0);
+            if (early_span > blend_in) {
+                const double s_from = Mod(cur_s_, track_len_);
+                const double s_to = Mod(cur_s_ + early_span, track_len_);
+                double wall_l, wall_r;
+                MinWallInSpan(s_from, s_to, wall_l, wall_r);
+                const double boundary =
+                    RequiredBoundaryMargin(spline_bound_mindist_);
+                const double room =
+                    ((d_hold >= 0.0) ? wall_l : wall_r) - boundary;
+                const double kappa_early = BlendKappaMax(s_from, s_to);
+                if (room >= std::abs(d_hold) &&
+                    kappa_early <= early_switch_kappa_max_) {
+                    RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+                        "LaneSwitch 조기 전환: 진입 %.2f -> %.2fm "
+                        "(구간 벽여유 %.2f >= |d_hold| %.2f, kappa %.3f)",
+                        blend_in, early_span, room, std::abs(d_hold),
+                        kappa_early);
+                    NoteReject("ok_early_switch");
+                    blend_in = early_span;
+                }
+            }
+        }
     }
     // 진입 블렌드가 hold 구간을 넘어가면 d 프로파일이 끊긴다.
     blend_in = std::min(blend_in, std::max(hold_end, wpnt_dist_));
@@ -1509,6 +1564,7 @@ bool SplinerNode::BuildLaneSwitch(
     if (!PlanSpanAllowed(total)) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 계획 스팬 %.1fm (한 바퀴 초과)", total);
+        NoteReject("lane_span_over_lap");
         return false;
     }
 
@@ -1516,6 +1572,7 @@ bool SplinerNode::BuildLaneSwitch(
     if (n < 8) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 경로 %d점 (최소 8)", n);
+        NoteReject("lane_too_few_points");
         return false;
     }
 
@@ -1620,6 +1677,7 @@ bool SplinerNode::BuildLaneSwitch(
     if (width_bad) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 통과폭이 차량 폭보다 좁은 구간 존재");
+        NoteReject("lane_width_negative");
         return false;
     }
     // 벽 때문에 오프셋을 줄여야 하는 경우의 **기하** 축소. (여기에 걸려 있던
@@ -1641,6 +1699,7 @@ bool SplinerNode::BuildLaneSwitch(
                 "LaneSwitch 거부: 벽 때문에 오프셋 %.2f -> %.2f로 축소되어 "
                 "장애물 간격 부족 (장애물 d[%.2f,%.2f])",
                 d_hold, d_fit, closest_obs.d_right, closest_obs.d_left);
+            NoteReject("lane_wall_clamped");
             return false;
         }
     }
@@ -1701,6 +1760,7 @@ bool SplinerNode::BuildLaneSwitch(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 속도 프로파일 불성립 (기하곡률>조향한계 또는 감속 불가, v=%.1f)",
             cur_vs_);
+        NoteReject("lane_speed_profile");
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -1710,6 +1770,7 @@ bool SplinerNode::BuildLaneSwitch(
     if (!CheckPathCollision(out_wpnts.wpnts, all_ahead, &blocking_s)) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 경로가 장애물과 충돌 (blocking s=%.2f)", blocking_s);
+        NoteReject("lane_collision");
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -1771,7 +1832,7 @@ bool SplinerNode::DoSpline(
     //      걸려 전패했고 그대로 충돌했다. 실제 안전은 아래 CheckPathCollision이
     //      판정하므로, 여기서 후보를 지울 이유가 없다.
     std::string desired = more_space;
-    if (SideKeepActive() && more_space != last_ot_side_) {
+    if (SideKeepActive(closest_obs) && more_space != last_ot_side_) {
         desired = last_ot_side_;
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "Keep OT side %s (proposed %s, mid-evasion d=%.2f)",
@@ -1804,10 +1865,31 @@ bool SplinerNode::DoSpline(
                 proposed_ok ? "성립" : "양쪽 불가");
             if (!proposed_ok) {
                 pitwall::Event("사이드 유지 불가 (" + desired + ")");
+                NoteReject("side_both_blocked");
+                return false;
+            }
+            // 이미 그 사이드로 몸이 나가 있으면 반대편으로 넘기지 않는다.
+            // d=+0.68에서 오른쪽으로 가려면 트랙을 가로질러야 하고, 그
+            // 경로는 장애물 정면을 지난다. 0808 run_185049에서 이 전환이
+            // 통과 직후 4랩(85.22 / 109.26 / 122.09 / 134.19)에 발생했고,
+            // 로컬 경로가 반대편으로 점프하면서 control 추종 백스톱을
+            // 발화시켰다(경로오차 0.37~0.63m -> 속도 1.5 m/s).
+            // 여기서 false를 돌려도 lane_switch/free_spline_geom_infeasible_
+            // 플래그를 세우지 않으므로 Tier3는 정지가 아니라
+            // trailing_retry_speed 감속으로 받는다 — 가로지르기보다 안전하다.
+            const bool committed_to_desired =
+                std::abs(cur_d_) > side_switch_d_tresh_ &&
+                ((cur_d_ > 0.0) ? (desired == "left") : (desired == "right"));
+            if (committed_to_desired) {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+                    "OT side 전환 거부: 이미 %s로 회피 중 (cur_d=%.2f) — "
+                    "가로지르지 않고 감속",
+                    desired.c_str(), cur_d_);
+                NoteReject("side_switch_blocked_mid_evasion");
                 return false;
             }
             pitwall::Event("사이드 전환 (" + desired + " -> " + more_space + ")");
-            last_ot_side_ = more_space;
+            CommitOtSide(more_space, closest_obs);
         }
     }
 
@@ -1872,6 +1954,7 @@ bool SplinerNode::DoSpline(
                 "가용 %.2fm (kappa=%.2f) — 어떤 속도로도 불가",
                 d_apex - cur_d_, BlendGeomFloor(d_apex - cur_d_, kappa_sp),
                 entry_avail_pre, kappa_sp);
+            NoteReject("spline_geom_floor");
             free_spline_geom_infeasible_ = true;
             return false;
         }
@@ -1945,6 +2028,7 @@ bool SplinerNode::DoSpline(
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "FreeSpline 거부: 이미 장애물 구간 내부 (cur_d=%.2f, %s 필요)",
                 cur_d_, more_space.c_str());
+            NoteReject("spline_inside_obstacle");
             // 위 BuildLaneSwitch 의 alongside 거부와 같은 이유로 기하 불성립
             // 플래그를 세운다 — 감속으로 벗어날 수 있는 상황이 아니다.
             free_spline_geom_infeasible_ = true;
@@ -1960,6 +2044,7 @@ bool SplinerNode::DoSpline(
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "FreeSpline 거부: ego가 절점 끝을 지남 (ego %.2f, 끝 %.2f)",
                 cur_unwrapped, knot_s.back());
+            NoteReject("spline_ego_past_knots");
             return false;
         }
         size_t keep = 0;
@@ -2020,6 +2105,7 @@ bool SplinerNode::DoSpline(
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                     "FreeSpline 거부: s=%.2f 통과폭 음수 (d_min %.2f > d_max %.2f)",
                     s_wrapped, d_min, d_max);
+                NoteReject("spline_width_negative");
                 out_wpnts.wpnts.clear();
                 return false;
             }
@@ -2045,6 +2131,7 @@ bool SplinerNode::DoSpline(
                 if (cuts_obstacle) {
                     RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                         "Evasion trajectory too close to TRACKBOUNDS, aborting evasion");
+                    NoteReject("spline_boundary_abort");
                     boundary_abort_now_ = true;
                     out_wpnts.wpnts.clear();
                     return false;
@@ -2058,6 +2145,7 @@ bool SplinerNode::DoSpline(
                 "FreeSpline 거부: 경계 이탈 s=%.2f d=%.2f (벽 L%.2f/R%.2f)",
                 s_wrapped, evasion_d[i], gb_wpnts_[gb_idx].d_left,
                 gb_wpnts_[gb_idx].d_right);
+            NoteReject("spline_out_of_bounds");
             out_wpnts.wpnts.clear();
             return false;
         }
@@ -2115,6 +2203,7 @@ bool SplinerNode::DoSpline(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "FreeSpline 거부: 속도 프로파일 불성립 (기하곡률>조향한계 또는 감속 불가, v=%.1f)",
             cur_vs_);
+        NoteReject("spline_speed_profile");
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -2125,6 +2214,7 @@ bool SplinerNode::DoSpline(
     if (!CheckPathCollision(out_wpnts.wpnts, all_ahead, &blocking_s)) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "FreeSpline 거부: 경로가 장애물과 충돌 (blocking s=%.2f)", blocking_s);
+        NoteReject("spline_collision");
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -2135,7 +2225,8 @@ bool SplinerNode::DoSpline(
             xy[i + 1].second - xy[i].second, xy[i + 1].first - xy[i].first);
     }
 
-    last_ot_side_ = more_space;
+    CommitOtSide(more_space, closest_obs);
+    NoteReject("ok_free_spline");
 
     // 시각화 마커
     out_mrks.markers.reserve(out_wpnts.wpnts.size());
@@ -2334,6 +2425,7 @@ bool SplinerNode::BuildTrailing(
     RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
         "Trailing fallback: obs s=%.1f gap=%.1fm v_target=%.1f d_ramp=%.1fm (%zu wpnts)",
         obs.s_center, span, v_target_actual, d_ramp_len, out_wpnts.wpnts.size());
+    NoteReject("trailing");
     return true;
 }
 
@@ -2757,8 +2849,53 @@ void SplinerNode::ClassifyObstacles(
     }
 }
 
+bool SplinerNode::MergeBlocksTrack(
+    const f1tenth_planning_msgs::msg::Obstacle &a,
+    const f1tenth_planning_msgs::msg::Obstacle &b,
+    double s_start, double s_end) const {
+    // 판정식은 MoreSpace와 완전히 같은 예산을 쓴다 — 여기서만 다르면
+    // "병합은 허용했는데 MoreSpace가 못 지나간다"거나 그 반대가 생긴다.
+    const double d_left = std::max(a.d_left, b.d_left);
+    const double d_right = std::min(a.d_right, b.d_right);
+    if (!std::isfinite(d_left) || !std::isfinite(d_right)) {
+        return false;   // 판단 불가 — 기존 동작(병합) 유지 = 보수적
+    }
+    double wall_left, wall_right;
+    MinWallInSpan(Mod(s_start - 0.5, track_len_),
+                  Mod(s_end + 0.5, track_len_), wall_left, wall_right);
+    // 요구 간격은 두 구성원 중 큰 쪽 (보수적).
+    const double need = std::max(RequiredObstacleClearance(a),
+                                 RequiredObstacleClearance(b));
+    const double min_space = need + RequiredBoundaryMargin(spline_bound_mindist_);
+    const double left_gap = wall_left - d_left;
+    const double right_gap = wall_right + d_right;
+    return left_gap < min_space && right_gap < min_space;
+}
+
+void SplinerNode::NoteReject(const char *reason) const {
+    if (reason == nullptr) {
+        return;
+    }
+    ++reject_counts_[reason];
+}
+
+void SplinerNode::PublishRejectCounts() {
+    // 1Hz. 거부 로그가 전부 THROTTLE(2000ms)인데 루프는 20~30Hz라 최대
+    // 1/40~1/60만 남는다 — 0808 run_185049 분석에서 "left 레인이 왜
+    // 실패했나"가 대부분 지워져 있었다. 카운터는 전수를 세므로 랩별
+    // 거부 사유 분포를 그대로 볼 수 있다 (Float32 하나당 수십 바이트).
+    const auto now = this->now();
+    if ((now - reject_publish_stamp_).seconds() < 1.0) {
+        return;
+    }
+    reject_publish_stamp_ = now;
+    for (const auto &kv : reject_counts_) {
+        pitwall::Log("reject_" + kv.first, static_cast<double>(kv.second));
+    }
+}
+
 std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
-    std::vector<f1tenth_planning_msgs::msg::Obstacle> obs) const {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> obs) {
     // 사이 corridor가 cluster_gap_d보다 좁고 s 간격이 cluster_gap_s 이내인
     // 쌍을 하나의 (s,d) 박스로 반복 병합 (합쳐진 박스가 또 다른 장애물과
     // 붙으면 다시 병합 — 수렴할 때까지)
@@ -2808,6 +2945,33 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
                     const double kap = BlendKappaMax(gap_from, gap_to);
                     if (BlendSpeedCap(need_lat, s_gap, a_lat, kap) > 0.0) {
                         // 사이로 지나갈 기하가 성립한다 — 병합하지 않는다.
+                        mergeable = false;
+                    }
+                }
+                // 병합 결과가 "트랙 전체가 막혔다"가 되면 그 병합은 거의
+                // 항상 벽 리턴/유령과 실물이 합쳐진 산물이다.
+                //   0808 run_185049: 실물은 s=31.7 d[-0.22,+0.19] 폭 0.41m
+                //   하나뿐인데(LiDAR 재구성), 1m 뒤 좌벽 리턴(s 0.30~0.50,
+                //   d[-0.08,+0.94], 맵 벽거리 0.25m)과 합쳐져 d[-0.28,+0.97]
+                //   폭 1.25m 박스가 됐다. 폭 1.47m 직선에서 좌우가 동시에
+                //   막혀 매 랩 TRAILING 제동으로 떨어졌고, 같은 박스가
+                //   커밋된 회피(StableObstacles 기반)까지 파기시켰다.
+                // 사전 필터는 낙관적이어야 하고 실제 가부는
+                // CheckPathCollision이 판정한다(이 파일의 일관된 정책) —
+                // 두 박스를 따로 두면 각각을 비켜 가는 해가 검증기까지 갈 수
+                // 있고, 정말 못 지나가면 거기서 정상적으로 거부된다.
+                if (mergeable) {
+                    const double m_start = Mod(ref + std::min(ai, aj), track_len_);
+                    const double m_end = Mod(ref + std::max(bi, bj), track_len_);
+                    if (MergeBlocksTrack(obs[i], obs[j], m_start, m_end)) {
+                        RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(),
+                            2000,
+                            "클러스터 병합 보류: 합치면 통과 가능한 d가 없음 "
+                            "(id %d+%d, s[%.1f,%.1f], d[%.2f,%.2f])",
+                            obs[i].id, obs[j].id, m_start, m_end,
+                            std::min(obs[i].d_right, obs[j].d_right),
+                            std::max(obs[i].d_left, obs[j].d_left));
+                        NoteReject("cluster_merge_blocks_track");
                         mergeable = false;
                     }
                 }
@@ -3049,12 +3213,51 @@ double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track) const {
     return std::min(std::sqrt(6.0 * a / spare), blend_dist_max_m_);
 }
 
-bool SplinerNode::SideKeepActive() const {
-    if (last_ot_side_.empty() || std::abs(cur_d_) <= side_switch_d_tresh_) {
+void SplinerNode::CommitOtSide(
+    const std::string &side,
+    const f1tenth_planning_msgs::msg::Obstacle &obs) {
+    last_ot_side_ = side;
+    if (std::isfinite(obs.s_center)) {
+        ot_side_obs_s_ = Mod(obs.s_center, std::max(track_len_, 1e-3));
+        ot_side_stamp_ = this->now();
+        has_ot_side_obs_ = true;
+    } else {
+        has_ot_side_obs_ = false;
+    }
+}
+
+bool SplinerNode::SideKeepActive(
+    const f1tenth_planning_msgs::msg::Obstacle &obs) const {
+    if (last_ot_side_.empty()) {
         return false;
     }
-    // d 부호가 유지 사이드와 같아야 "그 사이드로 회피 중"이다.
-    // (d>0 = 왼쪽, d<0 = 오른쪽 — Wpnt.d_left/d_right와 같은 부호 규약)
+    // (1) 같은 장애물을 계속 회피하는 중이면 |cur_d_|와 무관하게 유지한다.
+    //     예전 조건(|cur_d_| > 문턱)은 **접근 구간**에 히스테리시스를 전혀
+    //     주지 않았다 — 차가 아직 라인 위(|d| ~ 0.05)일 때가 정확히 좌우가
+    //     뒤집히는 구간이다. 0808 run_185049에서 같은 장애물의 관측 박스
+    //     폭이 0.28~1.25m로 흔들리며 left/right 판정이 프레임마다 바뀌었고,
+    //     그 결과 통과 직후 "사이드 전환 (left -> right)"이 4랩에서 발생해
+    //     로컬 경로가 반대편으로 점프했다(control 추종 백스톱 경로오차
+    //     0.37~0.63m -> 속도 1.5 m/s 캡, 통과 후 0.7~3.1초 크롤).
+    //     detector가 장애물 id를 초당 ~1.7개꼴로 갈아치우므로 동일성은
+    //     id가 아니라 s 근접으로 본다.
+    if (has_ot_side_obs_ && std::isfinite(obs.s_center) && track_len_ > 0.0) {
+        double ds = Mod(obs.s_center - ot_side_obs_s_, track_len_);
+        if (ds > track_len_ / 2.0) {
+            ds -= track_len_;
+        }
+        const double age = (this->now() - ot_side_stamp_).seconds();
+        if (std::abs(ds) <= kOtSideLockDistM &&
+            age >= 0.0 && age <= kOtSideLockSec) {
+            return true;
+        }
+    }
+    // (2) 기존 조건: 이미 그 사이드로 충분히 나가 있으면 유지.
+    //     d 부호가 유지 사이드와 같아야 "그 사이드로 회피 중"이다.
+    //     (d>0 = 왼쪽, d<0 = 오른쪽 — Wpnt.d_left/d_right와 같은 부호 규약)
+    if (std::abs(cur_d_) <= side_switch_d_tresh_) {
+        return false;
+    }
     return (cur_d_ > 0.0) ? (last_ot_side_ == "left")
                           : (last_ot_side_ == "right");
 }

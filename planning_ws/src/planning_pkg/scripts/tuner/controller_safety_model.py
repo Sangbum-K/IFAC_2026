@@ -42,12 +42,16 @@ from deployment_profiles import (          # noqa: E402,F401
 import deployment_profiles as _profiles     # noqa: E402
 
 G = 9.81
-MODEL_VERSION = 'tuner-controller-safety-2026-08-05-v3'
+MODEL_VERSION = 'tuner-controller-safety-2026-08-08-v4'
 # Restricted-AST digest of the generator functions that must remain numerically
 # paired with this lightweight copy.  Any generator algorithm edit locks tuner
 # saves until this model and its parity test are deliberately updated.
+# 2026-08-08 v4: velocity_profile now accepts per-waypoint longitudinal limits
+# so corners can run a narrower accel/decel band (build_map A_ACC_CORNER).  The
+# copy above was updated in the same change and the parity test re-run -- a
+# scalar call still reproduces the previous numbers exactly (broadcast).
 GENERATOR_MODEL_AST_SHA256 = (
-    '8ee562c228d312efda07c96ed65427d2af1354cd499c15a55245586a01d7929a')
+    'df30530319dbc3ddd738b5aebd19b734e50e28e38051102c9568d020c1b4b54f')
 VEHICLE_HALF_WIDTH_M = 0.15
 VEHICLE_HALF_LENGTH_M = 0.275
 
@@ -209,9 +213,14 @@ def _max_segment_endpoint_speed(
 
 def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
                      segment_ds, speed_ceiling=None, max_iterations=500):
-    """Closed-loop fixed-point projection with optional manual speed ceilings."""
-    values = (v_max, mu, a_acc_max, a_dec_max)
-    if not all(np.isfinite(value) and value > 0.0 for value in values):
+    """Closed-loop fixed-point projection with optional manual speed ceilings.
+
+    ``a_acc_max`` / ``a_dec_max`` accept a scalar or a per-waypoint array; the
+    generator uses arrays to narrow the longitudinal band inside corners
+    (``A_ACC_CORNER``).  Each segment takes the *smaller* of its two endpoint
+    limits, matching build_map.
+    """
+    if not all(np.isfinite(value) and value > 0.0 for value in (v_max, mu)):
         raise ValueError('velocity limits must be positive and finite')
     s = np.asarray(s, dtype=float)
     kappa = np.abs(np.asarray(kappa, dtype=float))
@@ -221,6 +230,15 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
             not np.isfinite(s).all() or not np.isfinite(kappa).all() or \
             not np.isfinite(segment_ds).all() or np.any(segment_ds <= 1e-6):
         raise ValueError('closed-loop velocity input is malformed')
+    accel_point = np.broadcast_to(
+        np.asarray(a_acc_max, dtype=float), (count,)).astype(float)
+    decel_point = np.broadcast_to(
+        np.asarray(a_dec_max, dtype=float), (count,)).astype(float)
+    if not np.isfinite(accel_point).all() or np.any(accel_point <= 0.0) or \
+            not np.isfinite(decel_point).all() or np.any(decel_point <= 0.0):
+        raise ValueError('velocity limits must be positive and finite')
+    accel_segment = np.minimum(accel_point, np.roll(accel_point, -1))
+    decel_segment = np.minimum(decel_point, np.roll(decel_point, -1))
     tire_limit = mu * G
     # Match build_map's 10 ppm reserve so 7-decimal CSV serialization cannot
     # turn an exactly-on-limit floating value into an over-limit value.
@@ -242,14 +260,15 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
             if v[following] >= v[index]:
                 safe = _max_segment_endpoint_speed(
                     v[index], kappa[index], kappa[following],
-                    segment_ds[index], a_acc_max, projection_limit,
+                    segment_ds[index], accel_segment[index], projection_limit,
                     v[following])
                 max_reduction = max(max_reduction, v[following] - safe)
                 v[following] = safe
             else:
                 safe = _max_segment_endpoint_speed(
                     v[following], kappa[following], kappa[index],
-                    segment_ds[index], a_dec_max, projection_limit, v[index])
+                    segment_ds[index], decel_segment[index], projection_limit,
+                    v[index])
                 max_reduction = max(max_reduction, v[index] - safe)
                 v[index] = safe
         if max_reduction < 1e-10:
@@ -264,8 +283,8 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
         next_v ** 2 * np.roll(kappa, -1))
     combined = np.hypot(worst_lateral, ax)
     invalid = (
-        (ax > a_acc_max + 1e-8) |
-        (ax < -a_dec_max - 1e-8) |
+        (ax > accel_segment + 1e-8) |
+        (ax < -decel_segment - 1e-8) |
         (combined > tire_limit + 1e-8))
     if np.any(invalid):
         bad = np.flatnonzero(invalid)

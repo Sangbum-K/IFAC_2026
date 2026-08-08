@@ -27,7 +27,7 @@ ROS 2 Humble / ament_cmake. `launch/planning.launch.py`(리포 최상위)로 실
 | `maps/` | 개발용 트랙 맵 (대회 맵은 교체) | Spielberg, Budapest |
 | `scripts/global_traj_sim/` | **오프라인 개발 도구** (.venv Python) | 완성·검증됨 |
 | `scripts/sim/` | 시뮬 전용 노드 3개 (tracker/obstacle/opponent) | 완성·검증됨 |
-| `scripts/tuner/`, `scripts/lib/` | 레이스라인 튜너, pitwall 텔레메트리 | 완성 |
+| `scripts/tuner/`, `scripts/lib/` | 웹 튜너 지원 모듈(line_resolver/안전모델), pitwall 텔레메트리 | 완성 |
 | `../pitwall_panel/` | RViz Pitwall 패널 (Qt 플러그인) | 완성 |
 | `../f1tenth_planning_msgs/` | 공용 메시지 (Wpnt/WpntArray/Obstacle/ObstacleArray) | 이식됨 — perception/control도 이 타입 사용 권장 |
 
@@ -206,7 +206,7 @@ python scripts/global_traj_sim/build_map.py Spielberg_map
 ### 2. 런타임 노드 (ROS 2, colcon 빌드)
 
 - raceline 추종/회피 노드는 위 표 참고. 시뮬 실행은 위
-  "RViz 시뮬레이션" 절, raceline 시각화·편집은 아래 "레이스라인 튜너" 절.
+  "RViz 시뮬레이션" 절, raceline 속도 편집은 아래 "레이스라인 속도 튜너" 절.
 
 ## 장애물 회피 (spliner_node)
 
@@ -358,39 +358,21 @@ vs(s)를 학습**하고, 자차/상대 속도 프로파일을 전방 적분해 "
 검증: colcon 빌드 + 가짜 odom/장애물 시나리오 (장애물 등장 → apex d=0.8 m
 회피 스플라인 + local 67/80 wpt 치환, 소멸 → 0.5 s 내 raceline 복귀 확인).
 
-## RViz 인터랙티브 레이스라인 튜너
+## 레이스라인 속도 튜너 (웹)
 
-HMCL unicorn 튜토리얼의 raceline_tuner를 ROS2로 구현한 것. 코너별로
-라인과 속도를 RViz에서 드래그로 조절한다. RViz 설정은 `sim_race.rviz`
-하나로 통합돼 있다 (튜너 핸들/미리보기 디스플레이 포함):
+RViz 인터랙티브 튜너는 삭제됐다. 지금은 브라우저 도구 하나뿐이다
+(`tools/racelinetuner.py`, alias `tune`) — **속도 프로파일만** 편집한다.
+라인 기하는 `mkcsv`(build_map.py)가 담당한다.
 
 ```bash
-# 방법 1: 시뮬과 함께 (같은 RViz에서 주행 보면서 편집)
-ros2 launch planning_pkg sim_race.launch.py map:=my_track0807 tuner:=true
-
-# 방법 2: 튜너만 단독 실행 (gym 불필요, 맵 + 튜너 + RViz)
-#   기본값이 my_track0807 기준 (stride 10 / falloff 3.13 / v_max 7.0 / 계획 mu 0.68)
-ros2 launch planning_pkg raceline_tuner.launch.py
-
-#   다른 맵은 map:= 하나만 — CSV는 <맵>_iqp_*.csv 로 자동 탐색
-ros2 launch planning_pkg raceline_tuner.launch.py \
-    map:=Spielberg_map stride:=25 falloff:=8.0 v_max:=15.0 mu:=0.85
+tune my_track0808          # 또는: python3 tools/racelinetuner.py my_track0808
 ```
 
-- **보라 구체** 드래그 → 주변이 코사인 falloff(`falloff:=`, 기본 ±8 m)로 함께 이동
-  (횡방향 성분만 적용, 벽에서 0.35 m 이내로는 못 들어가게 클램프)
-- **초록 수직 핸들** 드래그 → 그 구간 속도 조절 (높이 = 속도, 텍스트 표시)
-- 아무 핸들 **우클릭 메뉴**: 속도 재계산(마찰한계, 라인 수정 후 권장) /
-  실행취소(5회) / 전체 리셋 / CSV 저장
-- 미리보기: 파랑(느림)→빨강(빠름) 라인이 실시간 갱신
-
-저장은 **소스 트리의 CSV를 직접 수정**하고 원본은 `.bak`으로 백업한다.
-저장 후 `colcon build --packages-select planning_pkg` 해야 런타임에 반영.
-
-> `sim_race.launch.py tuner:=true` 는 CSV 경로만 넘기므로 stride/falloff/v_max/mu 가
-> **노드 기본값(25 / 8.0 / 12.0 / 0.85) 고정**이다 — my_track0807에선 드래그 범위가
-> 트랙 절반이 되고 "속도 재계산"이 12 m/s까지 올린다. 편집이 목적이면 방법 2를 쓸 것.
-> 자세한 건 [`scripts/tuner/README.md`](scripts/tuner/README.md).
+- 속도 그래프의 **막대를 잡고 위/아래로 드래그** → 그 구간 속도 조절
+  (주변은 "반영 범위"만큼 코사인 falloff로 따라온다)
+- **Shift+클릭** → 그 막대를 원본 값으로 되돌림 (핀 해제)
+- 원본은 건드리지 않고 `<맵>_tuned_iqp_*.csv` 로 저장한다.
+  저장 후 `./build_all.sh` → `rc <맵>_tuned`
 
 ## 포팅 TODO (통합 시 남은 작업)
 

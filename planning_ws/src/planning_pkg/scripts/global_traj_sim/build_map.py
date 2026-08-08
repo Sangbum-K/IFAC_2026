@@ -254,12 +254,96 @@ ADAPTIVE_SPEED_BY_WIDTH = True
 #    7.00 이 나오지만 폐루프 벽 침범이 160 step 이다. 코리도가 median 1.68 m
 #    (벽여유 0.55, 차 반폭 빼면 0.40) 라서 7 m/s 에서 라인을 못 잡는다.
 #    게이트를 통과하는 최고속은 6.43 (corner 0.114, 벼랑) / 6.34 (0.120).
-LAT_ERR_STRAIGHT_S = 0.035   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
-LAT_ERR_CORNER_S = 0.120     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
+# 2026-08-08 run_0808_202157(공격적 튜닝본으로 완주한 백) 실측 재산정:
+# 0.035 -> 0.030. 주행 중(v>1.0) 5513 샘플을 속도대로 자른 |lat err|:
+#   v [m/s]   n     p50     p95     max
+#   1~2      256   0.328   0.903   1.192   <- 백스톱이 1.5 로 클램프한 구간
+#   3~4      812   0.120   0.382   0.571
+#   5~6      142   0.121   0.228   0.261
+#   6~7       60   0.076   0.153   0.193
+# 즉 실차는 빠를수록 추종이 깨끗하다. 6~7 m/s 대의 **최대** 오차 0.193 을
+# 6.54 m/s 로 나누면 0.0295 s — 기존 0.035 는 실측 최악값보다도 보수적이었다.
+# p95(0.0235) 가 아니라 max 기준 0.030 을 쓴다. 이 상한이 실제로 무는 곳은
+# 넓은 직선이 아니라 **좁은 직선**이다(넓은 곳은 여유/0.035 가 이미 11 m/s 로
+# V_MAX 위라 아무 것도 안 한다). 좁은 직선의 상한이 6.34 -> 7.4 로 올라가
+# V_MAX 7.0 이 다시 구속이 된다.
+LAT_ERR_STRAIGHT_S = 0.030   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
+# 2026-08-08 (코너 ax 상한 + 종방향/폭상한 평활을 넣은 뒤) 0.120 -> 0.117.
+# 위 0.114 FAIL 표는 **구판 bang-bang 프로파일**로 뽑은 것이라 그대로 쓸 수 없다.
+# 코너 종가감속을 1.6 으로 좁히고 상한 노치를 메우자 폐루프 추종이 좋아져서
+# 벼랑이 아래로 내려갔다. 같은 게이트(cpp_real_car)로 다시 훑은 결과:
+#
+#   corner_s  게이트  |lat err|max  코너 평균 v  랩[s]  v_max
+#   0.120     PASS      0.166         3.09       8.58   6.62
+#   0.117     PASS      0.173         3.36       8.45   6.65   <- 채택
+#   0.114     PASS      0.250         3.41       8.32   6.66
+#   0.105     FAIL (벽 침범 11 step, t=3.40s)
+#   0.095     FAIL (벽 침범 45 step, t=3.35s)
+#
+# 0.114 도 게이트는 PASS 지만 채택하지 않는다: |lat err|max 0.250 은 control
+# 백스톱 발화 임계값(map/backstop_path_error_m = 0.25)과 정확히 같다. 그 값으로
+# 배포하면 헤어핀마다 백스톱이 speed 를 1.5 m/s 로 떨어뜨려, 이번에 없애려는
+# '울컥거림'을 CSV 가 아니라 런타임에서 다시 만든다 (run_0808_202157 에서 145 s
+# 동안 109 회 발화, 그중 87% 가 1.5 까지 클램프). 0.117 은 0.173 으로 그 임계값
+# 아래 31% 여유가 있다. **게이트 PASS 만 보고 고르면 안 되는 값**이다.
+LAT_ERR_CORNER_S = 0.117     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
 LAT_ERR_KAPPA_LOW = 0.05     # [1/m] 이하는 직선 취급 (R >= 20 m)
 LAT_ERR_KAPPA_HIGH = 0.30    # [1/m] 이상은 코너 취급 (R <= 3.3 m)
 LAT_ERR_KAPPA_WINDOW_M = 2.0  # 직전 곡률 rolling-max 창 [m] (코너 탈출 지연)
 WIDTH_SPEED_MIN_MPS = 1.5    # 폭 때문에 이보다 더 낮추지는 않는다 (정지 방지)
+# 코너를 빠져나온 뒤 slope 가 코너값에서 직선값으로 돌아오는 감쇠 길이 [m].
+# 2026-08-08 run_0808_202157 분석: 기존 구현은 LAT_ERR_KAPPA_WINDOW_M(2.0 m)
+# 안의 최대 곡률을 **그대로** 물고 있었다(hard rolling-max). 그래서 헤어핀
+# (s19~24.7)을 나온 뒤에도 2 m 동안 코너 취급이 유지되고, 폭 상한이
+#   cap = (벽여유 - 차반폭) / 0.120 ≈ 2.7~2.9 m/s
+# 로 고정된다. 실제 CSV 의 s26.0/26.5/27.0 이 2.71/2.88/2.76 으로 직선
+# 시작부 3 m 를 2.8 m/s 에 묶고 있었다 — 실차에서 느낀 "풀악셀이 늦다"의 정체다.
+# (V_MAX 7.0 이나 A_ACC_MAX 4.5 는 이 구간에서 아무 것도 구속하지 않는다.)
+# 지수 가중 rolling-max 로 바꿔 진입 쪽 보수성은 그대로 두고 탈출에서만 상한이
+# 풀리게 한다. None 이면 예전 hard rolling-max 동작.
+LAT_ERR_EXIT_DECAY_M = 0.8
+# 폭 연동 속도상한을 차 전장 창으로 평활하는 창 길이 [m]. 0/None 이면 안 함.
+# 근거: 상한의 입력인 벽 여유는 0.1 m 격자에서 occupancy 로 잰 값이라 폭이
+# 한 칸만 좁아지는 계단(노이즈 포함)이 그대로 상한의 V자 노치가 된다. 그
+# 노치마다 velocity_profile 이 감속 램프 하나 + 가속 램프 하나를 만들어 붙여
+# ax 가 +A_ACC_MAX / -A_DEC_PLANNED 를 왕복하는 톱니가 된다. my_track0808
+# 오리지널 CSV 헤어핀 s19~23.5 실측: 5 m 안에서 ax 부호 반전 4 회, v 가
+# 2.44~3.41 사이를 톱니로 진동 — 실차에서 느낀 "울컥거림"이 이것이다.
+# 전장 0.55 m 차량은 0.1 m 폭 노치 하나에 반응할 수 없고 반응해서도 안 된다
+# (footprint 가 창 전체를 덮는다). 그래서 창 평균이 물리적으로 맞는 상한이다.
+# 평균은 최저점을 끌어올릴 수 있으므로 상향폭을 아래 FRAC 으로 묶는다.
+WIDTH_CAP_SMOOTH_M = 2.0 * CAR_HALF_LENGTH   # 0.55 m
+# 평활이 원본 상한보다 올릴 수 있는 최대 비율. 벽 여유가 진짜로 좁아진 구간을
+# 평균이 희석해 버리는 것을 막는 안전판이다 (1.0 = 상향 금지, 사실상 rolling-min).
+WIDTH_CAP_SMOOTH_MAX_GAIN = 1.20
+
+# --- 코너 종방향 가감속 폭 (울컥거림 억제) -----------------------------------
+# A_ACC_MAX / A_DEC_PLANNED 는 '직선에서 낼 수 있는' 플랜트 한계다. 그 값을
+# 코너 안에서까지 허용하면 velocity_profile 이 코너를 bang-bang 으로 채운다 —
+# 모든 점이 +A_ACC_MAX 아니면 -A_DEC_PLANNED 에 붙고 중간값이 없다. 합성 타이어
+# 한계는 만족하지만 사람이 타면 "부드럽게 유지"가 아니라 "울컥"으로 느껴지고,
+# 실차에서는 매 반전마다 추종오차가 튀어 control 백스톱을 깨운다.
+# 그래서 곡률이 코너 취급 구간(LAT_ERR_KAPPA_HIGH 이상)에 들어가면 종가속 상한을
+# 따로 낮춘다. 직선(LOW 이하)에서는 기존 값을 그대로 쓰므로 직선 가속력은 안 준다.
+# 0/None 이면 전 구간 A_ACC_MAX / A_DEC_PLANNED (예전 동작).
+A_ACC_CORNER = 1.6    # 코너 내 종가속 상한 [m/s²]
+A_DEC_CORNER = 1.6    # 코너 내 종감속 상한 [m/s²]
+
+# 종방향 스무딩 패스 횟수. 각 패스는 (1) v 를 전장 창으로 평활해 국소 피크를
+# 깎고 (2) 그 결과를 상한으로 velocity_profile 을 다시 투영한다. 투영은 속도를
+# 낮추기만 하므로 몇 번을 돌려도 타이어/가감속 한계는 계속 만족한다 —
+# fail-closed 검증을 우회하지 않는다. 0 이면 예전 동작.
+LONGITUDINAL_SMOOTH_PASSES = 2
+LONGITUDINAL_SMOOTH_M = 2.0 * CAR_HALF_LENGTH   # 0.55 m
+# 보고용 종저크 한계 [m/s³]. 프로파일을 자르지는 않고 진단에만 쓴다 (초과 점수를
+# 출력). 저크를 직접 제한하려면 위 스무딩 패스/창을 키우는 것이 맞다.
+JERK_REPORT_LIMIT = 30.0
+
+# 위 상수들은 --v-max / --corner-ax / --lat-err-* 등으로 CLI 에서 덮어쓸 수 있다.
+# 그래서 이 값을 쓰는 함수는 기본 인자에 상수를 박지 않고 (기본 인자는 정의
+# 시점에 한 번 묶여서 나중에 전역을 바꿔도 안 따라온다) 호출 시점에 전역을
+# 읽는다. 그 '안 넘겼음'을 None 과 구분하기 위한 센티널.
+_DEFAULT = object()
 
 # --- 차량/컨트롤러 배포 프로파일 ---------------------------------------------
 # 실차 상수(WHEELBASE / MAX_STEER / A_ACC_MAX / A_DEC_MAX / BRAKE_DECEL_PER_AMP)
@@ -927,9 +1011,13 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     각 segment는 양끝 중 더 큰 횡가속도를 사용한다. 한 endpoint만 보던 기존
     forward/backward pass는 곡률이 급증하는 지점 직전의 ax를 과대 허용해,
     최종 CSV에서 hypot(v²*kappa, ax)가 mu*g를 넘길 수 있었다.
+
+    a_acc_max / a_dec_max 는 스칼라(전 구간 동일) 또는 웨이포인트별 배열이다.
+    배열을 주면 코너에서만 종가속 폭을 좁힐 수 있다(A_ACC_CORNER 참조).
+    segment 한계는 양 endpoint 중 **작은 쪽**을 쓴다 — 곡률이 올라가는 쪽으로
+    들어가는 segment 가 낮은 한계를 그냥 통과해 버리지 않게 하려는 것이다.
     """
-    if not all(np.isfinite(value) and value > 0.0
-               for value in (mu, a_acc_max, a_dec_max)):
+    if not (np.isfinite(mu) and mu > 0.0):
         raise ValueError("velocity profile limits must be positive and finite")
     # v_max 는 스칼라(전 구간 동일) 또는 웨이포인트별 배열(폭에 따른 상한)이다.
     v_max = np.asarray(v_max, dtype=float)
@@ -950,6 +1038,16 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     if len(segment_ds) != n or not np.isfinite(segment_ds).all() or \
             np.any(segment_ds <= 1e-6):
         raise ValueError("closed-loop segment lengths must be positive and finite")
+    # 점별 가감속 한계 -> segment 한계(양끝의 더 작은 쪽). 스칼라면 상수 배열.
+    accel_pt = np.broadcast_to(
+        np.asarray(a_acc_max, dtype=float), (n,)).astype(float)
+    decel_pt = np.broadcast_to(
+        np.asarray(a_dec_max, dtype=float), (n,)).astype(float)
+    if not np.isfinite(accel_pt).all() or np.any(accel_pt <= 0.0) or \
+            not np.isfinite(decel_pt).all() or np.any(decel_pt <= 0.0):
+        raise ValueError("velocity profile limits must be positive and finite")
+    accel_seg = np.minimum(accel_pt, np.roll(accel_pt, -1))
+    decel_seg = np.minimum(decel_pt, np.roll(decel_pt, -1))
 
     tire_limit = mu * G
     # CSV 7-decimal 양자화가 저장 후 한계 초과로 뒤집히지 않게 projection만
@@ -969,13 +1067,13 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
             if v[j] >= v[i]:
                 safe = _max_segment_endpoint_speed(
                     v[i], kappa[i], kappa[j], segment_ds[i],
-                    a_acc_max, projection_limit, v[j])
+                    accel_seg[i], projection_limit, v[j])
                 max_reduction = max(max_reduction, v[j] - safe)
                 v[j] = safe
             else:
                 safe = _max_segment_endpoint_speed(
                     v[j], kappa[j], kappa[i], segment_ds[i],
-                    a_dec_max, projection_limit, v[i])
+                    decel_seg[i], projection_limit, v[i])
                 max_reduction = max(max_reduction, v[i] - safe)
                 v[i] = safe
         if max_reduction < 1e-10:
@@ -989,8 +1087,8 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
         v ** 2 * kappa,
         next_v ** 2 * np.roll(kappa, -1))
     combined = np.hypot(worst_lateral, ax)
-    accel_bad = (ax > a_acc_max + 1e-8)
-    decel_bad = (ax < -a_dec_max - 1e-8)
+    accel_bad = (ax > accel_seg + 1e-8)
+    decel_bad = (ax < -decel_seg - 1e-8)
     tire_bad = combined > tire_limit + 1e-8
     if np.any(accel_bad | decel_bad | tire_bad):
         bad = np.flatnonzero(accel_bad | decel_bad | tire_bad)
@@ -1001,14 +1099,21 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     return v
 
 
-def recent_max_kappa(s, kappa, window_m=LAT_ERR_KAPPA_WINDOW_M):
+def recent_max_kappa(s, kappa, window_m=None, decay_m=_DEFAULT):
     """각 점에서 '직전 window_m 안에 지나온' 최대 |kappa| (폐루프 방향 기준).
 
     횡추적오차는 코너 안이 아니라 코너를 빠져나온 직후에 최대가 된다 — 조향을
     풀면서 가속하는 구간이라 lookahead 가 라인 바깥쪽으로 끌린다. 그래서 현재
     점의 곡률이 아니라 '방금 지나온' 곡률로 오차를 예측해야 한다. 배열은 닫힌
     루프이므로 wrap 한다.
+
+    decay_m 을 주면 지나온 거리에 따라 지수로 감쇠시킨 rolling-max 를 쓴다.
+    현재 점(거리 0)의 가중은 1 이므로 코너 **진입**과 코너 **안**의 보수성은
+    그대로고, 코너를 빠져나온 뒤에만 상한이 부드럽게 풀린다. None 이면 예전
+    hard rolling-max (창 끝까지 최대값을 그대로 물고 있어 탈출이 지연된다).
     """
+    window_m = LAT_ERR_KAPPA_WINDOW_M if window_m is None else window_m
+    decay_m = LAT_ERR_EXIT_DECAY_M if decay_m is _DEFAULT else decay_m
     s = np.asarray(s, dtype=float)
     k = np.abs(np.asarray(kappa, dtype=float))
     n = len(k)
@@ -1018,7 +1123,13 @@ def recent_max_kappa(s, kappa, window_m=LAT_ERR_KAPPA_WINDOW_M):
     ds = total / max(n, 1)
     back = int(np.clip(round(window_m / max(ds, 1e-6)), 1, n - 1))
     # 뒤로 back 칸까지의 rolling max (wrap 포함)
-    stacked = np.stack([np.roll(k, shift) for shift in range(back + 1)])
+    shifts = np.arange(back + 1)
+    if decay_m is not None and float(decay_m) > 0.0:
+        weight = np.exp(-shifts * ds / float(decay_m))
+    else:
+        weight = np.ones(len(shifts))
+    stacked = np.stack([np.roll(k, int(shift)) * w
+                        for shift, w in zip(shifts, weight)])
     return stacked.max(axis=0)
 
 
@@ -1034,8 +1145,8 @@ def lat_err_slope(s, kappa):
     return LAT_ERR_STRAIGHT_S + t * (LAT_ERR_CORNER_S - LAT_ERR_STRAIGHT_S)
 
 
-def width_speed_cap(d_left, d_right, s=None, kappa=None, v_max=V_MAX,
-                    enabled=ADAPTIVE_SPEED_BY_WIDTH):
+def width_speed_cap(d_left, d_right, s=None, kappa=None, v_max=None,
+                    enabled=None):
     """웨이포인트별 벽 여유에서 속도 상한 [m/s] 을 만든다.
 
     좁은 구간에서는 이격을 줄여 라인을 통과시키는 대신 속도를 깎아 갚는다.
@@ -1047,6 +1158,8 @@ def width_speed_cap(d_left, d_right, s=None, kappa=None, v_max=V_MAX,
 
     반환: (상한 배열, 진단 dict)
     """
+    v_max = V_MAX if v_max is None else v_max
+    enabled = ADAPTIVE_SPEED_BY_WIDTH if enabled is None else enabled
     clearance = np.minimum(np.asarray(d_left, dtype=float),
                            np.asarray(d_right, dtype=float))
     n = len(clearance)
@@ -1058,7 +1171,10 @@ def width_speed_cap(d_left, d_right, s=None, kappa=None, v_max=V_MAX,
     else:
         slope = lat_err_slope(s, kappa)
     margin = np.maximum(clearance - CAR_HALF_WIDTH, 0.0)
-    cap = np.clip(margin / slope, WIDTH_SPEED_MIN_MPS, float(v_max))
+    raw = margin / slope
+    cap = smooth_width_cap(raw, s)
+    notches = int(np.sum(cap > raw + 1e-9))
+    cap = np.clip(cap, WIDTH_SPEED_MIN_MPS, float(v_max))
     return cap, {
         "enabled": True,
         "limited_pts": int(np.sum(cap < float(v_max) - 1e-9)),
@@ -1067,10 +1183,122 @@ def width_speed_cap(d_left, d_right, s=None, kappa=None, v_max=V_MAX,
         "slope_min": float(slope.min()),
         "slope_max": float(slope.max()),
         "corner_pts": int(np.sum(slope > LAT_ERR_STRAIGHT_S + 1e-9)),
+        "smoothed_pts": notches,
+        "raw_v_min": float(raw.min()) if n else float(v_max),
     }
 
 
-def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
+def smooth_width_cap(cap, s=None, window_m=None, max_gain=None):
+    """폭 연동 속도상한을 차 전장 창으로 평활한다 (닫힌 루프).
+
+    상한의 입력인 벽 여유는 0.1 m 격자 occupancy 측정값이라 한 칸짜리 계단이
+    그대로 V자 노치가 되고, velocity_profile 은 노치마다 감속+가속 램프를 하나씩
+    붙여 ax 를 왕복시킨다(코너 톱니). 전장 0.55 m 차량의 footprint 는 창 전체를
+    덮으므로 창 평균이 그 차가 실제로 받는 제약이다.
+
+    평균은 최저점을 끌어올릴 수 있으므로 원본의 max_gain 배로 잘라, 벽 여유가
+    진짜로 좁아진 구간을 평균이 희석하지 못하게 한다. 이 함수를 거친 값은
+    여전히 velocity_profile 의 상한일 뿐이고, 최종 안전은 폐루프 게이트와
+    verify_line 이 실제 occupancy 로 검사한다.
+    """
+    window_m = WIDTH_CAP_SMOOTH_M if window_m is None else window_m
+    max_gain = WIDTH_CAP_SMOOTH_MAX_GAIN if max_gain is None else max_gain
+    cap = np.asarray(cap, dtype=float)
+    averaged = closed_moving_average(cap, s, window_m)
+    return np.minimum(averaged, cap * float(max_gain))
+
+
+def closed_moving_average(values, s=None, window_m=None):
+    """닫힌 루프 배열의 중심 이동평균 (창 길이는 [m], 격자는 s 에서 유도)."""
+    values = np.asarray(values, dtype=float)
+    n = len(values)
+    if n < 3 or not window_m or float(window_m) <= 0.0:
+        return values.copy()
+    if s is not None and len(s) == n and float(s[-1]) > 0.0:
+        ds = float(s[-1]) / max(n, 1)
+    else:
+        ds = float(window_m) / max(n, 1)
+    half = int(np.clip(round(0.5 * float(window_m) / max(ds, 1e-6)), 1, n // 2))
+    stacked = np.stack([np.roll(values, int(shift))
+                        for shift in range(-half, half + 1)])
+    return stacked.mean(axis=0)
+
+
+def corner_ax_limits(kappa, straight_accel=None, straight_decel=None,
+                     corner_accel=_DEFAULT, corner_decel=_DEFAULT):
+    """점별 (종가속 상한, 종감속 상한) — 곡률로 직선값↔코너값 보간.
+
+    코너 판정 경계는 폭 연동 속도상한과 같은 LAT_ERR_KAPPA_LOW/HIGH 를 쓴다.
+    한 트랙에서 '코너'의 정의가 두 개면 안 된다.
+    corner_* 가 None/0 이면 전 구간 직선값 (예전 동작).
+    """
+    straight_accel = A_ACC_MAX if straight_accel is None else straight_accel
+    straight_decel = A_DEC_PLANNED if straight_decel is None else straight_decel
+    corner_accel = A_ACC_CORNER if corner_accel is _DEFAULT else corner_accel
+    corner_decel = A_DEC_CORNER if corner_decel is _DEFAULT else corner_decel
+    k = np.abs(np.asarray(kappa, dtype=float))
+    t = np.clip((k - LAT_ERR_KAPPA_LOW) /
+                max(LAT_ERR_KAPPA_HIGH - LAT_ERR_KAPPA_LOW, 1e-9), 0.0, 1.0)
+    accel_end = float(corner_accel) if corner_accel else float(straight_accel)
+    decel_end = float(corner_decel) if corner_decel else float(straight_decel)
+    accel = float(straight_accel) + t * (accel_end - float(straight_accel))
+    decel = float(straight_decel) + t * (decel_end - float(straight_decel))
+    return accel, decel
+
+
+def smooth_longitudinal(v, s, kappa, segment_ds, mu, accel_lim, decel_lim,
+                        passes=None, window_m=None):
+    """v 의 국소 피크를 전장 창으로 깎고 다시 투영해 ax 톱니를 없앤다.
+
+    각 패스는 (1) 전장 창 이동평균과의 **최소값**을 새 상한으로 만들고
+    (2) velocity_profile 로 다시 투영한다. (1)은 속도를 낮추기만 하고 (2)도
+    낮추기만 하는 투영이므로, 몇 번을 돌려도 타이어·가감속 한계는 계속
+    만족한다 — 마지막 fail-closed 검증을 우회하는 경로가 아니다.
+
+    톱니의 '산'만 깎이고 '골'은 최소값 규칙 때문에 올라가지 않는다. 코너
+    평균속도를 되찾는 것은 이 함수가 아니라 폭 상한 평활(smooth_width_cap)의
+    일이다 — 골을 만든 것이 그 상한이기 때문이다.
+    """
+    passes = LONGITUDINAL_SMOOTH_PASSES if passes is None else passes
+    window_m = LONGITUDINAL_SMOOTH_M if window_m is None else window_m
+    passes = max(int(passes or 0), 0)
+    for _ in range(passes):
+        target = np.minimum(v, closed_moving_average(v, s, window_m))
+        v = velocity_profile(s, kappa, target, mu, accel_lim, decel_lim,
+                             segment_ds=segment_ds)
+    return v
+
+
+def longitudinal_diagnostics(v, ax, s, segment_ds, jerk_limit=None):
+    """종방향 거칠기 진단: ax 부호 반전 횟수와 종저크 분포.
+
+    저크는 공간 격자에서 d(ax)/ds * v 로 본다 (dt = ds/v).
+    프로파일을 자르지는 않는다 — 값이 나쁘면 스무딩 창/패스를 키울 신호다.
+    """
+    jerk_limit = JERK_REPORT_LIMIT if jerk_limit is None else jerk_limit
+    v = np.asarray(v, dtype=float)
+    ax = np.asarray(ax, dtype=float)
+    segment_ds = np.asarray(segment_ds, dtype=float)
+    dax = np.roll(ax, -1) - ax
+    jerk = np.abs(dax) * np.maximum(v, 1e-6) / np.maximum(segment_ds, 1e-6)
+    sign = np.sign(ax)
+    moving = sign != 0
+    flips = int(np.sum((sign != np.roll(sign, -1)) & moving &
+                       np.roll(moving, -1)))
+    return {
+        "ax_sign_flips": flips,
+        "jerk_p50": float(np.percentile(jerk, 50)),
+        "jerk_p99": float(np.percentile(jerk, 99)),
+        "jerk_max": float(jerk.max()),
+        "jerk_limit": float(jerk_limit),
+        "jerk_over_pts": int(np.sum(jerk > float(jerk_limit))),
+    }
+
+
+def build_trajectory(geo, v_max=None, mu=None, margin=None):
+    v_max = V_MAX if v_max is None else v_max
+    mu = MU if mu is None else mu
+    margin = MARGIN if margin is None else margin
     s, kappa = geo["s"], geo["kappa"]
     xy = np.asarray(geo["xy"], dtype=float)
     ds = np.hypot(
@@ -1087,10 +1315,21 @@ def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
             mu * G / np.maximum(np.abs(np.asarray(kappa, dtype=float)), 1e-12))
     width_speed_info["binding_pts"] = int(np.sum(
         v_cap < np.minimum(lateral_cap, float(v_max)) - 1e-9))
+    # 코너에서는 종가속 폭을 좁혀 bang-bang 대신 속도를 유지하게 한다.
+    accel_lim, decel_lim = corner_ax_limits(kappa)
     v = velocity_profile(
-        s, kappa, v_cap, mu, A_ACC_MAX, A_DEC_PLANNED,
+        s, kappa, v_cap, mu, accel_lim, decel_lim,
         segment_ds=ds)
+    raw_diag = longitudinal_diagnostics(
+        v, (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds), s, ds)
+    v = smooth_longitudinal(v, s, kappa, ds, mu, accel_lim, decel_lim)
     ax = (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds)
+    long_info = longitudinal_diagnostics(v, ax, s, ds)
+    long_info["ax_sign_flips_before_smoothing"] = raw_diag["ax_sign_flips"]
+    long_info["jerk_p99_before_smoothing"] = raw_diag["jerk_p99"]
+    long_info["accel_limit_min"] = float(np.min(accel_lim))
+    long_info["decel_limit_min"] = float(np.min(decel_lim))
+    long_info["smooth_passes"] = int(LONGITUDINAL_SMOOTH_PASSES or 0)
     # 실제 CSV 정밀도까지 양자화한 값도 다시 검사한다. 메모리 float가 PASS해도
     # 저장/재로드 후 FAIL하는 generation을 commit하지 않는다.
     csv_v = np.round(v, 7)
@@ -1108,11 +1347,12 @@ def build_trajectory(geo, v_max=V_MAX, mu=MU, margin=MARGIN):
             "d_left": np.maximum(geo["d_left"] - margin, 0.0),
             "psi": geo["psi"], "kappa": kappa, "vx": v, "ax": ax,
             "width_speed_info": width_speed_info,
+            "longitudinal_info": long_info,
             "safe_dist_info": geo.get("safe_dist_info")}
 
 
 # 웨이포인트 배열이 아니라 생성 요약인 키. roll/flip 대상이 아니다.
-TRAJ_META_KEYS = ("safe_dist_info", "width_speed_info")
+TRAJ_META_KEYS = ("safe_dist_info", "width_speed_info", "longitudinal_info")
 
 
 def loop_orientation(xy):
@@ -1994,6 +2234,99 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
     return not any("[FAIL]" in msg for msg in msgs), msgs
 
 
+# CLI 플래그 -> 모듈 전역. 이름을 한 곳에 모아 두면 매니페스트에 기록하는
+# '실제로 쓴 값' 목록과 어긋나지 않는다.
+PROFILE_OVERRIDES = {
+    "v_max": "V_MAX",
+    "corner_ax": ("A_ACC_CORNER", "A_DEC_CORNER"),
+    "smooth_passes": "LONGITUDINAL_SMOOTH_PASSES",
+    "smooth_window": ("LONGITUDINAL_SMOOTH_M", "WIDTH_CAP_SMOOTH_M"),
+    "lat_err_straight": "LAT_ERR_STRAIGHT_S",
+    "lat_err_corner": "LAT_ERR_CORNER_S",
+    "exit_decay": "LAT_ERR_EXIT_DECAY_M",
+}
+
+
+def _apply_profile_overrides(args):
+    """--v-max 류 플래그를 모듈 전역에 반영하고 무엇을 덮었는지 출력한다."""
+    applied = {}
+    for flag, names in PROFILE_OVERRIDES.items():
+        value = getattr(args, flag, None)
+        if value is None:
+            continue
+        for name in ((names,) if isinstance(names, str) else names):
+            globals()[name] = value
+            applied[name] = value
+    if applied:
+        print("[설정] CLI 오버라이드: " + ", ".join(
+            f"{name}={value:g}" for name, value in sorted(applied.items())))
+    return applied
+
+
+def profile_settings_manifest():
+    """CSV 생성에 실제로 쓰인 속도 프로파일 설정. 매니페스트에 그대로 들어간다."""
+    return {
+        "v_max_mps": V_MAX,
+        "mu_profile": MU_PROFILE,
+        "lat_err_straight_s": LAT_ERR_STRAIGHT_S,
+        "lat_err_corner_s": LAT_ERR_CORNER_S,
+        "lat_err_kappa_window_m": LAT_ERR_KAPPA_WINDOW_M,
+        "lat_err_exit_decay_m": LAT_ERR_EXIT_DECAY_M,
+        "width_cap_smooth_m": WIDTH_CAP_SMOOTH_M,
+        "width_cap_smooth_max_gain": WIDTH_CAP_SMOOTH_MAX_GAIN,
+        "corner_accel_mps2": A_ACC_CORNER,
+        "corner_decel_mps2": A_DEC_CORNER,
+        "longitudinal_smooth_passes": LONGITUDINAL_SMOOTH_PASSES,
+        "longitudinal_smooth_m": LONGITUDINAL_SMOOTH_M,
+    }
+
+
+def report_longitudinal(traj, corner_kappa=None):
+    """코너/직선을 나눠 속도·가감속·저크를 보고한다.
+
+    "코너에서 울컥거린다" / "직선에서 늦게 밟는다" 는 랩타임 한 숫자로는 절대
+    안 보인다. 두 구간을 갈라서 v 와 ax 부호 반전 횟수를 따로 내야 보인다.
+    """
+    corner_kappa = LAT_ERR_KAPPA_HIGH if corner_kappa is None else corner_kappa
+    info = traj.get("longitudinal_info") or {}
+    if not info:
+        return []
+    v = np.asarray(traj["vx"], dtype=float)
+    ax = np.asarray(traj["ax"], dtype=float)
+    k = np.abs(np.asarray(traj["kappa"], dtype=float))
+    s = np.asarray(traj["s"], dtype=float)
+    ds = np.diff(s, append=s[-1] + (s[-1] - s[-2] if len(s) > 1 else 0.1))
+    lap = float(np.sum(ds / np.maximum(v, 1e-6)))
+    lines = [
+        f"      [종방향] 랩 {lap:.2f} s · v {v.min():.2f}~{v.max():.2f} "
+        f"(평균 {v.mean():.2f}) · ax {ax.min():+.2f}~{ax.max():+.2f} m/s²",
+        f"        가감속 상한: 직선 {A_ACC_MAX:.2f}/{A_DEC_PLANNED:.2f} → "
+        f"코너 {info.get('accel_limit_min', float('nan')):.2f}/"
+        f"{info.get('decel_limit_min', float('nan')):.2f} m/s²",
+        f"        스무딩 {info.get('smooth_passes', 0)} 패스 "
+        f"(창 {LONGITUDINAL_SMOOTH_M:.2f} m): ax 부호반전 "
+        f"{info.get('ax_sign_flips_before_smoothing', 0)} → "
+        f"{info.get('ax_sign_flips', 0)} 회 · 저크 p99 "
+        f"{info.get('jerk_p99_before_smoothing', float('nan')):.1f} → "
+        f"{info.get('jerk_p99', float('nan')):.1f} m/s³ "
+        f"(max {info.get('jerk_max', float('nan')):.1f}, 한계 "
+        f"{info.get('jerk_limit', float('nan')):.0f} 초과 "
+        f"{info.get('jerk_over_pts', 0)}점)",
+    ]
+    corner = k >= corner_kappa
+    straight = k <= LAT_ERR_KAPPA_LOW
+    for label, mask in (("코너", corner), ("직선", straight)):
+        if not mask.any():
+            continue
+        sub_v, sub_ax = v[mask], ax[mask]
+        lines.append(
+            f"        {label} {int(mask.sum())}점: v {sub_v.min():.2f}~"
+            f"{sub_v.max():.2f} (평균 {sub_v.mean():.2f}) · "
+            f"|ax| 평균 {np.abs(sub_ax).mean():.2f} max "
+            f"{np.abs(sub_ax).max():.2f} m/s²")
+    return lines
+
+
 def report_speed_pairing(traj, profiles):
     """프로파일 속도가 control cap 에 얼마나 잘리는지 보고한다.
 
@@ -2134,6 +2467,54 @@ def _save_plots(m, traj, center, outer, inner, orientation, start_heading,
     plt.close(fig)
 
 
+# CLI 플래그 -> 덮어쓸 모듈 전역. None 은 아래에서 특수 처리한다.
+_PROFILE_OVERRIDES = {
+    "v_max": "V_MAX",
+    "corner_ax": None,          # 가감속 두 개를 한 번에 덮는다 (아래 특수 처리)
+    "smooth_passes": "LONGITUDINAL_SMOOTH_PASSES",
+    "smooth_window": None,      # 종방향/폭상한 두 창을 함께 (아래 특수 처리)
+    "lat_err_straight": "LAT_ERR_STRAIGHT_S",
+    "lat_err_corner": "LAT_ERR_CORNER_S",
+    "exit_decay": "LAT_ERR_EXIT_DECAY_M",
+}
+
+
+def _apply_profile_overrides(args):
+    """CLI 로 준 속도 프로파일 상수를 모듈 전역에 반영하고 무엇이 바뀌었는지 남긴다.
+
+    전역을 덮어쓰는 방식인 이유: 이 상수들은 파일 곳곳(폭 상한·기울기·스무딩)
+    에서 읽히고, 인자로 20 군데에 실어 나르면 한 군데를 빠뜨렸을 때 조용히
+    '반만 적용된' CSV 가 나온다. 전역 하나만 바꾸면 그 실패 모드가 없다.
+    반영된 값은 생성 매니페스트(velocity_profile_overrides)에 기록된다.
+    """
+    applied = {}
+    for flag, global_name in _PROFILE_OVERRIDES.items():
+        value = getattr(args, flag, None)
+        if value is None:
+            continue
+        if flag == "corner_ax":
+            globals()["A_ACC_CORNER"] = float(value)
+            globals()["A_DEC_CORNER"] = float(value)
+            applied["A_ACC_CORNER"] = applied["A_DEC_CORNER"] = float(value)
+            continue
+        if flag == "smooth_window":
+            globals()["LONGITUDINAL_SMOOTH_M"] = float(value)
+            globals()["WIDTH_CAP_SMOOTH_M"] = float(value)
+            applied["LONGITUDINAL_SMOOTH_M"] = float(value)
+            applied["WIDTH_CAP_SMOOTH_M"] = float(value)
+            continue
+        cast = int if flag == "smooth_passes" else float
+        globals()[global_name] = cast(value)
+        applied[global_name] = cast(value)
+    if applied:
+        print("[설정 오버라이드] " + ", ".join(
+            f"{name}={value}" for name, value in sorted(applied.items())))
+        print("      ⚠️ 소스 기본값이 아니다. 이 CSV 를 배포하려면 스윕 결과를 "
+              "설정 블록 주석에 남기고 상수를 옮길 것 — CLI 값은 매니페스트에만 "
+              "남고 다음 사람이 mkcsv 를 그냥 돌리면 재현되지 않는다.")
+    return applied
+
+
 def main():
     ap = argparse.ArgumentParser(description="맵 이름 하나로 레이스라인 생성")
     ap.add_argument("map", nargs="?", default="my_map",
@@ -2151,7 +2532,43 @@ def main():
                          "(cpp_real_car 만 gate, 시뮬은 보고만) / sim=시뮬 / "
                          "all=둘 다 gate. 어느 쪽이든 두 프로파일 모두 실행되고 "
                          "결과가 출력된다.")
+    # --- 속도 프로파일 스윕용 오버라이드 -----------------------------------
+    # 이 상수들은 원래 파일 상단 '설정' 블록에만 있어서 값 하나를 바꿔 보려면
+    # 매번 2400 줄 소스를 편집해야 했다. 그래서 스윕을 안 하게 되고, 안 하니까
+    # 근거 없는 값이 남는다. 아래 플래그는 **모듈 전역을 덮어쓴다** — 생성
+    # 매니페스트에도 실제 사용된 값이 기록되므로 어떤 값으로 만든 CSV인지
+    # 나중에 추적할 수 있다.
+    ap.add_argument("--v-max", type=float, default=None, metavar="MPS",
+                    help=f"최대 속도 [m/s] (기본 {V_MAX:.2f}). ⚠️ 이것만 올려도 "
+                         "보통 프로파일은 안 변한다 — 대부분의 점은 곡률·폭 "
+                         "상한이나 가감속 램프 위에 있다.")
+    ap.add_argument("--corner-ax", type=float, default=None, metavar="MPS2",
+                    help=f"코너 내 종가감속 상한 [m/s²] (기본 "
+                         f"{A_ACC_CORNER:.2f}/{A_DEC_CORNER:.2f}). 낮추면 코너에서 "
+                         "속도를 더 평평하게 유지한다(울컥거림 감소). 0 이면 "
+                         "직선 한계를 그대로 써서 bang-bang 이 된다.")
+    ap.add_argument("--smooth-passes", type=int, default=None, metavar="N",
+                    help=f"종방향 스무딩 패스 수 (기본 "
+                         f"{LONGITUDINAL_SMOOTH_PASSES}). 0 이면 스무딩 없음.")
+    ap.add_argument("--smooth-window", type=float, default=None, metavar="M",
+                    help=f"종방향/폭상한 평활 창 [m] (기본 "
+                         f"{LONGITUDINAL_SMOOTH_M:.2f} = 차 전장).")
+    ap.add_argument("--lat-err-straight", type=float, default=None,
+                    metavar="S",
+                    help=f"직선 |lat err|/v 기울기 [s] (기본 "
+                         f"{LAT_ERR_STRAIGHT_S:.3f}). 낮추면 좁은 직선의 속도 "
+                         "상한이 올라간다 = 최고속 상향.")
+    ap.add_argument("--lat-err-corner", type=float, default=None, metavar="S",
+                    help=f"코너 |lat err|/v 기울기 [s] (기본 "
+                         f"{LAT_ERR_CORNER_S:.3f}). 낮추면 코너 속도가 올라가지만 "
+                         "게이트 FAIL 벼랑(0.114)이 바로 옆이다 — 실차 재측정 "
+                         "없이 내리지 말 것.")
+    ap.add_argument("--exit-decay", type=float, default=None, metavar="M",
+                    help=f"코너 탈출 후 기울기 복귀 감쇠 길이 [m] (기본 "
+                         f"{LAT_ERR_EXIT_DECAY_M}). 작으면 탈출 직후 바로 풀악셀, "
+                         "0 이면 예전 동작(창 끝까지 코너 취급).")
     args = ap.parse_args()
+    _apply_profile_overrides(args)
     m = args.map
     profiles, advisory_profiles = selected_controller_profiles(args.profiles)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2219,6 +2636,13 @@ def main():
               f"{width_info.get('corner_pts', 0)}점) · 그중 곡률 상한보다 낮아 "
               f"실제로 프로파일을 낮춘 점 {width_info.get('binding_pts', 0)} · "
               f"프로파일 v_max {traj['vx'].max():.2f} m/s")
+        print(f"      [폭 상한 평활] 창 {WIDTH_CAP_SMOOTH_M:.2f} m · "
+              f"노치가 메워진 점 {width_info.get('smoothed_pts', 0)}/"
+              f"{width_info['total_pts']} · 상한 최저 "
+              f"{width_info.get('raw_v_min', float('nan')):.2f} -> "
+              f"{width_info['v_min']:.2f} m/s")
+    for line in report_longitudinal(traj):
+        print(line)
     for line in report_speed_pairing(traj, profiles + advisory_profiles):
         print(line)
     start_heading = float(traj["psi"][0])
@@ -2362,6 +2786,10 @@ def main():
             "brake_decel_per_amp": BRAKE_DECEL_PER_AMP,
             "adaptive_safe_dist": traj.get("safe_dist_info"),
             "adaptive_speed_by_width": traj.get("width_speed_info"),
+            # 이 CSV 를 만든 속도 프로파일 설정 전체. CLI 오버라이드까지 반영된
+            # '실제로 쓴 값' 이라, 나중에 어떤 설정의 산출물인지 추적할 수 있다.
+            "velocity_profile_settings": profile_settings_manifest(),
+            "longitudinal": traj.get("longitudinal_info"),
         })
 
     # 4) 플롯 ---------------------------------------------------------------

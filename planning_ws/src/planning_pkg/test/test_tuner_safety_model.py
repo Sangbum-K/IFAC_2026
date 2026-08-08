@@ -15,24 +15,8 @@ MODEL_PATH = (
     PACKAGE_ROOT / 'scripts' / 'tuner' / 'controller_safety_model.py')
 BUILD_MAP_PATH = (
     PACKAGE_ROOT / 'scripts' / 'global_traj_sim' / 'build_map.py')
-TUNER_NODE_PATH = (
-    PACKAGE_ROOT / 'scripts' / 'tuner' / 'raceline_tuner_node.py')
-
 sys.path.insert(0, str(SCRIPTS_ROOT))
 import deployment_profiles as profiles  # noqa: E402
-
-
-def _deployed_main_csv():
-    """The raceline the runtime actually loads, per params.yaml.
-
-    Hardcoding a filename here went stale once already: b05264b deleted the
-    my_track line but left this test (and the runtime default) pointing at it,
-    so the test failed for a year-zero reason instead of a safety one.
-    """
-    params, _ = profiles.runtime_params(
-        profiles.PKG_ROOT, 'global_trajectory_node', None)
-    name = params['global_trajectory/trajectory_csv_file']
-    return PACKAGE_ROOT / 'config' / 'global_trajectory' / name
 
 
 def _load_model():
@@ -215,75 +199,6 @@ def test_vesc_brake_arbitration_matches_ackermann_to_vesc():
     _, mode, _ = plant.step(
         0.5 * config['min_vehicle_speed'], 0.0, -1.0, dt)
     assert mode == 'coast'
-
-
-def test_default_wall_contract_accepts_unchanged_deployed_main_csv():
-    """Prevent reintroducing the old 0.35 + margin double-reserve deadlock."""
-    tree = ast.parse(
-        TUNER_NODE_PATH.read_text(encoding='utf-8'),
-        filename=str(TUNER_NODE_PATH))
-    default_min_wall = None
-    for call in (
-            node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-        if isinstance(call.func, ast.Attribute) and \
-                call.func.attr == 'declare_parameter' and \
-                len(call.args) >= 2 and \
-                isinstance(call.args[0], ast.Constant) and \
-                call.args[0].value == 'tuner/min_wall_dist_m':
-            default_min_wall = ast.literal_eval(call.args[1])
-            break
-    assert default_min_wall is not None
-    model = _load_model()
-    assert default_min_wall >= model.VEHICLE_HALF_WIDTH_M
-    csv_path = _deployed_main_csv()
-    assert csv_path.is_file(), (
-        f'params.yaml이 없는 raceline을 가리킵니다: {csv_path}')
-    trajectory = np.loadtxt(csv_path, delimiter=';', comments='#')
-    assert np.min(trajectory[:, 3:5]) >= default_min_wall
-
-
-def test_tuner_longitudinal_defaults_match_measured_plant():
-    """The tuner must not plan with limits the car cannot deliver."""
-    tree = ast.parse(
-        TUNER_NODE_PATH.read_text(encoding='utf-8'),
-        filename=str(TUNER_NODE_PATH))
-    defaults = {}
-    for call in (
-            node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-        if isinstance(call.func, ast.Attribute) and \
-                call.func.attr == 'declare_parameter' and \
-                len(call.args) >= 2 and \
-                isinstance(call.args[0], ast.Constant):
-            defaults[call.args[0].value] = ast.literal_eval(call.args[1])
-    assert defaults['tuner/a_acc_max'] == pytest.approx(profiles.A_ACC_MAX)
-    assert defaults['tuner/a_dec_max'] == pytest.approx(profiles.A_DEC_PLANNED)
-
-
-def test_free_speed_editing_is_opt_in_and_keeps_save_gates():
-    """free_speed 는 편집 감각만 바꾼다 — 저장 검사를 우회하면 안 된다."""
-    source = TUNER_NODE_PATH.read_text(encoding='utf-8')
-    tree = ast.parse(source, filename=str(TUNER_NODE_PATH))
-    defaults = {}
-    for call in (
-            node for node in ast.walk(tree) if isinstance(node, ast.Call)):
-        if isinstance(call.func, ast.Attribute) and \
-                call.func.attr == 'declare_parameter' and \
-                len(call.args) >= 2 and \
-                isinstance(call.args[0], ast.Constant):
-            defaults[call.args[0].value] = ast.literal_eval(call.args[1])
-    assert defaults['tuner/free_speed'] is False
-
-    save = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == '_save_csv')
-    called = {
-        node.func.attr for node in ast.walk(save)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
-    for gate in (
-            '_recompute_wall_distances_from_map', '_wall_clearance_is_safe',
-            '_validation_errors', '_footprint_is_free',
-            '_closed_loop_tracking_is_safe'):
-        assert gate in called, f'저장 게이트가 사라짐: {gate}'
 
 
 def test_velocity_projection_respects_manual_ceiling_and_wrap_segment():

@@ -459,6 +459,38 @@ def closed_loop_ax(speed, segment_ds):
     return (np.roll(speed, -1) ** 2 - speed ** 2) / (2.0 * segment_ds)
 
 
+def smooth_speed_steps(speed, segment_ds, window_m=0.55, passes=2):
+    """사람이 넣은 속도의 '계단'만 없앤다 (목표 속도 자체는 존중).
+
+    2026-08-08 run_0808_202157 의 튜닝본 실측: 0.1 m 간격 웨이포인트 사이에서
+    v 가 최대 ±2.19 m/s 튀고 그 결과 ax 가 ±129 m/s² 였다 (플랜트 한계는
+    4.5/2.38). 이건 사람이 의도한 '목표 속도'가 아니라 set_speed 의 falloff 창
+    끝에서 생기는 이산화 계단이다. 실차에서는 이 계단마다 속도 PID 가 전류를
+    포화시켜 울컥거리고, 추종오차가 튀어 control 백스톱까지 깨운다.
+
+    창 평균이므로 산은 깎이고 골은 메워져 **사람이 넣은 평균 목표 속도는
+    유지된다**. 한계로 되풀지 않는다는 튜너 원칙(초과는 표시만)은 그대로다 —
+    이 함수는 한계를 보지 않고 계단만 본다.
+
+    window_m 기본값은 차 전장(0.55 m). 그보다 짧은 파장의 속도 변화는 차량
+    footprint 안에서 일어나므로 애초에 추종할 수 없다.
+    """
+    speed = np.asarray(speed, dtype=float)
+    segment_ds = np.asarray(segment_ds, dtype=float)
+    count = len(speed)
+    if count < 3 or not window_m or float(window_m) <= 0.0:
+        return speed.copy()
+    ds = float(np.mean(segment_ds)) if len(segment_ds) else float(window_m)
+    half = int(np.clip(round(0.5 * float(window_m) / max(ds, 1e-6)),
+                       1, count // 2))
+    smoothed = speed.copy()
+    for _ in range(max(int(passes or 0), 0)):
+        stacked = np.stack([np.roll(smoothed, int(shift))
+                            for shift in range(-half, half + 1)])
+        smoothed = stacked.mean(axis=0)
+    return smoothed
+
+
 def interp_periodic(query_u, base_u, values):
     """폐루프 위 선형 보간. base_u/query_u 는 0~1 정규화 호장."""
     base_u = np.asarray(base_u, dtype=float)
@@ -488,7 +520,8 @@ class RacelineState:
 
     def __init__(self, base_array, track, corridor_margin=0.08,
                  v_max=None, v_min=0.5, influence_m=None, constants=None,
-                 curvature_bias=0.0):
+                 curvature_bias=0.0, speed_smooth_m=0.55,
+                 speed_smooth_passes=2):
         self.track = track
         self.constants = constants or generator_constants()
         self.half_width = self.constants["CAR_HALF_WIDTH"]
@@ -532,6 +565,10 @@ class RacelineState:
         self.pinned = np.zeros(self.n, dtype=bool)
         self.anchors = {}
         self.solve_info = {"solved": False, "anchors": 0}
+        # 저장 시 속도 계단 평활 (smooth_speed_steps 참조). 0 이면 끈다.
+        self.speed_smooth_m = float(speed_smooth_m or 0.0)
+        self.speed_smooth_passes = int(speed_smooth_passes or 0)
+        self._speed_smoothing = None
 
     # ---------------------------------------------------------------- 편집
     @property
@@ -730,6 +767,25 @@ class RacelineState:
             out_v = interp_periodic(out_u, base_u, self.v)
         out_u = out_s / max(geometry["length"], 1e-9)
         out_segments = closed_segments(out_xy)
+        # 속도를 편집한 경우에만 계단을 없앤다. 무편집 저장은 build_map 프로파일
+        # 그대로여야 하고(이미 스무딩되어 나온다) 여기서 한 번 더 건드리면
+        # "손대지도 않았는데 값이 달라졌다"가 된다 — 위 line_edited 주석과 같은 이유.
+        speed_edited = bool(self.pinned.any())
+        if speed_edited and self.speed_smooth_m:
+            raw_v = out_v
+            out_v = smooth_speed_steps(
+                out_v, out_segments, window_m=self.speed_smooth_m,
+                passes=self.speed_smooth_passes)
+            self._speed_smoothing = {
+                "window_m": float(self.speed_smooth_m),
+                "passes": int(self.speed_smooth_passes),
+                "max_step_before": float(np.abs(np.diff(
+                    raw_v, append=raw_v[0])).max()),
+                "max_step_after": float(np.abs(np.diff(
+                    out_v, append=out_v[0])).max()),
+            }
+        else:
+            self._speed_smoothing = None
         out_ax = closed_loop_ax(out_v, out_segments)
         a_lo, a_hi = self.track.corridor_interval(out_xy, out_psi)
         d_left_raw = np.maximum(a_hi, 0.0)
@@ -882,6 +938,10 @@ class RacelineState:
                 "plant_decel_max": A_DEC_PLANNED,
                 "over_accel_pts": int(len(accel_bad)),
                 "over_decel_pts": int(len(decel_bad)),
+                # 저장 시 속도 계단 평활 결과 (없으면 None). max_step_* 은 인접
+                # 웨이포인트 사이 |Δv| [m/s] — 0.1 m 간격에서 0.2 를 넘으면
+                # 사실상 실차가 못 따라가는 계단이다.
+                "speed_smoothing": self._speed_smoothing,
             },
             "line": dict(self.solve_info),
             "per_point": {

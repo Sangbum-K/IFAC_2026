@@ -102,8 +102,8 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
   <button id="undo">되돌리기</button>
   <select id="resetSel">
     <option value="">리셋…</option>
-    <option value="reset_line">라인만 원본으로</option>
-    <option value="reset_speed">속도만 원본으로</option>
+    <option value="reset_speed">속도 원본으로</option>
+    <option value="reset_line">라인 원본 복구 (구버전 편집 흔적)</option>
     <option value="reset_all">전체 원본으로</option>
   </select>
   <div class="sep"></div>
@@ -111,28 +111,13 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
 </div>
 
 <div id="bar2">
-  <span title="앵커 하나를 옮기면 그 앞뒤로 몇 m 까지 라인이 함께 따라오는지.
-좁게 = 그 코너만 · 넓게 = 진입·탈출까지 부드럽게">수정 범위</span>
+  <span title="막대 하나를 올리면 그 앞뒤로 몇 m 까지 속도가 함께 따라오는지.
+좁게 = 그 코너만 · 넓게 = 진입·탈출까지 부드럽게">속도 반영 범위</span>
   <button class="mini" data-infl="1.5" title="그 코너만 — 짧은 헤어핀">좁게</button>
   <button class="mini" data-infl="3" title="진입/탈출 포함 — 기본">보통</button>
   <button class="mini" data-infl="6" title="긴 직선·완만한 코너">넓게</button>
   <input id="infl" type="range" min="0.5" max="12" step="0.1" style="width:96px">
   <b id="inflV"></b>
-  <div class="sep"></div>
-  <details id="adv"><summary>고급</summary>
-    <div class="pop">
-      <label class="sl" style="align-items:flex-start;flex-direction:column;gap:4px">
-        <span>라인 재계산 방식 <b id="biasV"></b></span>
-        <input id="bias" type="range" min="0" max="1" step="0.05" style="width:220px">
-        <span style="color:var(--dim);max-width:44ch;line-height:1.5">
-          <b>0 (권장)</b> — 앵커만 지키고 나머지는 원본 모양 그대로.<br>
-          <b>1</b> — 곡률만 최적화. 점 하나만 옮겨도 <b>트랙 전체가 다시 그려지고</b>
-          라인이 벽에 붙습니다 (실측: 랩 31.3→29.5 m, 벽 여유 0.40→0.18 m).
-          그런 라인이 필요하면 튜너가 아니라 <code>mkcsv</code> 를 쓰세요.
-        </span>
-      </label>
-    </div>
-  </details>
   <div class="sep"></div>
   <label class="sl">실주행
     <select id="bagSel" style="max-width:230px"><option value="">— 백 선택 —</option></select>
@@ -150,9 +135,9 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
     <canvas id="track"></canvas>
     <div id="readout"></div>
     <div id="hint">
-      <b>라인 클릭</b> 앵커 만들기 · <b>앵커 드래그</b> 라인 안/밖으로 옮기기 ·
-      <b>Shift+클릭</b> 앵커 지우기<br>
-      <b>빈 곳 드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
+      속도는 오른쪽 <b>속도 그래프의 막대</b>를 잡고 위/아래로 끌어 조절합니다
+      (라인 기하는 이 도구로 바꾸지 않습니다 — <code>mkcsv</code> 담당).<br>
+      <b>드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
       회색 점선 = <b>mkcsv 원본</b>
     </div>
   </div>
@@ -162,7 +147,7 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
       <span><i style="background:var(--accent)"></i> 현재</span>
       <span style="color:#798394"><i style="background:#798394"></i> 원본</span>
       <span style="color:var(--bag)"><i style="background:var(--bag)"></i> 실주행</span>
-      <span style="color:var(--dim)">· 세로 드래그로 편집</span>
+      <span style="color:var(--dim)">· 막대를 잡고 위/아래 · Shift+클릭 = 원본으로</span>
     </div><canvas></canvas></div>
     <div class="chart" id="cGrip"><div class="hd">
       <b>남은 그립</b>
@@ -187,6 +172,21 @@ let LAYERS = null;       // 맵 배경
 let MAPIMG = null;
 let BAG = null, BAGLAP = "all";
 let busy = false;
+// 속도 막대: 원본 격자에서 고르게 뽑은 스테이션. 사람이 잡는 대상이자
+// set_speed 가 받는 인덱스라, 화면과 서버 상태가 같은 격자 위에 있다.
+let BARS = null, barHover = -1, barDrag = -1;
+
+function makeBars() {
+  const n = D.base.s.length;
+  const box = $("cSpeed").querySelector("canvas");
+  // 막대 하나가 최소 7 px 은 되게 (마우스로 집을 수 있는 크기)
+  const usable = Math.max(box.clientWidth - 50, 60);
+  const count = Math.max(8, Math.min(64, Math.floor(usable / 7)));
+  const stride = Math.max(1, Math.round(n / count));
+  const idx = [];
+  for (let i = 0; i < n; i += stride) idx.push(i);
+  BARS = { idx, stride, halfPx: Math.max(2, 0.5 * 0.72 * usable / idx.length) };
+}
 
 /* ------------------------------------------------------------ 로그 */
 function log(msg, cls) {
@@ -200,21 +200,23 @@ function log(msg, cls) {
 }
 
 /* ------------------------------------------------------------ 색 */
-function ramp(t) {                       // 0(느림) → 1(빠름)
+function ramp(t, a) {                    // 0(느림) → 1(빠름)
   const stops = [[0,[0,90,255]],[0.4,[0,225,205]],[0.72,[255,230,0]],[1,[255,40,0]]];
   t = Math.max(0, Math.min(1, t));
+  let rgb = [255,40,0];
   for (let i = 0; i < stops.length - 1; i++) {
     const [t0,c0] = stops[i], [t1,c1] = stops[i+1];
     if (t <= t1) {
       const f = (t - t0) / (t1 - t0);
-      return `rgb(${c0.map((c,k)=>Math.round(c+(c1[k]-c)*f)).join(",")})`;
+      rgb = c0.map((c,k)=>Math.round(c+(c1[k]-c)*f));
+      break;
     }
   }
-  return "rgb(255,40,0)";
+  return a == null ? `rgb(${rgb.join(",")})` : `rgba(${rgb.join(",")},${a})`;
 }
-function speedColor(v) {
+function speedColor(v, a) {
   const lo = D.report.speed.min, hi = Math.max(D.report.speed.max, lo + 0.1);
-  return ramp((v - lo) / (hi - lo));
+  return ramp((v - lo) / (hi - lo), a);
 }
 
 /* ------------------------------------------------------------ 뷰 변환 */
@@ -324,14 +326,6 @@ function drawTrack() {
     }
   }
 
-  // 앵커
-  for (const key of Object.keys(D.anchors)) {
-    const i = +key, p = D.line.xy[i];
-    const [x,y] = W2S(p[0], p[1], W, H);
-    ctx.fillStyle = "#c77dff"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(x, y, 6, 0, 7); ctx.fill(); ctx.stroke();
-  }
-
   // 시작점 + 진행 방향
   const [s0x,s0y] = W2S(xy[0][0], xy[0][1], W, H);
   ctx.fillStyle = "#5aa9ff";
@@ -400,13 +394,28 @@ function drawChart(id, series, opts) {
     }
     ctx.stroke(); ctx.setLineDash([]);
   }
-  // pinned 표시 (속도 그래프만)
-  if (opts.pins) {
-    ctx.fillStyle = "#c77dff";
-    for (let i = 0; i < D.pinned.length; i++) {
-      if (!D.pinned[i]) continue;
-      const s = D.base.s[i];
-      ctx.beginPath(); ctx.arc(X(s), Y(D.speed[i]), 2.6, 0, 7); ctx.fill();
+  // 속도 막대 (속도 그래프만) — 이게 유일한 편집 손잡이다.
+  // 곡선/원본선보다 먼저 그리면 선이 막대에 가려지므로 여기서 뒤에 얹는다.
+  if (opts.bars && BARS) {
+    const floor = g.H - g.B;
+    const half = BARS.halfPx;
+    for (let k = 0; k < BARS.idx.length; k++) {
+      const i = BARS.idx[k];
+      const v = D.speed[i];
+      const px = X(D.base.s[i]), py = Y(v);
+      const top = Math.min(Math.max(py, g.T), floor);
+      ctx.fillStyle = speedColor(v, D.pinned[i] ? 0.55 : 0.3);
+      ctx.fillRect(px - half, top, 2 * half, floor - top);
+      ctx.fillStyle = speedColor(v, 1);            // 잡는 곳 (막대 머리)
+      ctx.fillRect(px - half, top, 2 * half, 3);
+      if (D.pinned[i]) {                            // 사람이 정한 값
+        ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 1;
+        ctx.strokeRect(px - half + 0.5, top + 0.5, 2 * half - 1, floor - top - 1);
+      }
+      if (k === barHover || i === barDrag) {
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+        ctx.strokeRect(px - half - 1, top - 2, 2 * half + 2, floor - top + 2);
+      }
     }
   }
   if (hoverIdx >= 0) {
@@ -430,7 +439,7 @@ function drawCharts() {
     { x: D.base.s, y: D.base.vx, c: "#798394", w: 1.2, dash: [4,3] },
     ...(lap ? [{ x: lap.s, y: lap.v, c: "#ff8c42", w: 1.3 }] : []),
     { x: s, y: D.out.vx, c: "#5aa9ff", w: 1.9 },
-  ], { lo: 0, hi: D.limits.v_max, pins: true,
+  ], { lo: 0, hi: D.limits.v_max, bars: true,
        refs: [{ v: D.limits.v_max, c: "#4a5567", t: "v_max" }] });
 
   const grip = D.out.required_mu.map(m => D.limits.mu_physical - m);
@@ -480,7 +489,7 @@ function badges() {
       `ax ${l.ax_min.toFixed(2)}~${l.ax_max.toFixed(2)}`);
   add("flat", `속도 ${r.speed.min.toFixed(2)}~${r.speed.max.toFixed(2)} ` +
       `(평균 ${r.speed.mean.toFixed(2)}) · 핀 ${r.speed.pinned_pts}`);
-  add("flat", `앵커 ${Object.keys(D.anchors).length} · 랩 ${r.length_m.toFixed(2)} m`);
+  add("flat", `랩 ${r.length_m.toFixed(2)} m`);
   $("badges").innerHTML = out.join("");
 }
 
@@ -530,20 +539,14 @@ function absorb(data) {
   $("who").textContent = `${D.meta.map} → ${D.meta.tuned_csv}`;
   $("undo").disabled = !D.meta.undo_depth;
   $("inflV").textContent = "±" + D.limits.influence_m.toFixed(1) + " m";
-  $("biasV").textContent = D.limits.curvature_bias < 0.025
-    ? "원본 모양 유지" : `${D.limits.curvature_bias.toFixed(2)} ⚠ 라인 전체가 바뀝니다`;
-  $("biasV").style.color = D.limits.curvature_bias < 0.025
-    ? "var(--ok)" : "var(--warn)";
   markPresets(D.limits.influence_m);
-  if (first) {
-    $("infl").value = D.limits.influence_m;
-    $("bias").value = D.limits.curvature_bias;
-  }
+  if (first) $("infl").value = D.limits.influence_m;
   for (const note of notes) log(note, note.startsWith("⚠") ? "w" : "g");
   if (data.saved) log(
     `저장 ${data.saved.csv}\n  generation ${data.saved.generation_id}` +
     `  sha ${data.saved.sha256}`, "g");
   if (first) { sizeAll(); fitView(); }
+  if (!BARS) makeBars();
   badges(); redraw();
 }
 
@@ -561,42 +564,11 @@ function nearestOut(wx, wy) {
   }
   return { index: best, dist: Math.sqrt(bd) };
 }
-function nearestBaseStation(wx, wy) {
-  let best = -1, bd = Infinity;
-  for (let i = 0; i < D.base.xy.length; i++) {
-    const dx = D.line.xy[i][0]-wx, dy = D.line.xy[i][1]-wy;
-    const d = dx*dx + dy*dy;
-    if (d < bd) { bd = d; best = i; }
-  }
-  return { index: best, dist: Math.sqrt(bd) };
-}
-function anchorAt(wx, wy, tol) {
-  for (const key of Object.keys(D.anchors)) {
-    const i = +key, p = D.line.xy[i];
-    if (Math.hypot(p[0]-wx, p[1]-wy) < tol) return i;
-  }
-  return -1;
-}
-
 const track = $("track");
+// 라인 기하는 이 도구에서 편집하지 않는다 (mkcsv 담당). 트랙 캔버스는
+// 보기 전용 — 화면 이동/확대와 호버 읽기만 한다.
 track.addEventListener("mousedown", (ev) => {
   if (!D) return;
-  const rect = track.getBoundingClientRect();
-  const [wx,wy] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
-                      track.clientWidth, track.clientHeight);
-  const tol = 10 / view.k;
-  const hit = anchorAt(wx, wy, tol);
-  if (hit >= 0) {
-    if (ev.shiftKey) { edit({op:"anchor_clear", index:hit}); return; }
-    drag = { kind:"anchor", index:hit };
-    return;
-  }
-  const near = nearestBaseStation(wx, wy);
-  if (near.dist < tol) {                       // 라인 클릭 → 앵커 생성
-    drag = { kind:"anchor", index:near.index, fresh:true };
-    edit({op:"anchor_xy", index:near.index, x:wx, y:wy});
-    return;
-  }
   drag = { kind:"pan", x:ev.clientX, y:ev.clientY, cx:view.cx, cy:view.cy };
   track.classList.add("pan");
 });
@@ -613,15 +585,11 @@ window.addEventListener("mousemove", (ev) => {
   if (inside) {
     const [wx,wy] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
                         track.clientWidth, track.clientHeight);
-    if (drag && drag.kind === "anchor") { drag.wx = wx; drag.wy = wy; }
     const near = nearestOut(wx, wy);
     if (near.dist < 40/view.k) { hoverIdx = near.index; readout(); drawTrack(); drawCharts(); }
   }
 });
 window.addEventListener("mouseup", () => {
-  if (drag && drag.kind === "anchor" && drag.wx !== undefined) {
-    edit({op:"anchor_xy", index:drag.index, x:drag.wx, y:drag.wy});
-  }
   drag = null; track.classList.remove("pan");
 });
 track.addEventListener("wheel", (ev) => {

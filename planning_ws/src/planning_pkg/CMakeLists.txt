@@ -119,16 +119,6 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# RViz 인터랙티브 레이스라인 튜너 (raceline_tuner.launch.py)
-install(PROGRAMS scripts/tuner/raceline_tuner_node.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-# (controller_safety_model.py 는 install 하지 않는다: raceline_tuner_node 가
-#  CSV 경로에서 유도한 **소스 트리** 사본을 1순위로 로드하고, 같은 함수가
-#  scripts/global_traj_sim/build_map.py 도 요구하므로 튜너는 구조적으로
-#  소스 전용이다. 설치된 사본은 deployment_profiles.py 가 함께 설치되지
-#  않아 import 도 못 하면서 "설치본으로도 돈다"는 착시만 만들었다.)
-
 install(DIRECTORY rviz
   DESTINATION share/${PROJECT_NAME}
 )
