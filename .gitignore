@@ -15,6 +15,7 @@ log/
 
 yaw_baseline_*/
 run_*/
+run_*.zip
 
 rosbag*.zip
 rosbag*.tar.*
