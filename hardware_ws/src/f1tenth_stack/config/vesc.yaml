@@ -18,6 +18,9 @@
     steering_angle_to_servo_offset: 0.403
 
     port: /dev/ttyACM0
+    # Physical frame used by the AHRS quaternion. bringup_launch.py publishes
+    # base_link -> this frame from sensors.yaml.
+    imu_frame_id: vesc_imu
     duty_cycle_min: 0.0
     duty_cycle_max: 0.0
     current_min: 0.0

@@ -4,8 +4,8 @@
 import argparse
 import json
 import math
-import re
 from pathlib import Path
+import re
 
 import numpy as np
 
@@ -24,8 +24,10 @@ TOPICS = {
     '/pf/pose/odom',
     '/pf/viz/fake_scan',
     '/pf/viz/inferred_pose',
+    '/pf/viz/particles',
     '/rosout',
     '/scan',
+    '/sensors/imu/raw',
     '/tf_static',
 }
 
@@ -40,6 +42,49 @@ COUNTERS_PATTERN = re.compile(
     r'sync/stale/order-drop (?P<sync_drop>\d+)/(?P<stale_drop>\d+)/'
     r'(?P<order_drop>\d+), worker-error (?P<worker_error>\d+), '
     r'odom-buffer (?P<buffer_used>\d+)/(?P<buffer_capacity>\d+)'
+)
+MCL_PATTERN = re.compile(
+    r'ESS-prior/post (?P<ess_prior>[\d.]+)/(?P<ess_post>[\d.]+), '
+    r'scan-fit (?P<scan_fit>-?[\d.]+), beam-skip '
+    r'(?P<beam_skip>-?[\d.]+)%, beam-fallback (?P<beam_fallback>\d+), '
+    r'quality (?P<quality>[A-Z]+)(?: good/bad \d+/\d+, '
+    r'ready/initialpose(?:-received/accepted)? \d+/\d+(?:/\d+)?)?, '
+    r'resampled/lost-updates/lost-transitions '
+    r'(?P<resampled>\d+)/(?P<lost_updates>\d+)/(?P<lost_transitions>\d+)'
+)
+SLIP_PATTERN = re.compile(
+    r'IMU-buffer (?P<imu_buffer_used>\d+)/(?P<imu_buffer_capacity>\d+), '
+    r'imu-miss/reject (?P<imu_miss>\d+)/(?P<imu_reject>\d+), '
+    r'scan-match-invalid (?P<scan_match_invalid>\d+), scan-motion '
+    r'(?P<scan_motion_state>OK|INVALID) '
+    r'(?P<scan_translation>[\d.]+)m/(?P<scan_yaw>[\d.]+)deg rmse '
+    r'(?P<scan_rmse>-?[\d.]+)m inlier (?P<scan_inlier>-?[\d.]+), '
+    r'slip (?P<slip_state>ACTIVE|OK) score (?P<slip_score>[\d.]+), '
+    r'events/recoveries/bypass (?P<slip_events>\d+)/'
+    r'(?P<slip_recoveries>\d+)/(?P<slip_bypass>\d+), '
+    r'slip-age/last-duration (?P<slip_age>[\d.]+)/'
+    r'(?P<slip_last_duration>[\d.]+)s, slip-max-correction '
+    r'(?P<slip_max_translation>[\d.]+)m/'
+    r'(?P<slip_max_yaw>[\d.]+)deg'
+)
+DESKEW_PATTERN = re.compile(
+    r'deskew (?P<deskew_source>OFF|TIMING|NONE|ODOM|IMU) applied '
+    r'(?P<deskew_applied>\d+), timing/odom/imu-fallback '
+    r'(?P<deskew_timing_invalid>\d+)/(?P<deskew_odom_fallback>\d+)/'
+    r'(?P<deskew_imu_fallback>\d+), scan-span '
+    r'(?P<deskew_scan_span>[\d.]+)ms, translation-scale '
+    r'(?P<deskew_translation_scale>[\d.]+), deskew-max-motion '
+    r'(?P<deskew_max_translation>[\d.]+)m/'
+    r'(?P<deskew_max_yaw>[\d.]+)deg, '
+    r'(?:geometry (?P<geometry_reason>[A-Za-z0-9_-]+) '
+    r'ground/offplane/degraded/sync-miss(?:/fallback)? '
+    r'(?P<geometry_ground>\d+)/(?P<geometry_offplane>\d+)/'
+    r'(?P<geometry_degraded>\d+)/(?P<geometry_sync_miss>\d+)'
+    r'(?:/(?P<geometry_fallback>\d+))?, '
+    r'attitude-buffer (?P<attitude_buffer_used>\d+)/'
+    r'(?P<attitude_buffer_capacity>\d+) level '
+    r'(?P<level_state>[A-Za-z0-9_-]+), )?shape-drop '
+    r'(?P<deskew_shape_drop>\d+)'
 )
 
 
@@ -118,8 +163,9 @@ def storage_id(path):
         f'Cannot infer rosbag storage for {path}; expected db3 or mcap data')
 
 
-def read_bag(path):
-    """Read only the topics needed for PF comparison."""
+def read_bag(path, topics=None):
+    """Read only the requested topics, or the PF comparison defaults."""
+    selected_topics = TOPICS if topics is None else set(topics)
     reader = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(uri=str(path), storage_id=storage_id(path)),
@@ -130,9 +176,9 @@ def read_bag(path):
     }
     message_types = {
         topic: get_message(topic_types[topic])
-        for topic in TOPICS if topic in topic_types
+        for topic in selected_topics if topic in topic_types
     }
-    output = {topic: [] for topic in TOPICS}
+    output = {topic: [] for topic in selected_topics}
 
     while reader.has_next():
         topic, raw_data, record_stamp = reader.read_next()
@@ -190,6 +236,36 @@ class OdomInterpolator:
             self.unwrapped_yaw[lower] + ratio * (
                 self.unwrapped_yaw[upper] - self.unwrapped_yaw[lower]))
         return result
+
+    def at_many(self, timestamps):
+        """Vectorize interpolation for all beam timestamps in one scan."""
+        requested = np.asarray(timestamps, dtype=np.int64)
+        if requested.ndim != 1:
+            raise ValueError('timestamps must be a 1-D array')
+        if requested.size == 0:
+            return np.empty((0, 3), dtype=np.float64)
+        if (self.stamps.size < 2 or np.min(requested) < self.stamps[0]
+                or np.max(requested) > self.stamps[-1]):
+            return None
+
+        upper = np.searchsorted(self.stamps, requested, side='left')
+        upper = np.clip(upper, 1, self.stamps.size - 1)
+        lower = upper - 1
+        lower_stamps = self.stamps[lower]
+        upper_stamps = self.stamps[upper]
+        ratios = (
+            (requested - lower_stamps)
+            / (upper_stamps - lower_stamps).astype(np.float64)
+        )
+        lower_poses = self.poses[lower]
+        upper_poses = self.poses[upper]
+        output = lower_poses + ratios[:, np.newaxis] * (
+            upper_poses - lower_poses)
+        output[:, 2] = wrap_angle(
+            self.unwrapped_yaw[lower]
+            + ratios * (
+                self.unwrapped_yaw[upper] - self.unwrapped_yaw[lower]))
+        return output
 
 
 def nearest_record_index(records, record_stamp):
@@ -250,6 +326,8 @@ def percentile_summary(values, angular=False):
     if angular:
         values = np.degrees(values)
     return {
+        'min': float(np.min(values)),
+        'p05': float(np.percentile(values, 5)),
         'median': float(np.median(values)),
         'p95': float(np.percentile(values, 95)),
         'p99': float(np.percentile(values, 99)),
@@ -349,9 +427,21 @@ def output_timing(records, source_odom):
 def update_timing(updates, source_scans):
     """Summarize whether PF updates retain their source scan timestamps."""
     timestamps = np.array([item[0] for item in updates], dtype=np.int64)
-    source_stamps = {
+    header_stamps = {
         stamp_ns(message.header.stamp) for _, message in source_scans
     }
+    midpoint_stamps = set()
+    for _, message in source_scans:
+        scan_duration = (
+            (len(message.ranges) - 1) * float(message.time_increment)
+            if np.isfinite(message.time_increment)
+            and message.time_increment > 0.0 else 0.0
+        )
+        if 0.0 < scan_duration <= 0.20:
+            midpoint_stamps.add(
+                stamp_ns(message.header.stamp)
+                + int(round(0.5 * scan_duration * 1e9)))
+    reference_stamps = header_stamps | midpoint_stamps
     if timestamps.size < 2:
         return {'count': int(timestamps.size)}
     span_sec = (timestamps[-1] - timestamps[0]) / 1e9
@@ -362,7 +452,11 @@ def update_timing(updates, source_scans):
         'adjacent_duplicate_stamps': int(np.sum(np.diff(timestamps) == 0)),
         'non_monotonic_stamps': int(np.sum(np.diff(timestamps) < 0)),
         'exact_source_scan_stamps': int(sum(
-            int(timestamp) in source_stamps for timestamp in timestamps)),
+            int(timestamp) in reference_stamps for timestamp in timestamps)),
+        'exact_source_scan_header_stamps': int(sum(
+            int(timestamp) in header_stamps for timestamp in timestamps)),
+        'exact_source_scan_midpoint_stamps': int(sum(
+            int(timestamp) in midpoint_stamps for timestamp in timestamps)),
     }
 
 
@@ -378,13 +472,19 @@ def nearest_by_stamp(stamps, timestamp):
 
 def map_fit_metrics(
         valid_updates, scan_records, map_message, settle_ns,
-        laser_pose, predicted=False, beam_offset=5):
+        laser_pose, predicted=False, excluded_angle_steps=(10,),
+        held_out_stride=10, scan_adapter=None):
     """Measure held-out scan endpoint distances to occupied map cells."""
     scan_items = []
     for _, scan in scan_records:
-        timestamp = stamp_ns(scan.header.stamp)
-        ranges = np.asarray(scan.ranges, dtype=np.float32)
-        angles = scan.angle_min + np.arange(len(ranges)) * scan.angle_increment
+        if scan_adapter is None:
+            timestamp = stamp_ns(scan.header.stamp)
+            ranges = np.asarray(scan.ranges, dtype=np.float32)
+            angles = (
+                scan.angle_min
+                + np.arange(len(ranges)) * scan.angle_increment)
+        else:
+            timestamp, ranges, angles = scan_adapter(scan)
         scan_items.append((
             timestamp,
             ranges,
@@ -419,9 +519,13 @@ def map_fit_metrics(
         scan_data = scan_items[scan_index]
         scan_timestamp, ranges, angles, range_min, range_max = scan_data
         scan_time_error_ms.append(abs(scan_timestamp - timestamp) / 1e6)
-        # PF consumes beams 0, 10, 20, ...; offset 5 evaluates unseen beams.
-        sampled_ranges = ranges[beam_offset::10]
-        sampled_angles = angles[beam_offset::10]
+        beam_indices = np.arange(len(ranges), dtype=np.int64)
+        held_out = np.ones(len(ranges), dtype=bool)
+        for angle_step in excluded_angle_steps:
+            held_out &= beam_indices % angle_step != 0
+        held_out_indices = beam_indices[held_out][::held_out_stride]
+        sampled_ranges = ranges[held_out_indices]
+        sampled_angles = angles[held_out_indices]
         maximum_hit_range = min(float(range_max) * 0.995, 9.95)
         valid = np.logical_and.reduce((
             np.isfinite(sampled_ranges),
@@ -456,7 +560,8 @@ def map_fit_metrics(
     distances = np.asarray(endpoint_distances)
     return {
         'pose_stage': 'pre_update_prediction' if predicted else 'post_update',
-        'held_out_beam_offset': beam_offset,
+        'excluded_angle_steps': list(excluded_angle_steps),
+        'held_out_stride': held_out_stride,
         'endpoints': int(endpoint_count),
         'outside_map_fraction': float(outside_count / max(endpoint_count, 1)),
         'wall_distance_median_m': float(np.median(distances)),
@@ -473,6 +578,9 @@ def replay_diagnostics(log_records):
     sync_lines = []
     sync_values = []
     counter_values = []
+    mcl_values = []
+    slip_values = []
+    deskew_values = []
     rejected = []
     for _, message in log_records:
         if message.name != 'particle_filter':
@@ -491,6 +599,90 @@ def replay_diagnostics(log_records):
                     name: int(value)
                     for name, value in counter_match.groupdict().items()
                 })
+            mcl_match = MCL_PATTERN.search(message.msg)
+            if mcl_match:
+                values = mcl_match.groupdict()
+                mcl_values.append({
+                    'ess_prior': float(values['ess_prior']),
+                    'ess_post': float(values['ess_post']),
+                    'scan_fit': float(values['scan_fit']),
+                    'beam_skip': float(values['beam_skip']),
+                    'beam_fallback': int(values['beam_fallback']),
+                    'quality': values['quality'],
+                    'resampled': int(values['resampled']),
+                    'lost_updates': int(values['lost_updates']),
+                    'lost_transitions': int(values['lost_transitions']),
+                })
+            slip_match = SLIP_PATTERN.search(message.msg)
+            if slip_match:
+                values = slip_match.groupdict()
+                slip_values.append({
+                    'imu_buffer_used': int(values['imu_buffer_used']),
+                    'imu_buffer_capacity': int(values['imu_buffer_capacity']),
+                    'imu_miss': int(values['imu_miss']),
+                    'imu_reject': int(values['imu_reject']),
+                    'scan_match_invalid': int(values['scan_match_invalid']),
+                    'scan_motion_state': values['scan_motion_state'],
+                    'scan_translation': float(values['scan_translation']),
+                    'scan_yaw': float(values['scan_yaw']),
+                    'scan_rmse': float(values['scan_rmse']),
+                    'scan_inlier': float(values['scan_inlier']),
+                    'slip_state': values['slip_state'],
+                    'slip_score': float(values['slip_score']),
+                    'slip_events': int(values['slip_events']),
+                    'slip_recoveries': int(values['slip_recoveries']),
+                    'slip_bypass': int(values['slip_bypass']),
+                    'slip_age': float(values['slip_age']),
+                    'slip_last_duration': float(
+                        values['slip_last_duration']),
+                    'slip_max_translation': float(
+                        values['slip_max_translation']),
+                    'slip_max_yaw': float(values['slip_max_yaw']),
+                })
+            deskew_match = DESKEW_PATTERN.search(message.msg)
+            if deskew_match:
+                values = deskew_match.groupdict()
+                deskew_values.append({
+                    'deskew_source': values['deskew_source'],
+                    'deskew_applied': int(values['deskew_applied']),
+                    'deskew_timing_invalid': int(
+                        values['deskew_timing_invalid']),
+                    'deskew_odom_fallback': int(
+                        values['deskew_odom_fallback']),
+                    'deskew_imu_fallback': int(
+                        values['deskew_imu_fallback']),
+                    'deskew_scan_span': float(values['deskew_scan_span']),
+                    'deskew_translation_scale': float(
+                        values['deskew_translation_scale']),
+                    'deskew_max_translation': float(
+                        values['deskew_max_translation']),
+                    'deskew_max_yaw': float(values['deskew_max_yaw']),
+                    'deskew_shape_drop': int(values['deskew_shape_drop']),
+                    'geometry_reason': values.get('geometry_reason'),
+                    'geometry_ground': (
+                        int(values['geometry_ground'])
+                        if values.get('geometry_ground') is not None else None),
+                    'geometry_offplane': (
+                        int(values['geometry_offplane'])
+                        if values.get('geometry_offplane') is not None else None),
+                    'geometry_degraded': (
+                        int(values['geometry_degraded'])
+                        if values.get('geometry_degraded') is not None else None),
+                    'geometry_sync_miss': (
+                        int(values['geometry_sync_miss'])
+                        if values.get('geometry_sync_miss') is not None else None),
+                    'geometry_fallback': (
+                        int(values['geometry_fallback'])
+                        if values.get('geometry_fallback') is not None else None),
+                    'attitude_buffer_used': (
+                        int(values['attitude_buffer_used'])
+                        if values.get('attitude_buffer_used') is not None else None),
+                    'attitude_buffer_capacity': (
+                        int(values['attitude_buffer_capacity'])
+                        if values.get('attitude_buffer_capacity') is not None
+                        else None),
+                    'level_state': values.get('level_state'),
+                })
         if 'Rejected PF scan update' in message.msg:
             rejected.append(message.msg)
     timing = {}
@@ -499,10 +691,43 @@ def replay_diagnostics(log_records):
             values[name] for values in sync_values
             if name != 'age' or values[name] >= 0.0
         ])
+    mcl = {}
+    for name in ('ess_prior', 'ess_post', 'scan_fit', 'beam_skip'):
+        mcl[name] = percentile_summary([
+            values[name] for values in mcl_values
+            if values[name] >= 0.0
+        ])
+    quality_counts = {
+        state: sum(values['quality'] == state for values in mcl_values)
+        for state in ('STARTUP', 'OK', 'DEGRADED', 'LOST')
+    }
+    slip = {}
+    for name in (
+            'scan_translation', 'scan_yaw', 'scan_rmse', 'scan_inlier',
+            'slip_score', 'slip_age', 'slip_last_duration',
+            'slip_max_translation', 'slip_max_yaw'):
+        slip[name] = percentile_summary([
+            values[name] for values in slip_values if values[name] >= 0.0
+        ])
+    deskew = {}
+    for name in (
+            'deskew_scan_span', 'deskew_translation_scale',
+            'deskew_max_translation', 'deskew_max_yaw'):
+        deskew[name] = percentile_summary([
+            values[name] for values in deskew_values
+            if values[name] >= 0.0
+        ])
     return {
         'sync_samples': len(sync_lines),
         'timing': timing,
         'counters': counter_values[-1] if counter_values else {},
+        'mcl': mcl,
+        'mcl_last': mcl_values[-1] if mcl_values else {},
+        'quality_sample_counts': quality_counts,
+        'slip': slip,
+        'slip_last': slip_values[-1] if slip_values else {},
+        'deskew': deskew,
+        'deskew_last': deskew_values[-1] if deskew_values else {},
         'last_sync_line': sync_lines[-1] if sync_lines else None,
         'logged_jump_rejections': len(rejected),
         'jump_rejection_lines': rejected,
@@ -579,13 +804,32 @@ def render_text_report(results, old_path, new_path):
     diagnostics = new['diagnostics']
     timing = diagnostics['timing']
     counters = diagnostics['counters']
+    mcl = diagnostics.get('mcl', {})
+    mcl_last = diagnostics.get('mcl_last', {})
+    quality_counts = diagnostics.get('quality_sample_counts', {})
+    slip = diagnostics.get('slip', {})
+    slip_last = diagnostics.get('slip_last', {})
+    deskew = diagnostics.get('deskew', {})
+    deskew_last = diagnostics.get('deskew_last', {})
 
     timestamp_rows = [
         (
-            'PF update == scan stamp',
+            'PF update == scan reference',
             ratio(old_update['exact_source_scan_stamps'], old_update['count']),
             ratio(new_update['exact_source_scan_stamps'], new_update['count']),
             '100%',
+        ),
+        (
+            'PF update == scan midpoint',
+            ratio(
+                old_update['exact_source_scan_midpoint_stamps'],
+                old_update['count'],
+            ),
+            ratio(
+                new_update['exact_source_scan_midpoint_stamps'],
+                new_update['count'],
+            ),
+            'deskew: 100%',
         ),
         (
             'Duplicate update stamps',
@@ -692,6 +936,169 @@ def render_text_report(results, old_path, new_path):
             f"{number(values.get('max'))} {unit}",
         ))
 
+    deskew_rows = []
+    for label, group, scale, unit in (
+            ('Scan span', 'deskew_scan_span', 1.0, 'ms'),
+            ('Translation scale', 'deskew_translation_scale', 1.0, ''),
+            ('Max translation correction',
+             'deskew_max_translation', 100.0, 'cm'),
+            ('Max yaw correction', 'deskew_max_yaw', 1.0, 'deg')):
+        values = deskew.get(group, {})
+        latest = deskew_last.get(group)
+        deskew_rows.append((
+            label,
+            f"{number(scale * values.get('median')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * values.get('p95')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * values.get('p99')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * latest) if latest is not None else 'N/A'} "
+            f'{unit}',
+        ))
+    deskew_rows.extend((
+        (
+            'Source', '-', '-', '-',
+            deskew_last.get('deskew_source', 'N/A'),
+        ),
+        (
+            'Applied / timing invalid', '-', '-', '-',
+            '%s / %s' % (
+                deskew_last.get('deskew_applied', 'N/A'),
+                deskew_last.get('deskew_timing_invalid', 'N/A'),
+            ),
+        ),
+        (
+            'Odom / IMU fallback', '-', '-', '-',
+            '%s / %s' % (
+                deskew_last.get('deskew_odom_fallback', 'N/A'),
+                deskew_last.get('deskew_imu_fallback', 'N/A'),
+            ),
+        ),
+        (
+            'Scan shape drop', '-', '-', '-',
+            deskew_last.get('deskew_shape_drop', 'N/A'),
+        ),
+        (
+            'Geometry reason / level', '-', '-', '-',
+            '%s / %s' % (
+                deskew_last.get('geometry_reason') or 'N/A',
+                deskew_last.get('level_state') or 'N/A',
+            ),
+        ),
+        (
+            'Ground / off-plane beams', '-', '-', '-',
+            '%s / %s' % (
+                deskew_last.get('geometry_ground', 'N/A'),
+                deskew_last.get('geometry_offplane', 'N/A'),
+            ),
+        ),
+        (
+            'Degraded / sync miss / attitude fallback', '-', '-', '-',
+            '%s / %s / %s' % (
+                deskew_last.get('geometry_degraded', 'N/A'),
+                deskew_last.get('geometry_sync_miss', 'N/A'),
+                deskew_last.get('geometry_fallback', 'N/A'),
+            ),
+        ),
+        (
+            'Attitude buffer', '-', '-', '-',
+            '%s / %s' % (
+                deskew_last.get('attitude_buffer_used', 'N/A'),
+                deskew_last.get('attitude_buffer_capacity', 'N/A'),
+            ),
+        ),
+    ))
+
+    mcl_rows = []
+    for label, group, scale, unit in (
+            ('Prior ESS', 'ess_prior', 100.0, '%'),
+            ('Posterior ESS', 'ess_post', 100.0, '%'),
+            ('Prior-weighted scan fit', 'scan_fit', 100.0, '%'),
+            ('Beams proposed to skip', 'beam_skip', 1.0, '%')):
+        values = mcl.get(group, {})
+        latest = mcl_last.get(group)
+        mcl_rows.append((
+            label,
+            f"{number(scale * values.get('p05')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * values.get('median')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * values.get('p95')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * latest) if latest is not None else 'N/A'} "
+            f'{unit}',
+        ))
+    mcl_rows.extend((
+        (
+            'Systematic resamples',
+            '-', '-', '-',
+            mcl_last.get('resampled', 'N/A'),
+        ),
+        (
+            'Beam-skip fallbacks',
+            '-', '-', '-',
+            mcl_last.get('beam_fallback', 'N/A'),
+        ),
+        (
+            'LOST updates',
+            '-', '-', '-',
+            mcl_last.get('lost_updates', 'N/A'),
+        ),
+        (
+            'LOST transitions',
+            '-', '-', '-',
+            mcl_last.get('lost_transitions', 'N/A'),
+        ),
+        (
+            'Quality samples OK/DEGRADED/LOST',
+            '-', '-', '-',
+            '%d/%d/%d' % (
+                quality_counts.get('OK', 0),
+                quality_counts.get('DEGRADED', 0),
+                quality_counts.get('LOST', 0),
+            ),
+        ),
+    ))
+    for label, group, scale, unit in (
+            ('Scan-motion RMSE', 'scan_rmse', 100.0, 'cm'),
+            ('Scan-motion inliers', 'scan_inlier', 100.0, '%'),
+            ('Slip score', 'slip_score', 1.0, '')):
+        values = slip.get(group, {})
+        latest = slip_last.get(group)
+        mcl_rows.append((
+            label,
+            f"{number(scale * values.get('p05')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * values.get('median')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * values.get('p95')) if values else 'N/A'} "
+            f'{unit}',
+            f"{number(scale * latest) if latest is not None else 'N/A'} "
+            f'{unit}',
+        ))
+    mcl_rows.extend((
+        (
+            'Slip state', '-', '-', '-',
+            slip_last.get('slip_state', 'N/A'),
+        ),
+        (
+            'Slip events/recoveries/bypass', '-', '-', '-',
+            '%s/%s/%s' % (
+                slip_last.get('slip_events', 'N/A'),
+                slip_last.get('slip_recoveries', 'N/A'),
+                slip_last.get('slip_bypass', 'N/A'),
+            ),
+        ),
+        (
+            'Slip max correction', '-', '-', '-',
+            '%sm/%sdeg' % (
+                number(slip_last.get('slip_max_translation')),
+                number(slip_last.get('slip_max_yaw')),
+            ),
+        ),
+    ))
+
     offered = counters.get('offered', 0)
     drop_rows = [
         (
@@ -709,6 +1116,18 @@ def render_text_report(results, old_path, new_path):
         ('Stale drop', counters.get('stale_drop', 'N/A'), 'expected 0'),
         ('Order drop', counters.get('order_drop', 'N/A'), 'expected 0'),
         ('Worker error', counters.get('worker_error', 'N/A'), 'expected 0'),
+        (
+            'Deskew shape drop',
+            deskew_last.get('deskew_shape_drop', 'N/A'),
+            'expected 0',
+        ),
+        ('IMU sync miss', slip_last.get('imu_miss', 'N/A'), 'expected near 0'),
+        ('IMU reject', slip_last.get('imu_reject', 'N/A'), 'expected 0'),
+        (
+            'Scan-match invalid',
+            slip_last.get('scan_match_invalid', 'N/A'),
+            'diagnostic only; hold disabled',
+        ),
     ]
 
     timestamp_pass = (
@@ -738,11 +1157,29 @@ def render_text_report(results, old_path, new_path):
         and counters.get('order_drop', 1) == 0
         and counters.get('worker_error', 1) == 0
     )
+    deskew_health_pass = (
+        bool(deskew_last)
+        and deskew_last.get('deskew_applied', 0) > 0
+        and deskew_last.get('deskew_timing_invalid', 1) == 0
+        and deskew_last.get('deskew_shape_drop', 1) == 0
+    )
+    processed = counters.get('processed', 0)
+    mcl_health_pass = (
+        bool(mcl_last)
+        and mcl_last.get('quality') != 'LOST'
+        and mcl_last.get('lost_updates', processed)
+        / max(processed, 1) < 0.01
+        and mcl_last.get('beam_fallback', processed)
+        / max(processed, 1) < 0.10
+        and mcl.get('ess_post', {}).get('p05', 0.0) > 0.02
+    )
     overall = all((
         timestamp_pass,
         map_improved,
         correction_improved,
+        deskew_health_pass,
         runtime_pass,
+        mcl_health_pass,
     ))
 
     sections = [
@@ -750,7 +1187,10 @@ def render_text_report(results, old_path, new_path):
         f'Baseline : {old_path}',
         f'Candidate: {new_path}',
         f"Settle   : {results['settle_sec']:.1f} s excluded",
-        'Held-out : beams 5, 15, 25, ... (PF uses 0, 10, 20, ...)',
+        'Held-out : every %dth beam unused by angle steps %s' % (
+            results['held_out_stride'],
+            '/'.join(str(step) for step in results['excluded_angle_steps']),
+        ),
         '',
         '[1] TIMESTAMP INTEGRITY',
         text_table(
@@ -763,10 +1203,20 @@ def render_text_report(results, old_path, new_path):
         text_table(
             ('Metric', 'Baseline', 'Candidate', 'Change'), correction_rows),
         '',
-        '[4] CANDIDATE RUNTIME',
+        '[4] MCL / BEAM-SKIP / LOST HEALTH',
+        text_table(
+            ('Metric', 'p05', 'p50', 'p95', 'Latest / Count'), mcl_rows),
+        '',
+        '[5] DESKEW / 3D GEOMETRY HEALTH',
+        text_table(
+            ('Metric', 'p50', 'p95', 'p99', 'Latest / Count'),
+            deskew_rows,
+        ),
+        '',
+        '[6] CANDIDATE RUNTIME',
         text_table(('Metric', 'p50', 'p95', 'p99', 'Max'), runtime_rows),
         '',
-        '[5] QUEUE / ERROR COUNTERS (LAST PERIODIC DIAGNOSTIC)',
+        '[7] QUEUE / ERROR COUNTERS (LAST PERIODIC DIAGNOSTIC)',
         text_table(('Counter', 'Count', 'Ratio / Target'), drop_rows),
         '',
         '[SUMMARY]',
@@ -774,6 +1224,8 @@ def render_text_report(results, old_path, new_path):
         f"Held-out map fit    : {'IMPROVED' if map_improved else 'CHECK'}",
         'Correction stability: %s' % (
             'IMPROVED' if correction_improved else 'CHECK'),
+        f"Deskew health       : {'PASS' if deskew_health_pass else 'CHECK'}",
+        f"MCL health          : {'PASS' if mcl_health_pass else 'CHECK'}",
         f"Runtime health      : {'PASS' if runtime_pass else 'CHECK'}",
         f"Overall no-GT result: {'IMPROVED' if overall else 'CHECK REQUIRED'}",
         '',
@@ -790,6 +1242,18 @@ def main():
     parser.add_argument('--new', required=True, help='Replay output bag')
     parser.add_argument('--settle-sec', type=float, default=10.0)
     parser.add_argument(
+        '--old-angle-step', type=int, default=10,
+        help='Baseline PF beam step (default: 10)',
+    )
+    parser.add_argument(
+        '--new-angle-step', type=int, default=15,
+        help='Candidate PF beam step (default: 15)',
+    )
+    parser.add_argument(
+        '--held-out-stride', type=int, default=10,
+        help='Decimation after excluding PF-consumed beams (default: 10)',
+    )
+    parser.add_argument(
         '--format', choices=('text', 'json'), default='text',
         help='Output format (default: text)',
     )
@@ -797,6 +1261,14 @@ def main():
         '--output', help='Also write the rendered report to this file',
     )
     args = parser.parse_args()
+    if args.old_angle_step <= 0 or args.new_angle_step <= 0:
+        parser.error('angle steps must be positive')
+    if args.held_out_stride <= 0:
+        parser.error('--held-out-stride must be positive')
+    excluded_angle_steps = tuple(sorted({
+        args.old_angle_step,
+        args.new_angle_step,
+    }))
 
     old = read_bag(args.old)
     new = read_bag(args.new)
@@ -813,6 +1285,8 @@ def main():
 
     results = {
         'settle_sec': args.settle_sec,
+        'excluded_angle_steps': list(excluded_angle_steps),
+        'held_out_stride': args.held_out_stride,
         'base_to_laser_pose': laser_pose.tolist(),
         'old': {
             'updates': len(old_updates),
@@ -823,10 +1297,14 @@ def main():
             'corrections': old_corrections,
             'map_fit_held_out_post': map_fit_metrics(
                 old_valid, old['/scan'], map_message, settle_ns,
-                laser_pose),
+                laser_pose,
+                excluded_angle_steps=excluded_angle_steps,
+                held_out_stride=args.held_out_stride),
             'map_fit_held_out_pre': map_fit_metrics(
                 old_valid, old['/scan'], map_message, settle_ns,
-                laser_pose, predicted=True),
+                laser_pose, predicted=True,
+                excluded_angle_steps=excluded_angle_steps,
+                held_out_stride=args.held_out_stride),
         },
         'new': {
             'updates': len(new_updates),
@@ -835,10 +1313,14 @@ def main():
             'corrections': new_corrections,
             'map_fit_held_out_post': map_fit_metrics(
                 new_valid, old['/scan'], map_message, settle_ns,
-                laser_pose),
+                laser_pose,
+                excluded_angle_steps=excluded_angle_steps,
+                held_out_stride=args.held_out_stride),
             'map_fit_held_out_pre': map_fit_metrics(
                 new_valid, old['/scan'], map_message, settle_ns,
-                laser_pose, predicted=True),
+                laser_pose, predicted=True,
+                excluded_angle_steps=excluded_angle_steps,
+                held_out_stride=args.held_out_stride),
             'diagnostics': replay_diagnostics(new['/rosout']),
         },
     }

@@ -8,8 +8,10 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>f1tenth_perception_msgs</depend>
+  <depend>f1tenth_scan_geometry</depend>
   <depend>tf2_ros_py</depend>
   <depend>python3-numpy</depend>
   <!-- 트랙 경계(Frenet) 필터가 /global_waypoints(WpntArray)를 구독한다.

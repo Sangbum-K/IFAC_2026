@@ -101,11 +101,12 @@ cd ~/IFAC_ws
 | 목적 | 명령 |
 |---|---|
 | **시뮬 전체** (gym+perception+planning+control+RViz) | `ros2 launch integration_pkg stack.launch.py` |
-| **실차 원커맨드** (하드웨어→PF+RViz→수렴 게이트→자율 스택) | `ros2 launch integration_pkg real_car.launch.py` |
+| **실차 원커맨드** (하드웨어→PF+RViz→initialpose/quality 게이트→자율 스택) | `ros2 launch integration_pkg real_car.launch.py` |
 | **매핑** (하드웨어+SLAM+RViz+저장) | `ros2 launch integration_pkg mapping.launch.py map_name:=<이름>` |
 
 원커맨드로 실차를 띄우면 사람이 할 일은 **RViz에서 `2D Pose Estimate` 한 번**
-찍는 것뿐입니다. 파티클이 수렴하면 자율 스택이 자동으로 시작됩니다.
+찍는 것뿐입니다. PF가 `/initialpose` 적용과 scan-map quality 연속 OK를 확인하면
+자율 스택이 자동으로 시작됩니다.
 
 ### 실차를 터미널 3개로 나눠 띄우기 (디버깅용)
 
@@ -169,6 +170,10 @@ ros2 launch integration_pkg real_car.launch.py map:=my_track2
 
 ## 실차 안전장치
 
+- **localization 출발 게이트**는 `/initialpose`가 실제 적용되고 scan-map quality가
+  5회 연속 OK가 되기 전에는 자율 스택을 시작하지 않습니다. 실차 control도
+  `/pf/localization_ready`가 false 또는 0.5초 stale이면 0 명령만 냅니다. 이 게이트는
+  autonomy 입력에만 적용되므로 mux의 고우선순위 joystick/estop은 계속 동작합니다.
 - **자율주행 토글은 조이스틱 버튼 5** (`joy_toggle_teleop`, 엣지 트리거). 시작 시
   control_pkg는 `autonomous_on_start: true`로 자율 명령(`/autonomy/ackermann_cmd`)을
   내보내지만, teleop이 **수동 모드로 시작**해 mux(joystick 우선순위)를 점유하므로

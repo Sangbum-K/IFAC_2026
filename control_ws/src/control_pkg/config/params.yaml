@@ -11,6 +11,13 @@ control:
     service_name: /control/set_mode
     autonomous_on_start: false
 
+    # Fail-closed lease used only by real_car.yaml. The PF publishes a latched
+    # false until /initialpose is accepted and scan-map quality is consecutively
+    # OK, then refreshes the lease on every processed scan.
+    "localization_gate/enabled": false
+    "localization_gate/ready_topic": /pf/localization_ready
+    "localization_gate/status_timeout_sec": 0.50
+
     waypoint_timeout_sec: 0.25
     odom_timeout_sec: 0.25
     frenet_odom_timeout_sec: 0.25

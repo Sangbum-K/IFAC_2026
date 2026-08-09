@@ -15,6 +15,7 @@
 """
 import numpy as np
 import rclpy
+from threading import Lock
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
@@ -30,9 +31,10 @@ from rclpy.duration import Duration
 import tf2_ros
 from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 
-from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import OccupancyGrid
+from sensor_msgs.msg import Imu, LaserScan
+from nav_msgs.msg import OccupancyGrid, Odometry
 from geometry_msgs.msg import Point, Vector3
+from std_msgs.msg import Header
 
 try:
     from scipy.ndimage import distance_transform_edt
@@ -40,6 +42,19 @@ except ImportError:      # scipy 없는 환경(다른 개발 PC 등)은 맵 필�
     distance_transform_edt = None
 
 from f1tenth_perception_msgs.msg import Obstacle, ObstacleArray
+from f1tenth_scan_geometry import AttitudeSample
+from f1tenth_scan_geometry import GroundFilterConfig
+from f1tenth_scan_geometry import LevelReference
+from f1tenth_scan_geometry import LOOKUP_OK
+from f1tenth_scan_geometry import PoseSample
+from f1tenth_scan_geometry import TimestampedAttitudeBuffer
+from f1tenth_scan_geometry import TimestampedPoseBuffer
+from f1tenth_scan_geometry import base_orientation_from_imu
+from f1tenth_scan_geometry import deskew_points_to_reference
+from f1tenth_scan_geometry import mask_ground_and_offplane
+from f1tenth_scan_geometry import quaternion_from_rpy
+from f1tenth_scan_geometry import quaternion_to_matrix
+from f1tenth_scan_geometry.geometry import rotations_from_yaw_and_level_tilt
 
 try:
     # 트랙 경계 필터 전용. planning_ws가 소스되지 않은 개발 환경에서도
@@ -50,11 +65,11 @@ except ImportError:
 
 from perception_pkg.preprocessing import (
     preprocess_scan,
-    transform_points,
-    rotation_matrix_2d_from_quaternion,
     polygon_mask,
+    sanitize_scan_ranges,
 )
 from perception_pkg.clustering import adaptive_cluster_points
+from perception_pkg.clustering import adaptive_component_provenance
 from perception_pkg.tracker import Tracker
 from perception_pkg.classifier import classify_track
 from perception_pkg.track_filter import TrackBounds
@@ -109,8 +124,11 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter('min_hits', 3)            # 이만큼 관측돼야 장애물로 발행
 
         self.declare_parameter('scan_topic', '/scan')
+        self.declare_parameter('odom_topic', '/odom')
+        self.declare_parameter('imu_topic', '/sensors/imu/raw')
         self.declare_parameter('obstacle_topic', '/perception/obstacles')
         self.declare_parameter('target_frame', 'map')   # frame_id_override 대체
+        self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('tf_timeout_sec', 0.05)
         self.declare_parameter('require_source_stamp', True)
         self.declare_parameter('max_source_age_sec', 0.20)
@@ -124,6 +142,41 @@ class ObstacleDetectorNode(Node):
         # 합성해, latest 폴백의 주행 중 오차(속도 x TF지연)를 PF 보정
         # 드리프트 수준으로 줄인다. odom 프레임이 없는 환경(sim)은 비워 둘 것.
         self.declare_parameter('tf_fixed_frame', '')
+        # Timestamped 3D scan geometry. Buffers stay small and callbacks only
+        # append; interpolation is vectorized once per accepted scan.
+        self.declare_parameter('odom_buffer_size', 200)
+        self.declare_parameter('imu_buffer_size', 200)
+        self.declare_parameter('sensor_sync_wait_sec', 0.005)
+        self.declare_parameter('max_odom_interp_gap_sec', 0.08)
+        self.declare_parameter('max_imu_interp_gap_sec', 0.08)
+        self.declare_parameter('deskew_enabled', True)
+        self.declare_parameter('deskew_max_scan_duration_sec', 0.05)
+        self.declare_parameter('deskew_translation_scale', 1.0)
+        self.declare_parameter('imu_angular_velocity_scale', 0.017453292519943295)
+        self.declare_parameter('imu_linear_acceleration_scale', 9.80665)
+        # Used only when the IMU frame TF is absent. The real-car bringup now
+        # publishes base_link -> vesc_imu, so measured TF normally wins.
+        self.declare_parameter('base_to_imu_rpy_deg', [0.0, 0.0, 0.0])
+        self.declare_parameter('level_reference_samples', 20)
+        self.declare_parameter('level_reference_max_gyro_rad_s', 0.12)
+        self.declare_parameter('level_reference_accel_tolerance_mps2', 2.5)
+        self.declare_parameter('ground_filter_enabled', False)
+        self.declare_parameter('ground_z_m', 0.0)
+        self.declare_parameter('ground_range_tolerance_m', 0.08)
+        self.declare_parameter('ground_range_tolerance_ratio', 0.04)
+        self.declare_parameter('ground_endpoint_z_tolerance_m', 0.05)
+        self.declare_parameter('ground_min_component_beams', 6)
+        self.declare_parameter('ground_min_component_angle_deg', 4.0)
+        self.declare_parameter('ground_min_component_span_m', 0.30)
+        self.declare_parameter('max_planar_elevation_deg', 4.0)
+        self.declare_parameter('degraded_offplane_fraction', 0.55)
+        self.declare_parameter('degraded_ground_fraction', 0.70)
+        self.declare_parameter('attitude_fallback_tilt_deg', 4.0)
+        self.declare_parameter('attitude_ground_evidence_fraction', 0.05)
+        self.declare_parameter('attitude_ground_evidence_min_beams', 6)
+        self.declare_parameter('attitude_evidence_max_abs_angle_deg', 80.0)
+        self.declare_parameter('degraded_valid_fraction', 0.25)
+        self.declare_parameter('ground_min_retained_beams', 20)
         # target_frame(map) 기준. 기본 [0.0]은 "비활성" sentinel —
         # 빈 리스트 기본값은 rclpy에서 타입 미확정(ParameterUninitializedException)이 된다.
         self.declare_parameter('boundary_polygon_xy', [0.0])
@@ -211,6 +264,66 @@ class ObstacleDetectorNode(Node):
             p('tf_allow_latest_fallback').value)
         self.tf_max_age = float(p('tf_max_age_sec').value)
         self.tf_fixed_frame = str(p('tf_fixed_frame').value).strip()
+        self.base_frame = str(p('base_frame').value).strip()
+        self.odom_buffer_size = int(p('odom_buffer_size').value)
+        self.imu_buffer_size = int(p('imu_buffer_size').value)
+        self.sensor_sync_wait = float(p('sensor_sync_wait_sec').value)
+        self.max_odom_interp_gap = float(
+            p('max_odom_interp_gap_sec').value)
+        self.max_imu_interp_gap = float(
+            p('max_imu_interp_gap_sec').value)
+        self.deskew_enabled = bool(p('deskew_enabled').value)
+        self.deskew_max_scan_duration = float(
+            p('deskew_max_scan_duration_sec').value)
+        self.deskew_translation_scale = float(
+            p('deskew_translation_scale').value)
+        self.imu_angular_velocity_scale = float(
+            p('imu_angular_velocity_scale').value)
+        self.imu_linear_acceleration_scale = float(
+            p('imu_linear_acceleration_scale').value)
+        self.ground_filter_enabled = bool(
+            p('ground_filter_enabled').value)
+        base_to_imu_rpy = np.asarray(
+            p('base_to_imu_rpy_deg').value, dtype=np.float64)
+        if base_to_imu_rpy.shape != (3,) or not np.all(np.isfinite(base_to_imu_rpy)):
+            raise ValueError('base_to_imu_rpy_deg must contain three finite values')
+        self.base_to_imu_fallback = quaternion_from_rpy(
+            *np.deg2rad(base_to_imu_rpy))
+        level_samples = int(p('level_reference_samples').value)
+        level_max_gyro = float(
+            p('level_reference_max_gyro_rad_s').value)
+        level_accel_tolerance = float(
+            p('level_reference_accel_tolerance_mps2').value)
+        self.ground_config = GroundFilterConfig(
+            ground_z_m=float(p('ground_z_m').value),
+            range_tolerance_m=float(p('ground_range_tolerance_m').value),
+            range_tolerance_ratio=float(
+                p('ground_range_tolerance_ratio').value),
+            endpoint_z_tolerance_m=float(
+                p('ground_endpoint_z_tolerance_m').value),
+            min_component_beams=int(p('ground_min_component_beams').value),
+            min_component_angle_rad=np.deg2rad(float(
+                p('ground_min_component_angle_deg').value)),
+            min_component_span_m=float(
+                p('ground_min_component_span_m').value),
+            max_planar_elevation_rad=np.deg2rad(float(
+                p('max_planar_elevation_deg').value)),
+            degraded_offplane_fraction=float(
+                p('degraded_offplane_fraction').value),
+            degraded_ground_fraction=float(
+                p('degraded_ground_fraction').value),
+            attitude_fallback_tilt_rad=np.deg2rad(float(
+                p('attitude_fallback_tilt_deg').value)),
+            attitude_ground_evidence_fraction=float(
+                p('attitude_ground_evidence_fraction').value),
+            attitude_ground_evidence_min_beams=int(
+                p('attitude_ground_evidence_min_beams').value),
+            attitude_evidence_max_abs_angle_rad=np.deg2rad(float(
+                p('attitude_evidence_max_abs_angle_deg').value)),
+            degraded_valid_fraction=float(
+                p('degraded_valid_fraction').value),
+            min_retained_beams=int(p('ground_min_retained_beams').value),
+        )
         self.use_map_filter = bool(p('use_map_filter').value)
         self.wall_dist_min = float(p('wall_dist_min_m').value)
         self.max_cluster_radius = float(p('max_cluster_radius_m').value)
@@ -238,14 +351,71 @@ class ObstacleDetectorNode(Node):
         timing_values = (
             rate, tf_timeout_sec, self.max_source_age,
             self.source_future_tolerance, self.tf_max_age,
+            self.sensor_sync_wait, self.max_odom_interp_gap,
+            self.max_imu_interp_gap, self.deskew_max_scan_duration,
         )
         if (not all(np.isfinite(v) for v in timing_values)
                 or not 1.0 <= rate <= 500.0
                 or not 0.0 <= tf_timeout_sec <= 5.0
                 or not 0.01 <= self.max_source_age <= 5.0
                 or not 0.0 <= self.source_future_tolerance <= 1.0
-                or not 0.0 <= self.tf_max_age <= 1.0):
+                or not 0.0 <= self.tf_max_age <= 1.0
+                or not 0.0 <= self.sensor_sync_wait <= 0.1
+                or not 0.001 <= self.max_odom_interp_gap <= 1.0
+                or not 0.001 <= self.max_imu_interp_gap <= 1.0
+                or not 0.001 <= self.deskew_max_scan_duration <= 0.2):
             raise ValueError('invalid detector timing/freshness parameters')
+        ground_values = (
+            self.ground_config.ground_z_m,
+            self.ground_config.range_tolerance_m,
+            self.ground_config.range_tolerance_ratio,
+            self.ground_config.endpoint_z_tolerance_m,
+            self.ground_config.min_component_angle_rad,
+            self.ground_config.min_component_span_m,
+            self.ground_config.max_planar_elevation_rad,
+            self.ground_config.degraded_offplane_fraction,
+            self.ground_config.degraded_ground_fraction,
+            self.ground_config.attitude_fallback_tilt_rad,
+            self.ground_config.attitude_ground_evidence_fraction,
+            self.ground_config.attitude_evidence_max_abs_angle_rad,
+            self.ground_config.degraded_valid_fraction,
+            level_max_gyro, level_accel_tolerance,
+            self.imu_angular_velocity_scale,
+            self.imu_linear_acceleration_scale,
+            self.deskew_translation_scale,
+        )
+        if (not all(np.isfinite(v) for v in ground_values)
+                or not 2 <= self.odom_buffer_size <= 2000
+                or not 2 <= self.imu_buffer_size <= 2000
+                or not 2 <= level_samples <= 1000
+                or not 0.0 < level_max_gyro <= 5.0
+                or not 0.0 < level_accel_tolerance <= 20.0
+                or not -1.0 <= self.ground_config.ground_z_m <= 1.0
+                or not 0.0 < self.ground_config.range_tolerance_m <= 1.0
+                or not 0.0 <= self.ground_config.range_tolerance_ratio <= 0.5
+                or not 0.0 < self.ground_config.endpoint_z_tolerance_m <= 0.5
+                or not 2 <= self.ground_config.min_component_beams <= 1000
+                or not 0.0 < self.ground_config.min_component_angle_rad <= np.pi
+                or not 0.05 <= self.ground_config.min_component_span_m <= 5.0
+                or not np.deg2rad(0.5) <= self.ground_config.max_planar_elevation_rad <= np.deg2rad(30.0)
+                or not 0.0 < self.ground_config.degraded_offplane_fraction <= 1.0
+                or not 0.0 < self.ground_config.degraded_ground_fraction <= 1.0
+                or not np.deg2rad(1.0)
+                <= self.ground_config.attitude_fallback_tilt_rad
+                <= np.deg2rad(45.0)
+                or not 0.0
+                <= self.ground_config.attitude_ground_evidence_fraction <= 1.0
+                or not 1
+                <= self.ground_config.attitude_ground_evidence_min_beams <= 1000
+                or not np.deg2rad(10.0)
+                <= self.ground_config.attitude_evidence_max_abs_angle_rad
+                <= np.pi
+                or not 0.0 < self.ground_config.degraded_valid_fraction <= 1.0
+                or not 1 <= self.ground_config.min_retained_beams <= 10000
+                or not 0.0 <= self.deskew_translation_scale <= 1.0
+                or self.imu_angular_velocity_scale <= 0.0
+                or self.imu_linear_acceleration_scale <= 0.0):
+            raise ValueError('invalid detector deskew/ground-filter parameters')
         continuous_values = (
             self.range_min, self.range_max, self.fov_min, self.fov_max,
             self.lambda_angle, self.sigma, self.v_thresh, self.static_pos_std,
@@ -283,8 +453,8 @@ class ObstacleDetectorNode(Node):
         self.last_processed = -1e18
         self.last_seen_stamp = -1e18
         self.target_frame = str(p('target_frame').value).strip()
-        if not self.target_frame:
-            raise ValueError('target_frame must not be empty')
+        if not self.target_frame or not self.base_frame:
+            raise ValueError('target_frame and base_frame must not be empty')
         self.tf_timeout = Duration(seconds=tf_timeout_sec)
         self.boundary_polygon = self._parse_boundary_polygon(
             p('boundary_polygon_xy').value
@@ -300,9 +470,11 @@ class ObstacleDetectorNode(Node):
         )
 
         scan_topic = str(p('scan_topic').value).strip()
+        odom_topic = str(p('odom_topic').value).strip()
+        imu_topic = str(p('imu_topic').value).strip()
         obstacle_topic = str(p('obstacle_topic').value).strip()
-        if not scan_topic or not obstacle_topic:
-            raise ValueError('scan_topic and obstacle_topic must not be empty')
+        if not scan_topic or not odom_topic or not imu_topic or not obstacle_topic:
+            raise ValueError('scan/odom/imu/obstacle topics must not be empty')
 
         # ---- TF2 ----
         # /tf가 고빈도면 TF 콜백이 스캔 처리에 밀려 굶고, lookup이
@@ -327,9 +499,36 @@ class ObstacleDetectorNode(Node):
         self.tf_listener = tf2_ros.TransformListener(
             self.tf_buffer, self, spin_thread=False)
 
+        self.odom_buffer = TimestampedPoseBuffer(self.odom_buffer_size)
+        self.attitude_buffer = TimestampedAttitudeBuffer(self.imu_buffer_size)
+        self.sensor_state_lock = Lock()
+        self.current_wheel_speed = 0.0
+        self.base_to_imu_quaternion = np.copy(self.base_to_imu_fallback)
+        self.imu_extrinsic_frame = ''
+        self.level_reference = LevelReference(
+            min_samples=level_samples,
+            max_gyro_rad_s=level_max_gyro,
+            accel_tolerance_mps2=level_accel_tolerance,
+        )
+        self.laser_extrinsics = {}
+        self.ground_filtered_beams = 0
+        self.offplane_filtered_beams = 0
+        self.geometry_degraded_scans = 0
+        self.geometry_sync_misses = 0
+        self.attitude_fallback_scans = 0
+        self.deskew_applied_scans = 0
+        self.last_geometry_log_time = -1e18
+
+        sensor_cb_group = ReentrantCallbackGroup()
         self.sub = self.create_subscription(
             LaserScan, scan_topic, self.on_scan, qos_profile_sensor_data
         )
+        self.odom_sub = self.create_subscription(
+            Odometry, odom_topic, self.on_odom, qos_profile_sensor_data,
+            callback_group=sensor_cb_group)
+        self.imu_sub = self.create_subscription(
+            Imu, imu_topic, self.on_imu, qos_profile_sensor_data,
+            callback_group=sensor_cb_group)
         self.pub = self.create_publisher(ObstacleArray, obstacle_topic, 10)
 
         # ---- 맵 벽거리(EDT) 필터 ----
@@ -395,7 +594,7 @@ class ObstacleDetectorNode(Node):
 
         self.get_logger().info(
             f'obstacle_detector_node started: {scan_topic} -> {obstacle_topic} '
-            f'(target_frame={self.target_frame})'
+            f'(target_frame={self.target_frame}, odom={odom_topic}, imu={imu_topic})'
         )
         if self.boundary_polygon is not None:
             self.get_logger().info(
@@ -548,6 +747,255 @@ class ObstacleDetectorNode(Node):
             return None            # 맵 밖 — 열린 공간으로 취급하지 않는다
         return float(self.wall_dist[row, col])
 
+    @staticmethod
+    def _stamp_to_ns(stamp):
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+    @staticmethod
+    def _normalized_quaternion(message_quaternion):
+        quaternion = np.array([
+            message_quaternion.x, message_quaternion.y,
+            message_quaternion.z, message_quaternion.w,
+        ], dtype=np.float64)
+        norm = float(np.linalg.norm(quaternion))
+        if not np.isfinite(norm) or norm < 1e-9:
+            return None
+        return quaternion / norm
+
+    def on_odom(self, msg: Odometry):
+        """Append a lightweight odom sample; no scan work runs here."""
+        stamp_ns = self._stamp_to_ns(msg.header.stamp)
+        if stamp_ns <= 0:
+            stamp_ns = self.get_clock().now().nanoseconds
+        q = self._normalized_quaternion(msg.pose.pose.orientation)
+        if q is None:
+            return
+        yaw = float(np.arctan2(
+            2.0 * (q[3] * q[2] + q[0] * q[1]),
+            1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2])))
+        speed = float(msg.twist.twist.linear.x)
+        values = (msg.pose.pose.position.x, msg.pose.pose.position.y,
+                  yaw, speed)
+        if not np.all(np.isfinite(values)):
+            return
+        self.odom_buffer.append(PoseSample(
+            stamp_ns, float(values[0]), float(values[1]), yaw, speed))
+        with self.sensor_state_lock:
+            self.current_wheel_speed = speed
+
+    def _resolve_imu_extrinsic(self, frame_id):
+        """Resolve base<-IMU rotation once, retaining a parameter fallback."""
+        frame = frame_id.strip().lstrip('/')
+        if not frame:
+            return np.copy(self.base_to_imu_fallback)
+        with self.sensor_state_lock:
+            if self.imu_extrinsic_frame == frame:
+                return np.copy(self.base_to_imu_quaternion)
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame, frame, Time(), timeout=Duration(seconds=0.0))
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            self.get_logger().warn(
+                f'IMU TF {self.base_frame} <- {frame} unavailable; using '
+                'base_to_imu_rpy_deg fallback until TF arrives.',
+                throttle_duration_sec=5.0)
+            return np.copy(self.base_to_imu_fallback)
+        q = self._normalized_quaternion(transform.transform.rotation)
+        if q is None:
+            return np.copy(self.base_to_imu_fallback)
+        with self.sensor_state_lock:
+            changed = (self.imu_extrinsic_frame != frame
+                       or not np.allclose(q, self.base_to_imu_quaternion,
+                                          atol=1e-8))
+            self.base_to_imu_quaternion = q
+            self.imu_extrinsic_frame = frame
+            if changed:
+                self.attitude_buffer.clear()
+                self.level_reference.reset()
+                self.get_logger().info(
+                    f'Using measured IMU extrinsic {self.base_frame} <- {frame}; '
+                    'level reference reset')
+        return np.copy(q)
+
+    def on_imu(self, msg: Imu):
+        """Convert one timestamped IMU orientation to the base frame."""
+        stamp_ns = self._stamp_to_ns(msg.header.stamp)
+        if stamp_ns <= 0:
+            stamp_ns = self.get_clock().now().nanoseconds
+        imu_q = self._normalized_quaternion(msg.orientation)
+        values = np.array([
+            msg.angular_velocity.x, msg.angular_velocity.y,
+            msg.angular_velocity.z, msg.linear_acceleration.x,
+            msg.linear_acceleration.y, msg.linear_acceleration.z,
+        ], dtype=np.float64)
+        if imu_q is None or not np.all(np.isfinite(values)):
+            return
+        base_to_imu = self._resolve_imu_extrinsic(msg.header.frame_id)
+        try:
+            base_q = base_orientation_from_imu(imu_q, base_to_imu)
+        except ValueError:
+            return
+        angular_speed = float(
+            np.linalg.norm(values[:3]) * self.imu_angular_velocity_scale)
+        acceleration_norm = float(
+            np.linalg.norm(values[3:]) * self.imu_linear_acceleration_scale)
+        if not self.attitude_buffer.append(AttitudeSample(
+                stamp_ns, tuple(base_q), angular_speed, acceleration_norm)):
+            return
+        with self.sensor_state_lock:
+            was_ready = self.level_reference.ready
+            self.level_reference.update(
+                base_q, angular_speed, acceleration_norm,
+                wheel_speed=self.current_wheel_speed)
+            if self.level_reference.ready and not was_ready:
+                self.get_logger().info(
+                    'IMU level reference ready; 3D ground filtering enabled')
+
+    def _laser_extrinsic(self, source_frame):
+        """Return measured base<-LiDAR translation and full quaternion."""
+        frame = source_frame.strip().lstrip('/')
+        if frame == self.base_frame.lstrip('/'):
+            return np.zeros(3), quaternion_from_rpy(0.0, 0.0, 0.0)
+        if frame in self.laser_extrinsics:
+            translation, quaternion = self.laser_extrinsics[frame]
+            return np.copy(translation), np.copy(quaternion)
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame, frame, Time(), timeout=Duration(seconds=0.0))
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            self.get_logger().warn(
+                f'LiDAR extrinsic TF {self.base_frame} <- {frame} unavailable; '
+                'skipping scan.', throttle_duration_sec=2.0)
+            return None
+        q = self._normalized_quaternion(transform.transform.rotation)
+        t = transform.transform.translation
+        translation = np.array([t.x, t.y, t.z], dtype=np.float64)
+        if q is None or not np.all(np.isfinite(translation)):
+            return None
+        self.laser_extrinsics[frame] = (translation, q)
+        self.get_logger().info(
+            f'Using 6DoF LiDAR extrinsic {self.base_frame} <- {frame}: '
+            f'xyz=({t.x:.3f},{t.y:.3f},{t.z:.3f})')
+        return np.copy(translation), np.copy(q)
+
+    def _lookup_target_transform(self, source_frame, source_time, stamp_sec):
+        """Lookup target<-source at scan time with the existing bounded fallbacks."""
+        if self.target_frame.lstrip('/') == source_frame.lstrip('/'):
+            return np.zeros(3), quaternion_from_rpy(0.0, 0.0, 0.0)
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.target_frame, source_frame, source_time,
+                timeout=self.tf_timeout)
+        except (LookupException, ConnectivityException,
+                ExtrapolationException) as exact_ex:
+            transform = None
+            if self.tf_fixed_frame:
+                try:
+                    fixed_leg = self.tf_buffer.lookup_transform(
+                        self.tf_fixed_frame, source_frame, Time(),
+                        timeout=self.tf_timeout)
+                    fixed_stamp = (fixed_leg.header.stamp.sec
+                                   + fixed_leg.header.stamp.nanosec * 1e-9)
+                    if (np.isfinite(fixed_stamp) and fixed_stamp > 0.0
+                            and abs(stamp_sec - fixed_stamp) <= self.tf_max_age):
+                        clamped_time = (source_time if fixed_stamp >= stamp_sec
+                                        else Time.from_msg(fixed_leg.header.stamp))
+                        transform = self.tf_buffer.lookup_transform_full(
+                            self.target_frame, Time(), source_frame,
+                            clamped_time, self.tf_fixed_frame,
+                            timeout=self.tf_timeout)
+                except (LookupException, ConnectivityException,
+                        ExtrapolationException):
+                    transform = None
+            if transform is None and self.tf_allow_latest_fallback:
+                try:
+                    transform = self.tf_buffer.lookup_transform(
+                        self.target_frame, source_frame, Time(),
+                        timeout=self.tf_timeout)
+                except (LookupException, ConnectivityException,
+                        ExtrapolationException):
+                    transform = None
+            if transform is None:
+                self.get_logger().warn(
+                    f'TF lookup {source_frame} -> {self.target_frame} failed: '
+                    f'{exact_ex}. Skipping scan.', throttle_duration_sec=2.0)
+                return None
+            tf_stamp = (transform.header.stamp.sec
+                        + transform.header.stamp.nanosec * 1e-9)
+            if (not np.isfinite(tf_stamp) or tf_stamp <= 0.0
+                    or abs(tf_stamp - stamp_sec) > self.tf_max_age):
+                self.get_logger().warn(
+                    f'TF is too far from scan midpoint '
+                    f'(|tf-scan|={abs(tf_stamp - stamp_sec):.3f}s); skipping.',
+                    throttle_duration_sec=2.0)
+                return None
+        q = self._normalized_quaternion(transform.transform.rotation)
+        t = transform.transform.translation
+        translation = np.array([t.x, t.y, t.z], dtype=np.float64)
+        if q is None or not np.all(np.isfinite(translation)):
+            return None
+        return translation, q
+
+    def _points_in_target_frame(self, points_laser, target_from_base,
+                                reference_base_quaternion,
+                                level_quaternion, laser_extrinsic):
+        target_translation, target_quaternion = target_from_base
+        laser_translation, laser_quaternion = laser_extrinsic
+        target_rotation = quaternion_to_matrix(target_quaternion)
+        if reference_base_quaternion is not None and level_quaternion is not None:
+            yaw = float(np.arctan2(
+                target_rotation[1, 0], target_rotation[0, 0]))
+            target_rotation = rotations_from_yaw_and_level_tilt(
+                np.array([yaw]),
+                np.asarray(reference_base_quaternion).reshape(1, 4),
+                level_quaternion)[0]
+        laser_rotation = quaternion_to_matrix(laser_quaternion)
+        points_base = laser_translation + points_laser @ laser_rotation.T
+        points_target = target_translation + points_base @ target_rotation.T
+        return points_target[:, :2], target_translation[:2]
+
+    def _publish_tracks(self, active_tracks, _source_header, stamp_ns):
+        obstacle_array = ObstacleArray()
+        obstacle_array.header = Header(
+            stamp=Time(nanoseconds=stamp_ns).to_msg(),
+            frame_id=self.target_frame)
+        for track in active_tracks:
+            classify_track(
+                track, v_thresh=self.v_thresh,
+                n_confirm=self.n_confirm, n_release=self.n_release,
+                static_pos_std=self.static_pos_std,
+                dynamic_pos_std=self.dynamic_pos_std,
+                dynamic_release=self.dynamic_release)
+            if track.hits < self.min_hits and not track.ever_dynamic:
+                continue
+            x, y = track.kf.position
+            vx, vy = track.kf.velocity
+            coast = 1.0
+            if track.misses > 0:
+                coast = max(
+                    0.0, 1.0 - track.misses / float(self.tracker.track_timeout))
+            obs = Obstacle()
+            obs.id = track.id
+            obs.position = Point(x=float(x), y=float(y), z=0.0)
+            obs.velocity = Vector3(x=float(vx), y=float(vy), z=0.0)
+            obs.is_dynamic = bool(track.is_dynamic)
+            obs.confidence = float(track.confidence * coast)
+            obs.radius = float(track.radius)
+            obstacle_array.obstacles.append(obs)
+        self.pub.publish(obstacle_array)
+
+    def _log_geometry_diagnostics(self, stamp_sec):
+        if stamp_sec - self.last_geometry_log_time < 5.0:
+            return
+        self.last_geometry_log_time = stamp_sec
+        self.get_logger().info(
+            'scan geometry: ground=%d offplane=%d degraded=%d sync_miss=%d '
+            'attitude_fallback=%d deskew=%d level=%s' % (
+                self.ground_filtered_beams, self.offplane_filtered_beams,
+                self.geometry_degraded_scans, self.geometry_sync_misses,
+                self.attitude_fallback_scans, self.deskew_applied_scans,
+                'ready' if self.level_reference.ready else 'waiting'))
+
     def on_scan(self, msg: LaserScan):
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         source_frame = msg.header.frame_id.strip()
@@ -609,7 +1057,7 @@ class ObstacleDetectorNode(Node):
         ranges = np.asarray(msg.ranges, dtype=np.float64)
         scan_metadata = (
             msg.angle_min, msg.angle_max, msg.angle_increment,
-            msg.range_min, msg.range_max,
+            msg.range_min, msg.range_max, msg.time_increment,
         )
         if (ranges.ndim != 1 or ranges.size == 0
                 or not all(np.isfinite(v) for v in scan_metadata)
@@ -623,111 +1071,191 @@ class ObstacleDetectorNode(Node):
             )
             return
 
-        # ① 전처리 (laser frame 기준, range/FOV/median filter만)
-        # point_ranges는 센서 원점 기준 거리 — 아래에서 points를 map frame으로
-        # 옮겨도 클러스터링 임계값은 이 값을 써야 한다.
-        points, point_ranges = preprocess_scan(
+        header_stamp_ns = self._stamp_to_ns(msg.header.stamp)
+        scan_duration = ((len(ranges) - 1) * float(msg.time_increment)
+                         if msg.time_increment > 0.0 else 0.0)
+        timing_valid = bool(
+            0.0 < scan_duration <= self.deskew_max_scan_duration)
+        reference_offset_ns = (int(round(0.5 * scan_duration * 1e9))
+                               if timing_valid else 0)
+        reference_stamp_ns = header_stamp_ns + reference_offset_ns
+        reference_stamp = reference_stamp_ns * 1e-9
+        reference_time = Time(nanoseconds=reference_stamp_ns)
+
+        # Keep a full, sanitized FOV for geometry. In particular, no-return
+        # beams must remain represented so an upward-looking sky frame can be
+        # distinguished from a normal scan before median filtering.
+        geometry_all_ranges, geometry_all_angles = sanitize_scan_ranges(
+            msg.ranges, msg.angle_min, msg.angle_increment,
+            range_min=self.range_min, range_max=self.range_max,
+            sensor_range_max=msg.range_max,
+        )
+        geometry_fov = (
+            (geometry_all_angles >= self.fov_min)
+            & (geometry_all_angles <= self.fov_max)
+        )
+        geometry_indices = np.flatnonzero(geometry_fov).astype(np.int64)
+        geometry_ranges = geometry_all_ranges[geometry_fov]
+        geometry_angles = geometry_all_angles[geometry_fov]
+
+        # Clustering still uses the existing median-filtered points, with each
+        # point carrying its original beam index for geometry and provenance.
+        points, point_ranges, beam_indices, _point_angles = preprocess_scan(
             msg.ranges, msg.angle_min, msg.angle_increment,
             range_min=self.range_min, range_max=self.range_max,
             fov_min=self.fov_min, fov_max=self.fov_max,
             median_kernel=self.median_kernel,
+            sensor_range_max=msg.range_max,
+            return_metadata=True,
         )
 
-        # ①.5 TF 변환: laser frame -> target_frame (보통 map)
-        # 이 변환이 있어야 이후 boundary_polygon(map 기준)과 최종 publish 좌표가 실제로 맞음.
-        # sensor_xy는 트랙 필터의 s 원점(자차 위치, target_frame 기준). 변환이
-        # 없었다면 target_frame 기준 자차 위치를 알 수 없으므로 None으로 둔다.
-        sensor_xy = None
-        if self.target_frame != source_frame:
-            scan_time = Time.from_msg(msg.header.stamp)
-            try:
-                tf_stamped = self.tf_buffer.lookup_transform(
-                    self.target_frame, source_frame, scan_time,
-                    timeout=self.tf_timeout
-                )
-            except (LookupException, ConnectivityException,
-                    ExtrapolationException) as exact_ex:
-                # 1순위 폴백 — time-travel: laser->fixed(odom)는 스캔 시각
-                # (또는 odom 레그가 아직 스캔 시각을 못 덮으면 그 레그의 latest
-                # 시각으로 클램프), fixed->target(map)은 latest로 합성.
-                # 스캔 도착 시점엔 스캔 시각을 덮는 odom TF가 보통 수 ms 뒤에
-                # 오므로 클램프가 없으면 이 경로를 거의 못 탄다. 클램프하면
-                # ego-motion 오차가 그 수 ms 공백만큼으로 줄고, map 레그는
-                # PF 보정 드리프트만 남는다 (run_0801_175634 재생 실측: 전방
-                # 3m 기준 p50 29cm -> 5cm, p90 65cm -> 18cm).
-                tf_stamped = None
-                if self.tf_fixed_frame:
-                    try:
-                        odom_leg = self.tf_buffer.lookup_transform(
-                            self.tf_fixed_frame, source_frame, Time(),
-                            timeout=self.tf_timeout
-                        )
-                        odom_stamp = (odom_leg.header.stamp.sec
-                                      + odom_leg.header.stamp.nanosec * 1e-9)
-                        if (np.isfinite(odom_stamp) and odom_stamp > 0.0
-                                and abs(stamp - odom_stamp) <= self.tf_max_age):
-                            src_time = (scan_time if odom_stamp >= stamp
-                                        else Time.from_msg(odom_leg.header.stamp))
-                            tf_stamped = self.tf_buffer.lookup_transform_full(
-                                self.target_frame, Time(),
-                                source_frame, src_time,
-                                self.tf_fixed_frame, timeout=self.tf_timeout
-                            )
-                    except (LookupException, ConnectivityException,
-                            ExtrapolationException):
-                        tf_stamped = None
-                if tf_stamped is None:
-                    if not self.tf_allow_latest_fallback:
-                        self.get_logger().warn(
-                            f'Exact-time TF lookup {source_frame} -> '
-                            f'{self.target_frame} failed: {exact_ex}. '
-                            'Skipping this scan.',
-                            throttle_duration_sec=2.0,
-                        )
-                        return
-                    try:
-                        tf_stamped = self.tf_buffer.lookup_transform(
-                            self.target_frame, source_frame, Time(),
-                            timeout=self.tf_timeout
-                        )
-                    except (LookupException, ConnectivityException,
-                            ExtrapolationException) as latest_ex:
-                        self.get_logger().warn(
-                            f'TF lookup {source_frame} -> {self.target_frame} '
-                            f'failed: {latest_ex}. Skipping this scan.',
-                            throttle_duration_sec=2.0,
-                        )
-                        return
-                tf_stamp = (tf_stamped.header.stamp.sec
-                            + tf_stamped.header.stamp.nanosec * 1e-9)
-                if (not np.isfinite(tf_stamp) or tf_stamp <= 0.0
-                        or abs(tf_stamp - stamp) > self.tf_max_age):
-                    self.get_logger().warn(
-                        f'TF is not close enough to the LaserScan source '
-                        f'stamp (|tf-scan|={abs(tf_stamp - stamp):.3f}s, '
-                        f'limit={self.tf_max_age:.3f}s); skipping.',
-                        throttle_duration_sec=2.0,
-                    )
-                    return
+        laser_extrinsic = self._laser_extrinsic(source_frame)
+        if laser_extrinsic is None:
+            return
 
-            t = tf_stamped.transform.translation
-            q = tf_stamped.transform.rotation
-            transform_values = (t.x, t.y, q.x, q.y, q.z, q.w)
-            q_norm = float(np.linalg.norm([q.x, q.y, q.z, q.w]))
-            if (not all(np.isfinite(v) for v in transform_values)
-                    or q_norm < 1e-9):
-                self.get_logger().warn(
-                    'TF contains non-finite/invalid values; skipping.',
-                    throttle_duration_sec=2.0,
-                )
-                return
-            qx, qy, qz, qw = (
-                q.x / q_norm, q.y / q_norm,
-                q.z / q_norm, q.w / q_norm,
+        attitude_indices = (
+            geometry_indices if self.ground_filter_enabled else beam_indices)
+        if timing_valid:
+            attitude_stamps_ns = (
+                header_stamp_ns
+                + np.rint(
+                    attitude_indices * msg.time_increment * 1e9).astype(np.int64)
             )
-            R = rotation_matrix_2d_from_quaternion(qx, qy, qz, qw)
-            points = transform_points(points, [t.x, t.y], R)
-            sensor_xy = np.array([t.x, t.y], dtype=np.float64)
+        else:
+            attitude_stamps_ns = np.full(
+                len(attitude_indices), reference_stamp_ns, dtype=np.int64)
+
+        attitude_lookup = None
+        reference_base_quaternion = None
+        attitude_quaternions = None
+        beam_base_quaternions = None
+        level_quaternion = None
+        if len(self.attitude_buffer) and len(attitude_indices):
+            attitude_lookup = self.attitude_buffer.wait_for_lookup_many(
+                (reference_stamp_ns,) + tuple(attitude_stamps_ns),
+                timeout_sec=self.sensor_sync_wait,
+                max_gap_sec=self.max_imu_interp_gap)
+            if attitude_lookup.status == LOOKUP_OK:
+                reference_base_quaternion = attitude_lookup.quaternions[0]
+                attitude_quaternions = attitude_lookup.quaternions[1:]
+        with self.sensor_state_lock:
+            if self.level_reference.ready:
+                level_quaternion = np.copy(self.level_reference.quaternion)
+
+        if self.ground_filter_enabled:
+            if (level_quaternion is None or attitude_quaternions is None):
+                self.geometry_sync_misses += 1
+                self.get_logger().warn(
+                    'Ground filter waiting for timestamped IMU level data; '
+                    'scan is kept unchanged.', throttle_duration_sec=5.0)
+            else:
+                ground = mask_ground_and_offplane(
+                    geometry_ranges, geometry_angles, geometry_indices,
+                    attitude_quaternions, level_quaternion,
+                    laser_extrinsic[0], laser_extrinsic[1],
+                    self.ground_config)
+                self.ground_filtered_beams += int(
+                    np.count_nonzero(ground.ground_mask))
+                self.offplane_filtered_beams += int(
+                    np.count_nonzero(ground.offplane_mask))
+                if ground.attitude_fallback:
+                    self.attitude_fallback_scans += 1
+                    reference_base_quaternion = level_quaternion
+                    attitude_quaternions = np.tile(
+                        level_quaternion, (len(attitude_indices), 1))
+                if ground.degraded:
+                    self.geometry_degraded_scans += 1
+                    self.get_logger().warn(
+                        f'LiDAR frame rejected as non-planar '
+                        f'({ground.reason}); coasting existing tracks.',
+                        throttle_duration_sec=1.0)
+                    active_tracks = self.tracker.step([], reference_stamp)
+                    self._publish_tracks(
+                        active_tracks, msg.header, reference_stamp_ns)
+                    self._log_geometry_diagnostics(reference_stamp)
+                    return
+                rejected_indices = geometry_indices[
+                    ground.ground_mask | ground.offplane_mask]
+                keep = ~np.isin(
+                    beam_indices, rejected_indices, assume_unique=True)
+                points = points[keep]
+                point_ranges = point_ranges[keep]
+                beam_indices = beam_indices[keep]
+
+        if not len(points):
+            active_tracks = self.tracker.step([], reference_stamp)
+            self._publish_tracks(active_tracks, msg.header, reference_stamp_ns)
+            self._log_geometry_diagnostics(reference_stamp)
+            return
+
+        if timing_valid:
+            beam_stamps_ns = (
+                header_stamp_ns
+                + np.rint(
+                    beam_indices * msg.time_increment * 1e9).astype(np.int64)
+            )
+        else:
+            beam_stamps_ns = np.full(
+                len(beam_indices), reference_stamp_ns, dtype=np.int64)
+        if attitude_quaternions is not None:
+            positions = np.searchsorted(attitude_indices, beam_indices)
+            aligned = (
+                np.all(positions < len(attitude_indices))
+                and np.array_equal(attitude_indices[positions], beam_indices)
+            )
+            if aligned:
+                beam_base_quaternions = attitude_quaternions[positions]
+
+        points_laser = np.column_stack((points, np.zeros(len(points))))
+        if self.deskew_enabled and timing_valid and len(points):
+            odom_lookup = self.odom_buffer.wait_for_lookup_many(
+                (reference_stamp_ns,) + tuple(beam_stamps_ns),
+                timeout_sec=self.sensor_sync_wait,
+                max_gap_sec=self.max_odom_interp_gap)
+            if odom_lookup.status == LOOKUP_OK:
+                reference_pose_sample = odom_lookup.samples[0]
+                beam_pose_samples = odom_lookup.samples[1:]
+                beam_poses = np.asarray([
+                    (sample.x, sample.y, sample.yaw)
+                    for sample in beam_pose_samples], dtype=np.float64)
+                reference_pose = np.array([
+                    reference_pose_sample.x, reference_pose_sample.y,
+                    reference_pose_sample.yaw], dtype=np.float64)
+                if (level_quaternion is None
+                        or reference_base_quaternion is None
+                        or beam_base_quaternions is None):
+                    identity = quaternion_from_rpy(0.0, 0.0, 0.0)
+                    level_for_deskew = identity
+                    reference_for_deskew = identity
+                    beam_for_deskew = np.tile(identity, (len(points), 1))
+                else:
+                    level_for_deskew = level_quaternion
+                    reference_for_deskew = reference_base_quaternion
+                    beam_for_deskew = beam_base_quaternions
+                deskewed = deskew_points_to_reference(
+                    points_laser, beam_poses, reference_pose,
+                    beam_for_deskew, reference_for_deskew,
+                    level_for_deskew, laser_extrinsic[0], laser_extrinsic[1],
+                    translation_scale=self.deskew_translation_scale)
+                points_laser = deskewed.points
+                self.deskew_applied_scans += 1
+            else:
+                self.geometry_sync_misses += 1
+
+        target_from_base = self._lookup_target_transform(
+            self.base_frame, reference_time, reference_stamp)
+        if target_from_base is None:
+            return
+        points, sensor_xy = self._points_in_target_frame(
+            points_laser, target_from_base, reference_base_quaternion,
+            level_quaternion, laser_extrinsic)
+
+        # Capture raw connectivity before map/track filters fragment a wall.
+        source_labels, source_radii, source_sizes = \
+            adaptive_component_provenance(
+                points, point_ranges, msg.angle_increment,
+                lambda_angle=self.lambda_angle, sigma=self.sigma,
+                beam_indices=beam_indices)
 
         # ②.5 경계 필터 (이제 target_frame 기준이므로 정적 폴리곤을 그대로 써도 됨)
         # point_ranges도 같은 마스크로 잘라야 포인트와 1:1 대응이 유지된다.
@@ -735,6 +1263,8 @@ class ObstacleDetectorNode(Node):
             keep = polygon_mask(points, self.boundary_polygon)
             points = points[keep]
             point_ranges = point_ranges[keep]
+            beam_indices = beam_indices[keep]
+            source_labels = source_labels[keep]
 
         # ②.6 맵 벽 포인트 제거 — 반드시 클러스터링 '전'이어야 한다.
         # 클러스터가 만들어진 뒤에 centroid로 판정하면(브릿지의 map filter)
@@ -752,6 +1282,8 @@ class ObstacleDetectorNode(Node):
                 keep = self.wall_point_mask(points)
                 points = points[keep]
                 point_ranges = point_ranges[keep]
+                beam_indices = beam_indices[keep]
+                source_labels = source_labels[keep]
 
         # ②.65 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식.
         # 벽거리(②.6)와 직교하는 기준이라 벽 fringe가 남아도 여기서 걸린다:
@@ -778,13 +1310,15 @@ class ObstacleDetectorNode(Node):
                 )
                 points = points[keep]
                 point_ranges = point_ranges[keep]
+                beam_indices = beam_indices[keep]
+                source_labels = source_labels[keep]
 
         # ② 클러스터링
         if msg.angle_increment >= self.lambda_angle:
             self.get_logger().warn(
                 f'angle_increment ({np.rad2deg(msg.angle_increment):.3f} deg) >= '
                 f'lambda_angle_deg ({np.rad2deg(self.lambda_angle):.3f}); '
-                'clustering will merge everything. Raise lambda_angle_deg.',
+                'adjacent beams will split aggressively. Raise lambda_angle_deg.',
                 throttle_duration_sec=5.0,
             )
         # 열린 공간 완화가 켜져 있으면 낮은 임계로 뽑은 뒤 벽 거리로 선별한다.
@@ -800,6 +1334,10 @@ class ObstacleDetectorNode(Node):
             sigma=self.sigma,
             min_cluster_size=(self.min_cluster_size_open if open_relax
                               else self.min_cluster_size),
+            beam_indices=beam_indices,
+            source_labels=source_labels,
+            source_radii=source_radii,
+            source_sizes=source_sizes,
         )
         if open_relax:
             selected = []
@@ -824,59 +1362,25 @@ class ObstacleDetectorNode(Node):
         # 트래킹 '전'에 버려야 한다 — 트래커에 들어가면 재식별/코스팅으로
         # 살아남아 계속 발행된다.
         if self.max_cluster_radius > 0.0:
-            kept = [c for c in clusters if c.radius <= self.max_cluster_radius]
+            kept = [
+                c for c in clusters
+                if max(c.radius, c.source_radius) <= self.max_cluster_radius
+            ]
             if len(kept) != len(clusters):
+                rejected_radius = max(
+                    max(c.radius, c.source_radius) for c in clusters)
                 self.get_logger().warn(
                     f'{len(clusters) - len(kept)}개 초대형 클러스터 거부 '
                     f'(max_radius={self.max_cluster_radius:.2f}m, '
-                    f'최대 {max(c.radius for c in clusters):.2f}m) — 벽/구조물로 판단',
+                    f'원본 최대 {rejected_radius:.2f}m) — 벽/구조물로 판단',
                     throttle_duration_sec=2.0,
                 )
             clusters = kept
 
         # ③④ 매칭 + 칼만필터 트래킹
-        active_tracks = self.tracker.step(clusters, stamp)
-
-        # ⑤ 정적/동적 판별
-        obstacle_array = ObstacleArray()
-        obstacle_array.header = msg.header
-        obstacle_array.header.frame_id = self.target_frame  # 실제로 변환된 프레임과 항상 일치
-
-        for track in active_tracks:
-            classify_track(
-                track, v_thresh=self.v_thresh,
-                n_confirm=self.n_confirm, n_release=self.n_release,
-                static_pos_std=self.static_pos_std,
-                dynamic_pos_std=self.dynamic_pos_std,
-                dynamic_release=self.dynamic_release,
-            )
-
-            # 관측이 부족한(확정 전) 트랙은 노이즈 클러스터일 수 있어 발행하지 않는다.
-            # 단, 한 번 동적 확정된 상대는 occlusion 코스팅 중에도 계속 발행해
-            # 다운스트림(GP/회피)이 상대를 놓치지 않게 한다.
-            if track.hits < self.min_hits and not track.ever_dynamic:
-                continue
-
-            x, y = track.kf.position
-            vx, vy = track.kf.velocity
-
-            # 코스팅(미관측 외삽) 중이면 신뢰도를 감쇠 — 다운스트림이 측정값과
-            # 외삽값을 구분할 수 있게 한다 (misses가 timeout에 가까울수록 0).
-            coast = 1.0
-            if track.misses > 0:
-                coast = max(0.0, 1.0 - track.misses / float(self.tracker.track_timeout))
-
-            obs = Obstacle()
-            obs.id = track.id
-            obs.position = Point(x=float(x), y=float(y), z=0.0)
-            obs.velocity = Vector3(x=float(vx), y=float(vy), z=0.0)
-            obs.is_dynamic = bool(track.is_dynamic)
-            obs.confidence = float(track.confidence * coast)
-            obs.radius = float(track.radius)
-
-            obstacle_array.obstacles.append(obs)
-
-        self.pub.publish(obstacle_array)
+        active_tracks = self.tracker.step(clusters, reference_stamp)
+        self._publish_tracks(active_tracks, msg.header, reference_stamp_ns)
+        self._log_geometry_diagnostics(reference_stamp)
 
 
 def main(args=None):

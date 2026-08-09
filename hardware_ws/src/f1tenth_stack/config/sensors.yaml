@@ -17,3 +17,21 @@ urg_node:
     publish_multiecho: false
     cluster: 1
     skip: 0
+
+# Measure these from base_link (rear-axle midpoint projected onto the floor) to
+# each sensor's physical frame. Keep roll/pitch/yaw in radians. The current
+# values preserve the old launch behavior; replace them only with measured data.
+sensor_extrinsics:
+  ros__parameters:
+    base_to_laser_x: 0.27
+    base_to_laser_y: 0.0
+    base_to_laser_z: 0.11
+    base_to_laser_roll: 0.0
+    base_to_laser_pitch: 0.0
+    base_to_laser_yaw: 0.0
+    base_to_imu_x: 0.0
+    base_to_imu_y: 0.0
+    base_to_imu_z: 0.0
+    base_to_imu_roll: 0.0
+    base_to_imu_pitch: 0.0
+    base_to_imu_yaw: 0.0

@@ -1,10 +1,13 @@
 obstacle_detector_node:
   ros__parameters:
     scan_topic: /scan
+    odom_topic: /odom
+    imu_topic: /sensors/imu/raw
     obstacle_topic: /perception/obstacles
     # 노드가 TF로 laser -> target_frame 실좌표 변환 후 발행한다
     # (구 frame_id_override는 라벨만 바꿔 좌표가 어긋나던 버그로 제거됨).
     target_frame: map
+    base_frame: base_link
     tf_timeout_sec: 0.05
     # 고속주행 안전 계약: scan 원본 시각의 exact-time TF만 사용한다.
     require_source_stamp: true
@@ -12,6 +15,43 @@ obstacle_detector_node:
     source_future_tolerance_sec: 0.05
     tf_allow_latest_fallback: false
     tf_max_age_sec: 0.05
+    # Bounded, timestamped scan geometry. IMU/odom callbacks only append to
+    # these buffers; all beam timestamps are interpolated in one vectorized pass.
+    odom_buffer_size: 200
+    imu_buffer_size: 200
+    sensor_sync_wait_sec: 0.005
+    max_odom_interp_gap_sec: 0.08
+    max_imu_interp_gap_sec: 0.08
+    deskew_enabled: true
+    deskew_max_scan_duration_sec: 0.05
+    deskew_translation_scale: 1.0
+    # Current VESC driver units are deg/s and g.
+    imu_angular_velocity_scale: 0.017453292519943295
+    imu_linear_acceleration_scale: 9.80665
+    # Used only until base_link -> IMU TF becomes available.
+    base_to_imu_rpy_deg: [0.0, 0.0, 0.0]
+    level_reference_samples: 20
+    level_reference_max_gyro_rad_s: 0.12
+    level_reference_accel_tolerance_mps2: 2.5
+    # Disabled in the generic profile. Real car enables it after loading its
+    # measured 6DoF base_link -> laser transform.
+    ground_filter_enabled: false
+    ground_z_m: 0.0
+    ground_range_tolerance_m: 0.08
+    ground_range_tolerance_ratio: 0.04
+    ground_endpoint_z_tolerance_m: 0.05
+    ground_min_component_beams: 6
+    ground_min_component_angle_deg: 4.0
+    ground_min_component_span_m: 0.30
+    max_planar_elevation_deg: 4.0
+    degraded_offplane_fraction: 0.55
+    degraded_ground_fraction: 0.70
+    attitude_fallback_tilt_deg: 4.0
+    attitude_ground_evidence_fraction: 0.05
+    attitude_ground_evidence_min_beams: 6
+    attitude_evidence_max_abs_angle_deg: 80.0
+    degraded_valid_fraction: 0.25
+    ground_min_retained_beams: 20
     range_min: 0.1
     range_max: 10.0
     fov_min_deg: -80.0

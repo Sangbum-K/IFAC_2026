@@ -67,6 +67,7 @@ VescDriver::VescDriver(const rclcpp::NodeOptions & options)
 {
   // get vesc serial port address
   std::string port = declare_parameter<std::string>("port", "");
+  imu_frame_id_ = declare_parameter<std::string>("imu_frame_id", "vesc_imu");
 
   // attempt to connect to the serial port
   try {
@@ -209,6 +210,8 @@ void VescDriver::vescPacketCallback(const std::shared_ptr<VescPacket const> & pa
     auto std_imu_msg = Imu();
     imu_msg.header.stamp = now();
     std_imu_msg.header.stamp = now();
+    imu_msg.header.frame_id = imu_frame_id_;
+    std_imu_msg.header.frame_id = imu_frame_id_;
 
     imu_msg.imu.ypr.x = imuData->roll();
     imu_msg.imu.ypr.y = imuData->pitch();

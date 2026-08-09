@@ -52,6 +52,8 @@ def generate_launch_description():
         'config',
         'sensors.yaml'
     )
+    with open(sensors_config, 'r') as f:
+        sensor_defaults = yaml.safe_load(f)['sensor_extrinsics']['ros__parameters']
     mux_config = os.path.join(
         get_package_share_directory('f1tenth_stack'),
         'config',
@@ -160,7 +162,30 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_baselink_to_laser',
-        arguments=['0.27', '0.0', '0.11', '0.0', '0.0', '0.0', 'base_link', 'laser']
+        arguments=[
+            '--x', str(sensor_defaults['base_to_laser_x']),
+            '--y', str(sensor_defaults['base_to_laser_y']),
+            '--z', str(sensor_defaults['base_to_laser_z']),
+            '--roll', str(sensor_defaults['base_to_laser_roll']),
+            '--pitch', str(sensor_defaults['base_to_laser_pitch']),
+            '--yaw', str(sensor_defaults['base_to_laser_yaw']),
+            '--frame-id', 'base_link', '--child-frame-id', 'laser',
+        ]
+    )
+    static_imu_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_baselink_to_vesc_imu',
+        arguments=[
+            '--x', str(sensor_defaults['base_to_imu_x']),
+            '--y', str(sensor_defaults['base_to_imu_y']),
+            '--z', str(sensor_defaults['base_to_imu_z']),
+            '--roll', str(sensor_defaults['base_to_imu_roll']),
+            '--pitch', str(sensor_defaults['base_to_imu_pitch']),
+            '--yaw', str(sensor_defaults['base_to_imu_yaw']),
+            '--frame-id', 'base_link',
+            '--child-frame-id', str(vesc_defaults['imu_frame_id']),
+        ]
     )
 
     # finalize
@@ -173,5 +198,6 @@ def generate_launch_description():
     ld.add_action(urg_node)
     ld.add_action(ackermann_mux_node)
     ld.add_action(static_tf_node)
+    ld.add_action(static_imu_tf_node)
 
     return ld

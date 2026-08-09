@@ -19,18 +19,96 @@ SAFETY_FACTOR = 0.5
 
 
 class Cluster:
-    __slots__ = ("points", "centroid", "radius")
+    __slots__ = (
+        "points", "centroid", "radius", "beam_indices",
+        "source_component", "source_radius", "source_size",
+    )
 
-    def __init__(self, points):
+    def __init__(self, points, beam_indices=None, source_component=-1,
+                 source_radius=None, source_size=None):
         self.points = points  # (M, 2)
         self.centroid = points.mean(axis=0)
         # 클러스터 반경: 중심에서 가장 먼 포인트까지 거리
         self.radius = float(np.max(np.linalg.norm(points - self.centroid, axis=1)))
+        self.beam_indices = (None if beam_indices is None
+                             else np.asarray(beam_indices, dtype=np.int64))
+        self.source_component = int(source_component)
+        self.source_radius = (self.radius if source_radius is None
+                              else float(source_radius))
+        self.source_size = (len(points) if source_size is None
+                            else int(source_size))
+
+
+def _adaptive_breaks(points, ranges, angle_increment, lambda_angle, sigma,
+                     beam_indices=None, source_labels=None):
+    """Return split positions while respecting removed-beam angular gaps."""
+    count = len(points)
+    if count <= 1:
+        return np.empty(0, dtype=np.int64)
+    if beam_indices is None:
+        beam_indices = np.arange(count, dtype=np.int64)
+    else:
+        beam_indices = np.asarray(beam_indices, dtype=np.int64)
+    if len(beam_indices) != count or np.any(np.diff(beam_indices) <= 0):
+        raise ValueError('beam_indices must be strictly increasing and align with points')
+
+    dphi = np.abs(np.diff(beam_indices)) * abs(float(angle_increment))
+    valid_geometry = dphi < float(lambda_angle)
+    denom = np.sin(float(lambda_angle) - dphi)
+    r_pair = 0.5 * (ranges[:-1] + ranges[1:])
+    d_max = np.full(count - 1, -np.inf, dtype=np.float64)
+    d_max[valid_geometry] = (
+        r_pair[valid_geometry] * np.sin(dphi[valid_geometry])
+        / np.maximum(denom[valid_geometry], 1e-9)
+        + 3.0 * sigma
+    ) * SAFETY_FACTOR
+    distance = np.linalg.norm(points[1:] - points[:-1], axis=1)
+    split = distance > d_max
+    if source_labels is not None:
+        labels = np.asarray(source_labels, dtype=np.int64)
+        if len(labels) != count:
+            raise ValueError('source_labels must align with points')
+        split |= labels[1:] != labels[:-1]
+    return np.flatnonzero(split) + 1
+
+
+def adaptive_component_provenance(points, ranges, angle_increment,
+                                  lambda_angle=np.deg2rad(10.0), sigma=0.015,
+                                  beam_indices=None):
+    """Label raw scan components before map/track filters can fragment them."""
+    points = np.asarray(points, dtype=np.float64)
+    ranges = np.asarray(ranges, dtype=np.float64)
+    if len(points) != len(ranges):
+        raise ValueError('ranges must be the same length as points')
+    if beam_indices is None:
+        beam_indices = np.arange(len(points), dtype=np.int64)
+    else:
+        beam_indices = np.asarray(beam_indices, dtype=np.int64)
+    if not len(points):
+        return (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.int64))
+    breaks = _adaptive_breaks(
+        points, ranges, angle_increment, lambda_angle, sigma, beam_indices)
+    labels = np.empty(len(points), dtype=np.int64)
+    radii = []
+    sizes = []
+    starts = np.r_[0, breaks]
+    ends = np.r_[breaks, len(points)]
+    for label, (start, end) in enumerate(zip(starts, ends)):
+        component = points[start:end]
+        centroid = component.mean(axis=0)
+        radius = float(np.max(np.linalg.norm(component - centroid, axis=1)))
+        labels[start:end] = label
+        radii.append(radius)
+        sizes.append(end - start)
+    return labels, np.asarray(radii), np.asarray(sizes, dtype=np.int64)
 
 
 def adaptive_cluster_points(points, ranges, angle_increment,
                             lambda_angle=np.deg2rad(10.0), sigma=0.015,
-                            min_cluster_size=5):
+                            min_cluster_size=5, beam_indices=None,
+                            source_labels=None, source_radii=None,
+                            source_sizes=None):
     """
     각도순으로 정렬된 포인트를 adaptive breakpoint 기준으로 클러스터링한다.
 
@@ -69,19 +147,30 @@ def adaptive_cluster_points(points, ranges, angle_increment,
     if len(ranges) != len(points):
         raise ValueError('ranges must be the same length as points')
 
-    dphi = float(angle_increment)
-    # lambda <= dphi면 sin이 0 이하가 되어 d_max가 음수/발산한다. 양수로 클램프해
-    # "전부 병합"으로 떨어뜨린다 — 전부 분할(=장애물 실명)보다 안전한 실패 방향이다.
-    # 정상 설정에서는 걸리지 않는다 (노드가 기동 시 lambda > dphi를 검증).
-    denom = max(float(np.sin(lambda_angle - dphi)), 1e-6)
-
-    # 인접 쌍 단위로 벡터화 — 포인트마다 파이썬 루프를 돌면 1080점 스캔에서
-    # 25ms가 걸려 20Hz executor의 TF 콜백을 굶긴다 (실측).
-    r_pair = 0.5 * (ranges[:-1] + ranges[1:])
-    d_max = (r_pair * np.sin(dphi) / denom + 3.0 * sigma) * SAFETY_FACTOR
-    d = np.linalg.norm(points[1:] - points[:-1], axis=1)
-
-    breaks = np.flatnonzero(d > d_max) + 1
-
-    return [Cluster(seg) for seg in np.split(points, breaks)
-            if len(seg) >= min_cluster_size]
+    if beam_indices is None:
+        beam_indices = np.arange(len(points), dtype=np.int64)
+    else:
+        beam_indices = np.asarray(beam_indices, dtype=np.int64)
+    labels = (None if source_labels is None
+              else np.asarray(source_labels, dtype=np.int64))
+    breaks = _adaptive_breaks(
+        points, ranges, angle_increment, lambda_angle, sigma,
+        beam_indices, labels)
+    starts = np.r_[0, breaks]
+    ends = np.r_[breaks, len(points)]
+    clusters = []
+    for start, end in zip(starts, ends):
+        if end - start < min_cluster_size:
+            continue
+        source = -1 if labels is None else int(labels[start])
+        source_radius = None
+        source_size = None
+        if source >= 0:
+            if source_radii is not None:
+                source_radius = np.asarray(source_radii)[source]
+            if source_sizes is not None:
+                source_size = np.asarray(source_sizes)[source]
+        clusters.append(Cluster(
+            points[start:end], beam_indices[start:end], source,
+            source_radius, source_size))
+    return clusters

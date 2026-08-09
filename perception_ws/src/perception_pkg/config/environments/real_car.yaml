@@ -14,6 +14,21 @@ obstacle_detector_node:
     # real_car.launch.py는 PF 수렴 게이트를 통과한 뒤에 스택을 띄우므로
     # 이 시점엔 map->base_link TF가 이미 있다.
     target_frame: map
+    base_frame: base_link
+    odom_topic: /odom
+    imu_topic: /sensors/imu/raw
+    # Uses timestamped IMU attitude and the measured base_link -> laser TF.
+    # A badly tilted frame is coasted rather than injected into clustering.
+    ground_filter_enabled: true
+    deskew_enabled: true
+    # Do not turn acceleration-induced VESC AHRS tilt into mass scan drops.
+    # Large tilt is trusted only with continuous expected-floor evidence or a
+    # sky-like valid-return collapse; see f1tenth_scan_geometry.
+    attitude_fallback_tilt_deg: 4.0
+    attitude_ground_evidence_fraction: 0.05
+    attitude_ground_evidence_min_beams: 6
+    attitude_evidence_max_abs_angle_deg: 80.0
+    degraded_valid_fraction: 0.25
     # tf_timeout은 반드시 0으로. rclpy Buffer는 timeout>0이면 20ms 단위
     # sleep 폴링을 하므로(geometry2 #327) 0.005를 줘도 매 스캔 최소 20ms씩
     # executor를 블로킹해 /tf 콜백이 굶는다. exact-time lookup은 어차피

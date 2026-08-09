@@ -15,13 +15,15 @@
 """Tests for timestamp synchronization primitives."""
 
 import math
-import time
 from threading import Thread
+import time
 
+from particle_filter.synchronization import ImuSample
+from particle_filter.synchronization import LatestValueSlot
 from particle_filter.synchronization import LOOKUP_GAP_TOO_LARGE
 from particle_filter.synchronization import LOOKUP_OK
-from particle_filter.synchronization import LatestValueSlot
 from particle_filter.synchronization import OdomSample
+from particle_filter.synchronization import TimestampedImuBuffer
 from particle_filter.synchronization import TimestampedOdomBuffer
 
 
@@ -100,6 +102,88 @@ def test_wait_for_interpolation_accepts_delayed_future_bracket():
     assert result.sample is not None
     assert math.isclose(result.sample.x, 0.1)
     assert math.isclose(result.sample.yaw, 0.01)
+
+
+def test_batch_odom_interpolation_preserves_requested_beam_order():
+    """One lock interpolates all beam times without reordering them."""
+    buffer = TimestampedOdomBuffer(capacity=10)
+    buffer.append(OdomSample(
+        stamp_ns=1_000_000_000, x=0.0, y=0.0, yaw=0.0))
+    buffer.append(OdomSample(
+        stamp_ns=1_020_000_000, x=0.2, y=0.1, yaw=0.2))
+
+    result = buffer.lookup_many(
+        (1_015_000_000, 1_005_000_000), max_gap_sec=0.05)
+
+    assert result.status == LOOKUP_OK
+    assert [sample.stamp_ns for sample in result.samples] == [
+        1_015_000_000, 1_005_000_000]
+    assert math.isclose(result.samples[0].x, 0.15)
+    assert math.isclose(result.samples[1].yaw, 0.05)
+
+
+def test_imu_integration_interpolates_exact_scan_boundaries():
+    """Trapezoidal gyro integration starts and ends at scan timestamps."""
+    buffer = TimestampedImuBuffer(capacity=10)
+    buffer.append(ImuSample(
+        stamp_ns=1_000_000_000, yaw_rate=0.0,
+        acceleration_x=0.0, acceleration_y=0.0))
+    buffer.append(ImuSample(
+        stamp_ns=1_010_000_000, yaw_rate=1.0,
+        acceleration_x=1.0, acceleration_y=0.0))
+    buffer.append(ImuSample(
+        stamp_ns=1_020_000_000, yaw_rate=2.0,
+        acceleration_x=2.0, acceleration_y=0.0))
+
+    result = buffer.integrate(
+        1_005_000_000, 1_015_000_000, max_gap_sec=0.02)
+
+    assert result.status == LOOKUP_OK
+    assert math.isclose(result.delta_yaw, 0.01, abs_tol=1e-12)
+    assert math.isclose(result.max_abs_yaw_rate, 1.5)
+    assert math.isclose(result.max_horizontal_acceleration, 1.5)
+    assert result.sample_count == 3
+
+
+def test_imu_yaw_offsets_integrate_before_and_after_scan_midpoint():
+    """Beam yaw is signed relative to the common midpoint timestamp."""
+    buffer = TimestampedImuBuffer(capacity=10)
+    for stamp_ns in (1_000_000_000, 1_010_000_000, 1_020_000_000):
+        buffer.append(ImuSample(
+            stamp_ns=stamp_ns,
+            yaw_rate=1.0,
+            acceleration_x=0.0,
+            acceleration_y=0.0,
+        ))
+
+    result = buffer.integrated_yaw_offsets(
+        1_010_000_000,
+        (1_000_000_000, 1_010_000_000, 1_020_000_000),
+        max_gap_sec=0.02,
+    )
+
+    assert result.status == LOOKUP_OK
+    assert result.sample_count == 3
+    assert all(math.isclose(actual, expected, abs_tol=1e-12)
+               for actual, expected in zip(
+                   result.delta_yaws, (-0.01, 0.0, 0.01)))
+
+
+def test_imu_integration_rejects_missing_samples_inside_interval():
+    """A long IMU hole cannot be silently integrated across a scan interval."""
+    buffer = TimestampedImuBuffer(capacity=10)
+    buffer.append(ImuSample(
+        stamp_ns=1_000_000_000, yaw_rate=1.0,
+        acceleration_x=0.0, acceleration_y=0.0))
+    buffer.append(ImuSample(
+        stamp_ns=1_100_000_000, yaw_rate=1.0,
+        acceleration_x=0.0, acceleration_y=0.0))
+
+    result = buffer.integrate(
+        1_010_000_000, 1_090_000_000, max_gap_sec=0.06)
+
+    assert result.status == LOOKUP_GAP_TOO_LARGE
+    assert result.sample_count == 0
 
 
 def test_latest_value_slot_overwrites_pending_work():

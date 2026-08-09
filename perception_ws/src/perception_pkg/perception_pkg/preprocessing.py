@@ -18,10 +18,32 @@
 import numpy as np
 
 
+def sanitize_scan_ranges(ranges, angle_min, angle_increment,
+                         range_min=0.05, range_max=10.0,
+                         sensor_range_max=None,
+                         invalid_sentinel_min=65.5):
+    """Return angle-aligned ranges with every invalid/no-return sample as NaN."""
+    sanitized = np.asarray(ranges, dtype=np.float32).copy()
+    angles = angle_min + np.arange(len(sanitized)) * angle_increment
+    upper = float(range_max)
+    if sensor_range_max is not None and np.isfinite(sensor_range_max):
+        upper = min(upper, float(sensor_range_max))
+    invalid = (
+        ~np.isfinite(sanitized)
+        | (sanitized < range_min)
+        | (sanitized > upper)
+        | (sanitized >= invalid_sentinel_min)
+    )
+    sanitized[invalid] = np.nan
+    return sanitized, angles
+
+
 def preprocess_scan(ranges, angle_min, angle_increment,
                      range_min=0.05, range_max=10.0,
                      fov_min=-np.pi, fov_max=np.pi,
-                     median_kernel=3):
+                     median_kernel=3, sensor_range_max=None,
+                     invalid_sentinel_min=65.5,
+                     return_metadata=False):
     """
     LaserScan.ranges (list/array) -> 필터링된 (x, y) 포인트 배열 반환 (laser frame 기준)
 
@@ -41,9 +63,13 @@ def preprocess_scan(ranges, angle_min, angle_increment,
         adaptive 클러스터링의 임계값이 이 값을 쓴다. points는 이후 map frame으로
         옮겨지므로 |point|로는 복원할 수 없어 따로 돌려준다.
     """
-    ranges = np.asarray(ranges, dtype=np.float32)
+    ranges, angles = sanitize_scan_ranges(
+        ranges, angle_min, angle_increment,
+        range_min=range_min, range_max=range_max,
+        sensor_range_max=sensor_range_max,
+        invalid_sentinel_min=invalid_sentinel_min,
+    )
     n = len(ranges)
-    angles = angle_min + np.arange(n) * angle_increment
 
     # 1) median filter로 스파이크(순간 튀는 값) 제거
     if median_kernel >= 3 and median_kernel % 2 == 1 and n > median_kernel:
@@ -59,10 +85,14 @@ def preprocess_scan(ranges, angle_min, angle_increment,
     )
     r = ranges[valid]
     a = angles[valid]
+    beam_indices = np.flatnonzero(valid).astype(np.int64)
     xs = r * np.cos(a)
     ys = r * np.sin(a)
     points = np.stack([xs, ys], axis=1)
 
+    if return_metadata:
+        return (points, r.astype(np.float64), beam_indices,
+                a.astype(np.float64))
     return points, r.astype(np.float64)
 
 
@@ -147,7 +177,10 @@ def _median_filter_1d(arr, kernel):
     finite = np.isfinite(win)
     # 전부 비유한값인 윈도는 nanmedian이 nan + RuntimeWarning을 내므로 제외하고,
     # 해당 위치는 out에 그대로 둔다 (기존 동작).
-    valid = finite.any(axis=1)
+    center_finite = np.isfinite(arr[half:len(arr) - half])
+    # Never synthesize a return where the center beam was invalid. Require at
+    # least two real values so one isolated return is not copied sideways.
+    valid = center_finite & (np.count_nonzero(finite, axis=1) >= 2)
     if valid.any():
         masked = np.where(finite[valid], win[valid], np.nan)
         out[half:len(arr) - half][valid] = np.nanmedian(masked, axis=1)
