@@ -751,8 +751,9 @@ ros2 launch control_pkg control.launch.py env:=sim
   (`build_all.sh`는 항상 이걸 씀). 수동 빌드했다면 `colcon list`로 `perception_pkg` 확인.
 
 **종료할 때 `obstacle_detector_node`에 `Exception in thread Thread-1`**
-→ tf2 TransformListener의 내부 스레드가 남기는 로그로, 프로세스는 정상 종료(exit 0)합니다.
-  `process has died [exit code 1]`이 함께 뜨면 그건 다른 문제입니다.
+→ 파이썬 판(2026-08-10 이전)에서 tf2 TransformListener 내부 스레드가 남기던 로그입니다.
+  C++ 로 포팅한 뒤로는 나오지 않습니다. 지금도 이게 보인다면 옛 `install/`이 남아 있는
+  것이니 `perception_ws`의 `build/`·`install/`을 지우고 다시 빌드하세요.
 
 **노트북에서 `ros2 topic list`에 아무것도 안 보임 (원격 RViz)**
 → 순서대로 확인:

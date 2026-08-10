@@ -43,7 +43,15 @@ STEERING_LUT_DIR = "control_ws/src/control_pkg/config/steering_lookup"
 # 런타임 YAML(control vehicle/*)이 이 값과 어긋나면 resolve 단계에서 죽는다 —
 # '검증한 차'와 '달리는 차'가 다르면 PASS가 아무 것도 보장하지 않기 때문이다.
 WHEELBASE = 0.33        # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동일)
-MAX_STEER = 0.36        # [rad] (20.7°) 실차 검증 조향 한계. TUNING_STATUS 기준
+# [rad] 서보 기구 한계의 보수적 내림값. hardware vesc.yaml 에서 직접 유도한다:
+#   delta = (servo - offset) / gain,  gain -0.8320 / offset 0.3941 (2026-08-10)
+#   우 (0.70-0.3941)/-0.8320 = -0.3677 rad (21.07°)  <- 대칭 한계를 결정
+#   좌 (0.05-0.3941)/-0.8320 = +0.4136 rad (23.70°)
+# 0.36 은 그 0.3677 대비 2.1% 안쪽이다 (옛 calib 0.3619 기준에선 0.5% 였다).
+# ⚠️ 여유를 다 쓰려고 0.3677 로 올리지 말 것 — TUNING_STATUS §11 의 중립 튐
+#    (런 사이 최대 0.036 servo = 0.043 rad)이 우측 한계를 0.321 rad 까지
+#    끌어내린 적이 있어, 0.36 조차 그 상태에서는 낙관값이다.
+MAX_STEER = 0.36
 MAX_STEER_RATE = 2.0    # [rad/s] control 기본 steering-rate limit
 
 # 종방향 plant 한계 — run_0805_2*·run_0806_1* 6개 백 실측 (2026-08-06 재계산,
