@@ -21,9 +21,18 @@ F1TENTH 자율주행 스택. ROS 2 Humble, 쉘은 **zsh**.
 캘리브레이션 관련 작업을 할 때는 먼저 읽을 것.
 
 현재 상태:
-- **조향 — 완료 · 검증됨.** `gain -0.8206` / `offset 0.403`, 최대 조향 ±20.7°.
-  측정 정밀도 한계에 도달했으므로 **더 손대지 말 것** (근거는 `TUNING_STATUS.md` §4)
-- **속도 (`speed_to_erpm_gain`) — 다음 작업.** 함정 3가지가 `TUNING_STATUS.md` §5 ⑤에 있음
+- **조향 — 2026-08-10 타이어 교체 후 재적합, 실차 확인됨.**
+  `gain -0.8320` / `offset 0.3941`, 대칭 최대 조향 ±21.07°(0.3677 rad).
+  플래닝·컨트롤은 0.36으로 내림해서 쓴다 (네 곳이 같아야 함, `TUNING_STATUS.md` §1).
+  ⚠️ 옛 값 `-0.8206`/`0.403`이 문서 여기저기 남아 있으니 값은 vesc.yaml을 볼 것.
+  ⚠️ **미해결**: 조향 중립이 런 사이 최대 2.5° 튄다 — 기계 슬립이라 yaml로 못 잡음
+  (`TUNING_STATUS.md` §11). 소프트 보정 시도 금지.
+- **속도 — 마진 소멸이 최우선 과제.** 타이어 교체로 유효 구름둘레 +3.9%,
+  `speed_to_erpm_gain: 4255.1`은 그대로 → **08-09까지의 모든 실차 검증이 서 있던
+  "명령보다 4% 느림" 여유가 사라졌다.** 플래닝이 `velocity_scale 0.96`으로 임시
+  상쇄 중. 근본 해결은 08-10 이후 백으로 A_ACC/A_DEC를 **odom 아닌 PF 기준**으로
+  재측정 → `deployment_profiles.py` 갱신 → 궤적 재생성 (`TUNING_STATUS.md` §11).
+- **속도 캘리브레이션 (`speed_to_erpm_gain` 자체)** — 그다음. 함정 3가지가 §5 ⑤에 있음
 
 `hardware_ws/src/f1tenth_stack/config/vesc.yaml`이 hardware_ws 전체의
 single source of truth. **launch 인자로 덮어쓰지 말 것** — yaml과 어긋나서
