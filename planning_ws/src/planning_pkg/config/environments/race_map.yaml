@@ -10,10 +10,12 @@
 # real_car.yaml의 동일 블록 참조). scale = (control cap) / (raceline v-max).
 global_trajectory_node:
   ros__parameters:
-    # 현재 control race_map cap 1.0 m/s와 정합. 고속 승격 시 두 workspace를
-    # 원자적으로 바꾸고 실제 속도 회귀시험을 통과시킬 것.
-    # 2026-08-07: 기본 raceline이 v-max 6.0 -> 7.0 (my_track0807)으로 바뀌어
-    # scale = 1.0/7.0 로 재계산. cap 1.0 m/s 자체는 그대로다.
+    # 현재 control race_map cap 1.0 m/s와 정합 = 1.0 / RACELINE_V_MAX(7.0).
+    # 2026-08-07: 0.1666 은 V_MAX 6.0 시절 값(1.0/6.0)이라, V_MAX 가 7.0 으로
+    # 오른 뒤에는 계획 최고속 1.17 m/s > cap 1.0 이 되어 control이 상단을
+    # clamp했다. 그러면 조향 LUT를 wpnt 계획속도로 조회하는 구조 때문에
+    # 필요조향이 과대 산출된다 (real_car.yaml 상단 주석 참조).
+    # 고속 승격 시 두 workspace를 원자적으로 바꾸고 실제 속도 회귀시험을 통과시킬 것.
     global_trajectory/velocity_scale: 0.1429
 
 frenet_frame_node:

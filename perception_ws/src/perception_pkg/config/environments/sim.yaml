@@ -5,16 +5,61 @@
 #     -> planning perception_obstacle_bridge -> /perception/obstacles_frenet -> spliner
 # /perception/obstacles는 쓰지 않는다 — sim에선 virtual_obstacle_node가 같은
 # 이름으로 f1tenth_planning_msgs를 발행하므로 타입 충돌을 피해야 한다.
+#
+# env:=sim 은 GT odom + Python 트래커 기준의 "가벼운" 프로파일이라 플래닝
+# 속도/시야는 params.yaml 기본값(느린 쪽)을 따른다. 반면 **검출 파라미터는
+# real_car.yaml과 같게 유지한다** — 벽을 큰 클러스터로 잡는 현상은 gym에서도
+# 그대로 나므로(실측 radius 1.0~3.2 m), 필터가 빠져 있으면 sim만 유령 장애물로
+# 정지하고 그게 인지 문제인지 플래닝 문제인지 구분할 수 없게 된다.
+# 실차와 최대한 같은 조건으로 보려면 env:=sim_real_car 를 쓸 것.
 obstacle_detector_node:
   ros__parameters:
+    # --- 배선: sim ---
     scan_topic: /scan_overlay
     obstacle_topic: /perception/obstacles_detected
     target_frame: map          # TF: gym bridge(map->base_link) + RSP(base_link->laser)
-    tf_timeout_sec: 0.1
+    # --- TF 정책: real_car.yaml과 동일 ---
+    # tf_timeout은 반드시 0. rclpy Buffer는 timeout>0이면 20ms 단위 sleep
+    # 폴링을 하므로(geometry2 #327) 0.1이면 매 스캔 executor를 100ms 블로킹해
+    # /tf 콜백까지 굶는다. 0이면 즉시 실패 -> latest 폴백으로 넘어간다.
+    tf_timeout_sec: 0.0
+    tf_allow_latest_fallback: true
+    tf_max_age_sec: 0.3
+    # tf_fixed_frame(odom)은 여기서 **설정하지 않는다**. env:=sim 은 pf:=false가
+    # 기본이라 odom 프레임 자체가 없다 (sim_odom_drift_node는 pf:=true에서만
+    # 뜬다). 실차와 같은 map->odom->base_link 체인으로 보려면 env:=sim_real_car.
+    #
+    # sim 플래닝 기본값(spliner/lookahead_m 10.0)과 짝. 실차는 12.0/12.0.
     range_max: 10.0
+    # gym LiDAR는 결측/반사가 없어 트랙 유지가 쉬우므로 실차(8)보다 길게 둔다.
     track_timeout: 12
-    # 트랙 경계(벽) 필터는 planning 브릿지(bridge/wall_margin_m)가 raceline 기준으로
-    # 수행하므로 여기서는 폴리곤을 쓰지 않는다.
+    # ---- 이하 검출/필터: real_car.yaml과 동일 (근거·실측표는 그쪽 주석) ----
+    # 벽 fringe 억제. 상한은 검출률이 정한다(10 이상이면 벽에 붙은 장애물
+    # 검출이 94% -> 59%로 무너진다).
+    min_cluster_size: 8
+    # 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로
+    # 4점까지 허용. 없으면 노드 기본값 0(비활성)이라 폭 0.2 m 물체를 놓쳐
+    # 막힌 통로에 '가짜 틈'이 생긴다 (실차 run_0806_155621).
+    min_cluster_size_open: 4
+    open_space_dist_m: 0.50
+    gating_distance: 0.45
+    # ---- 맵 벽 필터 ----
+    # 파라미터 이름은 real_car.yaml과 반드시 같아야 한다. 노드가 선언하지 않은
+    # 이름을 주면 rclpy는 에러 없이 조용히 무시한다 -> 껐는데 켰다고 믿게 된다.
+    # /map은 sim_race.launch.py의 nav2 map_server가 latched로 발행한다.
+    use_map_filter: true
+    map_topic: /map
+    wall_dist_min_m: 0.25
+    # 2차 방어선: F1TENTH 차량(0.30x0.55 m) 클러스터 반경은 ~0.32 m.
+    # 이보다 크면 장애물이 아니다 — 트래킹 전에 버린다.
+    max_cluster_radius_m: 0.35
+    # ---- 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식 ----
+    # /global_waypoints는 planner_stack의 global_trajectory_node가 발행한다.
+    use_track_filter: true
+    global_waypoints_topic: /global_waypoints
+    track_bound_inflation_m: 0.10
+    max_view_ahead_m: 6.0
+    max_view_behind_m: 2.0
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)
 
 # sim에서는 입출력 토픽을 둘 다 바꿔야 한다:

@@ -22,8 +22,8 @@ Ctrl+C 하는 순간 맵이 `map_dir/map_name.{pgm,yaml}`로 저장된다.
   overwrite:=false      이름이 이미 쓰일 때만 거부. 기본은 덮어쓰기 허용
 
 이름이 겹치면 **주행 전에** 막는다: map_dir 은 localization / raceline_tuner /
-build_map 모두가 먼저 뒤지는 폴더라, 기존 맵이나 패키지 맵(particle_filter/maps,
-planning_pkg/maps)과 같은 이름으로 저장하면 그 맵이 에러 없이 조용히 가려진다.
+build_map / sim_race 가 쓰는 맵의 단일 위치라, 기존 맵이나 패키지 맵
+(particle_filter/maps)과 같은 이름으로 저장하면 조용히 덮어쓰거나 가려진다.
 
 주행 중 중간 저장:
   ros2 service call /save_map std_srvs/srv/Trigger
@@ -76,7 +76,8 @@ def _share(package):
 # 같은 이름으로 저장하면 그 맵들이 조용히 안 쓰이게 된다.
 SHADOWED_PACKAGES = (
     ('particle_filter', 'maps'),    # localization 이 2순위로 찾는 곳
-    ('planning_pkg', 'maps'),       # raceline_tuner / build_map 이 2순위로 찾는 곳
+    # planning_pkg/maps 는 폐지됐다 — raceline_tuner / build_map / sim_race 는
+    # 이제 map_dir 한 곳만 본다. 가려질 사본이 없으므로 검사 대상도 없다.
 )
 
 

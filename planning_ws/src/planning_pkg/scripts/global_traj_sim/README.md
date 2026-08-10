@@ -14,7 +14,7 @@ ROS 없이 `.venv`만으로 도는 global trajectory 생성 + 시뮬레이션 �
 라인·속도)+step3(시뮬)+step4(저장)를 한 파일로 합친 것이라, 아래 step1~4 파일은
 파이프라인 이해·수정용 참고 구현으로만 남아 있다.
 
-> 전제(STEP 0): 맵 `.png`(또는 `.pgm`) + `.yaml` 을 `planning_pkg/maps/` 에 미리
+> 전제(STEP 0): 맵 `.png`(또는 `.pgm`) + `.yaml` 을 `<workspace>/maps/` 에 미리
 > 넣어둘 것. 인자로 주는 맵 이름은 `maps/<이름>.yaml` 의 **확장자 뺀 파일명**과
 > 같아야 하고, yaml의 `image:` 필드도 **maps/ 안의 실제 파일**이어야 한다.
 

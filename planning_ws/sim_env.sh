@@ -18,4 +18,5 @@ for f in "$_ros_setup" "$_sim_ws" "$_planning_ws" "$_control_ws"; do
 done
 
 echo "sim_env.sh: sourced. 실행 예:"
-echo "  ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map"
+echo "  ros2 launch planning_pkg sim_race.launch.py map:=<맵이름>   # map은 필수"
+echo "  (맵 목록: ls ~/IFAC_ws/maps/*.yaml / 원커맨드: simm <맵이름>)"

@@ -1,0 +1,94 @@
+# --- gym sim + 실차 인지 파라미터 (stack.launch.py env:=sim_real_car) ---
+# 탐지·TF 파라미터를 real_car.yaml과 동일하게 두고, 토픽만 sim이다.
+#
+#   /scan_overlay (gym scan + 클릭 장애물 합성점, frame ego_racecar/laser)
+#     -> obstacle_detector (TF map 변환) -> /perception/obstacles_detected (map frame)
+#     -> planning perception_obstacle_bridge -> /perception/obstacles_frenet -> spliner
+#
+# pf:=true 덕분에 TF 체인이 실차와 같아졌다:
+#   map -(particle_filter)-> odom -(sim_odom_drift_node)-> base_link -(gym)-> laser
+# 그래서 real_car.yaml의 TF 폴백 설정(exact 실패 -> time-travel -> latest)을
+# 그대로 쓸 수 있고, 08-04에 실차를 세운 TF 경로를 sim에서도 지나간다.
+#
+# ⚠️ 파라미터로는 못 맞추는 sim/실차 차이:
+#   gym LiDAR는 빔당 1 cm 백색잡음만 있고 사거리 30 m다. 실차 Hokuyo의 반사/
+#   결측/지면반사로 생기는 유령 클러스터는 재현되지 않는다. 반대로 **벽을 큰
+#   클러스터로 잡는 현상은 sim에서도 그대로 난다** (실측 radius 1.0~3.2 m).
+obstacle_detector_node:
+  ros__parameters:
+    # --- 배선: sim ---
+    scan_topic: /scan_overlay          # 실차: /scan
+    obstacle_topic: /perception/obstacles_detected   # 실차: /perception/obstacles
+    # --- 이하 real_car.yaml과 동일 ---
+    # base_link가 아니라 map이어야 한다 (근거는 real_car.yaml 주석).
+    target_frame: map
+    # tf_timeout은 반드시 0. rclpy Buffer는 timeout>0이면 20ms 단위 sleep
+    # 폴링을 해서(geometry2 #327) 매 스캔 executor를 블로킹한다.
+    tf_timeout_sec: 0.0
+    tf_allow_latest_fallback: true
+    # 실차 실측(run_0731_221633): scan-TF 간격 p50 83ms / p90 123ms / max 240ms.
+    # sim+PF 실측도 같은 수준이라 그대로 쓴다.
+    tf_max_age_sec: 0.3
+    # time-travel lookup: laser->odom은 scan 정시각, odom->map은 latest로 합성.
+    tf_fixed_frame: odom
+    range_max: 12.0            # spliner/lookahead_m 12.0과 짝
+    # 클러스터링 임계값은 params.yaml의 lambda_angle_deg/sigma가 담당한다
+    # (거리 적응형이라 환경별 고정 eps가 불필요 — 구 cluster_eps 제거).
+    #
+    # ⚠️ 장애물 인지 OFF — real_car.yaml과 같은 상태로 맞춘 것이다.
+    # rosbag_0805 세 런(총 320초) 모두 /perception/obstacles가 4923개 메시지
+    # 전부 obstacles=[] 였다. 즉 08-05 주행은 회피가 한 번도 개입하지 않은
+    # 순수 레이스라인 추종이다. 이 줄이 없으면 sim은 그날 차와 다른 스택이 된다.
+    #
+    # 노드를 죽이지 않고 min_cluster_size로 막는 이유: spliner는 장애물 스트림이
+    # obs_timeout_sec(0.5s) 동안 끊기면 perception_stale -> fail-safe stop을 낸다.
+    # 반드시 "비어 있는 스트림"을 계속 흘려야 한다. 스캔 빔 수(~1080)보다 큰
+    # 값이라 클러스터가 절대 생기지 않고, 매 스캔 빈 ObstacleArray가 나간다.
+    #
+    # ⚠️ 08-05 재현 기준선으로 되돌리려면 아래 두 줄을 맞바꾼다.
+    #   min_cluster_size: 100000  = 인지 OFF (그날의 차 그대로. 클러스터가 절대
+    #                               안 생기고 빈 ObstacleArray만 계속 흐른다)
+    #   min_cluster_size: 8       = 인지 ON  (회피/벽구별 개발 모드)
+    # 08-06 현재 ON — 벽/장애물 구별을 rosbag_0801 재생으로 고친 뒤
+    # sim에서 frenet 회피 라인이 실제로 나오는지 확인하려고 켰다.
+    # real_car.yaml과 같은 값이어야 한다 (배선만 sim, 거동은 실차 동일).
+    # min_cluster_size: 100000
+    min_cluster_size: 8
+    # 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로
+    # 4점까지 허용한다. 이게 없으면 노드 기본값 0(비활성)이라 **sim만** 작은
+    # 물체를 놓친다 — 실차 run_0806_155621에서 폭 0.2m 물체(스캔 4점)가
+    # 15프레임 미검출되어 통로에 0.48~0.63m '가짜 틈'이 생긴 그 버그다.
+    # 막힌 통로를 열렸다고 오판하면 그 틈으로 회피를 시도하므로, sim에서
+    # 재현되지 않으면 회피 검증이 실차보다 낙관적으로 나온다.
+    min_cluster_size_open: 4
+    open_space_dist_m: 0.50
+    gating_distance: 0.45
+    track_timeout: 8
+    # ---- 맵 벽 필터 ----
+    # 파라미터 이름은 real_car.yaml과 반드시 같아야 한다. 노드가 선언하지 않은
+    # 이름(구 map_filter_enabled/map_wall_dist_min_m)을 주면 rclpy는 에러 없이
+    # 조용히 무시한다 -> 필터가 꺼진 채로 "켰다고 믿는" 상태가 된다.
+    use_map_filter: true
+    map_topic: /map
+    # real_car.yaml과 동일 (근거·실측표는 그쪽 주석 참고).
+    wall_dist_min_m: 0.25
+    # 2차 방어선: 맵 필터가 PF 오차로 흔들려 벽 리턴이 새더라도 이 크기를
+    # 넘으면 장애물이 아니다. 트래킹 전에 버린다.
+    max_cluster_radius_m: 0.35
+    # ---- 트랙 경계(Frenet) 필터 — real_car.yaml과 동일 ----
+    use_track_filter: true
+    global_waypoints_topic: /global_waypoints
+    track_bound_inflation_m: 0.10
+    max_view_ahead_m: 6.0
+    max_view_behind_m: 2.0
+    # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발)
+    # ⚠️ 벽/장애물 구분을 여기서 잡으려면 이 폴리곤이 제일 확실한 손잡이다.
+    #    브릿지의 map filter는 radius >= 0.20 m 클러스터를 못 지운다.
+
+# sim에서는 입출력 토픽을 둘 다 바꿔야 한다 (근거는 sim.yaml 주석 참조):
+# virtual_obstacle_node가 /perception/obstacles와 /perception/obstacle_markers를
+# 이미 쓰고 있어 타입 충돌·마커 덮어쓰기가 난다.
+obstacle_viz_node:
+  ros__parameters:
+    viz/input_topic: /perception/obstacles_detected
+    viz/output_topic: /perception/obstacles_detected_markers

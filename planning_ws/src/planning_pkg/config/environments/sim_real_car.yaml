@@ -1,0 +1,117 @@
+# --- gym sim + 실차 플래너 파라미터 (stack.launch.py env:=sim_real_car) ---
+#
+# 원칙: **거동 파라미터는 real_car.yaml과 한 글자도 다르지 않게 유지**하고,
+# 배선(odom 소스·장애물 토픽)만 sim으로 둔다. real_car.yaml을 고치면 여기도
+# 같이 고칠 것 — 두 파일이 어긋나면 "sim에선 됐는데 실차에선 안 되는" 원인이
+# 파라미터인지 물리인지 구분할 수 없게 된다.
+#
+# 배선이 실차와 다른 지점은 아래 2곳뿐이다:
+#   1) (없어짐) frenet odom_mode 는 실차와 **같은** 'real' 이다. sim에서도
+#      pf:=true 로 진짜 particle_filter 가 돌아 /pf/pose/odom 을 그대로 쓴다.
+#   2) bridge/input_topic: /perception/obstacles -> /perception/obstacles_detected
+#      (실차는 perception 팀 토픽, sim은 perception_pkg detector 출력)
+#
+# 차량 물리(mu·a_max·조향한계)는 ROS 파라미터가 아니라 gym 쪽이다 —
+# sim_race.launch.py의 vehicle:=real_car가 담당한다.
+global_trajectory_node:
+  ros__parameters:
+    # 1.0 — real_car.yaml과 동일하고, 08-05 실차의 실효값이다.
+    # (0.742는 08-04 이전 프로파일. real_car.yaml이 1.0으로 올라간 뒤에도
+    #  여기만 남아 있어서 sim이 실차보다 26% 느리게 돌았다.)
+    #
+    # bag 근거(rosbag_0805): /global_waypoints vx = [2.73, 5.94] m/s.
+    # rosout에는 "velocity_scale 1.083 exceeds certified maximum 1.000" 경고가
+    # 런당 ~100회 찍혔다 — 누군가 런타임에 1.083을 요청했지만
+    # global_trajectory_node가 max_velocity_scale=1.0으로 clamp했다.
+    # 따라서 실효 스케일은 1.0이고, 5.94는 CSV 프로파일 자체의 상한이다.
+    global_trajectory/velocity_scale: 1.0
+
+frenet_frame_node:
+  ros__parameters:
+    # 실차와 동일한 'real' (/pf/pose/odom 구독, frenet_frame_node.cpp:127).
+    # 예전의 'sim_pf' 는 real 과 동작이 완전히 같은 중복 모드라 노드에서
+    # 제거됐고, 지금 지정하면 std::invalid_argument 로 노드가 즉사한다.
+    frenet_frame/odom_mode: real
+
+# perception 장애물(카르테시안) -> frenet 변환 브릿지.
+# input_topic만 sim(detector 출력)이고 나머지는 real_car.yaml과 동일하다.
+perception_obstacle_bridge_node:
+  ros__parameters:
+    bridge/input_topic: /perception/obstacles_detected  # 실차: /perception/obstacles
+    bridge/output_topic: /perception/obstacles_frenet
+    bridge/target_frame: map
+    bridge/min_confidence: 0.0
+    bridge/wall_margin_m: 0.10
+    bridge/vel_lpf_alpha: 0.3
+    bridge/track_forget_sec: 2.0
+    bridge/tf_timeout_sec: 0.05
+    bridge/tf_allow_latest_fallback: false
+    bridge/tf_max_age_sec: 0.05
+    # 0.40 — real_car.yaml과 동일. 실차 detector가 15.6 Hz(=64 ms 주기)로
+    # 발행하므로(rosbag_0805 실측, /scan 40 Hz 대비 2.5스캔당 1회) 0.20은
+    # 지터 두 번이면 바로 걸린다.
+    bridge/max_source_age_sec: 0.40
+    bridge/source_future_tolerance_sec: 0.05
+    bridge/require_source_stamp: true
+    bridge/projection_window_wpnts: 80
+    bridge/projection_reacquire_distance_m: 1.5
+    bridge/max_abs_vs_mps: 10.0
+    bridge/max_abs_vd_mps: 4.0
+    # real_car.yaml과 동일. A/B로 끄고 싶으면 launch에서 map_filter:=false —
+    # yaml을 고치지 말 것 (launch 인자가 env yaml보다 나중에 적용된다).
+    bridge/use_map_filter: true
+    # 0.15 -> 0.30 (2026-08-07). real_car.yaml이 커밋 b934d0e에서 0.30으로
+    # 올라갔는데 여기만 08-06 값으로 남아 있었다. 브릿지 필터는 클러스터
+    # centroid의 맵 벽거리(EDT)만 보므로 임계값이 곧 유령 제거율이다 —
+    # rosbag_0806 실측으로 0.30이 유령의 23%를 지우면서 실물 제거는 1~5%로
+    # 묶인다(제거율 표는 real_car.yaml 같은 블록). 0.15면 유령 제거율 0%라
+    # sim만 "브릿지 필터가 없는" 상태로 회피를 검증하게 된다.
+    bridge/wall_dist_min_m: 0.30
+    bridge/map_topic: /map
+    bridge/map_timeout_sec: 5.0
+
+# --- 이하 real_car.yaml과 완전히 동일 (근거 주석은 real_car.yaml 참조) ---
+spliner_node:
+  ros__parameters:
+    spliner/obstacle_topic: /perception/obstacles_frenet
+    spliner/lookahead_m: 12.0
+    spliner/loop_rate_hz: 30.0
+    spliner/blend_lat_acc_max: 5.0
+    spliner/blend_dist_max_m: 8.0
+    # 6.6 = mu*g 예산. 실차와 동일해야 한다 — 7.0 은 MU_PROFILE 0.68 시절의
+    # mu*g(6.67)를 5% 넘겨서, 오프셋 경로의 잔여 그립 sqrt(budget²-lat_ref²)을
+    # 실제보다 크게 보고 진입 속도 캡이 물리적으로 못 내는 값이 됐다.
+    spliner/path_lat_acc_max: 6.6
+    spliner/path_decel_max: 6.0
+    spliner/lane_blend_out_m: 5.0
+    # 조기 라인 스위치 (real_car.yaml과 동일). 곡률이 이보다 작은 직선 구간에서만
+    # 회피 라인으로 미리 전환하고 헤어핀은 기존대로 늦게 전환한다.
+    spliner/early_switch_kappa_max: 0.10
+    spliner/obs_traj_tresh: 0.45
+    spliner/evasion_dist: 0.35
+    # (spliner/inside_speed_scale 제거 — real_car.yaml과 동일. 코너 안쪽 회피
+    #  감속은 offset_grip_cap 이 물리 기반으로 담당하고, 고정 배율은 이미
+    #  1.0(항등)이라 코드에서 함께 삭제됐다.)
+    spliner/path_check_margin: 0.15
+    spliner/boundary_tracking_margin_m: 0.10
+    spliner/cmd_speed_scale: 1.0
+
+opponent_predictor_node:
+  ros__parameters:
+    predictor/obstacle_topic: /perception/obstacles_frenet
+
+recovery_supervisor_node:
+  ros__parameters:
+    recovery/obstacle_topic: /perception/obstacles_frenet
+    recovery/stuck_timeout_sec: 1.5
+    recovery/boundary_stop_margin_m: 0.10
+    recovery/boundary_persist_sec: 0.10
+    recovery/rear_check_dist_m: 2.0
+    recovery/allow_reverse: false
+    recovery/rear_coverage_confirmed: false
+    recovery/recovery_reverse_speed_mps: 0.30
+    recovery/recovery_max_reverse_distance_m: 0.4
+    recovery/recovery_max_attempts: 1
+    recovery/align_speed_mps: 0.4
+    # 실차와 동일 — sim에서도 pf:=true라 이 토픽이 실제로 존재한다.
+    recovery/pose_odom_topic: /pf/pose/odom

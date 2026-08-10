@@ -83,10 +83,12 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 
-# 개발용 맵 (대회 맵은 이 폴더를 교체하거나 도구의 --maps-dir로 지정)
-install(DIRECTORY maps
-  DESTINATION share/${PROJECT_NAME}
-)
+# 맵은 더 이상 패키지에 설치하지 않는다.
+# 워크스페이스 공용 폴더 <ws>/maps 가 단일 위치다 (mapping.launch.py가 저장하고,
+# localization/tuner/sim launch가 전부 거기서 읽는다). 패키지에도 사본을 두면
+# 같은 이름의 맵이 두 벌 생겨 어느 쪽이 쓰였는지 조용히 갈린다 — 08-05 주행에서
+# 실제로 맵이 어긋난 원인과 같은 종류의 사고다.
+# 대회 맵은 그 폴더를 교체하거나 maps_dir:= / --maps-dir 로 가리킨다.
 
 # pitwall 텔레메트리 (import pitwall — 노드와 같은 디렉터리에 설치)
 install(FILES scripts/lib/pitwall.py
@@ -99,10 +101,13 @@ install(FILES scripts/lib/pitwall.py
 # 데모용으로만 남아 있으며 recovery lease 계약을 두 벌 유지해야 한다.
 # virtual_obstacle = 정적 장애물 + perception 주입(tracking merge / scan overlay).
 # opponent_driver = gym 2-agent 상대 조종 (path/ftg/manual).
+# sim_odom_drift = gym GT를 드리프트 있는 휠 오도메트리로 바꿔 particle_filter가
+# 보정할 odom 레그를 만든다 (sim_race.launch.py pf:=true).
 install(PROGRAMS
   scripts/sim/waypoint_tracker_node.py
   scripts/sim/virtual_obstacle_node.py
   scripts/sim/opponent_driver_node.py
+  scripts/sim/sim_odom_drift_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -1,0 +1,10 @@
+# gym sim + 실차 파라미터 프로파일 (stack.launch.py env:=sim_real_car).
+# 헬스 모니터가 보는 토픽도 실차와 같은 자리를 보게 맞춘다 — odom은 GT가 아니라
+# PF 출력이다 (pf:=true가 기본). gym 입력이라 drive_topic만 sim 쪽이다.
+integration:
+  ros__parameters:
+    scan_topic: /scan
+    odom_topic: /pf/pose/odom                        # 실차와 동일
+    perception_topic: /perception/obstacles_detected  # 실차: /perception/obstacles
+    waypoints_topic: /local_waypoints
+    drive_topic: /drive                               # 실차: /ackermann_cmd

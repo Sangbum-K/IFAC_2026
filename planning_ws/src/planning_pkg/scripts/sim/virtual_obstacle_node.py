@@ -35,7 +35,17 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 
-import pitwall
+try:
+    # 설치 트리(copy-install): pitwall.py 가 노드 옆(lib/planning_pkg/)에 깔린다.
+    import pitwall
+except ModuleNotFoundError:
+    # colcon --symlink-install: 설치된 노드가 src 원본으로 가는 심볼릭 링크라
+    # 파이썬이 sys.path[0] 을 realpath(=scripts/<하위>/)로 잡는다. 그러면
+    # 같이 설치된 pitwall.py 가 경로에 없다 -> 형제 폴더 scripts/lib 를 얹는다.
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+    import pitwall
 
 
 class VirtualObstacleNode(Node):

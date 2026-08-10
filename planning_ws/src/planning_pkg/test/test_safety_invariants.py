@@ -1,10 +1,13 @@
 """Fast, hardware-free checks for high-speed planning safety invariants."""
 
+import ast
 import math
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import yaml
 
 
@@ -13,6 +16,10 @@ WORKSPACE = PKG.parents[2]
 PARAMS = PKG / "config" / "params.yaml"
 TRAJECTORIES = PKG / "config" / "global_trajectory"
 CSV_SPEED_RE = re.compile(r"_max([0-9.]+)ms_")
+SIM_RACE_LAUNCH = PKG / "launch" / "sim_race.launch.py"
+
+sys.path.insert(0, str(PKG / "scripts"))
+import deployment_profiles as profiles  # noqa: E402
 
 
 def _yaml(path):
@@ -227,3 +234,133 @@ def test_launch_does_not_auto_enable_sp():
     assert "sp = sp_candidate" not in planner_launch
     assert "overtaking_csv_file', default_value=''" in planner_launch
     assert "overtaking_csv_file', default_value=''" in sim_launch
+
+
+def _sim_race_real_car_vehicle():
+    """Read sim_race.launch.py's REAL_CAR_VEHICLE dict without executing it.
+
+    The launch file cannot import ``deployment_profiles`` (that module lives in
+    ``scripts/`` and is never installed into ``share/``), so the gym numbers are
+    a hand-kept copy.  Parsing them here is what keeps the copy honest.
+    """
+    tree = ast.parse(
+        SIM_RACE_LAUNCH.read_text(encoding="utf-8"),
+        filename=str(SIM_RACE_LAUNCH))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "REAL_CAR_VEHICLE" in targets:
+            return ast.literal_eval(node.value)
+    raise AssertionError(
+        f"REAL_CAR_VEHICLE not found in {SIM_RACE_LAUNCH}")
+
+
+def test_sim_gym_vehicle_matches_measured_plant():
+    """gym 차량 물리(vehicle:=real_car)가 실측 상수와 어긋나면 실패.
+
+    어긋나면 sim은 실차가 낼 수 없는 가속/그립으로 돌아서, 회피·정지거리
+    검증이 통째로 낙관적이 된다 (2026-08-07 이전에 a_max가 2.2로 굳어 있어
+    실차 3.5 대비 37% 느리게 가속했다).
+    """
+    vehicle = _sim_race_real_car_vehicle()
+    assert vehicle["vehicle.a_max"] == pytest.approx(profiles.A_ACC_MAX)
+    assert vehicle["vehicle.v_max"] == pytest.approx(profiles.RACELINE_V_MAX)
+    assert vehicle["vehicle.s_max"] == pytest.approx(profiles.MAX_STEER)
+    assert vehicle["vehicle.s_min"] == pytest.approx(-profiles.MAX_STEER)
+    # gym 차체는 recovery가 코리도 판정에 쓰는 치수와 같아야 한다.
+    recovery = _ros_params(_yaml(PARAMS), "recovery_supervisor_node")
+    assert vehicle["vehicle.width"] == pytest.approx(
+        recovery["recovery/vehicle_width_m"])
+    assert vehicle["vehicle.length"] == pytest.approx(
+        recovery["recovery/vehicle_length_m"])
+
+    # gym의 accl_constraints는 ±a_max 대칭이라 감속만 따로 못 준다.
+    # control sim_real_car.yaml의 명령 slew가 그 역할을 하므로 여기서 함께 본다.
+    control_sim = _ros_params(
+        _yaml(WORKSPACE / "control_ws" / "src" / "control_pkg" / "config" /
+              "environments" / "sim_real_car.yaml"),
+        "control")
+    assert control_sim["vehicle/max_accel_mps2"] == pytest.approx(
+        profiles.A_ACC_MAX)
+    assert control_sim["vehicle/max_decel_mps2"] == pytest.approx(
+        profiles.A_DEC_PLANNED)
+    assert control_sim["vehicle/max_steering_angle_rad"] == pytest.approx(
+        profiles.MAX_STEER)
+    assert control_sim["vehicle/max_steering_rate_radps"] == pytest.approx(
+        profiles.MAX_STEER_RATE)
+
+
+# sim_real_car.yaml 이 real_car.yaml 과 **의도적으로** 다를 수 있는 키.
+# 전부 배선(토픽·프레임·LUT)이고 거동 파라미터는 하나도 없다. 여기에 거동
+# 파라미터를 추가하려면 "왜 sim에서 다른 값이어야 하는가"를 주석으로 남길 것.
+SIM_REAL_CAR_WIRING_EXEMPT = {
+    "planning": {
+        # 둘 다 /pf/pose/odom 을 구독한다 (frenet_frame_node.cpp).
+        "frenet_frame_node.frenet_frame/odom_mode",
+        # 실차는 perception 팀 토픽, sim은 perception_pkg detector 출력.
+        "perception_obstacle_bridge_node.bridge/input_topic",
+    },
+    "perception": {
+        "obstacle_detector_node.scan_topic",
+        "obstacle_detector_node.obstacle_topic",
+        # sim에만 있는 노드 — virtual_obstacle_node와 마커 토픽이 겹쳐서 분리.
+        "obstacle_viz_node.viz/input_topic",
+        "obstacle_viz_node.viz/output_topic",
+    },
+    "control": {
+        "control.ackermann_topic",
+        # LUT는 하드웨어 한계가 아니라 타이어 모델이다. gym single-track에
+        # 실차 Pacejka LUT를 물리면 실차와 무관한 추적오차가 생긴다.
+        "control.map/steering_lut_file",
+        # gym에는 VESC plant가 없어 명령단이 대신 차의 가감속/조향 한계를 건다.
+        # 값 자체는 test_sim_gym_vehicle_matches_measured_plant 가 검사한다.
+        "control.vehicle/max_accel_mps2",
+        "control.vehicle/max_decel_mps2",
+        "control.vehicle/max_steering_angle_rad",
+        "control.vehicle/max_steering_rate_radps",
+    },
+    "integration": {
+        "integration.perception_topic",
+        "integration.drive_topic",
+    },
+}
+
+SIM_REAL_CAR_PACKAGES = {
+    "planning": PKG,
+    "perception": WORKSPACE / "perception_ws" / "src" / "perception_pkg",
+    "control": WORKSPACE / "control_ws" / "src" / "control_pkg",
+    "integration": WORKSPACE / "integration_ws" / "src" / "integration_pkg",
+}
+
+
+def _env_profile_flat(pkg_root, env_name):
+    """environments/<env>.yaml 을 '<노드>.<파라미터>' 평면 dict으로."""
+    document = _yaml(Path(pkg_root) / "config" / "environments" /
+                     f"{env_name}.yaml") or {}
+    flat = {}
+    for node, section in document.items():
+        for key, value in (section or {}).get("ros__parameters", {}).items():
+            flat[f"{node}.{key}"] = value
+    return flat
+
+
+def test_sim_real_car_profiles_mirror_real_car():
+    """env:=sim_real_car 는 배선만 sim이고 거동은 실차와 같아야 한다.
+
+    이 계약이 깨지면 "sim에선 됐는데 실차에선 안 되는" 원인이 파라미터인지
+    물리인지 구분할 수 없게 된다. 실제로 bridge/wall_dist_min_m 이 real_car
+    0.30 / sim 0.15 로 갈려 sim만 브릿지 벽필터가 사실상 꺼져 있었다.
+    """
+    for name, pkg_root in SIM_REAL_CAR_PACKAGES.items():
+        real = _env_profile_flat(pkg_root, "real_car")
+        sim = _env_profile_flat(pkg_root, "sim_real_car")
+        exempt = SIM_REAL_CAR_WIRING_EXEMPT[name]
+        drifted = sorted(
+            key for key in set(real) | set(sim)
+            if key not in exempt and real.get(key) != sim.get(key))
+        assert not drifted, (
+            f"{name}: sim_real_car.yaml 이 real_car.yaml 과 어긋남 -> "
+            + ", ".join(
+                f"{key} (real={real.get(key, '<absent>')!r}, "
+                f"sim={sim.get(key, '<absent>')!r})" for key in drifted))

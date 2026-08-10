@@ -1308,6 +1308,11 @@ bool SplinerNode::TryLaneSwitch(
             NoteReject("lane_wall_no_room");
             continue;
         }
+        // 이 레인은 장애물 여유를 만족한다 — 뒤이은 속도/충돌 검증에서
+        // 떨어지더라도 "여기로 가려던 중"이라는 사실은 남긴다. 트레일링이
+        // raceline으로 되돌리는 대신 이 목표를 유지하는 근거가 된다
+        // (retry_d_target_ 주석 참조).
+        NoteRetryTarget(d_hold);
         if (BuildLaneSwitch(d_hold, closest_obs, all_ahead,
                             out_wpnts, out_mrks)) {
             CommitOtSide(side, closest_obs);
@@ -1962,6 +1967,9 @@ bool SplinerNode::DoSpline(
             entry_speed_cap = std::max(cap, plan_speed_floor_);
             plan_v = std::min(plan_v, entry_speed_cap);
         }
+        // 기하 하한은 통과했다 — 이후 속도/경계/충돌 검증에서 떨어져도
+        // 이 apex가 "가려던 목표"다 (TryLaneSwitch와 같은 이유).
+        NoteRetryTarget(d_apex);
     }
     double knot_base = std::abs(pre_apex_dists_.front());
     double need_scale = (knot_base > 0.1)
@@ -2310,28 +2318,52 @@ bool SplinerNode::BuildTrailing(
     // 궤적 밖의 원본 raceline 속도(전속)를 집어 재가속하는 것을 방지
     const double extend = 5.0;
     // 회피 중(|cur_d| 큼) 폴백이 걸리면 경로가 d=0으로 순간이동해 차가
-    // 장애물 쪽으로 끌려간다 — 현재 d에서 raceline으로 되돌아오는 램프.
+    // 장애물 쪽으로 끌려간다 — 현재 d에서 목표 d(아래 d_goal)로 가는 램프.
     // 길이는 고정 3m이 아니라 그립 예산으로: 6 m/s에서 d=0.4를 3m에 되돌리면
     // 1.0g를 요구한다.
-    const double d_ramp_len = std::max(1.0, BlendDist(cur_d_, cur_vs_));
+    // 램프의 종착 d. 기본은 raceline 복귀(0)지만, 회피가 **일시적으로**
+    // 실패해 재시도 중이면(= allow_stop이 false) 직전에 노렸던 회피 목표를
+    // 유지한다. 되돌리면 다음 사이클의 횡이동 잔량이 그대로라 회피가 영원히
+    // 성립하지 않는다 — 근거는 retry_d_target_ 주석(run_0809_231809 4랩).
+    double d_goal = 0.0;
+    if (!emergency_stop && !allow_stop && has_retry_d_) {
+        const double age = (this->now() - retry_d_stamp_).seconds();
+        if (age >= 0.0 && age <= kRetryDHoldSec) {
+            d_goal = retry_d_target_;
+        }
+    }
     const double planned_span = std::min(
         span + extend, std::max(track_len_ - wpnt_dist_, wpnt_dist_));
     int n = std::max(static_cast<int>(planned_span / wpnt_dist_), 2);
-    bool hold_current_d = emergency_stop;
-    if (!hold_current_d && std::abs(cur_d_) > 0.02) {
+    // 램프 길이는 실제 이동량(|d_goal - cur_d_|)의 그립 예산으로 정한다.
+    auto ramp_len_for = [&](double goal) {
+        return std::max(1.0, BlendDist(goal - cur_d_, cur_vs_));
+    };
+    // 램프 전 구간이 트랙 경계 안인가.
+    auto ramp_ok = [&](double goal, double len) {
         for (int i = 0; i < n; ++i) {
             const double dist = i * wpnt_dist_;
             const double s = Mod(cur_s_ + dist, track_len_);
             const int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
-            const double d = (dist < d_ramp_len)
-                ? cur_d_ * (1.0 - dist / d_ramp_len) : 0.0;
+            const double t = std::min(dist / std::max(len, 1e-3), 1.0);
+            const double d = cur_d_ + (goal - cur_d_) * t;
             if (!WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
-                // 안전한 raceline 복귀 기하가 없으면 빈 경로 대신 현재 d에서
-                // 정지한다. 빈 경로는 곧 전속 global path이므로 금지.
-                hold_current_d = true;
-                v_target_prof_actual = 0.0;
-                break;
+                return false;
             }
+        }
+        return true;
+    };
+    double d_ramp_len = ramp_len_for(d_goal);
+    bool hold_current_d = emergency_stop;
+    if (!hold_current_d && !ramp_ok(d_goal, d_ramp_len)) {
+        // 회피 목표 유지가 경계를 침범하면 예전 동작(raceline 복귀)으로 내려간다.
+        d_goal = 0.0;
+        d_ramp_len = ramp_len_for(0.0);
+        if (std::abs(cur_d_) > 0.02 && !ramp_ok(0.0, d_ramp_len)) {
+            // 안전한 raceline 복귀 기하도 없으면 빈 경로 대신 현재 d에서
+            // 정지한다. 빈 경로는 곧 전속 global path이므로 금지.
+            hold_current_d = true;
+            v_target_prof_actual = 0.0;
         }
     }
     out_wpnts.wpnts.reserve(n);
@@ -2353,10 +2385,15 @@ bool SplinerNode::BuildTrailing(
         w.s_m = s;
         // perception stale 비상정지는 알 수 없는 raceline 쪽으로 횡이동하지
         // 않고 현재 lateral line을 유지한다.
-        double d = hold_current_d
-            ? cur_d_
-            : ((std::abs(cur_d_) > 0.05 && dist < d_ramp_len)
-                ? cur_d_ * (1.0 - dist / d_ramp_len) : 0.0);
+        double d;
+        if (hold_current_d) {
+            d = cur_d_;
+        } else if (std::abs(d_goal - cur_d_) > 0.05) {
+            const double t = std::min(dist / std::max(d_ramp_len, 1e-3), 1.0);
+            d = cur_d_ + (d_goal - cur_d_) * t;
+        } else {
+            d = d_goal;
+        }
         w.d_m = d;
         if (std::abs(d) > 0.02) {
             if (!hold_current_d &&
@@ -2423,8 +2460,10 @@ bool SplinerNode::BuildTrailing(
     }
 
     RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-        "Trailing fallback: obs s=%.1f gap=%.1fm v_target=%.1f d_ramp=%.1fm (%zu wpnts)",
-        obs.s_center, span, v_target_actual, d_ramp_len, out_wpnts.wpnts.size());
+        "Trailing fallback: obs s=%.1f gap=%.1fm v_target=%.1f "
+        "d %.2f -> %.2f (ramp %.1fm) (%zu wpnts)",
+        obs.s_center, span, v_target_actual, cur_d_, d_goal, d_ramp_len,
+        out_wpnts.wpnts.size());
     NoteReject("trailing");
     return true;
 }
@@ -2877,6 +2916,15 @@ void SplinerNode::NoteReject(const char *reason) const {
         return;
     }
     ++reject_counts_[reason];
+}
+
+void SplinerNode::NoteRetryTarget(double d_target) {
+    if (!std::isfinite(d_target)) {
+        return;
+    }
+    retry_d_target_ = d_target;
+    retry_d_stamp_ = this->now();
+    has_retry_d_ = true;
 }
 
 void SplinerNode::PublishRejectCounts() {

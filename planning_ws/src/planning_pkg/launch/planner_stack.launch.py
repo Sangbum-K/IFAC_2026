@@ -140,6 +140,7 @@ def launch_setup(context, *args, **kwargs):
         'spliner_node': {},
         'recovery_supervisor_node': {},
         'opponent_predictor_node.py': {},
+        'perception_obstacle_bridge_node.py': {},
         'planner_visualizer_node': {},
     }
     # map:=<이름> — CSV 3종을 이름 하나로 해석한다. 개별 *_csv_file 인자가
@@ -277,8 +278,19 @@ def launch_setup(context, *args, **kwargs):
     if env in ('real_car', 'race_map') or bridge:
         bridge_input = LaunchConfiguration('bridge_input_topic').perform(context)
         if bridge_input:
-            overrides['perception_obstacle_bridge_node.py'] = {
-                'bridge/input_topic': bridge_input}
+            overrides['perception_obstacle_bridge_node.py'][
+                'bridge/input_topic'] = bridge_input
+        # map_filter:=true|false — 맵 거리변환 기반 벽 클러스터 제거를 켜고 끈다.
+        # 빈 값이면 environments/<env>.yaml 값을 그대로 쓴다. sim에서 벽/장애물
+        # 구별을 A/B로 보려고 넣은 손잡이다 (sim은 env yaml이 비어 있어 노드
+        # 기본값 false).
+        map_filter = LaunchConfiguration('map_filter').perform(context).strip().lower()
+        if map_filter:
+            if map_filter not in ('true', 'false'):
+                raise RuntimeError(
+                    f'map_filter:={map_filter!r} 는 true 또는 false여야 합니다')
+            overrides['perception_obstacle_bridge_node.py'][
+                'bridge/use_map_filter'] = (map_filter == 'true')
         nodes.append(make_node('perception_obstacle_bridge_node.py'))
 
     predictor_mode = LaunchConfiguration('predictor').perform(context).lower()
@@ -355,5 +367,10 @@ def generate_launch_description():
         DeclareLaunchArgument('bridge_input_topic', default_value='',
                               description='브릿지 입력 토픽 override '
                                           '(통합 sim: /perception/obstacles_detected)'),
+        DeclareLaunchArgument('map_filter', default_value='',
+                              description='bridge/use_map_filter override (true|false). '
+                                          '맵 거리변환으로 벽 클러스터를 제거한다. '
+                                          '빈 값이면 environments/<env>.yaml 값 사용. '
+                                          '벽/장애물 구별 A/B 확인용 (pf:=true와 함께)'),
         OpaqueFunction(function=launch_setup),
     ])

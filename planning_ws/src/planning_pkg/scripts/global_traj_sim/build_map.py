@@ -12,9 +12,8 @@ step1(트랙 추출) + step2(IQP 라인·속도) + step3(시뮬) + step4(저장)
 나중에 파일만 보고도 방향을 확인할 수 있다.
 
 전제:  <맵이름>.yaml + 거기서 가리키는 image(pgm/png) 한 쌍이 있어야 함.
-       맵은 두 곳을 순서대로 찾는다:
-         1) ~/IFAC_ws/maps      — mapping.launch.py 저장 위치 (복사 없이 바로 사용)
-         2) planning_pkg/maps   — 패키지에 함께 둔 맵
+       맵은 워크스페이스 공용 폴더 <ws>/maps 한 곳에서 찾는다
+       (mapping.launch.py 저장 위치라 복사 없이 바로 사용).
        확장자는 yaml 의 image: 필드를 따르므로 pgm/png 아무거나 된다.
 
 모든 튜닝 파라미터는 바로 아래 '설정' 블록에 모아뒀다. 트랙 크기(스케일)는
@@ -564,11 +563,12 @@ G = 9.81
 # 워크스페이스 루트를 정한다). 따로 계산하면 두 모듈이 다른 워크스페이스를
 # 가리킬 수 있다.
 HERE = Path(__file__).resolve().parent
-# 맵을 찾을 폴더 (앞에서부터 순서대로 — 먼저 있는 걸 쓴다):
-#   1) <workspace>/maps      — mapping.launch.py 가 저장하는 워크스페이스 공용 폴더.
-#      여기서 먼저 찾으므로 매핑 직후 복사 없이 바로 build_map 을 돌릴 수 있다.
-#   2) planning_pkg/maps     — 패키지에 함께 두는 맵 (기존 동작).
-MAPS_SEARCH_DIRS = [WORKSPACE_ROOT / "maps", PKG_ROOT / "maps"]
+# 맵의 단일 위치: <workspace>/maps — mapping.launch.py 가 저장하는 공용 폴더.
+# 매핑 직후 복사 없이 바로 build_map 을 돌릴 수 있고, 맵은 패키지에 설치되지
+# 않으므로 맵을 고쳐도 colcon build 가 필요 없다.
+# (planning_pkg/maps 사본은 폐지 — 같은 이름 맵이 두 벌이면 어느 쪽이 쓰였는지
+#  조용히 갈린다. 08-05 주행에서 실제로 맵이 어긋난 것과 같은 종류의 사고다.)
+MAPS_SEARCH_DIRS = [WORKSPACE_ROOT / "maps"]
 CSV_DIR = PKG_ROOT / "config" / "global_trajectory"
 CENTERLINE_DIR = PKG_ROOT / "config" / "centerline"
 OUT_DIR = HERE / "outputs"
@@ -2710,7 +2710,7 @@ def main():
     ap = argparse.ArgumentParser(description="맵 이름 하나로 레이스라인 생성")
     ap.add_argument("map", nargs="?", default="my_map",
                     help="<이름>.yaml 의 확장자 뺀 이름 "
-                         "(~/IFAC_ws/maps -> planning_pkg/maps 순으로 찾음)")
+                         "(~/IFAC_ws/maps 에서 찾음)")
     ap.add_argument("--dir", choices=("cw", "ccw", "auto"), default="ccw",
                     help="주행 방향 (기본 ccw). 이 스택의 트랙은 반시계로 돈다 — "
                          "시계로 돌 맵만 cw 를 준다. auto 는 예전 휴리스틱으로, "

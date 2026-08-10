@@ -1,0 +1,111 @@
+{
+  "files": [
+    {
+      "bytes": 30006,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_map_sp_max6.00ms_margin0.08m_mu0.65.csv",
+      "role": "sp_0",
+      "sha256": "4dfa98b749b802954142d15ee59dab6ad4e4ad62c2a5b2181047336f1e65d3b7"
+    },
+    {
+      "bytes": 30006,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_map_sp_max6.00ms_margin0.08m_mu0.65.csv",
+      "role": "sp_1",
+      "sha256": "4dfa98b749b802954142d15ee59dab6ad4e4ad62c2a5b2181047336f1e65d3b7"
+    },
+    {
+      "bytes": 63589,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_map_walls.csv",
+      "role": "walls_output",
+      "sha256": "85437c1807e81b12fa82321ff98b7842dd226227020209f51afa648d0b3dfc7f"
+    },
+    {
+      "bytes": 63589,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_map_walls.csv",
+      "role": "walls_runtime",
+      "sha256": "85437c1807e81b12fa82321ff98b7842dd226227020209f51afa648d0b3dfc7f"
+    },
+    {
+      "bytes": 7225,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_map_centerline.csv",
+      "role": "centerline_output",
+      "sha256": "0f0ebc75dee731837b3cb752137df8615420cc47499278a7af16856077754690"
+    },
+    {
+      "bytes": 7225,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_map_centerline.csv",
+      "role": "centerline_runtime",
+      "sha256": "0f0ebc75dee731837b3cb752137df8615420cc47499278a7af16856077754690"
+    },
+    {
+      "bytes": 30098,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_map_iqp_max6.00ms_margin0.08m_mu0.65.csv",
+      "role": "main_output",
+      "sha256": "8138dfcbfc068ff2934c14accb19c496c88af8aadcb369d6e4fba65336245dd0"
+    },
+    {
+      "bytes": 30098,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_map_iqp_max6.00ms_margin0.08m_mu0.65.csv",
+      "role": "main_runtime",
+      "sha256": "8138dfcbfc068ff2934c14accb19c496c88af8aadcb369d6e4fba65336245dd0"
+    }
+  ],
+  "generation_content_sha256": "7c7aaace929dfe4b94f2a67ed1b2c97cc511db117014f20be3c600ab39ffee2e",
+  "generation_id": "01d1bbd435484eca92b39a5b8ddd3b97",
+  "main": "my_map_iqp_max6.00ms_margin0.08m_mu0.65.csv",
+  "map": "my_map",
+  "schema_version": 1,
+  "sp": "my_map_sp_max6.00ms_margin0.08m_mu0.65.csv",
+  "sp_disabled_reason": "",
+  "sp_enabled": true,
+  "sp_expected": "my_map_sp_max6.00ms_margin0.08m_mu0.65.csv",
+  "validation": {
+    "adaptive_safe_dist": {
+      "enabled": true,
+      "narrow_pts": 0,
+      "safe_max": 0.45,
+      "safe_median": 0.45,
+      "safe_min": 0.39749999999999996,
+      "total_pts": 58,
+      "width_max": 3.55,
+      "width_median": 1.975,
+      "width_min": 1.325
+    },
+    "adaptive_speed_by_width": {
+      "binding_pts": 4,
+      "enabled": true,
+      "limited_pts": 15,
+      "total_pts": 295,
+      "v_min": 3.8888888888888893
+    },
+    "advisory_profiles": [
+      "python_sim_tracker"
+    ],
+    "brake_decel_per_amp": 0.0,
+    "gate_profiles": [
+      "cpp_real_car"
+    ],
+    "gate_target": "real",
+    "mu_profile": 0.65,
+    "plant_accel_mps2": 2.2,
+    "plant_decel_planned_mps2": 1.3,
+    "profile_settings": [
+      {
+        "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/sangbum/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "controller_speed_scale": 1.0,
+        "max_speed_mps": 5.0,
+        "name": "cpp_real_car",
+        "planner_speed_scale": 0.833333,
+        "plant": "vesc"
+      },
+      {
+        "config_sources": "/home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/sangbum/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "controller_speed_scale": 0.3,
+        "max_speed_mps": 6.0,
+        "name": "python_sim_tracker",
+        "planner_speed_scale": 0.6667,
+        "plant": "ideal"
+      }
+    ],
+    "raceline_v_max_mps": 6.0
+  }
+}

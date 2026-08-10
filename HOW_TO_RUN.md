@@ -30,7 +30,7 @@ sa #전체 소스
 mapp my_track0728   # 맵 이름 — 날짜 등으로 매번 새 이름을 쓸 것
 ```
 > `maps/`는 다른 어떤 폴더보다 먼저 검색되므로, 기존 맵이나 패키지 맵
-> (`particle_filter/maps`, `planning_pkg/maps`)과 같은 이름으로 저장하면 그 맵이
+> (`particle_filter/maps`)과 같은 이름으로 저장하면 그 맵이
 > 조용히 가려집니다. 그래서 이름이 겹치면 **주행 시작 전에** launch가 거부합니다.
 > 정말 덮어쓸 때만 `mapp <이름> overwrite:=true` (기존 파일은 `.bak`으로 백업됨).
 플래닝용 csv파일생성
@@ -235,12 +235,30 @@ source ~/IFAC_ws/localization_ws/install/setup.zsh
 
 ### 3-1. 한 줄로 전체 켜기
 
-터미널 하나에서 :
+터미널 하나에서 — **맵 이름만** 주면 됩니다 (source·빌드까지 알아서):
+
+```bash
+simm <맵이름>          # 예: simm my_track0807
+```
+
+`simm`이 하는 일 (= `~/IFAC_ws/simm.sh`):
+1. `~/IFAC_ws/maps/<맵>.{pgm|png,yaml}` 확인
+2. 레이스라인 CSV가 없으면 `build_map.py`로 생성 (`--regen`이면 항상 다시)
+3. `./build_all.sh sim` — 새 CSV를 `install/`로 넣는 단계이기도 함
+4. `./run_sim.sh <맵>` — source 순서까지 맞춰서 실행
+
+**새 트랙을 넣는 절차는 이게 전부입니다:** `maps/`에 pgm+yaml을 넣고 `simm <맵>`.
+
+이미 빌드가 끝난 상태에서 다시 띄우기만 할 때:
 
 ```bash
 sa
-ros2 launch integration_pkg stack.launch.py
+ros2 launch integration_pkg stack.launch.py map:=<맵이름>   # map은 필수
 ```
+
+> **기본 맵은 없습니다.** 예전엔 '지금 실차가 달리는 트랙' 이름이 launch에
+> 박혀 있었는데, 트랙이 바뀔 때마다 launch를 고쳐야 했고 안 고치면 옛 트랙 위에서
+> 조용히 돌았습니다. 지금은 맵 이름을 안 주면 사용 가능한 맵 목록을 띄우고 멈춥니다.
 - f1tenth_gym_ros 시뮬레이터 (차 2대: 내 차 + 상대 차)
 - 실제 perception 파이프라인 (LiDAR → 장애물 탐지 → frenet 변환)
 - planning 스택: 레이스라인(RACE) 추종 + **spliner 회피** +
@@ -254,24 +272,24 @@ ros2 launch integration_pkg stack.launch.py
 ### 3-2. 다른 맵 / RViz 끄기
 
 ```bash
-# 실차 트랙(my_track0807)을 시뮬에서 — 실차와 동일한 spliner+SP 라인으로 주행
-ros2 launch integration_pkg stack.launch.py map:=my_track0807
-
-# 헝가로링(코너 많은 맵)
-ros2 launch integration_pkg stack.launch.py map:=Budapest_map
+# 다른 맵으로
+simm <다른맵이름>
 
 # 화면 없이 (테스트/서버용)
-ros2 launch integration_pkg stack.launch.py rviz:=false
+simm <맵이름> --no-rviz
+
+# 이미 빌드했고 launch만 다시
+ros2 launch integration_pkg stack.launch.py map:=<맵이름> rviz:=false
 ```
 
-사용 가능한 시뮬 맵: **`my_track0807`(실차 트랙, 기본)**, `Spielberg_map`, `Budapest_map`, `my_map`.
-(라인 CSV가 있는 맵만 뜹니다 — 없으면 launch가 가능한 맵 목록과 함께 즉시 에러)
-`map:=<이름>`형태로 원하는 맵 연결
+쓸 수 있는 맵 = `~/IFAC_ws/maps/`에 yaml이 있고 raceline CSV도 있는 것.
+목록은 `simm --help` 맨 아래줄에 나옵니다. CSV가 없는 맵이면 `simm`이 먼저 뽑습니다.
 
-> ⚠️ **my_track0807은 16.1×8.1m로 작습니다.** 상대 차(gym 2번째 에이전트)를 LiDAR
-> 사거리(≈30m) 밖에 '주차'시킬 공간이 없어, 스폰 안 해도 상대/벽이 유령 장애물로
-> 몇 개 잡힙니다(`obs` 값이 큼). 주행 자체는 정상이며, **깨끗한 회피 데모는
-> `Publish Point`로 정적 장애물을 직접 놓아** 확인하는 걸 권장합니다.
+> ⚠️ **실차 트랙(my_track 계열)은 ~20×10m로 작습니다.** 상대 차(gym 2번째
+> 에이전트)를 LiDAR 사거리(≈30m) 밖에 '주차'시킬 공간이 없어, 스폰 안 해도
+> 상대/벽이 유령 장애물로 몇 개 잡힙니다(`obs` 값이 큼). 주행 자체는 정상이며,
+> **깨끗한 회피 데모는 `Publish Point`로 정적 장애물을 직접 놓아** 확인하는 걸
+> 권장합니다. (주차 위치는 맵 경계에서 자동으로 잡습니다 — 맵마다 손댈 것 없음)
 
 ### 3-3. RViz에서 조작하기
 
@@ -719,7 +737,8 @@ ros2 launch control_pkg control.launch.py env:=sim
 ```
 
 > 시뮬 전체(gym 포함)를 planning 쪽에서 직접 켜고 싶으면:
-> `ros2 launch planning_pkg sim_race.launch.py` (integration 없이 planning 단독 데모)
+> `ros2 launch planning_pkg sim_race.launch.py map:=<맵이름>`
+> (integration 없이 planning 단독 데모. 여기서도 map은 필수)
 
 ---
 

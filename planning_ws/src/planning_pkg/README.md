@@ -58,8 +58,8 @@ unicorn 튜토리얼(basic-simulator-usage)의 `race.launch sim:=true`에 대응
 
 source ~/sim_ws/install/setup.bash                  # f1tenth_gym_ros (필수)
 source ~/IFAC_ws/planning_ws/install/setup.bash
-ros2 launch planning_pkg sim_race.launch.py                    # my_track0807 (기본)
-ros2 launch planning_pkg sim_race.launch.py map:=Budapest_map  # 헝가로링 (코너 다수)
+ros2 launch planning_pkg sim_race.launch.py map:=<맵이름>       # map은 필수 (기본 맵 없음)
+# 맵 준비(CSV 생성)+빌드까지 한 번에: simm <맵이름>
 ```
 
 구성: gym 시뮬(**2-agent** — ego + 물리 상대 차량) + planner
@@ -199,7 +199,7 @@ colcon 빌드 대상이 아니다. numpy/scipy/matplotlib가 필요하며 `.venv
 #    (UNICORN이 IQP/SP를 둘 다 저장해 lane-change에 SP를 쓰는 것과 같은 구조)
 #  - 속도/마찰/벽 여유는 build_map.py 상단 설정 블록에서 지정
 python scripts/global_traj_sim/build_map.py Spielberg_map
-# 대회 맵은 <workspace>/maps 또는 planning_pkg/maps에 yaml+image를 둔다
+# 대회 맵은 <workspace>/maps 에 yaml+image를 둔다 (맵의 단일 위치)
 # 생성 후 colcon build로 install에 복사해야 런타임 노드가 새 CSV를 읽는다
 ```
 
@@ -365,7 +365,16 @@ RViz 인터랙티브 튜너는 삭제됐다. 지금은 브라우저 도구 하�
 라인 기하는 `mkcsv`(build_map.py)가 담당한다.
 
 ```bash
-tune my_track0808          # 또는: python3 tools/racelinetuner.py my_track0808
+# 방법 1: 시뮬과 함께 (같은 RViz에서 주행 보면서 편집)
+ros2 launch planning_pkg sim_race.launch.py map:=<맵이름> tuner:=true
+
+# 방법 2: 튜너만 단독 실행 (gym 불필요, 맵 + 튜너 + RViz)
+#   map은 필수. stride/falloff/v_max/mu 는 트랙 전장과 CSV 파일명에서 자동 유도
+ros2 launch planning_pkg raceline_tuner.launch.py map:=<맵이름>
+
+#   다른 맵은 map:= 하나만 — CSV는 <맵>_iqp_*.csv 로 자동 탐색
+ros2 launch planning_pkg raceline_tuner.launch.py \
+    map:=<큰트랙> stride:=25 falloff:=8.0 v_max:=15.0 mu:=0.85
 ```
 
 - 속도 그래프의 **막대를 잡고 위/아래로 드래그** → 그 구간 속도 조절

@@ -100,7 +100,7 @@ cd ~/IFAC_ws
 
 | 목적 | 명령 |
 |---|---|
-| **시뮬 전체** (gym+perception+planning+control+RViz) | `ros2 launch integration_pkg stack.launch.py` |
+| **시뮬 전체** (gym+perception+planning+control+RViz) | `simm <맵이름>` (CSV 생성+빌드+실행) 또는 `ros2 launch integration_pkg stack.launch.py map:=<맵이름>` |
 | **실차 원커맨드** (하드웨어→PF+RViz→수렴 게이트→자율 스택) | `ros2 launch integration_pkg real_car.launch.py` |
 | **매핑** (하드웨어+SLAM+RViz+저장) | `ros2 launch integration_pkg mapping.launch.py map_name:=<이름>` |
 

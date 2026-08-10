@@ -236,6 +236,8 @@ private:
   // 대부분 지워져 있었다. 카운터는 전수를 세고 /pitwall/reject_<사유>로 낸다.
   // const 경로(ClusterObstacles 등)에서도 세야 하므로 const + mutable 카운터.
   void NoteReject(const char * reason) const;
+  // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
+  void NoteRetryTarget(double d_target);
   void PublishRejectCounts();
 
   // [s_from, s_to] 구간에서 횡 전환에 쓸 수 있는 그립 [m/s²].
@@ -520,6 +522,24 @@ private:
   // 이 구분이 안전에 직결된다.
   bool lane_switch_geom_infeasible_{false};
   bool free_spline_geom_infeasible_{false};
+  // 회피가 **일시적으로** 실패했을 때 트레일링이 유지할 횡 목표 (d_hold /
+  // d_apex). Tier1/Tier2가 목표를 계산해 장애물 여유는 만족했지만(clears)
+  // 속도/충돌 검증에서 떨어진 경우에만 기록한다.
+  //
+  // 예전에는 실패하면 트레일링 d램프가 무조건 raceline(d=0)으로 되돌렸다.
+  // 그러면 다음 사이클의 횡이동 잔량(d_hold - cur_d_)이 줄지 않아
+  // BlendSpeedCap/BlendGeomFloor가 계속 같은 값을 돌려주는데, 그 사이
+  // 가용 거리만 v*dt씩 말라 회피가 영원히 성립하지 않는다.
+  //   run_0809_231809 4랩 실측: 52.51 "속도 프로파일 불성립"(캡 5.21 <
+  //   자차 5.33)으로 거부된 뒤 d가 -0.07~0.14를 벗어나지 못했고, 가용은
+  //   3.67 -> 1.15 m로 줄어 52.90에는 기하 하한(1.56)마저 못 채웠다.
+  //   같은 시점에 d가 0.30이었다면 잔량 0.17 -> 하한 1.06 < 가용 1.15로
+  //   성립했다.
+  // 기하 하한 초과(allow_stop)나 perception 비상정지에서는 예전대로 복귀한다.
+  double retry_d_target_{0.0};
+  rclcpp::Time retry_d_stamp_{0, 0, RCL_ROS_TIME};
+  bool has_retry_d_{false};
+  static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간
   std::mutex mutex_obstacles_;
   std::mutex mutex_gb_wpnts_;
 

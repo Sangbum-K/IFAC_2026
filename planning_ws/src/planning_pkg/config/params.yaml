@@ -10,6 +10,8 @@ global_trajectory_node:
     # 랩 31.3 m, safe_dist는 adaptive 0.37~0.55 m (CSV 첫 줄 헤더에 기록).
     # 2026-08-07: 옛 my_track 라인은 b05264b에서 삭제됐는데 이 기본값만 남아
     # install에 남은 유령 CSV로 주행하고 있었다 — 현행 맵으로 교체.
+    # ⚠️ sim.yaml 이 비어 있어 이 파일이 곧 sim 기본 프로파일이기도 하다.
+    # 여기가 없는 CSV를 가리키면 sim_race 가 "raceline 없음"으로 죽는다.
     # ⚠️ 실제 주행 속도는 environments/<env>.yaml의 velocity_scale이 결정한다 —
     # control의 vehicle/max_speed_mps와 짝을 맞출 것 (real_car.yaml 주석 참조).
     global_trajectory/trajectory_csv_file: my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv
@@ -238,7 +240,11 @@ spliner_node:
     # 6*A*v^2/L^2 로 속도의 제곱에 비례해 커진다. 실제로 복귀 2.5m 고정은
     # 4 m/s에서 0.65g, 6 m/s에서 1.46g를 요구했다 (mu 0.75 한계 0.75g).
     # 아래 예산으로 L = v*sqrt(6A/a_max) 를 매 사이클 계산한다.
-    spliner/blend_lat_acc_max: 5.0    # 횡 전환에 배정할 그립 [m/s^2] (0.51g)
+    # 7.85 = deployment_profiles.MU_PROFILE(0.80) * 9.81. path_lat_acc_max와
+    # 같은 예산으로 통일한다 — 서로 다르면 blend_use_spare_grip 켜짐/꺼짐에
+    # 따라 회피 기하가 말없이 달라진다. (실제로 이 값이 쓰이는 곳은
+    # blend_use_spare_grip=false일 때와 trailing d램프/return_speed_cap 뿐.)
+    spliner/blend_lat_acc_max: 7.85   # 횡 전환에 배정할 그립 [m/s^2] (0.80g)
                                       # 3.0(0.31g)은 raceline(0.75g) 대비 과보수 —
                                       # 6 m/s 전환 6.0 m(1s)로 반응이 늦었다. 5.0이면
                                       # 4.6 m(0.77s). 스월브 자체 곡률 상한(1b 패스)이
@@ -258,15 +264,44 @@ spliner_node:
     # 아래 두 값으로 (1) 오프셋 곡률 기반 속도 상한, (2) 역방향 감속 패스를
     # 적용한다. 직선(kappa~0)에서는 아무것도 깎지 않아 가속이 유지되고,
     # 코너 진입 전에서만 감속이 커진다.
-    # 7.0 -> 6.6: 이 값이 마찰원 예산이라 mu*g를 넘으면 안 된다.
-    # my_track0807 궤적 manifest의 validation.mu_profile = 0.68 이므로
-    # mu*g = 0.68*9.81 = 6.67 m/s². 7.0은 그 예산을 5% 초과해 BlendLatAcc의
-    # 잔여 그립(sqrt(budget^2 - lat_ref^2))을 실제보다 크게 보고, 진입
-    # 속도 캡이 물리적으로 못 내는 값으로 계산됐다. 6.6은 mu*g 바로 아래.
-    # ("raceline은 7.36 사용"이라던 옛 주석은 mu 0.75 시절 값이라 폐기.)
-    spliner/path_lat_acc_max: 6.6     # 오프셋 경로 횡그립 [m/s^2] (mu*g = 6.67)
+    # 이 값은 마찰원 예산이므로 **차가 실제로 달리는 라인이 계획에 쓴 mu**와
+    # 같아야 한다. 단일 기준은 scripts/deployment_profiles.py 의 MU_PROFILE 이고,
+    # 여기 숫자는 그 사본이다 (그 파일의 "베껴 적지 말 것" 경고 참조 — 사본이
+    # 드리프트한 사고가 이미 세 번 있었다. 궤적을 재생성할 때 같이 볼 것).
+    #
+    # 2026-08-10 6.6 -> 7.85. 6.6의 근거는 my_track0807(mu_profile 0.68)이었는데
+    # 차가 달리고 있던 라인은 my_track0809(mu_profile 0.80, gate_target=real 통과)다.
+    # 그 라인이 실제로 쓰는 a_lat = |kappa|*v^2 는 max 7.85 / p99 7.68 이고
+    # 316점 중 46점(15%)이 6.6을 넘는다. BlendLatAcc 는 구간 **최소** 잔여
+    # 그립을 쓰므로, 예산 6.6에서는 316점 중 67점(21%)에서 잔여가 하한 2.0으로
+    # 접혀 그 구간 회피가 사실상 불가능했다 (7.85면 5점 = 1.6%).
+    #   run_0809_231809 4랩: 횡 0.54m / 가용 3.67m 에서 캡 5.20 < 자차 5.33
+    #   -> 거부. 7.85면 캡 5.71 로 성립한다.
+    # ⚠️ MU(0.90, 물리 타이어 한계)가 아니라 MU_PROFILE(0.80)을 쓴다 — 나머지
+    #    0.10 은 컨트롤러 추종 보정 몫이다. build_map 주석대로 이 구간의 실제
+    #    구속은 그립이 아니라 추종오차이므로, 올린 뒤 첫 주행에서 회피 중
+    #    /pitwall/lat_err 가 벽 여유(최소 0.35 m) 안인지 확인할 것.
+    spliner/path_lat_acc_max: 7.85    # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE*g)
     spliner/path_decel_max: 6.0       # 회피 궤적 역방향 감속 한계 [m/s^2]
                                       # (raceline 프로파일 최대 요구 6.27과 정합)
+    # ⚠️ 미해결: 이 값은 실차 능력의 **과대평가**다. deployment_profiles 의
+    # A_DEC_PLANNED = A_DEC_MAX(1.4) + 0.14*7.0 = 2.38 m/s² 이고, 실측도
+    # run_0809_231809 4랩에서 명령 4.23 m/s / 실제 4.96 m/s 로 못 따라갔다.
+    # 6.0이면 (a) 프로파일이 늦게 제동하고 (b) ApplySpeedProfile 의
+    # require_current_feasible 이 "곧 줄일 수 있다"고 낙관해 못 지킬 경로를
+    # 통과시킨다.
+    # 그런데 단독으로 2.38로 내리면 그 낙관이 사라지면서 거부가 **더** 늘어난다.
+    # 함께 가야 하는 수정: require_current_feasible 실패 시 경로를 버리지 말고
+    # 진입 구간을 도달 가능한 최대 제동 곡선으로 채워 발행(= 감속 강등).
+    # 그 수정 전에는 여기를 건드리지 말 것.
+    # 2026-08-10: deployment_profiles.A_ACC_MAX(4.5)와 어긋나지만 **의도적으로**
+    # 3.0을 유지한다. 이 값은 회피 경로의 계획 속도(vx_mps)를 올리는데, 컨트롤러가
+    # 조향 LUT를 그 계획 속도로 조회하고 a_lat도 v_plan²로 계산한다
+    # (deployment_profiles.py RACELINE_V_MAX 주석 / control_node calc_steering_angle).
+    # 즉 이 값을 올리면 회피 직후 조향 산출이 같이 바뀌므로, 컨트롤 쪽 검증 없이
+    # 회피 성립과 무관한 이득(재가속 속도)만 보고 올릴 값이 아니다.
+    # 올리려면 /monitor/steering_input · /control/lookahead_point 로 회피 직후
+    # 조향 거동을 먼저 확인할 것.
     spliner/path_accel_max: 3.0       # 회피 중 보수적 재가속 한계 [m/s²]
     spliner/path_jerk_max: 8.0        # 현재 상태에서 도달 가능한 감속 변화율 [m/s³]
     spliner/planning_delay_sec: 0.15  # 인지→계획→제어 지연을 충돌 ETA에 포함
@@ -492,4 +527,6 @@ opponent_predictor_node:
 planner_visualizer_node:
   ros__parameters:
     planning_viz/loop_rate_hz: 10.0
+    # trajectory_csv_file 과 같은 맵이어야 한다 (섞이면 시각화 중앙선만 다른
+    # 트랙을 그려서 "레이스라인이 코스를 벗어난 것처럼" 보인다).
     planning_viz/centerline_csv_file: my_track0807_centerline.csv

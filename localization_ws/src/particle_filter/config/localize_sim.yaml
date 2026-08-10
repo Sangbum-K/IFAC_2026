@@ -1,0 +1,58 @@
+# --- gym 시뮬용 particle_filter (planning_pkg sim_race.launch.py pf:=true) ---
+#
+# 목적: 실차와 같은 위치추정 오차 위에서 인지/플래닝을 검증한다. gym이 주는
+# 완벽한 map->base_link GT를 쓰면 bridge/use_map_filter 같은 "PF 오차보다
+# 큰 임계인가"를 묻는 로직이 전부 무조건 통과해버려 검증이 무의미해진다.
+#
+# 배선 (sim_odom_drift_node가 odom 레그를 만든다):
+#   gym /tf -> (리맵 /tf_gym) -> sim_odom_drift_node
+#       map->ego_racecar/base_link 는 버리고, 드리프트 누적한
+#       odom->ego_racecar/base_link + /odom 을 대신 발행
+#   이 노드가 /scan_overlay + /odom 을 받아 map->odom TF + /pf/pose/odom 발행
+#
+# 탐지 파라미터는 실차 localize.yaml과 **의도적으로 동일**하게 둔다.
+# 실차 run_0804_215144 bag에서 뽑은 파티클 산포가
+#   std_x 0.044 m / std_y 0.021 m / std_yaw 0.018 rad (p50)
+#   중심 p95 반경 0.086 m, 최대 0.38 m
+# 인데, 이는 아래 motion_dispersion_x/y(0.05/0.025)와 거의 일치한다.
+# 즉 실차 PF 산포는 모션모델 분산이 지배하므로 같은 값을 쓰면 sim에서도
+# 같은 산포가 나온다. 이 값을 바꾸면 실차와의 대응이 깨진다.
+particle_filter:
+  ros__parameters:
+    # gym 토픽/프레임
+    # /scan 이 아니라 /scan_overlay 를 쓴다 — 실차 PF가 보는 /scan 에는 실제
+    # 장애물이 물리적으로 찍혀 있으므로, 클릭 가상장애물이 합성된 쪽이 대응된다.
+    # (virtual_obstacle_node는 tracking_merge 모드에서도 /scan을 그대로
+    #  /scan_overlay로 흘리므로 항상 존재한다)
+    scan_topic: '/scan_overlay'
+    odometry_topic: '/odom'          # sim_odom_drift_node 출력 (드리프트 포함)
+    map_frame: 'map'
+    odom_frame: 'odom'
+    base_frame: 'ego_racecar/base_link'
+    laser_frame: 'ego_racecar/laser'
+    # --- 아래는 실차 localize.yaml과 동일 (근거는 위 주석) ---
+    angle_step: 10
+    max_particles: 3000
+    squash_factor: 2.2
+    viz: 1
+    max_viz_particles: 60
+    range_method: 'glt'
+    theta_discretization: 112
+    max_range: 10
+    fine_timing: 0
+    publish_odom: 1
+    z_short: 0.01
+    z_max: 0.07
+    z_rand: 0.12
+    z_hit: 0.75
+    sigma_hit: 4.0
+    motion_dispersion_x: 0.05
+    motion_dispersion_y: 0.025
+    motion_dispersion_theta: 0.08
+    pose_jump_guard_enabled: true
+    max_pose_jump_translation_m: 0.30
+    max_pose_jump_yaw_rad: 0.35
+    rangelib_variant: 0
+
+# map_server는 sim_race.launch.py가 nav2_map_server로 이미 띄운다
+# (PF는 /map_server/map 서비스로 맵을 받으므로 여기서 또 띄우면 이름 충돌).
