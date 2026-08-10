@@ -2,25 +2,30 @@
 <package format="3">
   <name>perception_pkg</name>
   <version>0.1.0</version>
-  <description>Laser obstacle detection and tracking package.</description>
+  <description>Laser obstacle detection and tracking package (C++).</description>
   <maintainer email="you@example.com">you</maintainer>
   <license>Apache-2.0</license>
-  <buildtool_depend>ament_python</buildtool_depend>
-  <depend>rclpy</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>eigen3_cmake_module</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>eigen</depend>
   <depend>f1tenth_perception_msgs</depend>
-  <depend>tf2_ros_py</depend>
-  <depend>python3-numpy</depend>
   <!-- 트랙 경계(Frenet) 필터가 /global_waypoints(WpntArray)를 구독한다.
-       exec_depend인 이유: 임포트 실패 시 필터만 끄고 나머지는 계속 도는
-       가드가 있어(obstacle_detector_node.py) 빌드 의존은 아니다. -->
-  <exec_depend>f1tenth_planning_msgs</exec_depend>
-  <!-- 맵 벽거리(EDT) 필터. 없으면 필터만 비활성(fail-open). -->
-  <exec_depend>python3-scipy</exec_depend>
+       파이썬 판에서는 임포트 실패 시 필터만 끄는 가드가 있어 exec_depend였지만,
+       C++에서는 메시지 헤더가 컴파일 타임에 필요하므로 build depend다.
+       build_all.sh가 planning_ws를 먼저 빌드하므로 순서는 이미 보장돼 있다. -->
+  <depend>f1tenth_planning_msgs</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

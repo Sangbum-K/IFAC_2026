@@ -145,8 +145,16 @@ control:
     # Vehicle geometry and command limits.
     "vehicle/wheelbase_m": 0.33
     "vehicle/max_speed_mps": 1.0
-    # Limited by servo_max on the right side: beyond servo 0.7196 the servo
-    # stalls against a mechanical stop. See ~/TUNING_STATUS.md.
+    # Limited by servo_max (0.70) on the right side: beyond servo ~0.7196 the
+    # servo stalls against a mechanical stop, so hardware clips at 0.70.
+    # With the 2026-08-10 calibration (gain -0.8320 / offset 0.3941) that is
+    #   right (0.70-0.3941)/-0.8320 = -0.3677 rad (21.07 deg)  <- binding side
+    #   left  (0.05-0.3941)/-0.8320 = +0.4136 rad (23.70 deg)
+    # 0.36 keeps 2.1% inside the binding side. Do NOT raise it to 0.3677:
+    # TUNING_STATUS.md section 11 measured the steering neutral jumping up to
+    # 0.036 servo between runs, which drags the right limit down to 0.321 rad.
+    # Must stay equal to planning spliner/vehicle_max_steering_rad and
+    # deployment_profiles.MAX_STEER -- resolve() rejects a mismatch.
     "vehicle/max_steering_angle_rad": 0.36
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5

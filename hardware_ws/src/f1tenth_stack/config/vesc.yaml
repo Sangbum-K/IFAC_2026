@@ -6,19 +6,73 @@
     # commanded 0.8/1.0/1.5 m/s (topic pub, not joystick). Three independent
     # speeds agree within +-2% with mixed sign -> noise floor, not a real bias.
     # See ~/TUNING_STATUS.md.
+    #
+    # 2026-08-10: unchanged, but the TIRE SWAP made it accurate rather than
+    # optimistic. Effective rolling circumference grew ~3.9%; PF path length
+    # over odom integral went 0.957 (08-09) -> 0.994 (08-10). Read that
+    # backwards: until 08-10 the car ran ~4% SLOWER than commanded, and every
+    # on-car validation up to 08-09 (6 m/s promotion, A_ACC/A_DEC, mu 0.80
+    # raceline, steering LUT) was carried out inside that hidden margin.
+    # a_lat = kappa*v^2, so real lateral accel back then was 0.957^2 = 0.916 of
+    # planned -- the mu 0.80 line was only ever demonstrated at an effective
+    # 0.73. Planning compensates with global_trajectory/velocity_scale 0.96 in
+    # planning_ws/.../environments/real_car.yaml until A_ACC/A_DEC are
+    # re-measured against PF (not odom) on a post-08-10 bag.
     speed_to_erpm_gain: 4255.1
     speed_to_erpm_offset: 0.0
 
     # servo value (0 to 1) =  steering_angle_to_servo_gain * steering angle (radians) + steering_angle_to_servo_offset
-    # Measured 2026-07-22. Gain comes from a symmetric circle pair at delta
-    # +-0.18 rad (3.12 m / 1.96 m diameters); offset comes from a 4.5 m straight
-    # run, which probes delta = 0 directly. Both circles and the straight run sit
-    # on one line to within 0.2 deg. See ~/TUNING_STATUS.md.
-    steering_angle_to_servo_gain: -0.8206
-    steering_angle_to_servo_offset: 0.403
-
+    # 2026-08-10 post-tire-swap refit. THESE TWO VALUES ARE CURRENT AND
+    # INTENTIONAL -- they supersede the 2026-07-22 pair (-0.8206 / 0.403) that
+    # older notes still quote. Confirmed on-car the evening of 08-10.
+    #
+    # Gain: originally from a symmetric circle pair at delta +-0.18 rad
+    # (3.12 m / 1.96 m diameters), refit after the tire swap. The old -0.8206
+    # made the car reach only 0.8206/0.8320 = 98.6% of the commanded angle, so
+    # every bag recorded before 08-10 under-steers by 1.4% relative to command.
+    # Anything fitted on those bags (notably the control NUC2_hangar steering
+    # LUT) is biased by that much until refitted.
+    steering_angle_to_servo_gain: -0.8320
+    # Offset: physical neutral back-solved per run
+    # (S* = gain*delta0 + offset_in_effect, delta0 = yaw-rate zero crossing):
+    #
+    #   08-09 224544 (36 laps)      S* = 0.4061      |e|p50 0.141
+    #   08-10 181449                S* = 0.4330      |e|p50 0.173
+    #   08-10 182709                S* = 0.4309      |e|p50 0.199
+    #   08-10 192916 (with 0.4319)  S* = 0.3969      |e|p50 0.253
+    #
+    # 0.4319 was tried first and made things worse (|e|p50 0.173 -> 0.253):
+    # within any one run S* is stable to +-0.002 (15 s sliding windows), but it
+    # jumps up to 0.036 servo (2.5 deg) BETWEEN runs, so no single value can
+    # chase it. Stable-within / jumps-between is the signature of a discrete
+    # mechanical slip (servo saver, horn spline, horn screw, tie rod / knuckle
+    # re-seating on a wall hit).
+    #
+    # 0.3941 is the value that is actually on the car and drives well. That does
+    # NOT retire the mechanical finding -- see ~/TUNING_STATUS.md section 11 for
+    # the hands-on check and the "three consecutive runs within +-0.005" bar
+    # that has to be cleared before calling the neutral fixed.
+    steering_angle_to_servo_offset: 0.3941
+    #
+    # Derived limits (delta = (servo - offset)/gain, servo clipped to
+    # [servo_min, servo_max] below). Planning/control copy the symmetric one:
+    #   right (0.70-0.3941)/-0.8320 = -0.3677 rad (21.07 deg)  <- binding side
+    #   left  (0.05-0.3941)/-0.8320 = +0.4136 rad (23.70 deg)
+    #   symmetric 0.3677 rad -> min turn radius 0.857 m, kappa_max 1.167 1/m
+    # Consumers deliberately round down to 0.36 (2.1% inside):
+    #   planning spliner/vehicle_max_steering_rad, tracker/max_steer_rad,
+    #   deployment_profiles.MAX_STEER, control vehicle/max_steering_angle_rad.
     port: /dev/ttyACM0
-    duty_cycle_min: 0.0
+    # NOTE: duty_cycle_* only clips the "commands/motor/duty_cycle" topic in
+    # vesc_driver. Nothing in this stack publishes there -- ackermann_to_vesc
+    # emits commands/motor/{speed,current,brake} and commands/servo/position --
+    # so these two are inert today. If a duty-cycle publisher is ever added,
+    # note that min (0.05) > max (0.0) makes CommandLimit::clip collapse every
+    # command to one of those two bounds; fix the pair before using it.
+    # (Soft-starting the sensorless motor is NOT done here: throttle_interpolator
+    #  is commented out in bringup_launch.py, so max_acceleration below is dead
+    #  too. The live ramp is control_node's launch envelope.)
+    duty_cycle_min: 0.05
     duty_cycle_max: 0.0
     current_min: 0.0
     current_max: 100.0

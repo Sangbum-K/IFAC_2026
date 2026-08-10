@@ -126,8 +126,13 @@ private:
 
   // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
   // 아닌(|kappa| <= ot_max_kappa) s 구간을 raceline에서 자동 산출.
-  // 섹터 안에서만 회피를 시도하고(밖은 TRAILING 대기) 섹터 안에서는 경계
-  // 마진 완화 + 속도 부스트로 공격적으로 추월한다. 코너를 제외하는 이유:
+  // 섹터 안에서만 **동적 상대** 회피를 시도하고(밖은 TRAILING 대기),
+  // 섹터 안에서는 ot_speed_scale 배율로 속도를 올린다.
+  // (예전 주석의 "경계 마진 완화"는 실재하지 않는다 — ot_bound_mindist 가
+  //  spline_bound_mindist 와 같은 값이었고 모든 소비처가
+  //  RequiredBoundaryMargin() 하한에 먹혀 완화가 성립한 적이 없어 제거됐다.
+  //  정적 장애물은 섹터와 무관하게 항상 회피를 시도한다.)
+  // 코너를 제외하는 이유:
   // 코너 아웃라인 추월은 경로가 길어져 페이스 우위가 상쇄된다 — 코너에선
   // 바짝 붙고 직선에서 속도 차로 제치는 것이 정석.
   void ComputeOtSectors();
@@ -184,6 +189,13 @@ private:
   // 차이만큼 "성립한다고 판정했지만 실제로는 못 도는" 경로가 나왔다.
   double BlendGeomFloor(double amplitude, double kappa_track = 0.0) const;
 
+  // 계획이 달성 가능하다고 보는 최대 곡률 [1/m].
+  //   steer_kappa_scale_ * tan(|delta_max|) / wheelbase
+  // 회피 가부를 결정하는 모든 조향 게이트(BlendGeomFloor / ApplySpeedProfile /
+  // SP 라인 로드 검증)가 이 하나를 쓴다. 게이트마다 식을 따로 쓰면 한 곳만
+  // 완화됐을 때 "여기선 되는데 저기선 안 되는" 모순이 생긴다.
+  double SteerKappaMax() const;
+
   // 가용 거리 available 안에서 amplitude만큼 횡이동할 수 있는 최대 속도 [m/s].
   // 기하 하한을 못 채우면 0(= 어떤 속도로도 불가), 횡이동이 0에 가까우면 무한대.
   // 회피 가부를 "지금 속도에서 되나?"(이진 거부)가 아니라 "되는 속도는
@@ -195,7 +207,10 @@ private:
   // [s_from, s_to] 구간 레이스라인 |kappa|의 최대값 [1/m]. BlendGeomFloor에
   // 넘길 트랙 곡률항. 최대값을 쓰는 이유는 기하 하한이 구간 내 가장 조향이
   // 빡빡한 지점에서 성립해야 하기 때문이다.
-  double BlendKappaMax(double s_from, double s_to) const;
+  // d_offset != 0 이면 그 오프셋 경로의 유효 곡률(OffsetKappa) 기준 최대값.
+  // 0이면 레이스라인 곡률 그대로.
+  double BlendKappaMax(double s_from, double s_to,
+                       double d_offset = 0.0) const;
 
   // "회피 중이라 사이드를 유지해야 하는가". |cur_d_|가 문턱을 넘는 것만으로는
   // 부족하다 — 그 d의 **부호가 last_ot_side_와 같아야** 실제로 그 사이드로
@@ -239,6 +254,19 @@ private:
   // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
   void NoteRetryTarget(double d_target);
   void PublishRejectCounts();
+
+  // ── 사이클 트레이스 (trace_cycles_) ──────────────────────────────────
+  // 거부 로그가 전부 THROTTLE(2000ms)이고 카운터는 누적값만 주므로,
+  // "장애물까지 몇 m에서 / 무슨 분류로 / 어느 Tier가 / 왜 실패했나"의
+  // **시계열**이 어디에도 남지 않는다. 회피가 늦는 원인을 가르려면
+  //   (a) 인지가 늦게 잡는가  (b) 정적 분류가 늦는가
+  //   (c) 성립했다가 커밋이 깨지는가  (d) 진짜 기하가 안 되는가
+  // 를 구별해야 하는데, 넷 다 이 한 줄이 있으면 즉시 갈린다.
+  // 장애물이 있는 사이클에만 찍히므로 평시에는 조용하다.
+  void TraceCycle(
+    const f1tenth_planning_msgs::msg::Obstacle * closest,
+    bool committed, bool try_evade, bool in_sector,
+    const char * outcome) const;
 
   // [s_from, s_to] 구간에서 횡 전환에 쓸 수 있는 그립 [m/s²].
   // 마찰원 잔여 sqrt(path_lat_acc_max² - (kappa_ref·v_ref)²)의 구간 최소값.
@@ -285,7 +313,6 @@ private:
   // require_current_feasible=false는 충돌 회피보다 최대 제동 명령 발행이
   // 우선인 trailing에만 사용한다. 반환 false면 현재 상태에서 물리적으로
   // 도달할 수 없는 회피 경로다.
-  // bypass_speed_profile_ = true면 이 함수 전체가 no-op이다 (임시 테스트용).
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible = true) const;
@@ -313,16 +340,16 @@ private:
   std::vector<double> post_apex_dists_{2.0, 3.0, 4.0};
   double fixed_pred_time_{0.15};
   double outside_spline_scale_{1.75};
-  // ── 임시 테스트 스위치 ───────────────────────────────────────────────
-  // true면 회피 경로(lane switch / free spline / SP lane change / SP exit)의
-  // 모든 감속 요소를 끄고 글로벌 레이스라인 속도를 그대로 쓴다:
-  //   OT 배율, 진입·복귀 속도 캡, v_floor,
-  //   ApplySpeedProfile 전체(오프셋 곡률 캡·조향률 캡·역방향 감속·
-  //   순방향 가속 envelope·jerk shaping·현재상태 feasibility 거부).
-  // trailing(장애물 뒤 감속/정지 폴백)은 회피가 아니라 충돌 방지이므로
-  // 이 스위치의 영향을 받지 않는다.
-  // 물리 성립성을 검증하지 않으므로 실차 상시 사용 금지 — 테스트 후 false.
-  bool bypass_speed_profile_{false};
+  // outside 판정(코너 바깥쪽인가)에 필요한 최소 |곡률 합| [1/m].
+  // apex 뒤 2m(20점) 곡률 합의 **부호만** 보면 직선(합≈0)에서 노이즈로
+  // 좌/우가 프레임마다 뒤집히고, 뒤집힐 때마다 절점 간격이
+  // outside_spline_scale_(1.75배)만큼 점프한다. 데드밴드 아래에서는
+  // "바깥쪽 없음"으로 보고 배율을 적용하지 않는다.
+  // 1.0 = 2m 구간 헤딩 변화 0.1 rad (평균 곡률 0.05, 반경 20m).
+  static constexpr double kOutsideKappaSumMin{1.0};
+  // DoSpline 절점 스케일 상한. 조향 기하 하한이 이 배율을 넘게 요구하면
+  // "만들어 놓고 나중에 거부"가 아니라 여기서 기하 불성립으로 반환한다.
+  static constexpr double kMaxKnotScale{3.0};
   double spline_resolution_{0.1};
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
@@ -403,9 +430,15 @@ private:
   double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
   double cluster_gap_s_m_{8.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
   double cluster_gap_d_m_{0.8};      // 사이 corridor가 이보다 좁으면 병합 [m]
-  // 벽이 좁아 evasion_dist를 다 못 챙길 때 apex를 벽 마진 안으로 줄여서라도
-  // 회피를 시도하는 최소 장애물 간격 (차 반폭 ~0.15 + 여유)
-  double evasion_dist_min_{0.35};
+  // (evasion_dist_min_ 제거 — 2026-08-10)
+  // "벽이 좁을 때 apex를 여기까지 줄여서라도 시도한다"는 하한이었으나,
+  // 모든 소비처가 max(evasion_dist_min_, RequiredObstacleClearance(obs)) 로
+  // 쓰는데 후자가 항상 더 컸다. 브릿지가 position_var_floor=0.01 /
+  // velocity_var_floor=0.25 를 상수로 붙여 UncertaintyMargin 이 사실상 고정이라
+  // RequiredObstacleClearance = max(path_check_margin, 차반폭) + σ 는
+  // 실차에서 0.35~0.40 으로 굳어 있고, evasion_dist_min_(0.20)은 max 의
+  // 승자가 될 수 없었다. 회피 가부의 실제 하한은 RequiredObstacleClearance
+  // 하나이므로 그것만 남긴다.
   // squeeze 감속(apex가 벽 마진으로 축소된 회피를 배율로 감속) 제거됨.
   // 좁은 corridor에서의 속도 제한은 오프셋 곡률 기반 물리 캡
   // (OffsetKappa + path_lat_acc_max + offset_grip_cap)이 담당한다.
@@ -453,10 +486,17 @@ private:
   double ot_min_clearance_{0.95};
   double ot_max_kappa_{0.1};         // 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m)
   double ot_sector_min_len_m_{8.0};
+  // 섹터 안 회피 속도 배율. **1.0 초과 = 부스트**이며 상한은 gb_vmax_ 다.
+  // 2026-08-10 이전에는 생성자 검증이 1.0 초과를 거부해서, 헤더/파라미터
+  // 주석이 약속한 "섹터 내 공격 모드"가 원리적으로 성립할 수 없었다
+  // (배포 yaml 3개 모두 1.0 = 항등). 이제 허용하되 기본값은 1.0 유지.
   double ot_speed_scale_{1.0};
   std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
-  bool in_ot_sector_{false};
+  // "직전 사이클에 회피를 시도했는가"의 상승엣지 래치.
+  // 이름이 in_ot_sector_ 였지만 정적 장애물은 섹터 밖에서도 참이라 섹터
+  // 소속과 무관하다 — 실제 의미로 개명했다.
+  bool evade_attempt_active_{false};
   // 진행 중인 정적 회피 커밋 (경로 끝까지 유지 — 도중 소멸 시 벽 충돌)
   f1tenth_planning_msgs::msg::WpntArray committed_wpnts_;
   visualization_msgs::msg::MarkerArray committed_mrks_;
@@ -478,6 +518,24 @@ private:
   double vehicle_wheelbase_m_{0.33};
   double vehicle_max_steering_rad_{0.36};
   double vehicle_max_steering_rate_radps_{2.0};
+  // 계획 게이트가 쓰는 "실제로 달성되는 곡률 / kinematic 자전거모델 예측"
+  // 비율. 1.0이면 tan(delta_max)/L 그대로 (예전 동작).
+  // vehicle_max_steering_rad_ 는 steer_calib 로 측정·검증된 서보 기구 한계라
+  // 건드리면 안 되므로(TUNING_STATUS §4, CLAUDE.md), 타이어 그립 향상처럼
+  // "같은 조향각으로 더 돈다"를 반영할 때는 이 배율만 올린다.
+  double steer_kappa_scale_{1.0};
+  // BlendGeomFloor 의 smoothstep 근사 여유. 실제 샘플 피크 곡률이 근사식
+  // 6A/L² 보다 큰 것을 흡수한다. 1.0에 가까울수록 하한이 짧아진다(= 완화).
+  double geom_floor_margin_{0.8};
+  // 트랙 곡률이 조향 예산을 거의 다 먹었을 때 남겨두는 최소 비율.
+  // 이 아래로 내려가면 하한이 발산해 로그가 inf 로 찍히고 상위 로직이
+  // "가용 대비 얼마나 모자란가"를 표현할 수 없다. 올리면 헤어핀에서
+  // 하한이 짧아진다(= 완화).
+  double geom_floor_kappa_ratio_{0.15};
+  // ApplySpeedProfile 이 경로를 통째로 버리는 곡률 문턱의 배율.
+  // 1.0이면 조향 한계를 1e-3 이라도 넘는 샘플 하나에 경로 전체가 죽는다.
+  // 1.0보다 크면 그 밴드 안의 샘플은 살리되 횡가속 캡으로 속도만 눌린다.
+  double steer_kappa_reject_ratio_{1.0};
   bool lc_active_{false};
 
   // State
@@ -510,6 +568,10 @@ private:
   // 거부 사유 카운터 (NoteReject/PublishRejectCounts).
   mutable std::map<std::string, int> reject_counts_;
   rclcpp::Time reject_publish_stamp_{0, 0, RCL_ROS_TIME};
+  // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
+  // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
+  mutable std::string cycle_rejects_;
+  bool trace_cycles_{true};
   // 이번 사이클에 Tier1/Tier2가 "조향 기하 하한을 못 채움"(= 어떤 속도로도
   // 불가)으로 거부했는가. 매 Run() 시작에 false로 리셋한다.
   //
