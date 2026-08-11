@@ -66,14 +66,14 @@ sa                    # zsh에서 setup.bash는 깨진다 — setup.zsh/sa 를 �
 CSV는 심링크가 아니라 **빌드 시 복사**된다. 이 단계를 건너뛰면 런타임 노드가
 CSV를 못 찾아 launch가 멈춘다.
 
-### 4. RViz 튜너 (선택)
+### 4. 속도 튜너 (선택, 웹)
 ```bash
-tune my_track0727     # = ros2 launch planning_pkg raceline_tuner.launch.py map:=my_track0727
+tune my_track0727     # = python3 tools/racelinetuner.py my_track0727
 ```
-CSV는 `<맵>_iqp_*.csv` 로 자동 탐색, 배경 맵도 `~/IFAC_ws/maps` 에서 바로 읽으므로
-**맵을 이 폴더로 복사할 필요가 없다.** `v_max`/`mu` 는 CSV 파일명에서, `stride`/`falloff`
-는 트랙 전장에서 자동으로 정해지므로 맵 이름 말고는 넘길 게 없다.
-편집 후 저장했으면 `./build_all.sh` 를 다시.
+브라우저 도구이고 **속도 프로파일만** 편집한다 (라인 기하는 `mkcsv`/build_map.py).
+CSV는 `<맵>_iqp_*.csv` 로 자동 탐색하므로 맵 이름 말고는 넘길 게 없다.
+원본은 건드리지 않고 `<맵>_tuned_iqp_*.csv` 로 저장하니,
+편집 후에는 `./build_all.sh` 다시 하고 `rc <맵>_tuned` 로 띄운다.
 
 ### 5. 실차 주행
 ```bash

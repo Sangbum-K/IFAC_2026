@@ -139,17 +139,23 @@ python3 -m venv .venv
   `--safe-dist 0.30`(차 반폭+여유)으로 벽 접근 한계 조절 — UNICORN의
   safety_width에 해당. 줄이면 빠르지만 벽에 붙는다.
 
-### RViz 시각화
+### 결과 확인
 
-생성된 raceline은 RViz에서 본다 (별도 시각화 노드는 레이스라인 튜너로 통합):
+정적 미리보기는 `build_map.py`가 저장하는 `outputs/*_trajectory.png`,
+폐루프 검증은 `outputs/*_tracking.png` 를 본다.
+
+주행하면서 보려면 시뮬을 띄운다:
 
 ```bash
-# 결과 확인 + 드래그 편집 (맵 + 미리보기 + 인터랙티브 핸들)
-ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
-# 또는 시뮬 주행과 함께: ros2 launch planning_pkg sim_race.launch.py tuner:=true
+ros2 launch planning_pkg sim_race.launch.py map:=<맵이름>
 ```
 
-정적 미리보기는 `build_map.py`가 저장하는 `outputs/*_trajectory.png` 참고.
+속도 프로파일을 손으로 고치려면 웹 튜너를 쓴다 (라인 기하는 여기 build_map.py,
+속도만 튜너 담당):
+
+```bash
+tune <맵이름>          # 또는: python3 tools/racelinetuner.py <맵이름>
+```
 
 지원 맵: Spielberg처럼 트랙이 폐곡선 링 형태인 맵 (`f1tenth_gym_ros/maps/`).
 levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 있어
