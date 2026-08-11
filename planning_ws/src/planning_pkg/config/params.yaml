@@ -14,6 +14,8 @@ global_trajectory_node:
     # my_track0810 으로 달렸는데 기본값만 0807 로 남아 있어서, "그날 어떤 궤적으로
     # 달렸는지"를 백의 waypoint 개수(323)로 역추적해야 했다. 기본값이 현행 맵을
     # 가리키지 않으면 map:= 를 빠뜨린 실행이 조용히 옛 라인으로 돈다.
+    # ⚠️ sim.yaml 이 비어 있어 이 파일이 곧 sim 기본 프로파일이기도 하다.
+    # 여기가 없는 CSV를 가리키면 sim_race 가 "raceline 없음"으로 죽는다.
     # ⚠️ 실제 주행 속도는 environments/<env>.yaml의 velocity_scale이 결정한다 —
     # control의 vehicle/max_speed_mps와 짝을 맞출 것 (real_car.yaml 주석 참조).
     global_trajectory/trajectory_csv_file: my_track0810_iqp_max7.00ms_margin0.08m_mu0.80.csv
@@ -239,7 +241,15 @@ spliner_node:
     # 겹치며 run_0803_213313에서 28.6초 정지 라치가 됐다.
     # 0.50 = 6.6Hz 스트림의 3프레임 분. detector가 목표대로 >=15Hz가 되면
     # 다시 조일 것.
-    spliner/obs_timeout_sec: 0.50
+    #   -> 2026-08-11 조임. perception C++ 재작성(8706837) 후 rosbag0810
+    #      run_0810_233206 재생 실측 15.4Hz (dt p50 69.6ms / p95 80.2ms /
+    #      max 83.3ms). 0.25 는 관측 최대 간격의 3.0배이고 여전히 위 조건
+    #      "실측 주기의 2배 이상"을 만족한다(3.8배). 0.20 으로 더 내리지 않은
+    #      이유는 p95 80ms 기준 여유가 2.5배로 얇아져 run_0803 정지 라치의
+    #      재발 마진이 줄기 때문.
+    #      ⚠ 실측은 개발 PC 재생 기준이다. 차량 컴퓨트에서 15.4Hz 를 못 내면
+    #        이 값부터 되돌릴 것 — 미달 시 증상이 fail-safe 정지 깜빡임이다.
+    spliner/obs_timeout_sec: 0.25
     spliner/use_prediction: true         # Predictive Spliner: 예측 충돌구간이 원시 관측 대체
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속.
@@ -290,7 +300,14 @@ spliner_node:
     # 유령 소멸 -> 회복(5.051), 재등장 -> 재거부(5.615)로 인과가 3번 확인됐다.
     # 3프레임은 perception min_hits와 같은 성격의 게이트다.
     # (재계획 경로의 충돌 검증에는 적용하지 않는다 — 거기선 fail-closed가 맞다.)
-    spliner/commit_break_min_obs: 3
+    #   -> 2026-08-11: 3 -> 7. 이 값이 실제로 방어하는 건 프레임 수가 아니라
+    #      "유령이 얼마나 오래 버텨야 커밋을 깰 수 있나"라는 시간이다.
+    #      0807 사건 당시 6.6Hz 에서 3프레임 = 0.45s 였는데, perception C++
+    #      재작성 후 실측 15.4Hz 에서 3프레임은 0.19s 로 방어가 절반 이하로
+    #      약해진다. 7프레임 = 0.45s 로 그때의 방어력을 복원한다.
+    #      (perception 쪽 프레임 게이트 재스케일과 한 세트 —
+    #       perception_ws/.../config/params.yaml 의 2.33x 주석 참조.)
+    spliner/commit_break_min_obs: 7
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.30, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30
@@ -531,6 +548,12 @@ recovery_supervisor_node:
     recovery/align_tolerance_rad: 0.35         # 재정렬 완료 heading 오차 [rad]
     recovery/align_speed_mps: 0.5              # 재정렬/재출발 저속 [m/s]
     recovery/odom_timeout_sec: 0.20            # receipt와 원본 header 둘 다 검사
+    # 값 유지. 다만 의미가 바뀌었다: 파이썬 detector 6.6Hz 시절 이 값은
+    # 1.02 프레임이라 readiness 게이트가 상시 깜빡였을 것이다
+    # ("perception receipt/source stale" -> not_ready, 아래 StampFresh).
+    # C++ 재작성 후 실측 15.4Hz 에서는 3.8 프레임이 되어 값 변경 없이 해소된다.
+    # ⚠ 백 재생으로 not_ready 사유 분포를 확인하기 전까지는 "해소됐다"가 아니라
+    #   "해소됐을 것"이다.
     recovery/perception_timeout_sec: 0.25
     recovery/local_wpnts_timeout_sec: 0.20
     recovery/source_stamp_future_tolerance_sec: 0.10

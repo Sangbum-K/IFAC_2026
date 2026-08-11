@@ -1286,6 +1286,92 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
     return {"right", apex_right};
 }
 
+std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::EvasionGroup(
+    const f1tenth_planning_msgs::msg::Obstacle &closest,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead) const {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> group{closest};
+    if (track_len_ <= 0.0) {
+        return group;
+    }
+    // 자차 기준 상대거리로 unwrap — 뒤에 있는 장애물은 ~track_len 이 되어
+    // 아래 reach/lookahead 비교에서 자연히 걸러진다.
+    auto rel = [&](double s) { return Mod(s - cur_s_, track_len_); };
+    // 처음 도달범위 = closest 를 지난 뒤 복귀 블렌드가 끝나는 지점.
+    // 그 안에 다른 장애물이 있으면 "복귀하다 들이받는다".
+    double reach = std::min(rel(closest.s_end) + lane_blend_out_m_, lookahead_m_);
+    std::vector<char> taken(all_ahead.size(), 0);
+    bool changed = true;
+    while (changed && group.size() < kEvasionGroupMax) {
+        changed = false;
+        for (size_t i = 0; i < all_ahead.size(); ++i) {
+            if (taken[i]) {
+                continue;
+            }
+            const auto &o = all_ahead[i];
+            if (!std::isfinite(o.s_start) || !std::isfinite(o.s_end) ||
+                !std::isfinite(o.d_left) || !std::isfinite(o.d_right)) {
+                taken[i] = 1;
+                continue;
+            }
+            if (o.id == closest.id) {
+                taken[i] = 1;      // closest 본인
+                continue;
+            }
+            const double a = rel(o.s_start);
+            if (a > reach || a > lookahead_m_) {
+                continue;          // 아직 사정권 밖 (나중 반복에서 다시 본다)
+            }
+            taken[i] = 1;
+            group.push_back(o);
+            reach = std::min(std::max(reach, rel(o.s_end) + lane_blend_out_m_),
+                             lookahead_m_);
+            changed = true;
+        }
+    }
+    return group;
+}
+
+double SplinerNode::GroupApex(
+    const std::string &side,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &group,
+    bool *clears_all) const {
+    // 가장 요구가 큰 apex 하나로 그룹 전체를 덮는다. 왼쪽이면 최대, 오른쪽이면
+    // 최소 — ApexFor 가 이미 각 장애물의 벽 클램프를 반영하므로, 이 max/min 은
+    // "벽 안에서 모두를 비켜 가는 가장 가까운 오프셋"이 된다.
+    bool ok = !group.empty();
+    double d = (side == "left") ? -std::numeric_limits<double>::max()
+                                : std::numeric_limits<double>::max();
+    for (const auto &o : group) {
+        const double a = ApexFor(side, o);
+        if (!std::isfinite(a)) {
+            ok = false;
+            continue;
+        }
+        d = (side == "left") ? std::max(d, a) : std::min(d, a);
+    }
+    if (!std::isfinite(d) || group.empty()) {
+        if (clears_all) {
+            *clears_all = false;
+        }
+        return 0.0;
+    }
+    // 그 오프셋이 **정말로** 전부를 비켜 가는가. ApexFor 는 벽에 클램프되므로
+    // max/min 을 취해도 어떤 장애물은 여전히 못 비켜 갈 수 있다 — 그때는
+    // 이 사이드로 한 번에 통과할 수 없다는 뜻이고, 지그재그가 필요하다.
+    for (const auto &o : group) {
+        const double need = RequiredObstacleClearance(o);
+        const bool cleared = (side == "left") ? (d >= o.d_left + need)
+                                              : (d <= o.d_right - need);
+        if (!cleared) {
+            ok = false;
+        }
+    }
+    if (clears_all) {
+        *clears_all = ok;
+    }
+    return d;
+}
+
 double SplinerNode::ApexFor(
     const std::string &side,
     const f1tenth_planning_msgs::msg::Obstacle &obs) const {
@@ -1360,10 +1446,35 @@ bool SplinerNode::TryLaneSwitch(
         s_apex = (closest_obs.s_end + closest_obs.s_start) / 2.0;
     }
 
+    // ── 사이드/오프셋을 "연쇄 그룹" 전체로 정한다 (2026-08-11) ────────────
+    // closest 하나만 보면, 그 회피가 끝나기 전에 뒤 장애물이 closest 가 되며
+    // 같은 상황의 답이 뒤집힌다. 그러면 아래 committed_side 가드가 발동해
+    // 회피가 죽고 Tier3(정지)로 떨어진다 — 재생 실측으로 이것이 남은
+    // side_switch_blocked 의 96%였다 (EvasionGroup 주석).
+    const auto evasion_group = EvasionGroup(closest_obs, all_ahead);
+    bool left_all = false, right_all = false;
+    const double group_left = GroupApex("left", evasion_group, &left_all);
+    const double group_right = GroupApex("right", evasion_group, &right_all);
+
     // 사이드: MoreSpace(빈 공간)가 우선. 단 이미 회피 중(|d|>thresh)이면
     // 히스테리시스로 현재 사이드를 유지한다 — mid-evasion 사이드 뒤집힘은
     // 장애물 사이로 끌려드는 충돌 원인 (DoSpline과 동일 정책).
     std::string more_side = MoreSpace(closest_obs).first;
+    // 그룹이 둘 이상이고 **한쪽만** 전부를 비켜 갈 수 있으면 그쪽이 답이다.
+    // MoreSpace 는 closest 하나만 보므로 여기서 뒤 장애물의 정보를 반영한다.
+    // (양쪽 다 되거나 둘 다 안 되면 MoreSpace 의 판단을 그대로 둔다 — 후자는
+    //  지그재그가 필요한 경우이고 이 티어의 범위 밖이다.)
+    if (evasion_group.size() > 1 && left_all != right_all) {
+        const std::string group_side = left_all ? "left" : "right";
+        if (group_side != more_side) {
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+                "LaneSwitch 사이드 재선택: %s -> %s (연쇄 장애물 %zu개를 한 번에 "
+                "비켜 갈 수 있는 쪽)", more_side.c_str(), group_side.c_str(),
+                evasion_group.size());
+            NoteReject("lane_group_side_override");
+        }
+        more_side = group_side;
+    }
     std::string first = more_side;
     if (SideKeepActive(closest_obs)) {
         first = last_ot_side_;
@@ -1396,12 +1507,29 @@ bool SplinerNode::TryLaneSwitch(
             NoteReject("lane_side_switch_blocked_mid_evasion");
             continue;
         }
-        double d_hold = ApexFor(side, closest_obs);
-        const double need_clear = RequiredObstacleClearance(closest_obs);
-        bool clears = (side == "left")
-            ? d_hold >= closest_obs.d_left + need_clear
-            : d_hold <= closest_obs.d_right - need_clear;
+        // 오프셋도 그룹 전체 기준. 그룹이 하나면 ApexFor(closest) 와 같다.
+        const bool group_clears = (side == "left") ? left_all : right_all;
+        double d_hold = (side == "left") ? group_left : group_right;
+        // 그룹 전체는 못 비켜 가더라도 closest 하나는 비켜 갈 수 있으면 그건
+        // 시도할 값어치가 있다 — 뒤 장애물은 다음 사이클에 다시 판단한다.
+        // (예전 동작으로의 폴백. 이때는 hold 연장도 하지 않는다.)
+        bool clears = group_clears;
+        double hold_through_s = closest_obs.s_end;
+        if (group_clears && evasion_group.size() > 1) {
+            // hold 를 그룹 마지막 장애물 뒤까지 늘린다 (복귀 중 충돌 방지)
+            double far = Mod(closest_obs.s_end - cur_s_, track_len_);
+            for (const auto &o : evasion_group) {
+                far = std::max(far, Mod(o.s_end - cur_s_, track_len_));
+            }
+            hold_through_s = Mod(cur_s_ + far, track_len_);
+        } else if (!group_clears) {
+            d_hold = ApexFor(side, closest_obs);
+            const double need_c = RequiredObstacleClearance(closest_obs);
+            clears = (side == "left") ? (d_hold >= closest_obs.d_left + need_c)
+                                      : (d_hold <= closest_obs.d_right - need_c);
+        }
         if (!clears) {
+            const double need_clear = RequiredObstacleClearance(closest_obs);
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "LaneSwitch %s 레인 불가: d_hold=%.2f (필요 %.2f, 장애물 d[%.2f,%.2f])",
                 side.c_str(), d_hold,
@@ -1416,7 +1544,7 @@ bool SplinerNode::TryLaneSwitch(
         // raceline으로 되돌리는 대신 이 목표를 유지하는 근거가 된다
         // (retry_d_target_ 주석 참조).
         NoteRetryTarget(d_hold);
-        if (BuildLaneSwitch(d_hold, closest_obs, all_ahead,
+        if (BuildLaneSwitch(d_hold, closest_obs, hold_through_s, all_ahead,
                             out_wpnts, out_mrks)) {
             CommitOtSide(side, closest_obs);
             NoteReject("ok_lane_switch");
@@ -1435,6 +1563,7 @@ bool SplinerNode::TryLaneSwitch(
 bool SplinerNode::BuildLaneSwitch(
     double d_hold,
     const f1tenth_planning_msgs::msg::Obstacle &closest_obs,
+    double hold_through_s,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
     f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
@@ -1468,6 +1597,17 @@ bool SplinerNode::BuildLaneSwitch(
         dist_back = dist_front + span;
         if (dist_front > lookahead_m_ + 5.0) {
             return false;   // 너무 멀다
+        }
+    }
+
+    // 연쇄 장애물이 있으면 hold 를 그 끝까지 늘린다 (호출자가 hold_through_s
+    // 로 지정). 늘리지 않으면 복귀 블렌드가 뒤 장애물을 관통해 경로 전체가
+    // 거부되고, 다음 사이클에 그 장애물이 closest 가 되며 사이드가 뒤집힌다.
+    // 상한은 lookahead — 콘이 줄지어 있어도 hold 가 무한정 늘지 않게.
+    if (std::isfinite(hold_through_s)) {
+        const double through = Mod(hold_through_s - cur_s_, track_len_);
+        if (through <= lookahead_m_) {
+            dist_back = std::max(dist_back, through);
         }
     }
 
