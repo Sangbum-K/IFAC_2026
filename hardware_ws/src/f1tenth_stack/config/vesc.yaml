@@ -32,7 +32,7 @@
     # every bag recorded before 08-10 under-steers by 1.4% relative to command.
     # Anything fitted on those bags (notably the control NUC2_hangar steering
     # LUT) is biased by that much until refitted.
-    steering_angle_to_servo_gain: -0.8320
+    steering_angle_to_servo_gain: -0.8564
     # Offset: physical neutral back-solved per run
     # (S* = gain*delta0 + offset_in_effect, delta0 = yaw-rate zero crossing):
     #
@@ -52,16 +52,25 @@
     # NOT retire the mechanical finding -- see ~/TUNING_STATUS.md section 11 for
     # the hands-on check and the "three consecutive runs within +-0.005" bar
     # that has to be cleared before calling the neutral fixed.
-    steering_angle_to_servo_offset: 0.3941
+    steering_angle_to_servo_offset: 0.3935
     #
     # Derived limits (delta = (servo - offset)/gain, servo clipped to
     # [servo_min, servo_max] below). Planning/control copy the symmetric one:
-    #   right (0.70-0.3941)/-0.8320 = -0.3677 rad (21.07 deg)  <- binding side
-    #   left  (0.05-0.3941)/-0.8320 = +0.4136 rad (23.70 deg)
-    #   symmetric 0.3677 rad -> min turn radius 0.857 m, kappa_max 1.167 1/m
-    # Consumers deliberately round down to 0.36 (2.1% inside):
+    #   right (0.70-0.3935)/-0.8564 = -0.357894 rad (20.51 deg)  <- binding side
+    #   left  (0.05-0.3935)/-0.8564 = +0.401098 rad (22.98 deg)
+    #   symmetric 0.357894 rad -> min turn radius 0.882 m, kappa_max 1.133 1/m
+    # Consumers use 0.3578 -- the binding limit itself, rounded down only enough
+    # to stay inside it (0.03%). Set deliberately on 2026-08-11: the previous
+    # 0.36 was a 2.1% round-down from the older 0.3677 limit, and under the
+    # -0.8564 refit that same 0.36 would OVERRUN the limit by 0.6%.
     #   planning spliner/vehicle_max_steering_rad, tracker/max_steer_rad,
+    #   opponent/max_steer_rad, global_trajectory/validation_max_steer_rad,
     #   deployment_profiles.MAX_STEER, control vehicle/max_steering_angle_rad.
+    # ⚠️ There is now NO margin absorbing the unresolved neutral jump
+    #    (TUNING_STATUS.md section 11: up to 0.036 servo = 0.042 rad between
+    #    runs). When the neutral drifts right, commands near full lock clip at
+    #    servo_max instead of steering -- the car understeers exactly when it is
+    #    asking for maximum steering. Watch for it at the hairpin.
     port: /dev/ttyACM0
     # NOTE: duty_cycle_* only clips the "commands/motor/duty_cycle" topic in
     # vesc_driver. Nothing in this stack publishes there -- ackermann_to_vesc
