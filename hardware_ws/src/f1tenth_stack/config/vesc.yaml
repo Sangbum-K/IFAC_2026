@@ -32,7 +32,7 @@
     # every bag recorded before 08-10 under-steers by 1.4% relative to command.
     # Anything fitted on those bags (notably the control NUC2_hangar steering
     # LUT) is biased by that much until refitted.
-    steering_angle_to_servo_gain: -0.9064
+    steering_angle_to_servo_gain: -0.8564
     # Offset: physical neutral back-solved per run
     # (S* = gain*delta0 + offset_in_effect, delta0 = yaw-rate zero crossing):
     #
