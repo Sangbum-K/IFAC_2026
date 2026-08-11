@@ -59,9 +59,6 @@ from launch_ros.actions import Node
 # test/test_line_variant_routing.py 가 두 사본의 동기화를 강제한다.
 LINE_VARIANTS = ('tuned',)
 PF_AB_PROFILES = (
-    'current',
-    'variant0',
-    'variant0_no_ground',
     'variant0_no_ground_no_deskew',
     'variant0_no_ground_no_deskew_no_icp',
 )
@@ -112,8 +109,7 @@ def launch_setup(context, *args, **kwargs):
     actions = []
 
     actions.append(LogInfo(msg=(
-        '[real_car] PF profile=%s (기본 current 외 프로파일은 A/B 시험용)'
-        % pf_profile)))
+        '[real_car] C++ PF profile=%s' % pf_profile)))
 
     if line_variant:
         actions.append(LogInfo(msg=(
@@ -245,7 +241,7 @@ def generate_launch_description():
                                           '빈 값이면 localize.yaml / params.yaml 기본값 유지'),
         DeclareLaunchArgument(
             'pf_profile',
-            default_value='current',
-            description='PF A/B 프로파일. 기본 current는 현재 실차 설정을 유지'),
+            default_value='variant0_no_ground_no_deskew',
+            description='C++ PF 프로파일'),
         OpaqueFunction(function=launch_setup),
     ])

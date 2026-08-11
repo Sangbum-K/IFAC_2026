@@ -1,8 +1,0 @@
-particle_filter:
-  ros__parameters:
-    # A/B step 2: retain variant 0 and remove only the PF ground gate.
-    pf_profile_label: variant0_no_ground
-    rangelib_variant: 0
-    ground_filter_enabled: false
-    deskew_enabled: true
-    scan_match_enabled: true

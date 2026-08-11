@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # build_all.sh — 코드 빌드 전용 (매번 실행).
 #
-# 시스템 의존성(rosdep·range_libc) 설치는 여기 없다 → 차량당 1회 ./setup_deps.sh.
+# 시스템 의존성(rosdep·RangeLib) 설치는 여기 없다 → 차량당 1회 ./setup_deps.sh.
 # 이 스크립트는 순서대로 colcon build 만 한다. 의존성이 없으면 멈추고 안내한다.
 #
 # 사용법:
@@ -29,7 +29,7 @@ info() { print -P "%F{cyan}▶ $1%f"; }
 
 # ── numpy ABI 가드 (싸니까 매번) ────────────────────────────────────
 # ~/.local 에 pip numpy 2.x 가 깔리면 scipy/ROS C확장이 ABI로 깨지고
-# particle_filter 가 조용히 죽는다. 빌드 낭비 전에 먼저 막는다.
+# 다른 ROS Python 노드가 조용히 죽을 수 있어 빌드 전에 막는다.
 np=$($PY -c 'import numpy;print(numpy.__version__+" "+numpy.__file__)' 2>/dev/null) \
   || fail "numpy import 실패 — $PY 환경이 깨졌습니다"
 np_ver=${np%% *}; np_file=${np#* }
@@ -46,9 +46,9 @@ source /opt/ros/humble/setup.zsh || fail "ROS 2 Humble source 실패"
 # ── 의존성 게이트 (설치 안 됐으면 setup_deps 로 안내하고 멈춤) ──────
 # 매번 설치하지 않고, 있는지만 빠르게 확인한다.
 if [[ $MODE == car ]]; then
-  $PY -c 'import range_libc, tf_transformations, transforms3d' 2>/dev/null \
-    || fail "particle_filter 의존성 미설치 — 먼저 './setup_deps.sh' 를 한 번 실행하세요 (차량당 1회)"
-  ok "PF 의존성 확인 (range_libc / tf_transformations / transforms3d)"
+  [[ -f $HOME/range_libc/includes/RangeLib.h ]] \
+    || fail "RangeLib C++ headers 없음 — 먼저 './setup_deps.sh' 를 실행하세요"
+  ok "PF 의존성 확인 (RangeLib C++ headers)"
 fi
 
 # ── colcon build (순서 보장 · --base-paths src · 빌드 후 source) ─────

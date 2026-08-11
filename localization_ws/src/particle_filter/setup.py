@@ -7,7 +7,7 @@ package_name = 'particle_filter'
 setup(
     name=package_name,
     version='0.2.0',
-    packages=[package_name],
+    packages=[],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -23,12 +23,8 @@ setup(
     zip_safe=True,
     maintainer='Hongrui Zheng',
     maintainer_email='billyzheng.bz@gmail.com',
-    description='Particle Filter Localization using RangeLibc for accelerated ray casting.',
+    description='Maps, profiles, and launch files for the native C++ particle filter.',
     license='MIT',
     tests_require=['pytest'],
-    entry_points={
-        'console_scripts': [
-            'particle_filter = particle_filter.particle_filter:main'
-        ],
-    },
+    entry_points={'console_scripts': []},
 )

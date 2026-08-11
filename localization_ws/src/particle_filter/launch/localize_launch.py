@@ -1,6 +1,19 @@
-# MIT License
+# Copyright 2026 IFAC F1TENTH Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-# Copyright (c) 2020 Hongrui Zheng
+# The original launch file remains available under its MIT license:
+# Copyright 2020 Hongrui Zheng
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -31,9 +44,6 @@ import yaml
 
 
 PF_AB_PROFILES = (
-    'current',
-    'variant0',
-    'variant0_no_ground',
     'variant0_no_ground_no_deskew',
     'variant0_no_ground_no_deskew_no_icp',
 )
@@ -46,7 +56,6 @@ def _launch_particle_filter(context, *args, **kwargs):
         raise RuntimeError(
             'Unknown pf_profile:=%r. Choose one of: %s'
             % (profile, ', '.join(PF_AB_PROFILES)))
-
     base_config = LaunchConfiguration('localize_config').perform(context)
     if not os.path.isfile(base_config):
         raise RuntimeError(
@@ -65,11 +74,11 @@ def _launch_particle_filter(context, *args, **kwargs):
 
     return [
         LogInfo(msg=(
-            '[PF A/B] profile=%s; base=%s; overlay=%s'
+            '[PF C++] profile=%s; base=%s; overlay=%s'
             % (profile, base_config, profile_config))),
         Node(
-            package='particle_filter',
-            executable='particle_filter',
+            package='particle_filter_cpp',
+            executable='particle_filter_cpp_node',
             name='particle_filter',
             output='screen',
             # ROS parameter files are applied left-to-right. The small named
@@ -112,9 +121,9 @@ def generate_launch_description():
     )
     pf_profile_la = DeclareLaunchArgument(
         'pf_profile',
-        default_value='current',
+        default_value='variant0_no_ground_no_deskew',
         description=(
-            'PF A/B overlay: %s. current preserves production behavior.'
+            'C++ PF profile: %s.'
             % ', '.join(PF_AB_PROFILES)),
     )
     ld = LaunchDescription([

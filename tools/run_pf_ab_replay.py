@@ -8,7 +8,6 @@ Each profile gets its own sqlite3 output bag, logs, manifest, and no-GT report.
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import math
 import os
@@ -34,9 +33,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BAG = REPO_ROOT / 'bags' / 'rosbag0809' / 'run_0809_231809'
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / 'bags' / 'pf_ab_replay'
 PROFILES = (
-    'current',
-    'variant0',
-    'variant0_no_ground',
     'variant0_no_ground_no_deskew',
     'variant0_no_ground_no_deskew_no_icp',
 )
@@ -248,22 +244,6 @@ def package_share(package):
     return Path(result.stdout.strip()).resolve()
 
 
-def validate_pf_runtime():
-    """Fail before writing results when the compiled PF runtime is absent."""
-    command = [
-        sys.executable,
-        '-c',
-        'import range_libc, tf_transformations, transforms3d',
-    ]
-    result = subprocess.run(
-        command, check=False, text=True, capture_output=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            'PF runtime imports failed for %s. Run ./setup_deps.sh on the '
-            'Humble vehicle before replaying.\n%s'
-            % (sys.executable, (result.stderr or result.stdout).strip()))
-
-
 def sha256_bytes(value):
     """Return a lowercase SHA256 digest for bytes."""
     return hashlib.sha256(value).hexdigest()
@@ -456,75 +436,31 @@ def persist_worktree_evidence(session_dir, evidence):
     }
 
 
-def resolve_active_pf_runtime(package_prefix):
-    """Resolve code imported by the entry point, not stale copies."""
+def resolve_active_cpp_runtime(package_prefix):
+    """Resolve and hash the installed C++ PF executable."""
     package_prefix = Path(package_prefix).resolve()
-    executable = package_prefix / 'lib' / 'particle_filter' / 'particle_filter'
+    executable = (
+        package_prefix / 'lib' / 'particle_filter_cpp' /
+        'particle_filter_cpp_node')
     if not executable.is_file():
         raise RuntimeError(
-            'Installed PF entry point is missing: %s' % executable)
-
-    python_tag = 'python%d.%d' % (
-        sys.version_info.major, sys.version_info.minor)
-    site_packages = package_prefix / 'lib' / python_tag / 'site-packages'
-    egg_link = site_packages / 'particle-filter.egg-link'
-    egg_candidate = None
-    if egg_link.is_file():
-        lines = [
-            line.strip() for line in egg_link.read_text(
-                encoding='utf-8').splitlines() if line.strip()
-        ]
-        if not lines:
-            raise RuntimeError('Installed PF egg-link is empty: %s' % egg_link)
-        egg_root = Path(lines[0]).expanduser()
-        if not egg_root.is_absolute():
-            egg_root = egg_link.parent / egg_root
-        egg_candidate = egg_root / 'particle_filter' / 'particle_filter.py'
-
-    installed_candidate = (
-        site_packages / 'particle_filter' / 'particle_filter.py')
-    candidate = (
-        egg_candidate if egg_candidate is not None else installed_candidate)
-    if not candidate.is_file():
+            'Installed C++ PF executable is missing: %s' % executable)
+    if not os.access(executable, os.X_OK):
         raise RuntimeError(
-            'Cannot resolve active PF code for %s: expected %s'
-            % (python_tag, candidate))
-
-    # find_spec resolves the package path without importing particle_filter.py
-    # (which imports RangeLib and may fail during a dry-run on a dev machine).
-    spec = importlib.util.find_spec('particle_filter.particle_filter')
-    if spec is None or spec.origin is None:
-        raise RuntimeError(
-            'The sourced Python environment cannot locate particle_filter')
-    import_path = Path(spec.origin)
-    resolved_candidate = candidate.resolve()
-    resolved_import = import_path.resolve()
-    if resolved_candidate != resolved_import:
-        raise RuntimeError(
-            'PF install/import mismatch: %s resolves through the active %s '
-            'egg-link, but Python would import %s'
-            % (candidate, python_tag, import_path))
-
-    package_files = [
-        {
-            'path': str(path.resolve()),
-            'sha256': sha256_file(path),
-        }
-        for path in sorted(resolved_import.parent.glob('*.py'))
-    ]
-
+            'Installed C++ PF executable is not executable: %s' % executable)
+    digest = sha256_file(executable)
     return {
+        'engine': 'cpp',
         'package_prefix': str(package_prefix),
         'entrypoint_path': str(executable),
-        'entrypoint_sha256': sha256_file(executable),
-        'python_tag': python_tag,
-        'egg_link_path': str(egg_link) if egg_link.is_file() else None,
-        'egg_link_sha256': (
-            sha256_file(egg_link) if egg_link.is_file() else None),
-        'import_spec_path': str(import_path),
-        'active_particle_filter_path': str(resolved_import),
-        'active_particle_filter_sha256': sha256_file(resolved_import),
-        'active_package_files': package_files,
+        'entrypoint_sha256': digest,
+        'python_tag': 'native-cpp',
+        'egg_link_path': None,
+        'egg_link_sha256': None,
+        'import_spec_path': None,
+        'active_particle_filter_path': str(executable),
+        'active_particle_filter_sha256': digest,
+        'active_package_files': [],
     }
 
 
@@ -552,6 +488,7 @@ def snapshot_runtime_artifacts(result_dir, common, profile_config):
     """Freeze every YAML/tool/code artifact that can affect this PF run."""
     directory = result_dir / 'snapshot'
     runtime = common['pf_runtime']
+    active_name = 'particle_filter_cpp_node'
     sources = {
         'base_config': (
             common['base_config'], directory / 'config' / 'localize.yaml'),
@@ -559,7 +496,7 @@ def snapshot_runtime_artifacts(result_dir, common, profile_config):
             profile_config, directory / 'config' / 'profile.yaml'),
         'active_particle_filter': (
             runtime['active_particle_filter_path'],
-            directory / 'code' / 'particle_filter.py'),
+            directory / 'code' / active_name),
         'run_pf_ab_replay': (
             Path(__file__).resolve(),
             directory / 'tools' / 'run_pf_ab_replay.py'),
@@ -944,7 +881,7 @@ def build_commands(
             ros_double_literal(base_to_laser_z_m),
         ))
     pf_command = [
-        'ros2', 'run', 'particle_filter', 'particle_filter',
+        'ros2', 'run', 'particle_filter_cpp', 'particle_filter_cpp_node',
         '--ros-args',
         '--params-file', str(base_config),
         '--params-file', str(profile_config),
@@ -1006,6 +943,7 @@ def run_profile(args, common, case, domain_id, session_dir):
     })
     manifest = {
         'profile': profile,
+        'pf_engine': 'cpp',
         'run_label': run_label,
         'git_revision': common['worktree'].manifest['head'],
         'git_dirty': common['worktree'].manifest['dirty'],
@@ -1052,7 +990,7 @@ def run_profile(args, common, case, domain_id, session_dir):
             case.base_to_laser_z_source,
         ))
     print(
-        '[%s] active PF sha256=%s' % (
+        '[%s] active C++ PF sha256=%s' % (
             run_label,
             artifacts['active_particle_filter']['sha256']))
 
@@ -1148,19 +1086,19 @@ def parse_arguments():
   # Validate the installed profiles and exact commands; writes nothing.
   python3 tools/run_pf_ab_replay.py --dry-run
 
-  # Recommended first A/B: current RangeLib variant 5 versus variant 0.
-  python3 tools/run_pf_ab_replay.py --profiles current variant0
+  # Run the production C++ profile.
+  python3 tools/run_pf_ab_replay.py --profiles variant0_no_ground_no_deskew
 
   # Defaults shared by every profile: 25 Hz cap headroom and fixed seed 809.
   python3 tools/run_pf_ab_replay.py --max-update-rate-hz 25 --random-seed 809
 
-  # Run the cumulative ground/deskew/ICP isolation sequence on another bag.
+  # Isolate scan-to-scan ICP on another bag.
   python3 tools/run_pf_ab_replay.py /path/to/bag \\
-    --profiles variant0_no_ground variant0_no_ground_no_deskew \\
+    --profiles variant0_no_ground_no_deskew \\
     variant0_no_ground_no_deskew_no_icp
 
   # Isolate recorded 11.00 cm versus measured 13.74 cm LiDAR scan height.
-  python3 tools/run_pf_ab_replay.py --profiles variant0 \\
+  python3 tools/run_pf_ab_replay.py --profiles variant0_no_ground_no_deskew \\
     --base-to-laser-z-m 0.1100 0.1374
 
 Build/source localization_ws first. Results are written below
@@ -1259,7 +1197,6 @@ def main():
         raise SystemExit('time arguments must be non-negative')
     if len(set(args.profiles)) != len(args.profiles):
         raise SystemExit('each profile may be selected only once')
-
     bag_path = Path(args.bag).expanduser().resolve()
     output_root = Path(args.output_root).expanduser().resolve()
     validate_bag(bag_path)
@@ -1282,7 +1219,6 @@ def main():
         raise SystemExit('ROS domain IDs must remain between 0 and 232')
     input_bag_identity = capture_input_bag_identity(bag_path)
     share = package_share('particle_filter')
-    package_prefix_path = share.parent.parent
     base_config = share / 'config' / 'localize.yaml'
     profiles_dir = share / 'config' / 'profiles'
     missing = [
@@ -1296,11 +1232,9 @@ def main():
             'Installed PF configs are incomplete; rebuild/source '
             'localization_ws:\n  %s'
             % '\n  '.join(str(path) for path in missing))
-    if not args.dry_run:
-        validate_pf_runtime()
-
     worktree = capture_worktree_evidence()
-    pf_runtime = resolve_active_pf_runtime(package_prefix_path)
+    cpp_share = package_share('particle_filter_cpp')
+    pf_runtime = resolve_active_cpp_runtime(cpp_share.parent.parent)
 
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     session_dir = output_root / ('%s__%s' % (bag_path.name, stamp))
@@ -1310,6 +1244,7 @@ def main():
         'profiles_dir': profiles_dir,
         'worktree': worktree,
         'pf_runtime': pf_runtime,
+        'pf_engine': 'cpp',
         'input_bag_identity': input_bag_identity,
         'recorded_base_to_laser_transform': (
             recorded_base_to_laser_manifest),
@@ -1349,7 +1284,7 @@ def main():
             worktree.manifest['dirty'],
             worktree.manifest['fingerprint_sha256']))
     print(
-        '  PF code: %s (sha256=%s, %s)'
+        '  PF code: %s engine=cpp (sha256=%s, %s)'
         % (
             pf_runtime['active_particle_filter_path'],
             pf_runtime['active_particle_filter_sha256'],
@@ -1395,6 +1330,7 @@ def main():
         'worktree_fingerprint': worktree.manifest,
         'worktree_evidence_files': worktree_files,
         'active_pf_runtime': pf_runtime,
+        'pf_engine': 'cpp',
         'profiles': list(args.profiles),
         'recorded_base_to_laser_transform': (
             recorded_base_to_laser_manifest),

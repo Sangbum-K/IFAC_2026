@@ -21,7 +21,6 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import Optional
 
 import numpy as np
@@ -30,9 +29,6 @@ import yaml
 
 
 PROFILE_NAMES = (
-    'current',
-    'variant0',
-    'variant0_no_ground',
     'variant0_no_ground_no_deskew',
     'variant0_no_ground_no_deskew_no_icp',
 )
@@ -177,17 +173,31 @@ def test_replay_commands_are_humble_safe_and_preserve_double_override():
     assert '--disable-keyboard-controls' in play_command
 
 
+def test_replay_always_executes_native_cpp_runtime():
+    """The replay command must not retain a Python PF fallback."""
+    helpers = _load_replay_command_builder()
+    commands = helpers['build_commands'](
+        Path('/input_bag'), Path('/result'), Path('/base.yaml'),
+        Path('/profile.yaml'), Path('/map_server.py'),
+        1.0, 100.0, 2.0, 25.0, 809)
+
+    assert commands[1][:4] == [
+        'ros2', 'run', 'particle_filter_cpp',
+        'particle_filter_cpp_node']
+
+
 def test_laser_z_ab_replaces_recorded_static_tf_without_replaying_it():
     """Height A/B must change one TF edge without a duplicate publisher."""
     helpers = _load_replay_command_builder()
     cases = helpers['build_replay_cases'](
-        ('variant0',), (0.1100, 0.1374), 0.1100)
+        ('variant0_no_ground_no_deskew',),
+        (0.1100, 0.1374), 0.1100)
 
     assert [case.effective_base_to_laser_z_m for case in cases] == [
         0.1100, 0.1374]
     assert [case.label for case in cases] == [
-        'variant0__laser_z_0p1100m',
-        'variant0__laser_z_0p1374m',
+        'variant0_no_ground_no_deskew__laser_z_0p1100m',
+        'variant0_no_ground_no_deskew__laser_z_0p1374m',
     ]
 
     commands = helpers['build_commands'](
@@ -315,57 +325,3 @@ def test_replay_summary_separates_runtime_from_autonomy_moving_quality():
     assert '13.74' in rendered
     assert '90.0%' in rendered
     assert '50.0%' not in rendered
-
-
-def test_disabled_scan_match_returns_invalid_zero_motion(monkeypatch):
-    """The no-ICP profile cannot manufacture stationary scan evidence."""
-    # RangeLib is an optional compiled runtime dependency. The method under
-    # test exits before touching it, so a stub keeps this unit test portable.
-    if 'range_libc' not in sys.modules:
-        monkeypatch.setitem(
-            sys.modules, 'range_libc', ModuleType('range_libc'))
-    from particle_filter.mcl_core import should_hold_stationary_filter
-    import particle_filter.particle_filter as particle_filter_module
-    from particle_filter.particle_filter import ParticleFiler
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError('ICP implementation ran while disabled')
-
-    monkeypatch.setattr(
-        particle_filter_module,
-        'estimate_scan_motion',
-        fail_if_called,
-    )
-
-    particle_filter = ParticleFiler.__new__(ParticleFiler)
-    particle_filter.SCAN_MATCH_ENABLED = False
-    particle_filter.last_scan_motion_valid = True
-    particle_filter.last_scan_motion = np.ones(3)
-    particle_filter.last_scan_match_rmse_m = 0.0
-    particle_filter.last_scan_match_inlier_fraction = 1.0
-
-    motion, valid = particle_filter.estimate_scan_action(
-        np.ones(4),
-        np.zeros(4),
-        np.ones(4),
-        np.zeros(4),
-        np.zeros(3),
-    )
-
-    assert not valid
-    assert np.array_equal(motion, np.zeros(3))
-    assert not particle_filter.last_scan_motion_valid
-    assert np.array_equal(particle_filter.last_scan_motion, np.zeros(3))
-    assert particle_filter.last_scan_match_rmse_m == -1.0
-    assert particle_filter.last_scan_match_inlier_fraction == -1.0
-    assert not should_hold_stationary_filter(
-        True,
-        0.0,
-        0.2,
-        np.zeros(3),
-        True,
-        motion,
-        valid,
-        0.04,
-        0.04,
-    )

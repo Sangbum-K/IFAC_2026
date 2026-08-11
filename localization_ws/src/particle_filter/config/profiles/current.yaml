@@ -1,9 +1,0 @@
-particle_filter:
-  ros__parameters:
-    # e5f8bc4 feature state. The A/B switches are explicit so their state is
-    # recorded even if unrelated localize.yaml settings change later.
-    pf_profile_label: current
-    rangelib_variant: 5
-    ground_filter_enabled: true
-    deskew_enabled: true
-    scan_match_enabled: true

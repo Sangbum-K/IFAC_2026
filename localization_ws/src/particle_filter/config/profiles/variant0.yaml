@@ -1,8 +1,0 @@
-particle_filter:
-  ros__parameters:
-    # A/B step 1: isolate the RangeLib implementation only.
-    pf_profile_label: variant0
-    rangelib_variant: 0
-    ground_filter_enabled: true
-    deskew_enabled: true
-    scan_match_enabled: true

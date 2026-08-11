@@ -166,8 +166,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'pf_profile',
-            default_value='current',
-            description='particle_filter A/B 프로파일. current는 현재 실차 동작을 유지.',
+            default_value='variant0_no_ground_no_deskew',
+            description='C++ particle_filter 프로파일.',
         ),
         Node(
             package='slam_toolbox',

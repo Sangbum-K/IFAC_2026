@@ -81,11 +81,9 @@ particle_filter:
     # motion all agree that the car is stationary. VESC raw units are deg/s and
     # g; these scales convert them to rad/s and m/s^2 inside the PF.
     freeze_stationary_filter: true
-    # UST-10LX header.stamp is the first ray. Move the selected 73 endpoints to
-    # the scan midpoint using beam time_increment, batch odom interpolation,
-    # and integrated gyro yaw. During detected slip, wheel translation is not
-    # trusted, while gyro rotation and the 27 cm LiDAR lever arm remain active.
-    deskew_enabled: true
+    # The production C++ path uses the raw scan timestamp. The earlier Python
+    # deskew path regressed the 0809 bag and is no longer part of the runtime.
+    deskew_enabled: false
     deskew_max_scan_duration_sec: 0.05
     deskew_slip_translation_scale: 0.0
     imu_angular_velocity_scale: 0.017453292519943295
@@ -98,7 +96,9 @@ particle_filter:
     level_reference_samples: 20
     level_reference_max_gyro_rad_s: 0.12
     level_reference_accel_tolerance_mps2: 2.5
-    ground_filter_enabled: true
+    # The IMU ground filter also regressed 0809 and required unmeasured
+    # extrinsics, so the C++ production profile keeps it disabled.
+    ground_filter_enabled: false
     ground_z_m: 0.0
     ground_range_tolerance_m: 0.08
     ground_range_tolerance_ratio: 0.04
@@ -158,9 +158,8 @@ particle_filter:
     # 한 번 받아들여 재동기화한다. 0 = 비활성(구 동작 = 영구 차단 위험).
     # PF ~15Hz -> 10회는 약 0.7초. 그 안에 못 붙으면 예측이 틀린 것이다.
     max_consecutive_jump_rejects: 10
-    # Repeat-angle RangeLib raycasts plus precomputed Python log likelihoods:
-    # variant 2 query cost without its sensor-weight underflow failure mode.
-    rangelib_variant: 5
+    # Native C++ GiantLUT repeat-angle raycasting.
+    rangelib_variant: 0
 
 map_server:
   ros__parameters:
