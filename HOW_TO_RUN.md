@@ -30,7 +30,7 @@ sa #전체 소스
 mapp my_track0728   # 맵 이름 — 날짜 등으로 매번 새 이름을 쓸 것
 ```
 > `maps/`는 다른 어떤 폴더보다 먼저 검색되므로, 기존 맵이나 패키지 맵
-> (`particle_filter/maps`, `planning_pkg/maps`)과 같은 이름으로 저장하면 그 맵이
+> (`particle_filter_cpp/maps`, `planning_pkg/maps`)과 같은 이름으로 저장하면 그 맵이
 > 조용히 가려집니다. 그래서 이름이 겹치면 **주행 시작 전에** launch가 거부합니다.
 > 정말 덮어쓸 때만 `mapp <이름> overwrite:=true` (기존 파일은 `.bak`으로 백업됨).
 플래닝용 csv파일생성
@@ -156,7 +156,7 @@ LiDAR /scan
 | `control_ws` | ✅ | ✅ |
 | `integration_ws` | ✅ | ✅ |
 | `hardware_ws` (LiDAR·VESC·odom·TF·mux·조이스틱) | — | ✅ |
-| `localization_ws` (particle_filter) | — | ✅ |
+| `localization_ws` (`particle_filter_cpp`) | — | ✅ |
 | `sim_ws` (f1tenth_gym_ros) | ✅ 별도 | — |
 
 빌드는 두 단계입니다 — 의존성은 **차량당 1회**, 코드 빌드는 **고칠 때마다**.
@@ -178,7 +178,7 @@ cd ~/IFAC_ws
   있으면 `./setup_deps.sh`를 실행하라며 멈춘다. 끝에 실행용 source 블록(아래 2장) 출력.
 
 > ⚠️ **numpy는 apt 1.x 고정.** `pip install --user`로 numpy 2.x가 깔리면
-> scipy·pythran·ROS C확장이 ABI로 깨지고 particle_filter가 조용히 죽습니다.
+> scipy·pythran·ROS Python 확장이 ABI로 깨집니다.
 > 스크립트가 시작할 때 검사하며, 오염됐다면: `python3 -m pip uninstall -y numpy`.
 
 > ⚠️ **시뮬(`sim_ws`)은 `build_all.sh` 대상이 아닙니다** — 별도로 빌드해야 합니다.
@@ -425,7 +425,7 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 #   맵을 안 주면 localize.yaml 의 map: 을 따른다 (현재 my_track0807).
 
 # 다른 맵을 쓰려면 map:=<이름> — ~/IFAC_ws/maps 를 먼저, 없으면
-# particle_filter/maps 를 찾는다. 매핑으로 만든 맵은 재빌드 없이 바로 쓰인다.
+# particle_filter_cpp/maps 를 찾는다. 매핑으로 만든 맵은 재빌드 없이 바로 쓰인다.
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter map:=my_track2
 ```
 
@@ -451,7 +451,7 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 rviz2 -d $(ros2 pkg prefix --share monitor_pkg)/rviz/monitor.rviz
 
 # 초기 위치만 보는 최소 구성
-rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz
+rviz2 -d $(ros2 pkg prefix --share particle_filter_cpp)/rviz/pf.rviz
 ```
 
 **초기 위치 찍는 순서:**
@@ -658,7 +658,7 @@ alias·함수는 **전부 차량에서(SSH로) 실행**합니다. 하드웨어�
 | `tune <맵>` | ✅ | 웹앱. `ssh -L 8770:localhost:8770` 후 노트북 브라우저. 아래 참고 |
 
 **매핑을 원격으로** — 노트북에서 맵이 그려지는 걸 보며 조이스틱으로 한 바퀴 돕니다.
-`mapp`이 쓰는 설정은 `particle_filter/rviz/pf.rviz`인데 노트북엔 그 패키지가 없으므로,
+`mapp`이 쓰는 설정은 `particle_filter_cpp/rviz/pf.rviz`인데 노트북엔 그 패키지가 없으므로,
 이미 빌드해 둔 `monitor.rviz`(`rv`)를 쓰면 됩니다 — Map(`/map`)·LaserScan(`/scan`)·TF가
 들어 있어 매핑 확인에 충분합니다.
 

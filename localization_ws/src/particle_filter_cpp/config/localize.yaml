@@ -163,5 +163,5 @@ particle_filter:
 
 map_server:
   ros__parameters:
-    # assuming map file is in particle_filter/maps
+    # assuming map file is in particle_filter_cpp/maps
     map: 'my_track0807'

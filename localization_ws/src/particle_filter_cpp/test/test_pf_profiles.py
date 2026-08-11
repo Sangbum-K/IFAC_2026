@@ -135,7 +135,7 @@ def test_profile_names_stay_synchronized_across_launch_and_replay():
     repo_root = Path(__file__).resolve().parents[4]
     assignments = (
         (
-            repo_root / 'localization_ws/src/particle_filter/launch/'
+            repo_root / 'localization_ws/src/particle_filter_cpp/launch/'
             'localize_launch.py',
             'PF_AB_PROFILES',
         ),

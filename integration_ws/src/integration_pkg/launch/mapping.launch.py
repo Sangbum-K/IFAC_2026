@@ -22,7 +22,7 @@ Ctrl+C 하는 순간 맵이 `map_dir/map_name.{pgm,yaml}`로 저장된다.
   overwrite:=false      이름이 이미 쓰일 때만 거부. 기본은 덮어쓰기 허용
 
 이름이 겹치면 **주행 전에** 막는다: map_dir 은 localization / raceline_tuner /
-build_map 모두가 먼저 뒤지는 폴더라, 기존 맵이나 패키지 맵(particle_filter/maps,
+build_map 모두가 먼저 뒤지는 폴더라, 기존 맵이나 패키지 맵(particle_filter_cpp/maps,
 planning_pkg/maps)과 같은 이름으로 저장하면 그 맵이 에러 없이 조용히 가려진다.
 
 주행 중 중간 저장:
@@ -75,7 +75,7 @@ def _share(package):
 # build_map 은 모두 map_dir(~/IFAC_ws/maps)을 먼저 뒤지므로, 여기 있는 맵과
 # 같은 이름으로 저장하면 그 맵들이 조용히 안 쓰이게 된다.
 SHADOWED_PACKAGES = (
-    ('particle_filter', 'maps'),    # localization 이 2순위로 찾는 곳
+    ('particle_filter_cpp', 'maps'),  # localization 이 2순위로 찾는 곳
     ('planning_pkg', 'maps'),       # raceline_tuner / build_map 이 2순위로 찾는 곳
 )
 
@@ -164,7 +164,7 @@ def launch_setup(context, *args, **kwargs):
                 name='rviz2_mapping',
                 output='log',
                 arguments=['-d', PathJoinSubstitution([
-                    FindPackageShare('particle_filter'), 'rviz', 'pf.rviz'])],
+                    FindPackageShare('particle_filter_cpp'), 'rviz', 'pf.rviz'])],
                 parameters=[{'use_sim_time': False}],
             ),
         ]))

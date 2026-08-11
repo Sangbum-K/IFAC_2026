@@ -17,7 +17,7 @@ ROS 2 **Humble** 기반 F1TENTH 자율주행 스택입니다. LiDAR로 장애물
 | 워크스페이스 | 역할 | 핵심 패키지 |
 |---|---|---|
 | `hardware_ws` | 실차 하드웨어 bringup (joy, VESC, LiDAR, odom, TF, cmd mux) | `f1tenth_stack`, `ackermann_mux`, `vesc`, `urg_node` |
-| `localization_ws` | 위치 추정 (particle_filter / slam_toolbox / AMCL) | `localization_bringup`, `particle_filter` |
+| `localization_ws` | 위치 추정 (particle_filter / slam_toolbox / AMCL) | `localization_bringup`, `particle_filter_cpp` |
 | `perception_ws` | LiDAR 장애물 탐지 + 마커 시각화 | `perception_pkg` |
 | `planning_ws` | 레이스라인 추종 + 회피 경로 + 모니터/RViz 패널 + **메시지 정의** | `planning_pkg`, `monitor_pkg`, `pitwall_panel`, `f1tenth_planning_msgs`, `f1tenth_perception_msgs` |
 | `control_ws` | pure pursuit 제어 (C++) | `control_pkg` |
@@ -71,8 +71,8 @@ cd ~/IFAC_ws
 > - **두 스크립트는 zsh 전용입니다** (`#!/usr/bin/env zsh`). `bash setup_deps.sh`처럼
 >   호출하지 말고 `./setup_deps.sh`로 실행하세요.
 > - **`numpy`는 apt 1.x여야 합니다.** `~/.local`에 pip numpy 2.x가 깔리면
->   scipy/ROS C확장이 ABI로 깨져 `particle_filter`가 조용히 죽습니다. 두 스크립트
->   모두 시작할 때 이걸 검사하고 오염됐으면 중단합니다
+>   scipy/ROS Python 확장이 ABI로 깨집니다. 두 스크립트 모두 시작할 때 이걸
+>   검사하고 오염됐으면 중단합니다
 >   (고치기: `/usr/bin/python3 -m pip uninstall -y numpy`).
 > - **`git pull`/소스 수정 후에는 반드시 다시 `./build_all.sh`.** 실행은 `install/`을
 >   쓰므로, 빌드 안 하면 옛 맵·옛 파라미터로 주행합니다. (실제로 맵을 `my_track`으로
@@ -137,7 +137,7 @@ ros2 launch integration_pkg real_car.launch.py map:=my_track2          # 실차 
 ros2 launch integration_pkg stack.launch.py env:=real_car map:=my_track2
 ```
 
-- **PF 맵** — `~/IFAC_ws/maps/<이름>.yaml` → `particle_filter/maps/<이름>.yaml` 순으로
+- **PF 맵** — `~/IFAC_ws/maps/<이름>.yaml` → `particle_filter_cpp/maps/<이름>.yaml` 순으로
   찾습니다. 매핑으로 만든 맵은 **재빌드 없이** 바로 쓸 수 있습니다.
 - **planner CSV** — `<이름>_iqp_*.csv` 등을 glob으로 찾습니다(파일명에 속도·마진·mu가
   붙어 이름만으로 유도 불가). `planning_pkg/config/` 안에 있어야 하므로 새로 뽑았다면
@@ -204,7 +204,7 @@ ros2 launch integration_pkg real_car.launch.py map:=my_track2
 | perception 공통 / 환경별 | `perception_ws/src/perception_pkg/config/params.yaml`, `config/environments/*.yaml` |
 | integration 환경별 | `integration_ws/src/integration_pkg/config/environments/*.yaml` |
 | localization | `localization_ws/src/localization_bringup/config/localization/*.yaml` |
-| particle_filter 맵 (기본값) | `localization_ws/src/particle_filter/config/localize.yaml` — `map:=`를 안 줬을 때만 쓰입니다. 당일 맵은 `map:=<이름>`으로 지정하는 편이 낫습니다 |
+| particle_filter_cpp 맵 (기본값) | `localization_ws/src/particle_filter_cpp/config/localize.yaml` — `map:=`를 안 줬을 때만 쓰입니다. 당일 맵은 `map:=<이름>`으로 지정하는 편이 낫습니다 |
 | planner raceline CSV (기본값) | `planning_ws/src/planning_pkg/config/params.yaml` — 마찬가지로 `map:=`가 없을 때만 |
 | 매핑으로 만든 맵 | `maps/` (`map:=`가 가장 먼저 찾는 곳) |
 

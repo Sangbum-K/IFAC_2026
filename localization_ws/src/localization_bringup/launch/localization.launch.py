@@ -17,8 +17,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _default_map_name():
-    """particle_filter/config/localize.yaml 의 `map:` 이름 (맵 이름의 단일 출처)."""
-    pf_share = get_package_share_directory('particle_filter')
+    """particle_filter_cpp/config/localize.yaml 의 `map:` 이름."""
+    pf_share = get_package_share_directory('particle_filter_cpp')
     with open(os.path.join(pf_share, 'config', 'localize.yaml')) as f:
         return yaml.safe_load(f)['map_server']['ros__parameters']['map']
 
@@ -29,7 +29,7 @@ def _resolve_map(context, *args, **kwargs):
     두 곳을 순서대로 찾는다:
       1) maps_dir (기본 ~/IFAC_ws/maps)  — mapping.launch.py 가 저장하는 곳.
          여기서 먼저 찾기 때문에 새로 만든 맵을 재빌드 없이 바로 쓸 수 있다.
-      2) particle_filter/maps (설치본)   — 패키지에 포함돼 배포되는 맵.
+      2) particle_filter_cpp/maps (설치본) — 패키지에 포함돼 배포되는 맵.
 
     map_yaml_path 를 직접 준 경우엔 건드리지 않는다(전체 경로 override).
     map:= 도 없으면 localize.yaml 의 `map:` 을 따른다 — 기존 동작 그대로.
@@ -43,7 +43,7 @@ def _resolve_map(context, *args, **kwargs):
     map_name = context.launch_configurations.get('map') or _default_map_name()
     search_dirs = [
         os.path.expanduser(context.launch_configurations.get('maps_dir') or ''),
-        os.path.join(get_package_share_directory('particle_filter'), 'maps'),
+        os.path.join(get_package_share_directory('particle_filter_cpp'), 'maps'),
     ]
 
     for directory in search_dirs:
@@ -78,7 +78,7 @@ def generate_launch_description():
     pf_profile = LaunchConfiguration('pf_profile')
 
     pf_rviz_config = PathJoinSubstitution([
-        FindPackageShare('particle_filter'),
+        FindPackageShare('particle_filter_cpp'),
         'rviz',
         'pf.rviz',
     ])
@@ -138,8 +138,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'map',
             default_value='',
-            description='맵 이름 (<이름>.yaml). maps_dir -> particle_filter/maps 순으로 '
-                        '찾는다. 빈 값이면 particle_filter/config/localize.yaml 의 map: 을 따른다.',
+            description='맵 이름 (<이름>.yaml). maps_dir -> particle_filter_cpp/maps 순으로 '
+                        '찾는다. 빈 값이면 particle_filter_cpp/config/localize.yaml 의 map: 을 따른다.',
         ),
         DeclareLaunchArgument(
             'maps_dir',
@@ -232,7 +232,7 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
-                    FindPackageShare('particle_filter'),
+                    FindPackageShare('particle_filter_cpp'),
                     'launch',
                     'localize_launch.py',
                 ])

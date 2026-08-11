@@ -62,7 +62,7 @@ def _launch_particle_filter(context, *args, **kwargs):
             'PF base config does not exist: %s' % base_config)
 
     profile_config = os.path.join(
-        get_package_share_directory('particle_filter'),
+        get_package_share_directory('particle_filter_cpp'),
         'config',
         'profiles',
         profile + '.yaml',
@@ -96,7 +96,7 @@ def _launch_particle_filter(context, *args, **kwargs):
 def generate_launch_description():
     # config and args
     localize_config = os.path.join(
-        get_package_share_directory('particle_filter'),
+        get_package_share_directory('particle_filter_cpp'),
         'config',
         'localize.yaml'
     )
@@ -113,7 +113,7 @@ def generate_launch_description():
     map_yaml_path_la = DeclareLaunchArgument(
         'map_yaml_path',
         default_value=os.path.join(
-            get_package_share_directory('particle_filter'),
+            get_package_share_directory('particle_filter_cpp'),
             'maps',
             map_name + '.yaml',
         ),

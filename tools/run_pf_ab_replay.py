@@ -1218,7 +1218,7 @@ def main():
     if args.domain_id < 0 or args.domain_id + len(cases) - 1 > 232:
         raise SystemExit('ROS domain IDs must remain between 0 and 232')
     input_bag_identity = capture_input_bag_identity(bag_path)
-    share = package_share('particle_filter')
+    share = package_share('particle_filter_cpp')
     base_config = share / 'config' / 'localize.yaml'
     profiles_dir = share / 'config' / 'profiles'
     missing = [
@@ -1233,8 +1233,7 @@ def main():
             'localization_ws:\n  %s'
             % '\n  '.join(str(path) for path in missing))
     worktree = capture_worktree_evidence()
-    cpp_share = package_share('particle_filter_cpp')
-    pf_runtime = resolve_active_cpp_runtime(cpp_share.parent.parent)
+    pf_runtime = resolve_active_cpp_runtime(share.parent.parent)
 
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     session_dir = output_root / ('%s__%s' % (bag_path.name, stamp))

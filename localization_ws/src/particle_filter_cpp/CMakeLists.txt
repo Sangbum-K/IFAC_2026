@@ -57,14 +57,23 @@ install(TARGETS
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
+install(
+  DIRECTORY config launch maps rviz
+  DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
+)
+install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(test_mcl_core test/test_mcl_core.cpp)
   if(TARGET test_mcl_core)
     target_compile_features(test_mcl_core PUBLIC cxx_std_17)
     target_link_libraries(test_mcl_core particle_filter_cpp_core)
   endif()
+  ament_add_pytest_test(test_pf_profiles test/test_pf_profiles.py)
 endif()
 
 ament_export_include_directories(include)

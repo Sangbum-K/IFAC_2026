@@ -236,7 +236,7 @@ def generate_launch_description():
         DeclareLaunchArgument('wait_timeout', default_value='0.0',
                               description='수렴 대기 제한시간(초). 0이면 무한 대기'),
         DeclareLaunchArgument('map', default_value='',
-                              description='맵 이름. PF 맵(particle_filter/maps/<이름>.yaml)과 '
+                              description='맵 이름. PF 맵(particle_filter_cpp/maps/<이름>.yaml)과 '
                                           'planner CSV 3종을 한 번에 전환한다. '
                                           '빈 값이면 localize.yaml / params.yaml 기본값 유지'),
         DeclareLaunchArgument(

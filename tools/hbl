@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hbl — run a command inside the humble-env distrobox with ROS 2 Humble +
-# all IFAC_ws overlays sourced. Analysis/replay must run here: the host is
-# Jazzy/py3.12 and has no range_libc, so particle_filter dies on import.
+# all IFAC_ws overlays sourced. Analysis/replay must run here because the host
+# uses Jazzy while the vehicle stack and native particle_filter_cpp use Humble.
 #
 #   tools/hbl python3 tools/run_pf_ab_replay.py --dry-run
 #   tools/hbl colcon test --base-paths src
