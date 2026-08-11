@@ -87,7 +87,7 @@ spliner_node:
     # 벽 클램프로 회피가 상시 abort → 소형 트랙 값 0.35로 정렬 (real_car.yaml과 동일).
     # 당일 맵이 확연히 넓으면 0.5~0.75로 다시 올릴 것.
     spliner/evasion_dist: 0.35
-    # (spliner/inside_speed_scale 제거: offset_grip_cap 이 대체. real_car.yaml 참조)
+    # (spliner/inside_speed_scale 제거: 오프셋 곡률 마찰원 캡이 대체. real_car.yaml 참조)
     # 좁은 코리도(폭~1.25 m)에서 0.20은 유효 회피경로를 과도히 배제 → 0.15로 정렬.
     spliner/path_check_margin: 0.15
     spliner/boundary_tracking_margin_m: 0.10

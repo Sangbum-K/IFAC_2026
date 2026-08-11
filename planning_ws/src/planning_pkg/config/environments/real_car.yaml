@@ -181,8 +181,11 @@ spliner_node:
     spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
                                         # (0.75는 벽 클램프로 회피 상시 abort). 섹터/비섹터 공통
-    # (spliner/inside_speed_scale 제거: 코너 안쪽 회피 감속은 offset_grip_cap 이
-    #  물리 기반으로 담당한다. 고정 배율은 이미 1.0(항등)이라 코드에서 함께 삭제.)
+    # (spliner/inside_speed_scale 제거: 코너 안쪽 회피 감속은 오프셋 곡률에 대한
+    #  마찰원 캡 v <= sqrt(path_lat_acc_max/kappa_offset) 이 물리 기반으로 담당한다.
+    #  고정 배율은 이미 1.0(항등)이라 코드에서 함께 삭제.
+    #  2026-08-11: 한때 offset_grip_cap 이 이 역할이라고 적혀 있었으나 그 캡은
+    #  false 로 껐다 — 근거는 params.yaml 의 offset_grip_cap 주석.)
     spliner/path_check_margin: 0.15
     # recovery의 center-to-wall 0.25m 계약과 같은 경로만 생성.
     spliner/boundary_tracking_margin_m: 0.10

@@ -5,16 +5,20 @@
 # ---------------------------------------------------------------------------
 global_trajectory_node:
   ros__parameters:
-    # my_track0807 실차: v-max 7, 계획 mu 0.68 (raceline 재생성 시 접미사 함께 교체)
+    # my_track0810 실차: v-max 7, 계획 mu 0.80 (raceline 재생성 시 접미사 함께 교체)
     # margin 0.08 = 소형 트랙 회피 corridor 확보용 (build_map MARGIN, 주행선 불변)
-    # 랩 31.3 m, safe_dist는 adaptive 0.37~0.55 m (CSV 첫 줄 헤더에 기록).
+    # 랩 32.2 m, safe_dist는 adaptive 0.38~0.55 m (CSV 첫 줄 헤더에 기록).
     # 2026-08-07: 옛 my_track 라인은 b05264b에서 삭제됐는데 이 기본값만 남아
     # install에 남은 유령 CSV로 주행하고 있었다 — 현행 맵으로 교체.
+    # 2026-08-11: 0807 -> 0810. 08-10 실차 두 런(run_0810_233206/233521)이
+    # my_track0810 으로 달렸는데 기본값만 0807 로 남아 있어서, "그날 어떤 궤적으로
+    # 달렸는지"를 백의 waypoint 개수(323)로 역추적해야 했다. 기본값이 현행 맵을
+    # 가리키지 않으면 map:= 를 빠뜨린 실행이 조용히 옛 라인으로 돈다.
     # ⚠️ sim.yaml 이 비어 있어 이 파일이 곧 sim 기본 프로파일이기도 하다.
     # 여기가 없는 CSV를 가리키면 sim_race 가 "raceline 없음"으로 죽는다.
     # ⚠️ 실제 주행 속도는 environments/<env>.yaml의 velocity_scale이 결정한다 —
     # control의 vehicle/max_speed_mps와 짝을 맞출 것 (real_car.yaml 주석 참조).
-    global_trajectory/trajectory_csv_file: my_track0807_iqp_max7.00ms_margin0.08m_mu0.68.csv
+    global_trajectory/trajectory_csv_file: my_track0810_iqp_max7.00ms_margin0.08m_mu0.80.csv
     # SP는 전 구간 경계/조향 검증을 통과한 파일만 map:= 또는 CLI로 원자적으로
     # 연결한다. 현재 기본 SP는 R_min 한계 위반이라 안전 기본값은 비활성.
     global_trajectory/overtaking_csv_file: ""
@@ -188,7 +192,38 @@ spliner_node:
     # true면 오프셋으로 곡률이 커진 구간에서 그 지점 레이스라인이 쓰던
     # 횡가속(kappa*v^2)을 넘지 않게 캡한다 -> v = v_gb*sqrt(kappa_ref/kappa_off).
     # 곡률이 줄어드는 바깥쪽 회피는 캡하지 않는다(속도가 오르지도 않는다).
-    spliner/offset_grip_cap: true
+    #
+    # 2026-08-11 true -> false. rosbag0810 두 런 분석 결과, 이 캡은 **막아야 할
+    # 곳에서는 아무것도 안 막고 안 막아야 할 곳에서만 걸린다**.
+    #
+    # my_track0810(323점)에서 회피 S자가 곡률을 +0.08 더할 때 이 캡이 강제하는
+    # 속도 (레이스라인 대비):
+    #   kappa>0.35  헤어핀   120점 -> 0.92배   <- 거의 안 자름
+    #   kappa 0.15~0.35     85점 -> 0.87배
+    #   kappa 0.05~0.15     46점 -> 0.74배
+    #   kappa 0.02~0.05     34점 -> 0.52배   <- 거의 직선인데 반토막
+    # 헤어핀에서 안 걸리는 이유는 거기서 레이스라인이 이미 마찰 한계(7.85)를
+    # 다 쓰고 있어서 "레이스라인만큼만"이 "예산 다 써라"와 같은 말이 되기
+    # 때문이다. 반대로 직선에서는 레이스라인이 힘을 안 쓰니 "쓰지 마라"가 된다.
+    #
+    # 실제 피해 (run_0810_233521, 콘이 직선 우벽에 밀착, 좌측 여유 1.36 m):
+    #   회피가 성공해 커밋된 958프레임의 속도가 레이스라인의 29% (1.82 / 6.28 m/s).
+    #   병목은 s=27.20 한 점 — 레이스라인 kappa 0.0202 로 게이트(0.02) 바로 위,
+    #   그 지점이 쓰던 횡가속 0.58 m/s^2 -> 회피 곡률 0.103 에서 캡 2.37 m/s.
+    #   (마찰원 예산 7.85 로 풀면 같은 곡률에서 8.7 m/s 까지 가능하다.)
+    #   이 한 점이 jerk shaping 을 타고 앞쪽으로 번져 자차 위치 허용속도가
+    #   1.86 m/s 가 되고, require_current_feasible 이 경로를 통째로 버렸다.
+    #
+    # 끄면 물리는 그대로 지켜진다 — 오프셋 곡률에 대한 마찰원 캡
+    #   v <= sqrt(path_lat_acc_max / kappa_offset)
+    # 이 바로 아래에 그대로 있다. 캡을 끄고 계획이 실제 요구하는 횡가속을
+    # 재계산하면 직선 7.39 / 헤어핀 7.68 로 예산 7.85 안이다 (물리한계 8.83).
+    #
+    # ⚠️ 끈 뒤 첫 주행 확인 항목: 회피 중 /pitwall/lat_err 가 벽 여유(최소
+    #    0.35 m) 안인지. 이 캡이 없으면 회피가 예산 0.80g 를 끝까지 쓰므로,
+    #    남은 0.10g(물리 0.90 - 프로파일 0.80)가 추종오차 몫으로 충분한지는
+    #    실측으로만 확인된다 (path_lat_acc_max 주석의 같은 지시사항).
+    spliner/offset_grip_cap: false
     # 사이클 트레이스: 장애물이 있는 사이클마다 한 줄로
     #   [trace] s/v/d | 장애물 id·거리·d범위·정적여부·관측수 | evade/sector/commit
     #          | 결과(lane_switch|sp_lane_change|free_spline|trailing|committed_hold|none)
@@ -617,4 +652,4 @@ planner_visualizer_node:
     planning_viz/loop_rate_hz: 10.0
     # trajectory_csv_file 과 같은 맵이어야 한다 (섞이면 시각화 중앙선만 다른
     # 트랙을 그려서 "레이스라인이 코스를 벗어난 것처럼" 보인다).
-    planning_viz/centerline_csv_file: my_track0807_centerline.csv
+    planning_viz/centerline_csv_file: my_track0810_centerline.csv
