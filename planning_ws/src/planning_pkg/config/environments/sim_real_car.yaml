@@ -40,17 +40,22 @@ perception_obstacle_bridge_node:
     bridge/input_topic: /perception/obstacles_detected  # 실차: /perception/obstacles
     bridge/output_topic: /perception/obstacles_frenet
     bridge/target_frame: map
-    bridge/min_confidence: 0.0
+    # 0.2 — real_car.yaml과 동일 (2026-08-11 rosbag_0811 분석. coasting 트랙이
+    # 두 콘 사이에 유령을 만드는 걸 confidence 문턱으로 막는다 — 근거는
+    # real_car.yaml 참조). 여기 있던 0.0 은 그 갱신 전 값이 그대로 남은
+    # 드리프트였다.
+    bridge/min_confidence: 0.2
     bridge/wall_margin_m: 0.10
     bridge/vel_lpf_alpha: 0.3
     bridge/track_forget_sec: 2.0
     bridge/tf_timeout_sec: 0.05
     bridge/tf_allow_latest_fallback: false
     bridge/tf_max_age_sec: 0.05
-    # 0.40 — real_car.yaml과 동일. 실차 detector가 15.6 Hz(=64 ms 주기)로
-    # 발행하므로(rosbag_0805 실측, /scan 40 Hz 대비 2.5스캔당 1회) 0.20은
-    # 지터 두 번이면 바로 걸린다.
-    bridge/max_source_age_sec: 0.40
+    # 0.15 — real_car.yaml과 동일 (2026-08-11, perception C++ 재작성 후
+    # 구독자 실측 age p99 6.3 / max 16.5 ms 기준. 근거는 real_car.yaml 참조).
+    # 여기 있던 0.40 은 그 갱신 전 값이 그대로 남은 드리프트였다
+    # (test_sim_real_car_profiles_mirror_real_car 가 이제 이 드리프트를 막는다).
+    bridge/max_source_age_sec: 0.15
     bridge/source_future_tolerance_sec: 0.05
     bridge/require_source_stamp: true
     bridge/projection_window_wpnts: 80
@@ -74,6 +79,15 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet
+    # ── 원호 이탈 (2026-08-11, real_car.yaml과 동일) ────────────────────────
+    # 965badf 가 real_car.yaml에 추가한 뒤 여기 반영이 빠져 있었다 — 이 다섯
+    # 개가 없으면 sim 은 escape_arc 기능 자체가 꺼진 채로 돈다(코드 기본값
+    # false/0). 근거 주석은 real_car.yaml 참조.
+    spliner/escape_arc_enabled: true
+    spliner/escape_arc_lat_acc: 5.5
+    spliner/escape_arc_min_speed: 1.2
+    spliner/escape_arc_max_heading_rad: 0.70
+    spliner/commit_break_requires_visible: true
     spliner/lookahead_m: 12.0
     spliner/loop_rate_hz: 30.0
     spliner/blend_lat_acc_max: 5.0

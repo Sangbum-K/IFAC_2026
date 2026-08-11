@@ -65,7 +65,15 @@ obstacle_detector_node:
     gating_distance: 0.45
     # 2026-08-11: 8 -> 19. real_car.yaml 과 값이 갈리면 sim 검증이 실차와
     # 다른 트래킹 지속시간으로 돌아 회피 검증이 무의미해진다.
+    # (track_timeout_sec 0.80 이 base 에서 이미 우선 적용되므로 이 프레임 값은
+    #  지금은 fallback 일 뿐이지만, real_car.yaml 과 형태를 맞춰 둔다.)
     track_timeout: 19
+    # real_car.yaml과 동일 값을 **명시**한다 (test_sim_real_car_profiles_
+    # mirror_real_car). 시뮬 detector 가 실제로 이 상한 근처까지 가려면
+    # gym 이 실차와 같은 20/30ms 이봉 스캔 지터를 내야 한다 — 그건 파라미터가
+    # 아니라 gym_bridge 쪽(sim_race.launch.py vehicle:=real_car 의
+    # sensor_publish_rate_hz)이 담당한다.
+    process_rate_hz: 20.0
     # ---- 맵 벽 필터 ----
     # 파라미터 이름은 real_car.yaml과 반드시 같아야 한다. 노드가 선언하지 않은
     # 이름(구 map_filter_enabled/map_wall_dist_min_m)을 주면 rclpy는 에러 없이

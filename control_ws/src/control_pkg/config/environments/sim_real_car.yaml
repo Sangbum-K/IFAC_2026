@@ -24,9 +24,12 @@ control:
     # 달성 /odom max 5.28 / p95 5.01 — 명령을 못 따라가는 것 자체가 재현 대상이다.
     "vehicle/max_speed_mps": 7.0
     "vehicle/speed_scale": 1.0
-    # 0.36 rad = 20.7° (서보 포화 실측, TUNING_STATUS.md §4).
+    # 0.3578 rad = 20.5° (c0aceaf 조향 재적합, gain -0.8564 대칭 한계 자체,
+    # TUNING_STATUS.md §4). base params.yaml과 동일 — 여기 있던 0.36 은 재적합
+    # 전 값이 그대로 남은 드리프트였다 (test_sim_gym_vehicle_matches_measured_
+    # plant 가 이제 이 드리프트를 막는다).
     # sim_race.launch.py vehicle:=real_car가 gym 쪽 s_max도 같은 값으로 맞춘다.
-    "vehicle/max_steering_angle_rad": 0.36
+    "vehicle/max_steering_angle_rad": 0.3578
     "vehicle/max_steering_rate_radps": 2.0
 
     # --- 가감속 한계 (차가 실제로 낼 수 있는 값) ---
