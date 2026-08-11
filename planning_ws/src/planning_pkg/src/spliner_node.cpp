@@ -73,6 +73,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/path_lat_acc_max", 7.0);
     this->declare_parameter("spliner/offset_grip_cap", true);
     this->declare_parameter("spliner/path_decel_max", 6.0);
+    this->declare_parameter("spliner/plant_decel_mps2", 2.38);
     this->declare_parameter("spliner/path_accel_max", 3.0);
     this->declare_parameter("spliner/path_jerk_max", 8.0);
     this->declare_parameter("spliner/planning_delay_sec", 0.10);
@@ -149,6 +150,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     path_lat_acc_max_ = this->get_parameter("spliner/path_lat_acc_max").as_double();
     offset_grip_cap_ = this->get_parameter("spliner/offset_grip_cap").as_bool();
     path_decel_max_ = this->get_parameter("spliner/path_decel_max").as_double();
+    plant_decel_mps2_ = this->get_parameter("spliner/plant_decel_mps2").as_double();
     path_accel_max_ = this->get_parameter("spliner/path_accel_max").as_double();
     path_jerk_max_ = this->get_parameter("spliner/path_jerk_max").as_double();
     planning_delay_sec_ = this->get_parameter("spliner/planning_delay_sec").as_double();
@@ -224,7 +226,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         side_switch_d_tresh_, obs_timeout_sec_,
         trailing_gap_m_, trailing_decel_, cmd_speed_scale_,
         blend_lat_acc_max_, blend_dist_max_m_, path_lat_acc_max_,
-        path_decel_max_, path_accel_max_, path_jerk_max_, planning_delay_sec_,
+        path_decel_max_, plant_decel_mps2_, path_accel_max_, path_jerk_max_,
+        planning_delay_sec_,
         vehicle_half_length_m_, vehicle_half_width_m_,
         boundary_tracking_margin_m_, collision_sigma_, path_check_margin_,
         static_time_uncertainty_cap_, max_uncertainty_m_, plan_speed_floor_,
@@ -262,6 +265,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         path_lat_acc_max_ <= 0.0 || path_lat_acc_max_ > 15.0 ||
         path_accel_max_ <= 0.0 || path_accel_max_ > 20.0 ||
         path_decel_max_ <= 0.0 || path_decel_max_ > 20.0 ||
+        plant_decel_mps2_ <= 0.0 || plant_decel_mps2_ > 20.0 ||
         path_jerk_max_ <= 0.0 || path_jerk_max_ > 100.0 ||
         planning_delay_sec_ < 0.0 || planning_delay_sec_ > 1.0 ||
         vehicle_half_length_m_ < 0.05 || vehicle_half_length_m_ > 2.0 ||
@@ -4180,6 +4184,18 @@ bool SplinerNode::ApplySpeedProfile(
     //
     // reachable 은 최대 제동 곡선이라 앞쪽에서 급격히 작아지므로, max() 는
     // 진입 구간만 올리고 그 뒤 계획 프로파일은 건드리지 않는다.
+    //
+    // 2026-08-11(2): 이 시뮬레이션의 제동 한계를 path_decel_max_ 에서
+    // plant_decel_mps2_ 로 분리했다. path_decel_max_(6.0)는 경로 정형용 상한이라
+    // 실차 제동 능력(A_DEC_PLANNED 2.38)의 2.5배이고, 그 값으로 reachable 을
+    // 풀면 **차가 실제로는 훨씬 빨리 지나가는데 시뮬은 이미 섰다**고 본다.
+    // 두 방향 모두 틀렸다:
+    //   · 게이트: k*v²>예산 판정의 v 가 과소 -> 실제로는 마찰원을 넘는 회피를
+    //     통과시킨다. v0=5.0 에서 4 m 앞 시뮬 2.50 vs 실제 3.58 m/s 이고,
+    //     kappa 0.783(이 트랙 최대)에서 실제 a_lat 10.0 > 물리한계 8.83.
+    //   · 발행: 아래 max() 로 올려 쓰는 값도 실제보다 낮아, 컨트롤러
+    //     speed_for_lookup 이 여전히 조향을 (계획/실제)² 배로 줄인다 —
+    //     이 블록이 애초에 고치려던 항목이 절반만 고쳐진다.
     if (require_current_feasible) {
         std::vector<double> reachable(n, 0.0);
         double simulated_v = std::max(std::abs(cur_vs_), 0.0);
@@ -4194,7 +4210,7 @@ bool SplinerNode::ApplySpeedProfile(
                 const double dt =
                     segment / std::max(simulated_v, 0.25);
                 const double decel = longitudinal_budget(
-                    path_decel_max_, simulated_v,
+                    plant_decel_mps2_, simulated_v,
                     std::abs(curvature[(i == 0) ? 0 : i - 1]));
                 simulated_a = std::max(
                     -decel, simulated_a - path_jerk_max_ * dt);

@@ -399,6 +399,11 @@ private:
   double path_decel_max_{6.0};      // 회피 궤적 역방향 감속 한계 [m/s^2]
   double path_accel_max_{3.0};      // 회피 궤적 순방향 가속 한계 [m/s^2]
   double path_jerk_max_{8.0};       // 현재 상태 도달 가능성/ax 변화 한계 [m/s^3]
+  // "지금 최대로 밟으면 어디까지 줄일 수 있나"(reachable)를 푸는 **플랜트**
+  // 제동 능력 [m/s^2]. path_decel_max_ 와 목적이 다르다 — 저쪽은 경로 정형용
+  // 상한이고 이쪽은 차가 실제로 낼 수 있는 감속이다. 섞으면 ApplySpeedProfile
+  // 의 그립 게이트가 낙관 쪽으로 틀린다 (params.yaml 주석 참조).
+  double plant_decel_mps2_{2.38};   // = deployment_profiles.A_DEC_PLANNED
   double planning_delay_sec_{0.10}; // 인지-계획-제어 지연 보수치 [s]
   double vehicle_half_length_m_{0.275};
   double vehicle_half_width_m_{0.15};
