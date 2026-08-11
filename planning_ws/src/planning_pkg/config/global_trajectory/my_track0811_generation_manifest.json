@@ -1,16 +1,16 @@
 {
   "files": [
     {
-      "bytes": 32974,
+      "bytes": 32976,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0811_sp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "sp_0",
-      "sha256": "f2979f1bff98001a6423d3dc7f80bfedf19172be7a3941fc728c6cca13bc0fbc"
+      "sha256": "cf3a538032fb40960b4a9a0bf25479c4005d259742610ef35f61effa100b3334"
     },
     {
-      "bytes": 32974,
+      "bytes": 32976,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0811_sp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "sp_1",
-      "sha256": "f2979f1bff98001a6423d3dc7f80bfedf19172be7a3941fc728c6cca13bc0fbc"
+      "sha256": "cf3a538032fb40960b4a9a0bf25479c4005d259742610ef35f61effa100b3334"
     },
     {
       "bytes": 7577,
@@ -25,20 +25,20 @@
       "sha256": "7e2907dbacd08733613b463b40980a5bdbc361647084754b95836c57538126ab"
     },
     {
-      "bytes": 33090,
+      "bytes": 33089,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0811_iqp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "main_output",
-      "sha256": "3bc07980f7d1a5e49e782d9d4db04893a942d0df40e54a3fe1ed1048da880ac9"
+      "sha256": "679d2be098a2f57aad1104c43583b83181bd348a3df8d9cb5449f0b830550511"
     },
     {
-      "bytes": 33090,
+      "bytes": 33089,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0811_iqp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "main_runtime",
-      "sha256": "3bc07980f7d1a5e49e782d9d4db04893a942d0df40e54a3fe1ed1048da880ac9"
+      "sha256": "679d2be098a2f57aad1104c43583b83181bd348a3df8d9cb5449f0b830550511"
     }
   ],
-  "generation_content_sha256": "8d01d0d0800c21464f1f34a07983761cf2b0b175e806635b8564be7162e053f3",
-  "generation_id": "f464181748b049e283fd8e1477fe66dc",
+  "generation_content_sha256": "b2576793ab0f8767b5858985f96183eeb278b11405edd89ae3169ded18172ec3",
+  "generation_id": "f086aa225e2c488e87fe2ba43e704ac0",
   "main": "my_track0811_iqp_max7.00ms_margin0.08m_mu0.80.csv",
   "map": "my_track0811",
   "schema_version": 1,
@@ -59,16 +59,16 @@
       "width_min": 1.25
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 38,
+      "binding_pts": 0,
       "corner_pts": 256,
       "enabled": true,
-      "limited_pts": 165,
-      "raw_v_min": 2.7777777777777777,
-      "slope_max": 0.09,
+      "limited_pts": 99,
+      "raw_v_min": 3.3333333333333335,
+      "slope_max": 0.075,
       "slope_min": 0.03,
-      "smoothed_pts": 169,
+      "smoothed_pts": 172,
       "total_pts": 327,
-      "v_min": 3.2142857142857153
+      "v_min": 3.8571428571428577
     },
     "advisory_profiles": [
       "python_sim_tracker"
@@ -80,15 +80,15 @@
     "gate_target": "real",
     "longitudinal": {
       "accel_limit_min": 2.2,
-      "ax_sign_flips": 14,
-      "ax_sign_flips_before_smoothing": 15,
+      "ax_sign_flips": 11,
+      "ax_sign_flips_before_smoothing": 13,
       "decel_limit_min": 2.2,
       "jerk_limit": 30.0,
-      "jerk_max": 151.22654564168133,
-      "jerk_over_pts": 25,
-      "jerk_p50": 2.7396157599595554,
-      "jerk_p99": 95.56045274518722,
-      "jerk_p99_before_smoothing": 167.87993535194843,
+      "jerk_max": 112.43054183461919,
+      "jerk_over_pts": 27,
+      "jerk_p50": 2.144029793078555,
+      "jerk_p99": 84.63510458564298,
+      "jerk_p99_before_smoothing": 112.32845059808751,
       "smooth_passes": 2
     },
     "mu_profile": 0.8,
@@ -116,7 +116,7 @@
     "velocity_profile_settings": {
       "corner_accel_mps2": 2.2,
       "corner_decel_mps2": 2.2,
-      "lat_err_corner_s": 0.09,
+      "lat_err_corner_s": 0.075,
       "lat_err_exit_decay_m": 0.8,
       "lat_err_kappa_window_m": 2.0,
       "lat_err_straight_s": 0.03,

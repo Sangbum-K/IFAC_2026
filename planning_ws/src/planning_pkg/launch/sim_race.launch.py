@@ -264,8 +264,9 @@ def launch_setup(context, *args, **kwargs):
     #                          (레이스라인 생성에 쓰는 MU_PROFILE 0.80은 계획용
     #                           derate라 다른 값 — 그건 CSV에 이미 반영돼 있다)
     #   a_max 9.51   -> 4.5   : deployment_profiles.A_ACC_MAX
-    #   s_max 0.4189 -> 0.36  : deployment_profiles.MAX_STEER
-    #                          (서보 포화 실측 20.7deg, TUNING_STATUS.md §4)
+    #   s_max 0.4189 -> 0.3578: deployment_profiles.MAX_STEER
+    #                          (2026-08-11 gain -0.8564/offset 0.3935 에서 우측
+    #                           servo 포화 한계 20.51deg 자체, TUNING_STATUS.md §1)
     #   v_max 20.0   -> 7.0   : deployment_profiles.RACELINE_V_MAX
     #                          (vesc.yaml speed_max 32000 / gain 4255.1 = 7.52 이
     #                           하드웨어 천장이라 7.0이 그 아래로 들어간다)
@@ -284,13 +285,15 @@ def launch_setup(context, *args, **kwargs):
     #    옛 값으로 남아 있었다 — 실차가 달리는 my_track0809/0810 레이스라인은
     #    새 상수(A_ACC 4.5 / A_DEC_PLANNED 2.38 / MU_PROFILE 0.80)로 생성돼 있어
     #    gym 차량이 계획된 가속을 못 내고 코너에서 먼저 미끄러졌다.)
+    #   (2026-08-11 동기화: s_max 0.36 -> 0.3578. gain 재적합(-0.8564)으로
+    #    대칭 조향 한계가 0.357894 rad 로 내려갔다 — 0.36 은 그 한계를 넘긴다.)
     # ⚠️ gym의 accl_constraints는 가감속이 대칭(-a_max)이라 A_DEC_PLANNED 2.38을
     #   여기서 못 준다. control_pkg sim_real_car.yaml의 vehicle/max_decel_mps2
     #   2.38이 명령단에서 그 역할을 한다.
     REAL_CAR_VEHICLE = {
         'vehicle.mu': 0.90,
         'vehicle.a_max': 4.5,
-        'vehicle.s_min': -0.36, 'vehicle.s_max': 0.36,
+        'vehicle.s_min': -0.3578, 'vehicle.s_max': 0.3578,
         'vehicle.v_max': 7.0, 'vehicle.v_min': -1.0,
         'vehicle.width': 0.30, 'vehicle.length': 0.55,
         # 실차 Hokuyo /scan 40 Hz (run_0804 실측 748msg/18.5s). gym 기본 250 Hz는
@@ -547,7 +550,7 @@ def generate_launch_description():
                                           '빈 값이면 params.yaml 기본값만 사용.'),
         DeclareLaunchArgument('vehicle', default_value='gym_default',
                               description='gym 차량 물리 프로파일: gym_default | real_car. '
-                                          'real_car는 mu 0.75 / a_max 3.5 / s_max 0.36 / '
+                                          'real_car는 mu 0.90 / a_max 4.5 / s_max 0.3578 / '
                                           'v_max 7.0 등 실측값을 넣어 고속 슬립까지 '
                                           '실차에 맞춘다.'),
         DeclareLaunchArgument('map_filter', default_value='',
