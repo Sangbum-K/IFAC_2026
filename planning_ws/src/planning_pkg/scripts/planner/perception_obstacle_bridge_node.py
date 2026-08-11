@@ -70,6 +70,15 @@ class PerceptionObstacleBridgeNode(Node):
         self.declare_parameter('bridge/max_abs_vs_mps', 10.0)
         self.declare_parameter('bridge/max_abs_vd_mps', 4.0)
         self.declare_parameter('bridge/position_var_floor', 0.01)
+        # confidence -> pos_var 팽창의 **상한** [m].
+        # 예전 식은 (half * (1 - confidence))^2 라 confidence -> 0 이면 팽창이
+        # half 전체로 커졌다. 그런데 confidence 를 떨어뜨리는 주범은 coasting
+        # (detector 가 misses/track_timeout 만큼 감쇠시킨다)이고, coasting 은
+        # "존재가 불확실하다"는 뜻이지 "더 큰 물체"라는 뜻이 아니다.
+        # 결과적으로 **유령일수록 spliner 눈에 더 큰 장애물**이 돼서 회랑을 더
+        # 많이 막았다 (rosbag_0811 분석). 존재 불확실성은 min_confidence 와
+        # is_visible 이 담당하고, 여기서는 위치 불확실성만 유한하게 둔다.
+        self.declare_parameter('bridge/confidence_var_inflation_max_m', 0.10)
         self.declare_parameter('bridge/velocity_var_floor', 0.25)
         # 속도를 아직 유한차분으로 못 잰 첫 프레임의 속도 표준편차 prior [m/s].
         # max_abs_v(클립 한계)를 분산으로 쓰던 것을 대체한다 — 근거는 아래
@@ -105,6 +114,8 @@ class PerceptionObstacleBridgeNode(Node):
         self.max_abs_vd = float(p('bridge/max_abs_vd_mps').value)
         self.position_var_floor = float(
             p('bridge/position_var_floor').value)
+        self.conf_inflation_max = float(
+            p('bridge/confidence_var_inflation_max_m').value)
         self.velocity_var_floor = float(
             p('bridge/velocity_var_floor').value)
         self.init_vel_std = float(p('bridge/init_vel_std_mps').value)
@@ -580,8 +591,10 @@ class PerceptionObstacleBridgeNode(Node):
             obs.vs = vs
             obs.vd = vd
             confidence = max(float(src.confidence), 1e-3)
-            pos_var = max(self.position_var_floor,
-                          (half * (1.0 - confidence)) ** 2)
+            # 팽창을 conf_inflation_max 로 자른다 (선언부 주석 참조) — 저신뢰
+            # 검출이 더 **큰** 장애물이 되어 회랑을 막던 역전을 없앤다.
+            inflation = min(half * (1.0 - confidence), self.conf_inflation_max)
+            pos_var = max(self.position_var_floor, inflation ** 2)
             # 속도 미확정 프레임의 분산으로 max_abs_v(=클립 한계)의 제곱을
             # 쓰면 안 된다. 그건 유한차분 추정치를 자르는 위생 한계지 물체가
             # 실제로 낼 수 있는 속도가 아니다. vs_var=100 / vd_var=16이 되어
@@ -600,7 +613,9 @@ class PerceptionObstacleBridgeNode(Node):
             obs.vd_var = vel_var
             obs.size = 2.0 * half
             obs.is_static = not src.is_dynamic  # 초기값 — spliner cls_*가 재분류
-            obs.is_visible = True
+            # detector 의 실제 관측 여부를 그대로 전달한다. 예전에는 True 로
+            # 하드코딩돼 있어 coasting 외삽이 측정과 구분되지 않았다.
+            obs.is_visible = bool(src.is_visible)
             out.obstacles.append(obs)
 
         # 오래 안 보인 트랙 정리

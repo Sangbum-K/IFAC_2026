@@ -365,16 +365,7 @@ RViz 인터랙티브 튜너는 삭제됐다. 지금은 브라우저 도구 하�
 라인 기하는 `mkcsv`(build_map.py)가 담당한다.
 
 ```bash
-# 방법 1: 시뮬과 함께 (같은 RViz에서 주행 보면서 편집)
-ros2 launch planning_pkg sim_race.launch.py map:=<맵이름> tuner:=true
-
-# 방법 2: 튜너만 단독 실행 (gym 불필요, 맵 + 튜너 + RViz)
-#   map은 필수. stride/falloff/v_max/mu 는 트랙 전장과 CSV 파일명에서 자동 유도
-ros2 launch planning_pkg raceline_tuner.launch.py map:=<맵이름>
-
-#   다른 맵은 map:= 하나만 — CSV는 <맵>_iqp_*.csv 로 자동 탐색
-ros2 launch planning_pkg raceline_tuner.launch.py \
-    map:=<큰트랙> stride:=25 falloff:=8.0 v_max:=15.0 mu:=0.85
+tune my_track0808          # 또는: python3 tools/racelinetuner.py my_track0808
 ```
 
 - 속도 그래프의 **막대를 잡고 위/아래로 드래그** → 그 구간 속도 조절

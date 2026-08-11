@@ -59,7 +59,15 @@ perception_obstacle_bridge_node:
     bridge/input_topic: /perception/obstacles          # perception 팀 발행 (f1tenth_perception_msgs)
     bridge/output_topic: /perception/obstacles_frenet  # spliner/recovery가 구독
     bridge/target_frame: map
-    bridge/min_confidence: 0.0       # detector가 확정한 저신뢰/coasting 트랙도 보존
+    # 2026-08-11 rosbag_0811 분석으로 0.0 -> 0.2.
+    # coasting(미관측 외삽) 트랙이 그대로 통과해 두 콘 사이에 "유령"을 만들었다.
+    # 자기 위치 반경 0.25m 안의 스캔 점: 실물 콘 67~75% vs 유령 9%(중앙값 0점).
+    # confidence 중앙값도 실물 0.47~0.53 vs 유령 0.06(p90 0.16)으로 갈린다.
+    # 0.2 = 실물 관측 77% 유지 / 유령 92% 제거 (run_0811_165619 실측).
+    # 버려지는 실물 23%는 전부 미측정(coasting) 프레임이라 물체가 사라지지 않는다.
+    # ⚠️ 이 값을 0으로 되돌리려면 is_visible 소비(spliner/require_visible_for_*)가
+    #    켜져 있는지 먼저 확인할 것 — 둘 다 꺼지면 유령이 그대로 복귀한다.
+    bridge/min_confidence: 0.2
     bridge/wall_margin_m: 0.10       # 트랙 경계 밖(벽 반사) 클러스터 제거 여유
     bridge/vel_lpf_alpha: 0.3        # vs/vd 유한차분 LPF
     bridge/track_forget_sec: 2.0
@@ -139,6 +147,20 @@ perception_obstacle_bridge_node:
 spliner_node:
   ros__parameters:
     spliner/obstacle_topic: /perception/obstacles_frenet   # 브릿지 출력
+    # ── 원호 이탈 (2026-08-11) ─────────────────────────────────────────────
+    # 라인스위치/스플라인이 **조향 기하 하한**으로 거부했을 때만 도는 마지막
+    # 회피. 평행 복귀를 포기하고 한쪽으로만 꺾어(2A/L², S자는 6A/L²) 필요
+    # 거리를 58%로 줄인다. rosbag_0811 기하불가 기각 표본 기준 LaneSwitch
+    # 기각의 48% / FreeSpline 기각의 67%가 이 모델에서는 성립한다.
+    spliner/escape_arc_enabled: true
+    # 통상 전환(blend_lat_acc_max 5.0)보다 크게 잡되 path_lat_acc_max 이하.
+    # 여기서 아끼면 그 다음은 정지다.
+    spliner/escape_arc_lat_acc: 5.5
+    spliner/escape_arc_min_speed: 1.2      # 미만은 정상 회피가 이미 성립
+    spliner/escape_arc_max_heading_rad: 0.70   # 40도. 넘으면 복귀가 벽으로 간다
+    # coasting(is_visible=false) 장애물에게 커밋 파기 권한을 주지 않는다.
+    # rosbag_0811에서 두 콘 사이 committed_break가 전부 유령 때문이었다.
+    spliner/commit_break_requires_visible: true
     # perception real_car range_max(12.0)와 일치. 8.0이면 12 m에서 이미 보이는
     # 장애물을 8 m까지 버려서 (a) 조기 레인스위치를 못 하고 (b) 6 m/s에서
     # 정적 장애물 앞 정지가 불가능하다 (8 m: 5.70 m/s가 한계, 12 m: 7.25 m/s).

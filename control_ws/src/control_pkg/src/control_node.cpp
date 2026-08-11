@@ -385,6 +385,9 @@ public:
     estop_sub_ = this->create_subscription<std_msgs::msg::Bool>(
       estop_topic, reliable_qos,
       std::bind(&ControlNode::estop_callback, this, std::placeholders::_1));
+    escape_active_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+      "/planner/escape_active", reliable_qos,
+      std::bind(&ControlNode::escape_active_callback, this, std::placeholders::_1));
     recovery_state_sub_ = this->create_subscription<std_msgs::msg::String>(
       recovery_state_topic, reliable_qos,
       std::bind(&ControlNode::recovery_state_callback, this, std::placeholders::_1));
@@ -549,6 +552,18 @@ private:
     acceleration_samples_[0] = imu_acceleration_sign_ * msg->linear_acceleration.x;
   }
 
+  // 플래너가 원호 이탈(BuildEscapeArc) 중이라고 알려 오는 신호.
+  // 그 기동은 설계상 조향이 포화 근처로 가므로, 백스톱의 **조향포화 분기**를
+  // 그대로 두면 감속으로 회피와 싸운다. 경로오차 분기는 그대로 살린다 —
+  // 그건 "계획을 못 따라가고 있다"는 뜻이라 원호 중에도 유효한 신호다.
+  // stamp 를 같이 저장해 신호가 끊기면 자동으로 원복한다 (fail-closed).
+  void escape_active_callback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    escape_active_ = msg->data;
+    escape_active_stamp_ = this->now();
+  }
+
   void estop_callback(const std_msgs::msg::Bool::SharedPtr msg)
   {
     {
@@ -672,6 +687,8 @@ private:
     bool has_recovery_state = false;
     bool has_recovery_target_speed = false;
     bool estop = false;
+    bool escape_active = false;
+    rclcpp::Time escape_active_stamp{0, 0, RCL_ROS_TIME};
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
       waypoints = waypoints_;
@@ -694,6 +711,8 @@ private:
       has_recovery_state = has_recovery_state_;
       has_recovery_target_speed = has_recovery_target_speed_;
       estop = estop_;
+      escape_active = escape_active_;
+      escape_active_stamp = escape_active_stamp_;
     }
 
     const auto now = this->now();
@@ -927,7 +946,13 @@ private:
           backstop_cap = std::min(
             backstop_cap, speed_now - over * (speed_now - backstop_min_speed_));
         }
-        if (sat > backstop_sat_ratio_) {
+        // 원호 이탈 중이면 조향포화 분기를 건너뛴다. 이 기동은 "조향을 최대로
+        // 쓰는 것"이 목적이라, 포화를 감속 사유로 읽으면 회피와 정면으로
+        // 싸운다 (플래너는 회피를 계획하고 컨트롤러는 그 속도를 깎는다).
+        // 신호가 끊기면 즉시 원복 — 게이팅은 fail-closed 여야 한다.
+        const bool escape_now = escape_active &&
+          (now - escape_active_stamp).seconds() < kEscapeActiveTimeoutSec;
+        if (sat > backstop_sat_ratio_ && !escape_now) {
           // 조향이 포화면 기하를 못 만들고 있다. 다만 경로오차 분기와 같은
           // **비례 램프**로 깎는다. 0808 run_202157에서 하한 즉시 캡은
           // 오발화했다: apex 5곳에서 경로오차가 3~7cm(= 추종은 완벽)인데
@@ -1304,6 +1329,10 @@ private:
   // Controller state
   bool autonomous_{false};
   bool estop_{false};
+  bool escape_active_{false};
+  rclcpp::Time escape_active_stamp_{0, 0, RCL_ROS_TIME};
+  // 이 시간 넘게 신호가 없으면 원호 중이 아니라고 본다 (플래너 20 Hz).
+  static constexpr double kEscapeActiveTimeoutSec{0.30};
   bool has_odom_{false};
   bool has_frenet_odom_{false};
   bool has_recovery_state_{false};
@@ -1338,6 +1367,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr frenet_odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr escape_active_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr recovery_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr recovery_target_speed_sub_;
   rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr command_pub_;

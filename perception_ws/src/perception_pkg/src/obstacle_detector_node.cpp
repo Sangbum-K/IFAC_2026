@@ -237,6 +237,27 @@ private:
     this->declare_parameter<double>("reid_timeout_sec", 1.0);
     this->declare_parameter<int>("pos_hist_len", 20);
     this->declare_parameter<int>("min_hits", 3);
+    // ── 초 단위 창 (프레임 상수 대체) ────────────────────────────────────
+    // 위 track_timeout / n_confirm / n_release / dynamic_release / pos_hist_len
+    // 은 전부 프레임 수라, 발행 주기가 바뀌면 뜻하는 벽시계 창이 같이 바뀐다
+    // (params.yaml 의 2.33x 재스케일 주석 참조). 실측 출력 주기는 스로틀과
+    // LiDAR 지터의 맥놀이라 12.5~20 Hz 사이를 오가므로, 같은 설정에서도
+    // ±30% 밴드가 생긴다.
+    //
+    // 여기서는 창을 **초**로 받고, 노드가 자기 실측 처리 주기로 프레임 수를
+    // 매 사이클 환산한다. 0 이하면 비활성 = 위 프레임 값을 그대로 쓴다
+    // (기존 튜닝을 그대로 재현하고 싶을 때).
+    //
+    // ⚠️ min_hits 는 의도적으로 프레임으로 남긴다 — 이건 시간 창이 아니라
+    //    "센서 노이즈는 프레임 단위로 뜬다"는 프레임 도메인 게이트다
+    //    (params.yaml 의 근거 주석 참조).
+    this->declare_parameter<double>("track_timeout_sec", 0.0);
+    this->declare_parameter<double>("n_confirm_sec", 0.0);
+    this->declare_parameter<double>("n_release_sec", 0.0);
+    this->declare_parameter<double>("dynamic_release_sec", 0.0);
+    this->declare_parameter<double>("pos_hist_sec", 0.0);
+    // 실측 주기 EMA 계수. 0에 가까울수록 느리게 반응한다.
+    this->declare_parameter<double>("rate_ema_alpha", 0.05);
 
     this->declare_parameter<std::string>("scan_topic", "/scan");
     this->declare_parameter<std::string>("obstacle_topic", "/perception/obstacles");
@@ -300,6 +321,12 @@ private:
     reid_distance_ = this->get_parameter("reid_distance").as_double();
     reid_timeout_ = this->get_parameter("reid_timeout_sec").as_double();
     pos_hist_len_ = static_cast<int>(this->get_parameter("pos_hist_len").as_int());
+    track_timeout_sec_ = this->get_parameter("track_timeout_sec").as_double();
+    n_confirm_sec_ = this->get_parameter("n_confirm_sec").as_double();
+    n_release_sec_ = this->get_parameter("n_release_sec").as_double();
+    dynamic_release_sec_ = this->get_parameter("dynamic_release_sec").as_double();
+    pos_hist_sec_ = this->get_parameter("pos_hist_sec").as_double();
+    rate_ema_alpha_ = this->get_parameter("rate_ema_alpha").as_double();
 
     const double rate = this->get_parameter("process_rate_hz").as_double();
     const double tf_timeout_sec = this->get_parameter("tf_timeout_sec").as_double();
@@ -568,6 +595,55 @@ private:
     }
   }
 
+  // ── 초 단위 창 -> 프레임 수 환산 ───────────────────────────────────────
+  // 실측 처리 주기(measured_dt_)가 바뀔 때만 다시 계산한다. 매 프레임
+  // 재계산해도 결과는 같지만, 로그를 한 번만 남기기 위해 게이트를 둔다.
+  void refresh_frame_windows()
+  {
+    if (measured_dt_ <= 1e-6) {
+      return;
+    }
+    const bool any_sec = track_timeout_sec_ > 0.0 || n_confirm_sec_ > 0.0 ||
+      n_release_sec_ > 0.0 || dynamic_release_sec_ > 0.0 || pos_hist_sec_ > 0.0;
+    if (!any_sec) {
+      return;
+    }
+    // dt 가 5% 이상 움직였을 때만 갱신 — EMA 미세 진동으로 창이 떨리지 않게.
+    if (last_window_dt_ > 0.0 &&
+      std::abs(measured_dt_ - last_window_dt_) < 0.05 * last_window_dt_)
+    {
+      return;
+    }
+    last_window_dt_ = measured_dt_;
+    auto frames = [&](double sec, int fallback, int lo) {
+      if (sec <= 0.0) {
+        return fallback;
+      }
+      const double f = sec / measured_dt_;
+      // 100000 은 read_and_validate_parameters 의 상한과 같다.
+      return static_cast<int>(std::clamp(std::lround(f),
+        static_cast<long>(lo), static_cast<long>(100000)));
+    };
+    // min_hits 는 프레임 도메인 게이트라 환산 대상이 아니지만,
+    // track_timeout >= min_hits 불변식은 여기서도 지켜야 한다.
+    track_timeout_ = std::max(
+      frames(track_timeout_sec_, track_timeout_, 1), min_hits_);
+    n_confirm_ = frames(n_confirm_sec_, n_confirm_, 1);
+    n_release_ = frames(n_release_sec_, n_release_, 1);
+    dynamic_release_ = frames(dynamic_release_sec_, dynamic_release_, 1);
+    pos_hist_len_ = frames(pos_hist_sec_, pos_hist_len_, 2);
+    if (tracker_) {
+      tracker_->set_track_timeout(track_timeout_);
+      tracker_->set_pos_hist_len(pos_hist_len_);
+    }
+    RCLCPP_INFO(
+      this->get_logger(),
+      "프레임 창 재환산 (실측 %.1f Hz, dt %.1f ms): track_timeout=%d "
+      "n_confirm=%d n_release=%d dynamic_release=%d pos_hist_len=%d",
+      1.0 / measured_dt_, 1000.0 * measured_dt_, track_timeout_, n_confirm_,
+      n_release_, dynamic_release_, pos_hist_len_);
+  }
+
   // ── 콜백: /scan ────────────────────────────────────────────────────────
   void on_scan(sensor_msgs::msg::LaserScan::ConstSharedPtr msg)
   {
@@ -670,7 +746,21 @@ private:
       have_sensor_xy = true;
     }
     // 여기까지 온 프레임만 실제로 처리된다 — 스로틀 예산은 이제 소비한다.
+    // 실측 처리 주기를 EMA 로 추적한다. 초 단위 창(*_sec)이 프레임으로
+    // 환산될 때 쓰는 유일한 기준이며, 이 값이 흔들리면 창의 벽시계 길이가
+    // 흔들리는 게 아니라 **일정하게 유지**된다 (그게 이 기능의 목적이다).
+    if (last_processed_ > -1e17) {
+      const double dt = stamp - last_processed_;
+      // 스로틀 하한(min_period_)보다 짧거나 1초를 넘는 간격은 이상치로 본다
+      // (백 재생 점프, 스캔 드롭). EMA 를 오염시키지 않는다.
+      if (dt >= min_period_ * 0.5 && dt <= 1.0) {
+        measured_dt_ = (measured_dt_ <= 0.0)
+          ? dt
+          : (1.0 - rate_ema_alpha_) * measured_dt_ + rate_ema_alpha_ * dt;
+      }
+    }
     last_processed_ = stamp;
+    refresh_frame_windows();
 
     // ②.5 경계 필터 (target_frame 기준이므로 정적 폴리곤을 그대로 쓸 수 있다).
     if (!boundary_polygon_.empty()) {
@@ -822,6 +912,10 @@ private:
       obs.velocity.y = track->kf.vy();
       obs.velocity.z = 0.0;
       obs.is_dynamic = track->is_dynamic;
+      // 이번 프레임에 측정이 매칭됐는지 그대로 넘긴다. confidence 감쇠만으로는
+      // 하류가 "저신뢰 측정"과 "외삽"을 구분할 수 없다 — 둘의 대응이 다르다
+      // (전자는 여유를 키우면 되지만, 후자는 존재 자체가 불확실하다).
+      obs.is_visible = (track->misses == 0);
       obs.confidence = static_cast<float>(track->confidence * coast);
       obs.radius = static_cast<float>(track->radius);
       obstacle_array.obstacles.push_back(obs);
@@ -959,6 +1053,12 @@ private:
   int track_timeout_{1};
   double reid_distance_{0.0}, reid_timeout_{0.0};
   int pos_hist_len_{2};
+  // 초 단위 창 (0 이하 = 비활성, 위 프레임 값 사용)
+  double track_timeout_sec_{0.0}, n_confirm_sec_{0.0}, n_release_sec_{0.0};
+  double dynamic_release_sec_{0.0}, pos_hist_sec_{0.0};
+  double rate_ema_alpha_{0.05};
+  double measured_dt_{0.0};        ///< 처리 간 실측 dt EMA [s] (0 = 미측정)
+  double last_window_dt_{0.0};     ///< 마지막으로 프레임 창을 환산한 dt
   double min_period_{0.0};
   bool require_source_stamp_{true};
   double max_source_age_{0.0}, source_future_tolerance_{0.0};

@@ -17,6 +17,7 @@
 #ifndef PERCEPTION_PKG__TRACKER_HPP_
 #define PERCEPTION_PKG__TRACKER_HPP_
 
+#include <algorithm>
 #include <cstddef>
 #include <deque>
 #include <memory>
@@ -95,6 +96,17 @@ public:
   std::vector<TrackPtr> step(const std::vector<Cluster> & clusters, double stamp);
 
   int track_timeout() const {return track_timeout_;}
+
+  /// 프레임 창을 실측 처리율로부터 다시 계산해 넣기 위한 setter.
+  /// (초 단위 파라미터 -> 프레임 변환은 노드가 담당한다. tracker 는 프레임
+  ///  도메인에서만 동작한다 — 스캔이 균일 간격이 아니어도 '연속 미관측 N회'
+  ///  라는 의미가 흔들리지 않기 때문이다.)
+  /// pos_hist_len 변경은 **새로 생성되는 트랙**부터 적용된다.
+  void set_track_timeout(int frames) {track_timeout_ = std::max(1, frames);}
+  void set_pos_hist_len(int frames)
+  {
+    pos_hist_len_ = static_cast<std::size_t>(std::max(2, frames));
+  }
 
 private:
   struct Retired

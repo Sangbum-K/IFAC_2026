@@ -15,6 +15,7 @@
 
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
@@ -146,6 +147,25 @@ private:
   // 않는다. Tier1/2가 "조향 기하 하한 초과"가 아닌 일시적 사유로 실패한
   // 경우에 쓴다 — 정지가 정당하지 않고, 감속만 해도 다음 사이클의
   // BlendDist가 줄어 회피가 성립한다.
+  // Tier 2c: 원호 이탈 (escape arc).
+  // Tier1(라인스위치)/Tier2(스플라인)가 **조향 기하 하한**으로 거부했을 때만
+  // 시도하는 마지막 회피 수단. 둘 다 "평행 복귀"를 전제한 smoothstep 이라
+  // 6A/L² 을 요구하는데, 여기서는 평행 복귀를 포기하고 한쪽으로만 꺾어
+  // 2A/L² 로 비킨다 (필요 거리 58%). 사람이 급하면 핸들만 꺾는 것과 같다.
+  //
+  // 전제 3가지 — 하나라도 깨지면 정지가 더 안전하다:
+  //  (1) 정적 + 지금 실제로 보이는(is_visible) 장애물일 것. 외삽 유령에
+  //      대고 급조향하면 멀쩡한 라인에서 벽으로 튄다.
+  //  (2) 비키는 쪽에 실제 통과폭이 있을 것 (벽 여유 검사).
+  //  (3) 남은 헤딩을 풀 복귀 구간이 계획 안에 들어올 것.
+  // 곡률은 "최대 조향"이 아니라 조향 한계와 **그립 한계 중 작은 쪽**을 쓴다 —
+  // 3 m/s 이상에서는 그립이 구속이라 최대 조향을 넣으면 그냥 밀린다.
+  bool BuildEscapeArc(
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks);
+
   bool BuildTrailing(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
@@ -215,7 +235,16 @@ private:
   // 이다. 이 항을 빼면 헤어핀에서 하한을 과소평가한다 — 0807 run_164216
   // (kappa 0.74, A 0.49)의 참 하한은 1.80m가 아니라 2.23~2.45m였고, 그
   // 차이만큼 "성립한다고 판정했지만 실제로는 못 도는" 경로가 나왔다.
-  double BlendGeomFloor(double amplitude, double kappa_track = 0.0) const;
+  //
+  // one_sided: 한쪽으로만 꺾어 "비키기만" 하는 원호 기동. 평행 복귀를 하는
+  // smoothstep 은 피크 곡률이 6A/L² 인데, 한쪽 원호는 2A/L² 이라 같은 곡률로
+  // **3배**의 횡이동을 낸다. 즉 필요 거리가 1/sqrt(3) = 58% 로 준다.
+  // rosbag_0811 기하불가 기각 표본에 대입하면 LaneSwitch 기각의 48% /
+  // FreeSpline 기각의 67% 가 이 모델에서는 성립한다.
+  // 대신 기동 끝에서 헤딩이 kappa*L 만큼 남으므로(3.8 m/s, A=0.46 에서 41도)
+  // 반드시 복귀 블렌드와 세트로만 써야 한다 — BuildEscapeArc 참조.
+  double BlendGeomFloor(double amplitude, double kappa_track = 0.0,
+                        bool one_sided = false) const;
 
   // 계획이 달성 가능하다고 보는 최대 곡률 [1/m].
   //   steer_kappa_scale_ * tan(|delta_max|) / wheelbase
@@ -455,6 +484,18 @@ private:
   // 1.8배로 늘리면 3분의 1이 된다. 0이면 이 완화를 끈다(옛 동작).
   double early_switch_kappa_max_{0.10};   // [rad/m] 0.10 = 반경 10m
   bool spline_fallback_active_{false};  // "모든 레인 막힘 -> 스플라인" 상승엣지 이벤트용
+  // ── 원호 이탈 (BuildEscapeArc) ──────────────────────────────────────────
+  bool escape_arc_enabled_{true};
+  // 원호 기동에 배정할 횡가속 [m/s²]. blend_lat_acc_max_(3.0)가 아니라 더
+  // 큰 값을 쓰는 이유: 이건 정상 주행의 전환이 아니라 마지막 회피 수단이고,
+  // 여기서 아끼면 그 다음은 정지다. path_lat_acc_max_(7.0) 이하로 둘 것.
+  double escape_arc_lat_acc_{5.5};
+  // 이 속도 미만에서는 원호를 시도하지 않는다. 저속에서는 이미 정상 회피가
+  // 성립하고(그립 곡률이 v² 로 커진다), 굳이 헤딩을 남길 이유가 없다.
+  double escape_arc_min_speed_{1.2};
+  // 기동 끝에 남는 헤딩 상한 [rad]. 이보다 크면 복귀가 벽으로 간다.
+  double escape_arc_max_heading_{0.70};
+  bool escape_arc_active_{false};       // 상승엣지 이벤트 + 컨트롤러 게이팅용
   // "회피 포기(트랙경계)" 상승엣지 이벤트용. 이 사유는 매 사이클 재발생하므로
   // (30Hz x 8초 = 207회 실측) 엣지에서만 발행하지 않으면 pitwall 로그가 묻힌다.
   bool boundary_abort_active_{false};   // 직전 사이클에 경계 abort가 있었나
@@ -513,6 +554,13 @@ private:
   std::map<int32_t, ObsClsTrack> cls_tracks_;
   // 커밋된 회피를 파기할 수 있는 최소 관측 수 (StableObstacles).
   int commit_break_min_obs_{3};
+  // coasting(is_visible=false) 장애물에게 커밋 파기 권한을 줄 것인가.
+  // false(기본)면 외삽만으로 성립한 회피를 깨지 못한다 — rosbag_0811 에서
+  // 두 콘 사이 committed_break 가 전부 근거 없는 coasting 트랙 때문이었고,
+  // 그때마다 회피가 트레일링(급감속)으로 떨어졌다.
+  // 여전히 **경로 계획의 입력**으로는 쓰인다 (가림 중인 실물을 잊지 않도록).
+  // 막는 것은 "이미 성립한 회피를 뒤집는" 권한뿐이다.
+  bool commit_break_requires_visible_{true};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
@@ -649,6 +697,10 @@ private:
   rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_evasion_wpnts_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_markers_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_sector_markers_;
+  // 원호 이탈 중임을 컨트롤러에 알린다. 이 기동은 설계상 조향이 포화 근처로
+  // 가므로, control 의 추종 백스톱(조향포화 -> 감속)이 그대로 걸리면 회피와
+  // 싸운다. 컨트롤러는 이 신호가 true 인 동안 포화 분기만 건너뛴다.
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_escape_active_;
   rclcpp::TimerBase::SharedPtr t_run_;
 };
 
