@@ -51,6 +51,28 @@ private:
   double ApexFor(
     const std::string & side,
     const f1tenth_planning_msgs::msg::Obstacle & obs) const;
+
+  // ── 연쇄 회피 그룹 ──────────────────────────────────────────────────────
+  // closest 하나만 보고 사이드/오프셋을 정하면, 그 회피가 끝나기 전에 다음
+  // 장애물이 closest 가 되면서 **같은 상황에 대해 답이 뒤집힌다**.
+  //   run_0810_233521 재생 실측: 인카운터 71건 중 50건(70%)이 "차가 이미
+  //   라인 밖(|d|>0.2)"인 상태에서 시작했고, side_switch_blocked 가 난
+  //   28건 중 27건(96%)이 그 경우였다. 직전 인카운터와의 간격 p50 0.04초 —
+  //   별개 사건이 아니라 한 번의 회피 도중 closest 가 갈린 것이다.
+  // 그래서 "closest 의 복귀 블렌드 안에 들어오는 장애물"을 연쇄적으로 모아
+  // 한 덩어리로 보고, 사이드와 오프셋을 그 덩어리 전체로 정한다.
+  // 병합(ClusterObstacles)과 다르다: 여기서는 s 구간을 합치지 않으므로
+  // MinWallInSpan 이 사이 구간의 최소 벽폭까지 훑는 부작용이 없다.
+  std::vector<f1tenth_planning_msgs::msg::Obstacle> EvasionGroup(
+    const f1tenth_planning_msgs::msg::Obstacle & closest,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead) const;
+  // 그룹 전체를 한 오프셋으로 비켜 가는 d. clears_all 이 false면 그 사이드로는
+  // 전부를 한 번에 통과할 수 없다 (지그재그가 필요 — 이 티어의 범위 밖).
+  double GroupApex(
+    const std::string & side,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & group,
+    bool * clears_all) const;
+
   bool DoSpline(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
@@ -70,9 +92,15 @@ private:
   // 목표 오프셋 d_hold로 ease-on→hold→ease-back 궤적 생성 + 충돌/경계 검증.
   // closest_obs를 포함한 모든 장애물과 차량 footprint/도착시간을 검증한다.
   // 목표 오프셋 계산이 성공했더라도 실제 sampled path가 안전하지 않으면 false.
+  // hold_through_s: 오프셋을 유지해야 하는 마지막 s (그룹의 끝 장애물).
+  //   기본은 closest_obs.s_end 지만, 복귀 블렌드 구간에 다른 장애물이 있으면
+  //   그 뒤까지 hold 를 늘려 **복귀하다 들이받는 것**을 막는다. 늘리지 않으면
+  //   경로가 CheckPathCollision 에서 거부되고, 그 다음 사이클에 뒤 장애물이
+  //   closest 가 되면서 사이드가 뒤집힌다 (EvasionGroup 주석의 27건).
   bool BuildLaneSwitch(
     double d_hold,
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    double hold_through_s,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
@@ -371,6 +399,11 @@ private:
   double path_decel_max_{6.0};      // 회피 궤적 역방향 감속 한계 [m/s^2]
   double path_accel_max_{3.0};      // 회피 궤적 순방향 가속 한계 [m/s^2]
   double path_jerk_max_{8.0};       // 현재 상태 도달 가능성/ax 변화 한계 [m/s^3]
+  // "지금 최대로 밟으면 어디까지 줄일 수 있나"(reachable)를 푸는 **플랜트**
+  // 제동 능력 [m/s^2]. path_decel_max_ 와 목적이 다르다 — 저쪽은 경로 정형용
+  // 상한이고 이쪽은 차가 실제로 낼 수 있는 감속이다. 섞으면 ApplySpeedProfile
+  // 의 그립 게이트가 낙관 쪽으로 틀린다 (params.yaml 주석 참조).
+  double plant_decel_mps2_{2.38};   // = deployment_profiles.A_DEC_PLANNED
   double planning_delay_sec_{0.10}; // 인지-계획-제어 지연 보수치 [s]
   double vehicle_half_length_m_{0.275};
   double vehicle_half_width_m_{0.15};
@@ -565,6 +598,9 @@ private:
   bool has_ot_side_obs_{false};
   static constexpr double kOtSideLockDistM{1.5};   // 같은 장애물로 볼 s 오차
   static constexpr double kOtSideLockSec{1.0};     // 잠금 유효 시간
+  // 연쇄 회피 그룹 상한. 콘이 줄지어 있어도 hold 가 무한정 늘어나지 않게
+  // 막는다 (구간 상한은 별도로 lookahead_m_ 가 잡는다).
+  static constexpr size_t kEvasionGroupMax{4};
   // 거부 사유 카운터 (NoteReject/PublishRejectCounts).
   mutable std::map<std::string, int> reject_counts_;
   rclcpp::Time reject_publish_stamp_{0, 0, RCL_ROS_TIME};

@@ -241,7 +241,35 @@ spliner_node:
     # 겹치며 run_0803_213313에서 28.6초 정지 라치가 됐다.
     # 0.50 = 6.6Hz 스트림의 3프레임 분. detector가 목표대로 >=15Hz가 되면
     # 다시 조일 것.
-    spliner/obs_timeout_sec: 0.50
+    #   -> 2026-08-11 조임. perception C++ 재작성(8706837) 후 rosbag0810
+    #      run_0810_233206 재생 실측 15.4Hz (dt p50 69.6ms / p95 80.2ms /
+    #      max 83.3ms). 0.25 는 관측 최대 간격의 3.0배이고 여전히 위 조건
+    #      "실측 주기의 2배 이상"을 만족한다(3.8배). 0.20 으로 더 내리지 않은
+    #      이유는 p95 80ms 기준 여유가 2.5배로 얇아져 run_0803 정지 라치의
+    #      재발 마진이 줄기 때문.
+    #      ⚠ 실측은 개발 PC 재생 기준이다. 차량 컴퓨트에서 15.4Hz 를 못 내면
+    #        이 값부터 되돌릴 것 — 미달 시 증상이 fail-safe 정지 깜빡임이다.
+    #
+    #   -> 2026-08-11(2) 0.25 -> 0.30. 위 ⚠ 를 차량 컴퓨트(Jetson Orin Nano
+    #      Super, MAXN_SUPER)에서 직접 확인했다. 같은 백 run_0810_233206 재생,
+    #      real_car 프로파일, 맵 벽 필터 활성:
+    #        출력 15.49 Hz / dt p50 69.5 · p95 80.0 · max 83.3 ms
+    #        detector CPU p50 7.3% / max 8.6% (1코어 기준)
+    #      개발 PC 수치와 사실상 동일하므로 15.4Hz 가정은 차량에서도 성립한다.
+    #
+    #      그런데 **이 게이트가 재는 것은 detector 가 아니라 브릿지 출력**이다.
+    #      obstacles_stamp_ 는 수신시각(this->now())이고, 그 앞에 파이썬
+    #      perception_obstacle_bridge 가 있다. 브릿지는 프레임을 통째로 버리고
+    #      return 하는 경로가 5개다 (TF 실패 / source age / malformed / 맵 미준비
+    #      / 중복 id) — 실제로 real_car.yaml 의 max_source_age 주석이 "511프레임
+    #      중 508개 거부" 사례를 기록하고 있다.
+    #      즉 예산은 detector dt 뿐 아니라 브릿지 드롭까지 흡수해야 한다:
+    #        0.25 = 3.00 x 83.3ms  -> 2프레임 연속 드롭(250ms)에서 정확히 경계
+    #        0.30 = 3.60 x 83.3ms  -> 2프레임 드롭 + 20% 여유          <- 채택
+    #      완화 쪽 비용은 장애물이 50ms 더 오래 남는 것(7 m/s 에서 0.35 m)이고,
+    #      조임 쪽 비용은 run_0803 의 28.6초 정지 라치 재발이다. 후자가 훨씬 크다.
+    #      옛 0.50 대비로는 여전히 40% 조인 값이다.
+    spliner/obs_timeout_sec: 0.30
     spliner/use_prediction: true         # Predictive Spliner: 예측 충돌구간이 원시 관측 대체
     # 회피 불가(트랙경계 abort) 시 TRAILING 폴백: raceline 유지 + 장애물 뒤
     # trailing_gap에서 장애물 속도(정적이면 0)까지 감속.
@@ -292,7 +320,14 @@ spliner_node:
     # 유령 소멸 -> 회복(5.051), 재등장 -> 재거부(5.615)로 인과가 3번 확인됐다.
     # 3프레임은 perception min_hits와 같은 성격의 게이트다.
     # (재계획 경로의 충돌 검증에는 적용하지 않는다 — 거기선 fail-closed가 맞다.)
-    spliner/commit_break_min_obs: 3
+    #   -> 2026-08-11: 3 -> 7. 이 값이 실제로 방어하는 건 프레임 수가 아니라
+    #      "유령이 얼마나 오래 버텨야 커밋을 깰 수 있나"라는 시간이다.
+    #      0807 사건 당시 6.6Hz 에서 3프레임 = 0.45s 였는데, perception C++
+    #      재작성 후 실측 15.4Hz 에서 3프레임은 0.19s 로 방어가 절반 이하로
+    #      약해진다. 7프레임 = 0.45s 로 그때의 방어력을 복원한다.
+    #      (perception 쪽 프레임 게이트 재스케일과 한 세트 —
+    #       perception_ws/.../config/params.yaml 의 2.33x 주석 참조.)
+    spliner/commit_break_min_obs: 7
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.30, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30
@@ -349,18 +384,37 @@ spliner_node:
     #    구속은 그립이 아니라 추종오차이므로, 올린 뒤 첫 주행에서 회피 중
     #    /pitwall/lat_err 가 벽 여유(최소 0.35 m) 안인지 확인할 것.
     spliner/path_lat_acc_max: 7.85    # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE*g)
-    spliner/path_decel_max: 6.0       # 회피 궤적 역방향 감속 한계 [m/s^2]
-                                      # (raceline 프로파일 최대 요구 6.27과 정합)
-    # ⚠️ 미해결: 이 값은 실차 능력의 **과대평가**다. deployment_profiles 의
-    # A_DEC_PLANNED = A_DEC_MAX(1.4) + 0.14*7.0 = 2.38 m/s² 이고, 실측도
-    # run_0809_231809 4랩에서 명령 4.23 m/s / 실제 4.96 m/s 로 못 따라갔다.
-    # 6.0이면 (a) 프로파일이 늦게 제동하고 (b) ApplySpeedProfile 의
-    # require_current_feasible 이 "곧 줄일 수 있다"고 낙관해 못 지킬 경로를
-    # 통과시킨다.
-    # 그런데 단독으로 2.38로 내리면 그 낙관이 사라지면서 거부가 **더** 늘어난다.
-    # 함께 가야 하는 수정: require_current_feasible 실패 시 경로를 버리지 말고
-    # 진입 구간을 도달 가능한 최대 제동 곡선으로 채워 발행(= 감속 강등).
-    # 그 수정 전에는 여기를 건드리지 말 것.
+    # 회피 궤적 **정형**용 역방향 감속 한계 [m/s^2]. 플랜트 능력이 아니다 —
+    # 그건 아래 plant_decel_mps2 다. 둘을 분리하기 전까지 이 값 하나가 양쪽을
+    # 겸했고, 그게 아래 ⚠️ 블록의 미해결 항목이었다.
+    spliner/path_decel_max: 6.0
+    # 2026-08-11: 위 주석의 "raceline 프로파일 최대 요구 6.27과 정합"은 폐기.
+    # my_track0810 CSV 실측 ax 범위는 [-2.38, +4.50] 으로 최대 제동 요구가
+    # 정확히 A_DEC_PLANNED 2.38 이다. 6.27 은 mu 0.68 시절 숫자다.
+    #
+    # ── 해소됨 (2026-08-11) ────────────────────────────────────────────────
+    # 옛 ⚠️ 미해결: "이 값은 실차 능력의 과대평가(A_DEC_PLANNED 2.38)인데,
+    #   단독으로 2.38 로 내리면 require_current_feasible 의 거부가 더 늘어난다.
+    #   함께 가야 하는 수정 = 실패 시 경로를 버리지 말고 진입 구간을 도달 가능한
+    #   최대 제동 곡선으로 채워 발행. 그 전에는 건드리지 말 것."
+    # 그 선행 수정이 e35c2a5 로 들어왔다(ApplySpeedProfile: 거부 -> 그립 판정 +
+    # reachable 발행). 이제 전제가 충족됐으므로 값을 내리는 대신 **역할을
+    # 쪼갠다** — 경로 정형은 6.0 그대로, 도달성 시뮬만 plant_decel_mps2 로.
+    # 정형 상한을 6.0 으로 남기는 이유: 이건 "프로파일이 이보다 가파르게
+    # 떨어지지 않게 하라"는 상한이라 낮추면 회피 프로파일이 더 보수적이 되고,
+    # 그 방향의 실차 검증은 없다. 도달성 판정만 물리로 맞추면 게이트의 낙관은
+    # 사라진다.
+    #
+    # "지금 최대로 밟으면 어디까지 줄일 수 있나"를 푸는 **플랜트** 제동 능력.
+    # deployment_profiles.A_DEC_PLANNED = A_DEC_MAX(1.4 코스팅) + 0.14 * 7.0 A
+    # = 2.38 과 같아야 한다. my_track0810 궤적도 이 값으로 생성됐다
+    # (manifest validation.plant_decel_planned_mps2).
+    # 6.0 을 쓰면 v0=5.0 m/s 기준 4 m 앞 시뮬 속도가 2.50 인데 실제는 3.58 이고,
+    # 이 트랙 최대 곡률 0.783 에서 실제 a_lat 이 10.0 (물리한계 8.83 초과)인데도
+    # 게이트는 4.89 로 보고 통과시킨다.
+    # ⚠️ A_DEC_PLANNED 를 재측정하면 여기도 같이 갱신할 것 (TUNING_STATUS §11
+    #    의 PF 기준 A_ACC/A_DEC 재측정이 그 작업이다).
+    spliner/plant_decel_mps2: 2.38
     # 2026-08-10: deployment_profiles.A_ACC_MAX(4.5)와 어긋나지만 **의도적으로**
     # 3.0을 유지한다. 이 값은 회피 경로의 계획 속도(vx_mps)를 올리는데, 컨트롤러가
     # 조향 LUT를 그 계획 속도로 조회하고 a_lat도 v_plan²로 계산한다
@@ -533,6 +587,12 @@ recovery_supervisor_node:
     recovery/align_tolerance_rad: 0.35         # 재정렬 완료 heading 오차 [rad]
     recovery/align_speed_mps: 0.5              # 재정렬/재출발 저속 [m/s]
     recovery/odom_timeout_sec: 0.20            # receipt와 원본 header 둘 다 검사
+    # 값 유지. 다만 의미가 바뀌었다: 파이썬 detector 6.6Hz 시절 이 값은
+    # 1.02 프레임이라 readiness 게이트가 상시 깜빡였을 것이다
+    # ("perception receipt/source stale" -> not_ready, 아래 StampFresh).
+    # C++ 재작성 후 실측 15.4Hz 에서는 3.8 프레임이 되어 값 변경 없이 해소된다.
+    # ⚠ 백 재생으로 not_ready 사유 분포를 확인하기 전까지는 "해소됐다"가 아니라
+    #   "해소됐을 것"이다.
     recovery/perception_timeout_sec: 0.25
     recovery/local_wpnts_timeout_sec: 0.20
     recovery/source_stamp_future_tolerance_sec: 0.10

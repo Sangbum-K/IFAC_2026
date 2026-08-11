@@ -123,11 +123,21 @@ python3 -m venv .venv
 .venv/bin/python planning_ws/src/planning_pkg/scripts/global_traj_sim/build_map.py Spielberg_map
 ```
 
-구형 `step4_main.py`는 검증 전에 결과를 저장하므로 기본 실행이 차단돼 있다.
-그 구현의 중앙선 추출은 안·바깥 경계 **중점** 방식이라, 인필드가
-아웃필드 벽까지 뻗는 '게이트'에서 중점이 한쪽 벽으로 붕괴해 곡률이 튄다
-(R~0.3 m 스파이크). `build_map.py`는 이걸 medial-axis(골격)로 바꿔 해결했다 —
-소형 실내 트랙에서 두 결과가 다르면 이 차이 때문이다.
+구형 `step4_main.py`는 48fe25a 에서 삭제됐다. caabf06 이 오래된 브랜치에서
+되살려 왔길래 2026-08-11 에 다시 지웠다 (같은 커밋이 되살린 RViz 튜너 3파일은
+d374a94 가 이미 제거 — 이건 그 네 번째다).
+지운 이유는 실행 가드(`--allow-unsafe-legacy`)가 있음에도 남는 위험이다:
+그 스크립트는 `build_map.py` 와 **같은 런타임 경로**(`config/global_trajectory/`,
+`config/centerline/`)에 **같은 파일명 규칙**으로 쓰면서 manifest 도 폐루프
+게이트도 남기지 않는다. 한 번 돌면 게이트 통과본이 게이트 없는 CSV 로 덮이고
+manifest 의 sha256 만 옛 파일을 가리킨 채 남는다. `--v-max` 를 달리 주면
+같은 맵에 CSV 가 둘 생겨 launch 의 glob 이 "여러 CSV 매칭"으로 죽는다.
+
+기능적으로도 대체됐다: 그 구현의 중앙선 추출은 안·바깥 경계 **중점** 방식이라,
+인필드가 아웃필드 벽까지 뻗는 '게이트'에서 중점이 한쪽 벽으로 붕괴해 곡률이
+튄다 (R~0.3 m 스파이크). `build_map.py` 는 이걸 medial-axis(골격)로 바꿔
+해결했다 — 옛 결과와 비교해야 하면 `git show 48fe25a^:...step4_main.py` 로
+꺼내 쓰고, 저장 경로는 반드시 `--out` 으로 돌릴 것.
 
 ### Raceline 모드: `--raceline {center,iqp}` (기본 iqp)
 
@@ -139,17 +149,23 @@ python3 -m venv .venv
   `--safe-dist 0.30`(차 반폭+여유)으로 벽 접근 한계 조절 — UNICORN의
   safety_width에 해당. 줄이면 빠르지만 벽에 붙는다.
 
-### RViz 시각화
+### 결과 확인
 
-생성된 raceline은 RViz에서 본다 (별도 시각화 노드는 레이스라인 튜너로 통합):
+정적 미리보기는 `build_map.py`가 저장하는 `outputs/*_trajectory.png`,
+폐루프 검증은 `outputs/*_tracking.png` 를 본다.
+
+주행하면서 보려면 시뮬을 띄운다:
 
 ```bash
-# 결과 확인 + 드래그 편집 (맵 + 미리보기 + 인터랙티브 핸들)
-ros2 launch planning_pkg raceline_tuner.launch.py csv:=<파일명>.csv
-# 또는 시뮬 주행과 함께: ros2 launch planning_pkg sim_race.launch.py tuner:=true
+ros2 launch planning_pkg sim_race.launch.py map:=<맵이름>
 ```
 
-정적 미리보기는 `build_map.py`가 저장하는 `outputs/*_trajectory.png` 참고.
+속도 프로파일을 손으로 고치려면 웹 튜너를 쓴다 (라인 기하는 여기 build_map.py,
+속도만 튜너 담당):
+
+```bash
+tune <맵이름>          # 또는: python3 tools/racelinetuner.py <맵이름>
+```
 
 지원 맵: Spielberg처럼 트랙이 폐곡선 링 형태인 맵 (`f1tenth_gym_ros/maps/`).
 levine 같은 실내 corridor 맵은 free space가 이미지 경계와 붙어 있어

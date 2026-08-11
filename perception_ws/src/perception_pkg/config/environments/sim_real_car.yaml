@@ -63,7 +63,9 @@ obstacle_detector_node:
     min_cluster_size_open: 4
     open_space_dist_m: 0.50
     gating_distance: 0.45
-    track_timeout: 8
+    # 2026-08-11: 8 -> 19. real_car.yaml 과 값이 갈리면 sim 검증이 실차와
+    # 다른 트래킹 지속시간으로 돌아 회피 검증이 무의미해진다.
+    track_timeout: 19
     # ---- 맵 벽 필터 ----
     # 파라미터 이름은 real_car.yaml과 반드시 같아야 한다. 노드가 선언하지 않은
     # 이름(구 map_filter_enabled/map_wall_dist_min_m)을 주면 rclpy는 에러 없이
