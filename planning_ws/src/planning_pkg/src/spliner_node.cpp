@@ -1246,7 +1246,40 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
     if (left_gap > min_space && right_gap < min_space) {
         return {"left", apex_left};
     }
-    // 양쪽 다 가능(또는 불가능)하면 raceline에서 덜 벗어나는 쪽 선택
+    // 양쪽 다 가능(또는 불가능)하면 raceline에서 덜 벗어나는 쪽 선택.
+    //
+    // 2026-08-11: 그 전에 "실제로 비켜 가지는가"를 먼저 본다.
+    // ApexFor는 apex를 벽 안쪽으로 clamp하므로, **막힌 쪽일수록 apex의 절댓값이
+    // 작아진다**. 그대로 |apex| 비교에 넣으면 "덜 벗어나는 쪽"이 곧 "막힌 쪽"이
+    // 되어, 통과 불가능한 사이드를 제안하게 된다.
+    //   run_0810_233521 실측: side_switch_blocked_mid_evasion 2291프레임 중
+    //   2258개(99%)가 이 패턴이었다. 대표 프레임 —
+    //     장애물 d[-0.45, +0.13], 좌벽 1.34 / 우벽 0.47
+    //     apex_left  = +0.58 (통과 가능)
+    //     apex_right = -0.22 (우벽 0.47-0.25 에 clamp. 통과하려면 -0.85 필요)
+    //   |0.58| > |0.22| 라 right 가 선택됐고, 상위에서 "이미 left로 회피 중"과
+    //   충돌해 회피를 버리고 감속했다 — 왼쪽이 1.2 m 비어 있는데도.
+    const double clear_need = RequiredObstacleClearance(obs);
+    const bool left_clears = apex_left >= obs.d_left + clear_need;
+    const bool right_clears = apex_right <= obs.d_right - clear_need;
+    if (left_clears != right_clears) {
+        return left_clears ? std::pair<std::string, double>{"left", apex_left}
+                           : std::pair<std::string, double>{"right", apex_right};
+    }
+    if (!left_clears && !right_clears) {
+        // 둘 다 안 되는 경우에도 |apex| 를 쓰면 안 된다 — 위와 같은 이유로
+        // "더 심하게 막힌 쪽"이 이긴다. 여기서 고른 사이드는 last_ot_side_ 로
+        // 커밋되어 다음 사이클의 사이드 유지 히스테리시스를 좌우하므로, 지금
+        // 실패하더라도 **가장 덜 막힌 쪽**을 남겨야 재시도가 그쪽으로 수렴한다.
+        // (위 두 branch 가 gap 으로 이미 한쪽을 골라내지만, MinWallInSpan 이
+        //  장애물 s-구간 전체의 최소 벽폭을 쓰기 때문에 클러스터가 길면 양쪽
+        //  gap 이 동시에 min_space 아래로 내려와 여기로 떨어진다 — 관측된
+        //  2258 프레임이 그 경로다.)
+        return (left_gap >= right_gap)
+            ? std::pair<std::string, double>{"left", apex_left}
+            : std::pair<std::string, double>{"right", apex_right};
+    }
+    // 둘 다 통과 가능 — 이때만 "raceline 에서 덜 벗어나는 쪽"이 의미가 있다.
     if (std::abs(apex_left) <= std::abs(apex_right)) {
         return {"left", apex_left};
     }
@@ -1819,22 +1852,69 @@ bool SplinerNode::BuildLaneSwitch(
     }
     // 벽 때문에 오프셋을 줄여야 하는 경우의 **기하** 축소. (여기에 걸려 있던
     // 배율 감속은 제거됐다 — 속도 제한은 ApplySpeedProfile 의 물리 캡 몫.)
+    //
+    // 2026-08-11: 전역 배율(d *= fit) -> **지점별 클램프**.
+    // profile_fit 은 스팬 전체에서 가장 나쁜 비율 하나(worst)를 뽑는데, 그것을
+    // 프로파일 전체에 곱하면 정작 장애물 옆의 apex 까지 같이 줄어든다.
+    // run_0810_233521 에서 15회 전부 이 경로였다 — 콘 옆은 0.99 m 비어 있는데
+    // 4 m 뒤 코너가 좁다는 이유로 오프셋이 0.44 -> 0.21 / 0.46 -> 0.19 로
+    // 줄어 "장애물 간격 부족"으로 회피가 포기됐다.
+    // 좁은 것은 그 지점이지 스팬 전체가 아니므로, 각 점을 그 점의 벽 안으로만
+    // 넣는다. 클램프는 접합부에 기울기 꺾임을 만들므로 3점 평균 2회로 눌러
+    // 주고, 평활 후 다시 한 번 클램프해 경계는 반드시 지킨다.
+    // (꺾임이 남아 곡률 한계를 넘으면 ApplySpeedProfile 이 거부한다 — 예전과
+    //  같은 결과이지 더 나쁘지 않다. 대신 apex 가 살아남는 경우가 생긴다.)
     const bool lane_wall_clamped = fit < 1.0 - 1e-6;
     if (lane_wall_clamped) {
-        for (auto &d : lane_d) {
-            d *= fit;
+        const double margin = RequiredBoundaryMargin(spline_bound_mindist_);
+        auto clamp_to_walls = [&]() {
+            for (int i = 0; i < n; ++i) {
+                const double s = Mod(cur_s_ + i * wpnt_dist_, track_len_);
+                const int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
+                const double d_lo = -std::abs(gb_wpnts_[gi].d_right) + margin;
+                const double d_hi = std::abs(gb_wpnts_[gi].d_left) - margin;
+                lane_d[i] = std::clamp(lane_d[i], d_lo, d_hi);
+            }
+        };
+        clamp_to_walls();
+        for (int pass = 0; pass < 2; ++pass) {
+            std::vector<double> smoothed = lane_d;
+            for (int i = 1; i + 1 < n; ++i) {
+                smoothed[i] =
+                    (lane_d[i - 1] + lane_d[i] + lane_d[i + 1]) / 3.0;
+            }
+            lane_d = std::move(smoothed);
         }
-        // 축소된 오프셋으로도 장애물을 비켜 가는가 — 아니면 이 레인은 무의미
-        const double d_fit = d_hold * fit;
+        clamp_to_walls();
+
+        // 축소된 오프셋으로도 장애물을 비켜 가는가 — 이제 **장애물 옆 구간**만
+        // 본다. 예전에는 전역 배율을 d_hold 에 곱한 한 숫자로 판정해서, 정작
+        // 장애물 옆에서는 여유가 남는데도 다른 구간의 축소 때문에 거부됐다.
         const double need_clear2 = RequiredObstacleClearance(closest_obs);
+        bool have_side = false;
+        double d_side = d_hold;
+        for (int i = 0; i < n; ++i) {
+            const double t = i * wpnt_dist_;
+            if (t < dist_front || t > dist_back) {
+                continue;
+            }
+            if (!have_side) {
+                d_side = lane_d[i];
+                have_side = true;
+            } else {
+                d_side = (d_hold > 0.0) ? std::min(d_side, lane_d[i])
+                                        : std::max(d_side, lane_d[i]);
+            }
+        }
         const bool still_clears = (d_hold > 0.0)
-            ? d_fit >= closest_obs.d_left + need_clear2
-            : d_fit <= closest_obs.d_right - need_clear2;
+            ? d_side >= closest_obs.d_left + need_clear2
+            : d_side <= closest_obs.d_right - need_clear2;
         if (!still_clears) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                "LaneSwitch 거부: 벽 때문에 오프셋 %.2f -> %.2f로 축소되어 "
-                "장애물 간격 부족 (장애물 d[%.2f,%.2f])",
-                d_hold, d_fit, closest_obs.d_right, closest_obs.d_left);
+                "LaneSwitch 거부: 벽 때문에 장애물 옆 오프셋이 %.2f -> %.2f로 "
+                "줄어 간격 부족 (장애물 d[%.2f,%.2f], 필요 %.2f)",
+                d_hold, d_side, closest_obs.d_right, closest_obs.d_left,
+                need_clear2);
             NoteReject("lane_wall_clamped");
             return false;
         }
@@ -3807,6 +3887,7 @@ bool SplinerNode::ApplySpeedProfile(
         for (size_t i = 0; i < n; ++i) {
             const double k = std::abs(curvature[i]);
             if (!std::isfinite(k) || k > steering_curvature_reject + 1e-3) {
+                NoteReject("speed_steer_curv");
                 return false;
             }
             if (k > 1e-4) {
@@ -3931,13 +4012,39 @@ bool SplinerNode::ApplySpeedProfile(
         }
     }
 
-    // 현재 속도에서 계획 지연 후 jerk/decel 한계로 최대 제동했을 때도
-    // 곡률 cap에 도달하지 못하면 회피 기하 자체를 거부한다.
+    // ── 현재 상태 성립성: "계획 속도 도달"이 아니라 "그립 초과"로 판정한다 ──
+    // 현재 속도에서 계획 지연 후 jerk/decel 한계로 최대 제동했을 때 **실제로
+    // 낼 속도**(reachable)를 구한다.
+    //
+    // 2026-08-11 이전에는 reachable 이 계획 속도를 tolerance 이상 넘으면 그
+    // 자리에서 경로를 통째로 버렸다(return false). 그런데 버리면 남는 건
+    // Tier3 트레일링(감속/정지)뿐이고, 감속하고 나면 다음 사이클에 같은 회피가
+    // 성립한다 — rosbag0810 두 런에서 이것이 "먼저 서고 나중에 피한다"의
+    // 직접 원인이었다 (첫 검출 4.4~5.5 m / 3.0 m/s 에서 거부 -> 2.2~2.9 m/s 로
+    // 떨어진 뒤에야 커밋).
+    //
+    // 실제로 위험한 것은 "계획 속도를 못 맞추는 것"이 아니라 "그 속도로 그
+    // 곡률을 돌 때 마찰원을 넘는 것"이다. 거부된 케이스들을 재구성하면
+    // 계획보다 최대 +2.33 m/s 빨리 지나가도 요구 횡가속은 6.48~7.60 으로
+    // 예산 7.85 안이었다 (물리한계 0.90g = 8.83). 즉 거부는 순손실이었다.
+    //
+    // 그래서 (1) 판정을 그립 초과로 바꾸고, (2) 통과하면 진입 구간의 계획
+    // 속도를 reachable 로 **올려서** 발행한다.
+    //
+    // (2)가 필수인 이유: 컨트롤러가 조향을 waypoint 의 vx_mps 로 계산한다
+    // (control_node.cpp calc_steering_angle 의 speed_for_lookup ->
+    //  lateral_acceleration = 2*v^2/L1*sin(eta)). 계획 속도가 실제보다 낮으면
+    // 조향 요구가 (계획/실제)^2 배로 줄어 차가 덜 꺾는다 — 위 케이스에서
+    // 0.08~0.56 배였다. vx=0 프로파일이 조향을 0으로 만들어 0807 코스아웃
+    // 4건을 낸 것과 같은 메커니즘이다. 못 지킬 숫자를 적어 보내면 안 된다.
+    //
+    // reachable 은 최대 제동 곡선이라 앞쪽에서 급격히 작아지므로, max() 는
+    // 진입 구간만 올리고 그 뒤 계획 프로파일은 건드리지 않는다.
     if (require_current_feasible) {
+        std::vector<double> reachable(n, 0.0);
         double simulated_v = std::max(std::abs(cur_vs_), 0.0);
         double simulated_a = 0.0;
         double delay_distance = simulated_v * planning_delay_sec_;
-        const double tolerance = 0.25 + 0.03 * simulated_v;
         for (size_t i = 0; i < n; ++i) {
             double segment = (i == 0) ? first_distance : ds[i - 1];
             const double delayed = std::min(segment, delay_distance);
@@ -3955,9 +4062,22 @@ bool SplinerNode::ApplySpeedProfile(
                     simulated_v * simulated_v +
                     2.0 * simulated_a * segment, 0.0));
             }
-            if (simulated_v > speed[i] + tolerance) {
+            reachable[i] = simulated_v;
+            // 최대 제동으로도 이 곡률을 마찰원 안에서 못 도는 지점이 있으면
+            // 감속으로 살릴 수 없다 — 그때만 상위 폴백(트레일링)으로 넘긴다.
+            const double k = std::abs(curvature[i]);
+            if (path_lat_acc_max_ > 1e-3 && k > 1e-4 &&
+                k * simulated_v * simulated_v > path_lat_acc_max_) {
+                // 이 함수는 const 라 THROTTLE 로그(clock 필요)를 못 쓴다.
+                // 사유는 카운터로 남긴다 — 호출자가 찍는 "속도 프로파일
+                // 불성립"만으로는 곡률 초과와 구분이 안 됐다.
+                NoteReject("speed_grip_infeasible");
                 return false;
             }
+        }
+        // 통과 — 못 지킬 낮은 숫자 대신 실제 낼 속도를 적는다.
+        for (size_t i = 0; i < n; ++i) {
+            speed[i] = std::max(speed[i], reachable[i]);
         }
     }
 
