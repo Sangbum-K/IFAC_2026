@@ -63,7 +63,7 @@ perception_obstacle_bridge_node:
     bridge/map_timeout_sec: 5.0
 
 # (제거) pose_odom_bridge_node: /pf/pose/odom은 localization particle_filter가 직접 발행.
-# 당일 맵 사용 시 particle_filter/config/localize.yaml의 map_server.map도 당일 맵으로 교체할 것.
+# 당일 맵 사용 시 particle_filter_cpp/config/localize.yaml의 map_server.map도 당일 맵으로 교체할 것.
 
 spliner_node:
   ros__parameters:

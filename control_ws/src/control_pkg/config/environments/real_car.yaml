@@ -4,6 +4,9 @@ control:
     odom_topic: /pf/pose/odom
     ackermann_topic: /autonomy/ackermann_cmd
     autonomous_on_start: true
+    # Blocks only the autonomy publisher. Joystick and estop remain independent,
+    # higher-priority ackermann_mux inputs.
+    "localization_gate/enabled": true
     "recovery/require_supervisor": false
     # 2026-08-08 NUC6_glc -> NUC2_hangar. 0807 백 6개 + 0808 백 6개에서
     # (δ, v, 실측 a_lat) 15,386 쌍을 뽑아 두 표를 채점한 결과(IMU 자이로는

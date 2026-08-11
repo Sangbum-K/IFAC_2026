@@ -128,8 +128,8 @@ class CDR:
 
     def header(self):
         t = self.time()
-        self.string()
-        return t
+        frame = self.string()
+        return t, frame
 
 
 def quat_yaw(qx, qy, qz, qw):
@@ -140,12 +140,13 @@ def quat_yaw(qx, qy, qz, qw):
 
 def dec_odom(b):
     c = CDR(b)
-    c.header()
+    header_t, _frame = c.header()
     c.string()                       # child_frame_id
     x, y, _z, qx, qy, qz, qw = c.f64n(7)
     c.skip_f64(36)                   # pose covariance
     vx, vy, _vz = c.f64n(3)
-    return x, y, quat_yaw(qx, qy, qz, qw), math.hypot(vx, vy) * (1 if vx >= 0 else -1)
+    return (header_t, x, y, quat_yaw(qx, qy, qz, qw),
+            math.hypot(vx, vy) * (1 if vx >= 0 else -1))
 
 
 def dec_pose_stamped(b):
@@ -189,18 +190,19 @@ def dec_ackermann(b):
 
 def dec_scan(b, beam_stride):
     c = CDR(b)
-    c.header()
+    header_t, _frame = c.header()
     amin = c.f32()
     c.f32()                          # angle_max
     ainc = c.f32()
-    c.f32(); c.f32()                 # time_increment, scan_time
+    time_increment = c.f32()
+    c.f32()                          # scan_time
     rmin = c.f32()
     rmax = c.f32()
     n = c.u32()
     r = np.array(c.f32a(n)[::beam_stride], copy=True)
     bad = ~np.isfinite(r) | (r < rmin) | (r > rmax)
     r[bad] = 0.0
-    return amin, ainc * beam_stride, np.round(r, 2)
+    return header_t, amin, ainc * beam_stride, time_increment, np.round(r, 2)
 
 
 def dec_float32(b):
@@ -270,15 +272,15 @@ def dec_tf_static(b):
         parent = c.string()
         child = c.string()
         x, y, z = c.f64n(3)
-        c.skip_f64(4)
-        out.append((parent, child, x, y, z))
+        qx, qy, qz, qw = c.f64n(4)
+        out.append((parent, child, x, y, z, quat_yaw(qx, qy, qz, qw)))
     return out
 
 
 def dec_obstacles(b):
-    """f1tenth_perception_msgs/ObstacleArray → [(x, y, radius, is_dynamic)] (laser frame)"""
+    """Return the declared frame and compact obstacle tuples."""
     c = CDR(b)
-    c.header()
+    _header_t, frame = c.header()
     n = c.u32()
     out = []
     for _ in range(min(n, 64)):
@@ -289,7 +291,7 @@ def dec_obstacles(b):
         c.f32()                      # confidence
         radius = c.f32()
         out.append((round(px, 2), round(py, 2), round(radius, 2), int(dyn)))
-    return out
+    return frame, out
 
 
 # ---------------------------------------------------------------- PNG writer
@@ -384,6 +386,13 @@ def extract(db_path):
         rows = fetch(name)
         return rows[0] if rows else None
 
+    def source_time(header_epoch, storage_relative):
+        """Prefer the message's sensor timestamp when it belongs to this bag."""
+        relative = float(header_epoch) - t0 / 1e9
+        if np.isfinite(relative) and -1.0 <= relative <= dur + 1.0:
+            return relative
+        return storage_relative
+
     out = {
         "name": Path(db_path).stem,
         "duration": round(dur, 2),
@@ -398,12 +407,13 @@ def extract(db_path):
     # --- pose (주행 궤적) : PF 우선, 없으면 /odom
     pose_topic = "/pf/pose/odom" if count("/pf/pose/odom") else "/odom"
     pose = {"t": [], "x": [], "y": [], "yaw": [], "v": []}
-    for t, b in _decimate(fetch(pose_topic), 4500):
+    pose_cap = max(1, int(math.ceil(dur * 50.0)))
+    for t, b in fetch(pose_topic, pose_cap):
         try:
-            x, y, yaw, v = dec_odom(b)
+            header_t, x, y, yaw, v = dec_odom(b)
         except Exception:
             continue
-        pose["t"].append(round(t, 3))
+        pose["t"].append(round(source_time(header_t, t), 4))
         pose["x"].append(round(x, 3))
         pose["y"].append(round(y, 3))
         pose["yaw"].append(round(yaw, 3))
@@ -416,7 +426,7 @@ def extract(db_path):
     if count("/odom"):
         for t, b in _decimate(fetch("/odom"), 2500):
             try:
-                _x, _y, _yaw, v = dec_odom(b)
+                _header_t, _x, _y, _yaw, v = dec_odom(b)
             except Exception:
                 continue
             act["t"].append(round(t, 3))
@@ -471,13 +481,22 @@ def extract(db_path):
     scans = []
     n_scan = count("/scan")
     beam_stride = 3
-    for t, b in fetch("/scan", 240):
+    # Keep up to 20 Hz across the whole run. The old hard cap of 240 produced
+    # >1 s scan gaps in a five-minute bag and then rendered an old scan at the
+    # current vehicle pose, creating metre-scale phantom walls.
+    scan_cap = max(1, int(math.ceil(dur * 20.0)))
+    for t, b in fetch("/scan", scan_cap):
         try:
-            amin, ainc, r = dec_scan(b, beam_stride)
+            header_t, amin, ainc, time_increment, r = dec_scan(b, beam_stride)
         except Exception:
             continue
-        scans.append({"t": round(t, 3), "a0": round(float(amin), 4),
-                      "ai": round(float(ainc), 5), "r": [float(v) for v in r]})
+        scans.append({
+            "t": round(source_time(header_t, t), 4),
+            "a0": round(float(amin), 5),
+            "ai": round(float(ainc), 6),
+            "dt": round(float(time_increment) * beam_stride, 7),
+            "r": [float(v) for v in r],
+        })
     out["scans"] = scans
     out["scanTotal"] = n_scan
 
@@ -557,11 +576,11 @@ def extract(db_path):
     obs = []
     for t, b in fetch("/perception/obstacles", 600):
         try:
-            lst = dec_obstacles(b)
+            frame, lst = dec_obstacles(b)
         except Exception:
             continue
         if lst:
-            obs.append({"t": round(t, 3), "o": lst})
+            obs.append({"t": round(t, 3), "f": frame, "o": lst})
     out["obs"] = obs
 
     # --- 랩: frenet s wrap (없으면 레이스라인 최근접 투영으로 s 복원)
@@ -679,13 +698,13 @@ def extract(db_path):
     out["calibSrc"] = cal["src"]
 
     # --- tf_static → base_link 대비 laser 오프셋
-    laser_off = [0.0, 0.0]
+    laser_off = [0.0, 0.0, 0.0]
     g = first("/tf_static")
     if g:
         try:
-            for parent, child, x, y, _z in dec_tf_static(g[1]):
-                if child == "laser":
-                    laser_off = [round(x, 3), round(y, 3)]
+            for parent, child, x, y, _z, yaw in dec_tf_static(g[1]):
+                if parent.lstrip("/") == "base_link" and child.lstrip("/") == "laser":
+                    laser_off = [round(x, 4), round(y, 4), round(yaw, 5)]
         except Exception:
             pass
     out["laserOff"] = laser_off
@@ -1113,6 +1132,23 @@ function bisect(arr, t) {           // arr 오름차순, t 이하 마지막 인�
   while (lo<hi) { const mid=(lo+hi+1)>>1; if (arr[mid]<=t) lo=mid; else hi=mid-1; }
   return lo;
 }
+function nearestIndex(arr,t){
+  const i=bisect(arr,t);
+  if(i<0) return arr.length?0:-1;
+  if(i+1<arr.length&&Math.abs(arr[i+1]-t)<Math.abs(arr[i]-t)) return i+1;
+  return i;
+}
+function poseAt(t){
+  const p=D&&D.pose; if(!p||!p.t.length) return null;
+  let i=bisect(p.t,t);
+  if(i<0) return {x:p.x[0],y:p.y[0],yaw:p.yaw[0]};
+  if(i+1>=p.t.length||p.t[i+1]<=p.t[i]) return {x:p.x[i],y:p.y[i],yaw:p.yaw[i]};
+  const f=Math.max(0,Math.min(1,(t-p.t[i])/(p.t[i+1]-p.t[i])));
+  const dyaw=Math.atan2(Math.sin(p.yaw[i+1]-p.yaw[i]),Math.cos(p.yaw[i+1]-p.yaw[i]));
+  return {x:p.x[i]+f*(p.x[i+1]-p.x[i]),
+          y:p.y[i]+f*(p.y[i+1]-p.y[i]),
+          yaw:p.yaw[i]+f*dyaw};
+}
 function lerpHex(h1,h2,f){
   const a=parseInt(h1.slice(1),16), b=parseInt(h2.slice(1),16);
   const c=[16,8,0].map(s=>Math.round(((a>>s&255)*(1-f)+(b>>s&255)*f)));
@@ -1231,6 +1267,7 @@ function onData(d){
   if(!d){ setStatus("응답 없음",true); return; }
   if(d.error){ setStatus("오류: "+d.error,true); return; }
   D=d; tCur=0; playing=false; mapImg=null;
+  D.scanTimes=D.scans.map(s=>s.t+0.5*(s.dt||0)*Math.max(0,s.r.length-1));
   vmax=1;
   if(D.glb) D.glb.vx.forEach(v=>{ if(v>vmax)vmax=v; });
   D.pose.v.forEach(v=>{ if(Math.abs(v)>vmax)vmax=Math.abs(v); });
@@ -1490,8 +1527,9 @@ function drawTrack(){
     }
     tctx.lineCap="butt";
   }
-  const pi=bisect(D.pose.t,tCur);
-  const px=pi>=0?D.pose.x[pi]:0, py=pi>=0?D.pose.y[pi]:0, pyaw=pi>=0?D.pose.yaw[pi]:0;
+  const pi=bisect(D.pose.t,tCur), currentPose=poseAt(tCur);
+  const px=currentPose?currentPose.x:0, py=currentPose?currentPose.y:0;
+  const pyaw=currentPose?currentPose.yaw:0;
   // 회피/로컬 경로 (현재 시각)
   [["ot","violet",show.ot,[6,5]],["loc","magenta",show.loc,null]].forEach(([key,col,on,dash])=>{
     if(!on||!D[key].length) return;
@@ -1526,18 +1564,22 @@ function drawTrack(){
       tctx.setLineDash([]);
     }
   }
-  // LiDAR 스캔 (차량 포즈 기준 변환)
+  // LiDAR scan: interpolate PF pose at this scan's midpoint, never at cursor time.
   if(show.scan&&D.scans.length&&pi>=0){
-    const ts=D.scans.map(s=>s.t), i=bisect(ts,tCur);
-    if(i>=0&&Math.abs(tCur-ts[i])<2){
+    const i=nearestIndex(D.scanTimes,tCur);
+    if(i>=0&&Math.abs(tCur-D.scanTimes[i])<0.15){
       const s=D.scans[i];
-      const lx=px+D.laserOff[0]*Math.cos(pyaw)-D.laserOff[1]*Math.sin(pyaw);
-      const ly=py+D.laserOff[0]*Math.sin(pyaw)+D.laserOff[1]*Math.cos(pyaw);
-      tctx.fillStyle="rgba(195,194,183,0.75)";
-      for(let j=0;j<s.r.length;j++){
-        const r=s.r[j]; if(!r) continue;
-        const a=pyaw+s.a0+s.ai*j;
-        tctx.fillRect(W2SX(lx+r*Math.cos(a))-1, W2SY(ly+r*Math.sin(a))-1, 2,2);
+      const scanPose=poseAt(D.scanTimes[i]);
+      if(scanPose){
+        const lx=scanPose.x+D.laserOff[0]*Math.cos(scanPose.yaw)-D.laserOff[1]*Math.sin(scanPose.yaw);
+        const ly=scanPose.y+D.laserOff[0]*Math.sin(scanPose.yaw)+D.laserOff[1]*Math.cos(scanPose.yaw);
+        const laserYaw=scanPose.yaw+(D.laserOff[2]||0);
+        tctx.fillStyle="rgba(195,194,183,0.75)";
+        for(let j=0;j<s.r.length;j++){
+          const r=s.r[j]; if(!r) continue;
+          const a=laserYaw+s.a0+s.ai*j;
+          tctx.fillRect(W2SX(lx+r*Math.cos(a))-1, W2SY(ly+r*Math.sin(a))-1, 2,2);
+        }
       }
     }
   }
@@ -1546,9 +1588,17 @@ function drawTrack(){
     const ts=D.obs.map(o=>o.t), i=bisect(ts,tCur);
     if(i>=0&&Math.abs(tCur-ts[i])<1){
       tctx.strokeStyle=C("red"); tctx.lineWidth=2;
-      D.obs[i].o.forEach(([ox,oy,r,dyn])=>{
-        const wx2=px+ox*Math.cos(pyaw)-oy*Math.sin(pyaw);
-        const wy2=py+ox*Math.sin(pyaw)+oy*Math.cos(pyaw);
+      const item=D.obs[i], obsPose=poseAt(item.t);
+      item.o.forEach(([ox,oy,r,dyn])=>{
+        let wx2=ox, wy2=oy;
+        if((item.f||"").replace(/^\//,"")!=="map"&&obsPose){
+          const isLaser=(item.f||"").replace(/^\//,"")==="laser";
+          const yaw=obsPose.yaw+(isLaser?(D.laserOff[2]||0):0);
+          const bx=obsPose.x+(isLaser?D.laserOff[0]*Math.cos(obsPose.yaw)-D.laserOff[1]*Math.sin(obsPose.yaw):0);
+          const by=obsPose.y+(isLaser?D.laserOff[0]*Math.sin(obsPose.yaw)+D.laserOff[1]*Math.cos(obsPose.yaw):0);
+          wx2=bx+ox*Math.cos(yaw)-oy*Math.sin(yaw);
+          wy2=by+ox*Math.sin(yaw)+oy*Math.cos(yaw);
+        }
         tctx.beginPath();
         tctx.arc(W2SX(wx2),W2SY(wy2),Math.max(4,(r||0.15)*view.s),0,6.283);
         tctx.setLineDash(dyn?[4,3]:[]); tctx.stroke(); tctx.setLineDash([]);

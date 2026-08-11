@@ -1,0 +1,10 @@
+particle_filter:
+  ros__parameters:
+    # A/B step 4: retain the earlier changes and remove scan-to-scan ICP.
+    # The ICP-dependent slip detector is neutralized with scan matching OFF;
+    # otherwise it could enter on odom/IMU evidence but never recover.
+    pf_profile_label: variant0_no_ground_no_deskew_no_icp
+    rangelib_variant: 0
+    ground_filter_enabled: false
+    deskew_enabled: false
+    scan_match_enabled: false

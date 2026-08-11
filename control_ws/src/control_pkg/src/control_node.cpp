@@ -282,6 +282,12 @@ public:
       "ackermann_topic", "/ackermann_cmd");
     const auto estop_topic = this->declare_parameter<std::string>(
       "estop_topic", "/safety/emergency_stop");
+    localization_gate_enabled_ = this->declare_parameter<bool>(
+      "localization_gate/enabled", false);
+    const auto localization_ready_topic = this->declare_parameter<std::string>(
+      "localization_gate/ready_topic", "/pf/localization_ready");
+    localization_ready_timeout_ = this->declare_parameter<double>(
+      "localization_gate/status_timeout_sec", 0.50);
     const auto recovery_state_topic = this->declare_parameter<std::string>(
       "recovery/state_topic", "/planner/recovery/state");
     const auto recovery_target_speed_topic = this->declare_parameter<std::string>(
@@ -388,6 +394,15 @@ public:
     escape_active_sub_ = this->create_subscription<std_msgs::msg::Bool>(
       "/planner/escape_active", reliable_qos,
       std::bind(&ControlNode::escape_active_callback, this, std::placeholders::_1));
+    if (localization_gate_enabled_) {
+      const auto localization_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+      localization_ready_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+        localization_ready_topic, localization_qos,
+        std::bind(
+          &ControlNode::localization_ready_callback, this,
+          std::placeholders::_1));
+    }
     recovery_state_sub_ = this->create_subscription<std_msgs::msg::String>(
       recovery_state_topic, reliable_qos,
       std::bind(&ControlNode::recovery_state_callback, this, std::placeholders::_1));
@@ -420,14 +435,20 @@ public:
       "Recovery lease: required=%s timeout=%.2fs reverse=%s max_reverse=%.2fm/s",
       recovery_require_supervisor_ ? "yes" : "no", recovery_command_timeout_,
       recovery_allow_reverse_ ? "OPT-IN" : "OFF", recovery_max_reverse_speed_);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Localization autonomy gate: %s topic=%s timeout=%.2fs",
+      localization_gate_enabled_ ? "ENABLED" : "disabled",
+      localization_ready_topic.c_str(), localization_ready_timeout_);
   }
 
 private:
   void validate_parameters()
   {
-    const std::array<double, 36> finite_values = {
+    const std::array<double, 37> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
+      localization_ready_timeout_,
       recovery_command_timeout_, recovery_pair_max_skew_,
       recovery_max_reverse_speed_, recovery_max_forward_override_,
       t_clip_min_, t_clip_max_, m_l1_, q_l1_, speed_lookahead_,
@@ -447,6 +468,7 @@ private:
       frenet_odom_timeout_ < 0.01 || frenet_odom_timeout_ > 2.0 ||
       source_stamp_future_tolerance_ < 0.0 ||
       source_stamp_future_tolerance_ > 0.5 ||
+      localization_ready_timeout_ < 0.05 || localization_ready_timeout_ > 2.0 ||
       recovery_command_timeout_ < 0.01 || recovery_command_timeout_ > 2.0 ||
       recovery_pair_max_skew_ < 0.0 ||
       recovery_pair_max_skew_ > recovery_command_timeout_ ||
@@ -575,6 +597,22 @@ private:
     }
   }
 
+  void localization_ready_callback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      localization_ready_ = msg->data;
+      localization_ready_stamp_ = this->now();
+      has_localization_ready_ = true;
+    }
+    if (!msg->data) {
+      RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Localization not ready -> autonomy stop (teleop/estop remain available)");
+      publish_stop();
+    }
+  }
+
   void recovery_state_callback(const std_msgs::msg::String::SharedPtr msg)
   {
     std::lock_guard<std::mutex> lock(data_mutex_);
@@ -680,12 +718,15 @@ private:
     rclcpp::Time frenet_odom_source_stamp(0, 0, RCL_ROS_TIME);
     rclcpp::Time recovery_state_stamp(0, 0, RCL_ROS_TIME);
     rclcpp::Time recovery_target_speed_stamp(0, 0, RCL_ROS_TIME);
+    rclcpp::Time localization_ready_stamp(0, 0, RCL_ROS_TIME);
     std::string recovery_state;
     double recovery_target_speed = std::numeric_limits<double>::quiet_NaN();
     bool has_odom = false;
     bool has_frenet_odom = false;
     bool has_recovery_state = false;
     bool has_recovery_target_speed = false;
+    bool has_localization_ready = false;
+    bool localization_ready = false;
     bool estop = false;
     bool escape_active = false;
     rclcpp::Time escape_active_stamp{0, 0, RCL_ROS_TIME};
@@ -710,6 +751,9 @@ private:
       recovery_target_speed_stamp = recovery_target_speed_stamp_;
       has_recovery_state = has_recovery_state_;
       has_recovery_target_speed = has_recovery_target_speed_;
+      localization_ready_stamp = localization_ready_stamp_;
+      has_localization_ready = has_localization_ready_;
+      localization_ready = localization_ready_;
       estop = estop_;
       escape_active = escape_active_;
       escape_active_stamp = escape_active_stamp_;
@@ -720,6 +764,25 @@ private:
     if (estop) {
       publish_stop();
       return;
+    }
+
+    if (localization_gate_enabled_) {
+      double status_age = std::numeric_limits<double>::infinity();
+      if (has_localization_ready && localization_ready_stamp.nanoseconds() > 0) {
+        status_age = (now - localization_ready_stamp).seconds();
+      }
+      const bool status_fresh =
+        std::isfinite(status_age) && status_age >= 0.0 &&
+        status_age <= localization_ready_timeout_;
+      if (!has_localization_ready || !localization_ready || !status_fresh) {
+        RCLCPP_ERROR_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Localization autonomy gate blocked: received=%s ready=%s age=%.3fs",
+          has_localization_ready ? "yes" : "no",
+          localization_ready ? "true" : "false", status_age);
+        publish_stop();
+        return;
+      }
     }
 
     bool recovery_stop = false;
@@ -1292,6 +1355,8 @@ private:
   double imu_acceleration_sign_{-1.0};
   bool require_source_stamps_{true};
   double source_stamp_future_tolerance_{0.1};
+  bool localization_gate_enabled_{false};
+  double localization_ready_timeout_{0.50};
   bool recovery_require_supervisor_{false};
   double recovery_command_timeout_{0.25};
   double recovery_pair_max_skew_{0.10};
@@ -1337,6 +1402,8 @@ private:
   bool has_frenet_odom_{false};
   bool has_recovery_state_{false};
   bool has_recovery_target_speed_{false};
+  bool has_localization_ready_{false};
+  bool localization_ready_{false};
   double curr_steering_angle_{0.0};
   double last_speed_command_{0.0};
   double curvature_waypoints_{0.0};
@@ -1361,6 +1428,7 @@ private:
   rclcpp::Time frenet_odom_source_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time recovery_state_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time recovery_target_speed_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time localization_ready_stamp_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr waypoint_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -1368,6 +1436,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr escape_active_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr localization_ready_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr recovery_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr recovery_target_speed_sub_;
   rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr command_pub_;

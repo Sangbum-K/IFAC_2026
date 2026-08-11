@@ -448,7 +448,7 @@ def launch_setup(context, *args, **kwargs):
     # --- pf:=true 전용 노드 2개 ---
     pf_nodes = []
     if use_pf:
-        pf_share = get_package_share_directory('particle_filter')
+        pf_share = get_package_share_directory('particle_filter_cpp')
         pf_config = os.path.join(pf_share, 'config', 'localize_sim.yaml')
         if not os.path.isfile(pf_config):
             raise RuntimeError(
@@ -470,13 +470,17 @@ def launch_setup(context, *args, **kwargs):
                 output='screen',
             ),
             Node(
-                package='particle_filter',
-                executable='particle_filter',
+                package='particle_filter_cpp',
+                executable='particle_filter_cpp_node',
+                # 노드 이름은 'particle_filter' 그대로 — localize_sim.yaml 의
+                # ros__parameters 키가 이 이름에 걸려 있고, C++ 판도 실차
+                # localize_launch.py 에서 같은 이름으로 뜬다.
                 name='particle_filter',
                 parameters=[pf_config],
                 # ⚠️ /clicked_point 충돌 회피 (sim 전용 리맵).
-                # particle_filter.clicked_pose()는 PointStamped를 받으면
-                # initialize_global() — 즉 파티클을 맵 전체에 다시 뿌린다.
+                # PF는 이 토픽으로 PointStamped를 받으면 initialize_global()
+                # — 즉 파티클을 맵 전체에 다시 뿌린다 (C++ 판도 동일:
+                # particle_filter_node.cpp 의 /clicked_point 구독).
                 # 그런데 sim에서는 virtual_obstacle_node가 **같은 토픽**으로
                 # 가상 장애물을 스폰한다(RViz "Publish Point"). 그대로 두면
                 # 회피를 시험하려고 장애물을 찍는 순간 위치추정이 날아간다

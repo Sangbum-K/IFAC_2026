@@ -1,0 +1,8 @@
+particle_filter:
+  ros__parameters:
+    # A/B step 3: retain the earlier changes and remove only scan deskew.
+    pf_profile_label: variant0_no_ground_no_deskew
+    rangelib_variant: 0
+    ground_filter_enabled: false
+    deskew_enabled: false
+    scan_match_enabled: true

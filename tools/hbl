@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# hbl — run a command inside the humble-env distrobox with ROS 2 Humble +
+# all IFAC_ws overlays sourced. Analysis/replay must run here because the host
+# uses Jazzy while the vehicle stack and native particle_filter_cpp use Humble.
+#
+#   tools/hbl python3 tools/run_pf_ab_replay.py --dry-run
+#   tools/hbl colcon test --base-paths src
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# VS Code may already be attached to humble-env.  In that case distrobox is a
+# host-only command and is intentionally unavailable inside the container.
+if [[ "${ROS_DISTRO:-}" == humble && -f /opt/ros/humble/setup.bash ]]; then
+  exec "$ROOT/tools/hbl-inner" "$PWD" "$@"
+fi
+distrobox_bin=$(command -v distrobox 2>/dev/null || true)
+if [[ -z "$distrobox_bin" && -x /usr/bin/distrobox ]]; then
+  distrobox_bin=/usr/bin/distrobox
+fi
+if [[ -z "$distrobox_bin" ]]; then
+  echo "hbl: distrobox executable not found (checked PATH and /usr/bin)" >&2
+  exit 127
+fi
+exec "$distrobox_bin" enter humble-env -- "$ROOT/tools/hbl-inner" "$PWD" "$@"
