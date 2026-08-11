@@ -75,6 +75,7 @@ def generate_launch_description():
     map_yaml_path = LaunchConfiguration('map_yaml_path')
     posegraph_path = LaunchConfiguration('posegraph_path')
     rviz = LaunchConfiguration('rviz')
+    pf_profile = LaunchConfiguration('pf_profile')
 
     pf_rviz_config = PathJoinSubstitution([
         FindPackageShare('particle_filter'),
@@ -163,6 +164,11 @@ def generate_launch_description():
             default_value='true',
             description='(backend:=particle_filter) 초기 위치 지정용 RViz 실행 여부',
         ),
+        DeclareLaunchArgument(
+            'pf_profile',
+            default_value='current',
+            description='particle_filter A/B 프로파일. current는 현재 실차 동작을 유지.',
+        ),
         Node(
             package='slam_toolbox',
             executable='async_slam_toolbox_node',
@@ -234,6 +240,7 @@ def generate_launch_description():
             launch_arguments={
                 'use_sim_time': use_sim_time,
                 'map_yaml_path': map_yaml_path,
+                'pf_profile': pf_profile,
             }.items(),
             condition=use_particle_filter,
         ),

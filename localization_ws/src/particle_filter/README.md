@@ -208,6 +208,89 @@ python3 tools/analyze_pf_bags.py \
   bags/run_0806_233816 bags/run_0807_153600
 ```
 
+Run the production PF and RangeLib implementation against the exact recorded
+map, scan, odometry, IMU, static TF, and initial pose in an isolated ROS
+domain.  This launches no hardware, planner, controller, mux, or actuation
+node.  Stop any existing vehicle ROS stack before starting the replay.  Named
+overlays form a cumulative rollback ladder, with adjacent steps changing
+exactly one feature:
+
+```bash
+cd ~/IFAC_ws
+./build_all.sh
+sa
+
+# Validate the installed configs and commands without writing anything.
+python3 tools/run_pf_ab_replay.py --dry-run
+
+# Test RangeLib variant 5 versus 0 first.
+python3 tools/run_pf_ab_replay.py --profiles current variant0
+
+# Repeat in reverse order to expose thermal/order bias on the Jetson.
+python3 tools/run_pf_ab_replay.py --profiles variant0 current
+
+# Hold PF code/features fixed and compare recorded versus measured LiDAR
+# scan-plane height. Repeat with the two values reversed.
+python3 tools/run_pf_ab_replay.py --profiles variant0 \
+  --base-to-laser-z-m 0.1100 0.1374
+python3 tools/run_pf_ab_replay.py --profiles variant0 \
+  --base-to-laser-z-m 0.1374 0.1100
+
+# Shared deterministic replay controls (these are also the defaults).
+python3 tools/run_pf_ab_replay.py --profiles current variant0 \
+  --max-update-rate-hz 25 --random-seed 809
+
+# Continue only if needed, removing ground filtering, deskew, then ICP.
+python3 tools/run_pf_ab_replay.py --profiles \
+  variant0_no_ground \
+  variant0_no_ground_no_deskew \
+  variant0_no_ground_no_deskew_no_icp
+```
+
+The default input is `bags/rosbag0809/run_0809_231809`.  Each profile writes
+an sqlite bag, process logs, manifest, full comparison JSON, and a compact
+summary below `bags/pf_ab_replay/`.  Every replay overrides
+`max_update_rate_hz=25.0` and `random_seed=809` for all selected profiles.  The
+25 Hz cap is replay-only and leaves headroom above the strict measured 15 Hz
+target; the tool rejects a cap below 20 Hz so the configured limiter cannot be
+mistaken for the real bottleneck.  The fixed seed gives every profile the same
+PF random stream.  Neither override changes production `localize.yaml`.
+When `--base-to-laser-z-m` is present, the bag player excludes the recorded
+`/tf_static`; the recorded-map helper republishes every static transform with
+only direct `base_link -> laser` translation z replaced.  One value applies
+to every selected PF profile.  Multiple ordered values require exactly one PF
+profile and form a LiDAR-height A/B whose result rows include `LaserZcm`.
+The original and effective transforms are retained in each manifest and the
+modified `/tf_static` is recorded in each output bag.  This replay override
+does not edit `hardware_ws` sensor calibration.
+Compare the forward and reverse two-profile runs before advancing down the
+rollback ladder; a result that changes with run order is not feature evidence.
+The ladder isolates these four switches on the current hardened PF code.  It
+is not a byte-for-byte execution of the parent of `e5f8bc4`; use that commit in
+a separate workspace if the feature ladder does not explain the regression.
+
+Runtime acceptance is PF correction rate at least 15 Hz, correction-age p99
+at most 100 ms, and zero stale/worker errors.  Each result snapshots and hashes
+the exact executed base/profile YAML, replay/map/analyzer tools, installed
+entry point, and active PF Python package (including `particle_filter.py`).
+It also hashes `metadata.yaml` and every input `.db3`/`.mcap`, then verifies
+that identity before and after each profile so all rows use the same bag bytes.
+Its manifest also records HEAD,
+dirty state, a binary tracked-diff hash, every non-ignored untracked file hash,
+and their combined worktree fingerprint.  With a symlink install, the tool
+resolves the active Python-version egg-link through `build/` to the source; it
+rejects an import-path mismatch instead of archiving an old site-packages copy.
+
+A profile can then be selected for the controlled real-car check with:
+
+```bash
+rc my_track0809 pf_profile:=<name> rviz:=false
+```
+
+`current` remains the default.  Do not shorten this to `rc 0809`: the alias
+passes its first argument directly as `map:=`, whereas offline replay ignores
+that name because it uses the bag's embedded `/map`.
+
 The `Auto*` columns and worst intervals use only samples where the final
 `/ackermann_cmd` is an exact ackermann_mux copy of
 `/autonomy/ackermann_cmd`, the command is fresh, and odometry speed is at

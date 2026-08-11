@@ -58,6 +58,13 @@ from launch_ros.actions import Node
 # 두 launch 는 서로 다른 워크스페이스라 import 할 수 없어 사본으로 둔다.
 # test/test_line_variant_routing.py 가 두 사본의 동기화를 강제한다.
 LINE_VARIANTS = ('tuned',)
+PF_AB_PROFILES = (
+    'current',
+    'variant0',
+    'variant0_no_ground',
+    'variant0_no_ground_no_deskew',
+    'variant0_no_ground_no_deskew_no_icp',
+)
 
 
 def split_line_variant(name):
@@ -89,6 +96,11 @@ def launch_setup(context, *args, **kwargs):
     rviz = LaunchConfiguration('rviz').perform(context)
     autostart = _is_true(LaunchConfiguration('autostart').perform(context))
     wait_timeout = LaunchConfiguration('wait_timeout').perform(context)
+    pf_profile = LaunchConfiguration('pf_profile').perform(context)
+    if pf_profile not in PF_AB_PROFILES:
+        raise RuntimeError(
+            '알 수 없는 pf_profile:=%r. 사용 가능: %s'
+            % (pf_profile, ', '.join(PF_AB_PROFILES)))
     # 빈 값이면 각 하위 launch의 기존 기본값(localize.yaml / params.yaml)을 쓴다.
     map_name = LaunchConfiguration('map').perform(context)
     # map:=<맵>_tuned 는 '다른 맵'이 아니라 '같은 맵의 사람 튜닝 라인'이다.
@@ -98,6 +110,10 @@ def launch_setup(context, *args, **kwargs):
     map_base, line_variant = split_line_variant(map_name)
 
     actions = []
+
+    actions.append(LogInfo(msg=(
+        '[real_car] PF profile=%s (기본 current 외 프로파일은 A/B 시험용)'
+        % pf_profile)))
 
     if line_variant:
         actions.append(LogInfo(msg=(
@@ -127,6 +143,7 @@ def launch_setup(context, *args, **kwargs):
             'mode': 'localization',
             'use_sim_time': 'false',
             'rviz': 'false',
+            'pf_profile': pf_profile,
         }
         if map_base:
             loc_args['map'] = map_base
@@ -226,5 +243,9 @@ def generate_launch_description():
                               description='맵 이름. PF 맵(particle_filter/maps/<이름>.yaml)과 '
                                           'planner CSV 3종을 한 번에 전환한다. '
                                           '빈 값이면 localize.yaml / params.yaml 기본값 유지'),
+        DeclareLaunchArgument(
+            'pf_profile',
+            default_value='current',
+            description='PF A/B 프로파일. 기본 current는 현재 실차 설정을 유지'),
         OpaqueFunction(function=launch_setup),
     ])

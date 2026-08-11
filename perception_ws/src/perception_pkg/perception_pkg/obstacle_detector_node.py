@@ -75,6 +75,26 @@ from perception_pkg.classifier import classify_track
 from perception_pkg.track_filter import TrackBounds
 
 
+def partition_clusters_by_postfilter_radius(clusters, max_radius):
+    """Split clusters using only their geometry after map/track filtering.
+
+    ``source_radius`` deliberately describes the raw connected component.  A
+    real obstacle touching a wall in the raw scan can therefore have a large
+    source radius even after the wall points have correctly been removed.  It
+    remains attached to the cluster for diagnostics and for a future,
+    separately tuned wall-connectivity rule, but it must not tighten this
+    physical-size gate.
+    """
+    clusters = list(clusters)
+    if max_radius <= 0.0:
+        return clusters, []
+    kept = [cluster for cluster in clusters
+            if cluster.radius <= max_radius]
+    rejected = [cluster for cluster in clusters
+                if cluster.radius > max_radius]
+    return kept, rejected
+
+
 class ObstacleDetectorNode(Node):
 
     def __init__(self):
@@ -1362,17 +1382,18 @@ class ObstacleDetectorNode(Node):
         # 트래킹 '전'에 버려야 한다 — 트래커에 들어가면 재식별/코스팅으로
         # 살아남아 계속 발행된다.
         if self.max_cluster_radius > 0.0:
-            kept = [
-                c for c in clusters
-                if max(c.radius, c.source_radius) <= self.max_cluster_radius
-            ]
-            if len(kept) != len(clusters):
-                rejected_radius = max(
-                    max(c.radius, c.source_radius) for c in clusters)
+            kept, rejected = partition_clusters_by_postfilter_radius(
+                clusters, self.max_cluster_radius)
+            if rejected:
+                rejected_radius = max(c.radius for c in rejected)
+                rejected_source_radius = max(
+                    c.source_radius for c in rejected)
                 self.get_logger().warn(
-                    f'{len(clusters) - len(kept)}개 초대형 클러스터 거부 '
+                    f'{len(rejected)}개 초대형 클러스터 거부 '
                     f'(max_radius={self.max_cluster_radius:.2f}m, '
-                    f'원본 최대 {rejected_radius:.2f}m) — 벽/구조물로 판단',
+                    f'필터 후 최대 {rejected_radius:.2f}m, '
+                    f'원본 연결성 최대 {rejected_source_radius:.2f}m) '
+                    '— 필터 후 크기로 벽/구조물 판단',
                     throttle_duration_sec=2.0,
                 )
             clusters = kept

@@ -23,9 +23,9 @@ urg_node:
 # values preserve the old launch behavior; replace them only with measured data.
 sensor_extrinsics:
   ros__parameters:
-    base_to_laser_x: 0.27
-    base_to_laser_y: 0.0
-    base_to_laser_z: 0.11
+    base_to_laser_x: 0.27 #뒷바퀴축부터 라이다 광점까지 거리
+    base_to_laser_y: 0.0 #중심으로부터 라이다 광점 좌우 위치차이
+    base_to_laser_z: 0.1374 #바닥부터 라이다 광점까지 높이
     base_to_laser_roll: 0.0
     base_to_laser_pitch: 0.0
     base_to_laser_yaw: 0.0

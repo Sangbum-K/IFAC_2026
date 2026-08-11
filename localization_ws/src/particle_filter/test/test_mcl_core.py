@@ -19,20 +19,21 @@ import math
 import numpy as np
 
 from particle_filter.mcl_core import (
+    LocalizationQualityTracker,
+    LocalizationReadinessTracker,
+    QualityState,
+    SlipDetector,
     can_bypass_jump_guard_for_slip,
     deskew_scan_to_reference,
     effective_sample_size,
     estimate_scan_motion,
     likelihoods_from_log_table,
-    LocalizationQualityTracker,
-    LocalizationReadinessTracker,
+    make_random_generators,
     posterior_from_likelihood,
     prepare_mcl_proposal,
-    QualityState,
     relative_pose_batch,
     select_beams,
     should_hold_stationary_filter,
-    SlipDetector,
     systematic_resample,
 )
 
@@ -53,6 +54,24 @@ def test_systematic_resampling_is_sorted_and_favors_dominant_particle():
     assert len(indices) == len(weights)
     assert np.all(np.diff(indices) >= 0)
     assert np.count_nonzero(indices == 0) >= 2
+
+
+def test_fixed_seed_repeats_algorithm_without_viz_coupling():
+    """A/B profiles share MCL noise even when visualization load differs."""
+    first_mcl, first_viz = make_random_generators(809231809)
+    second_mcl, second_viz = make_random_generators(809231809)
+    _, expected_viz = make_random_generators(809231809)
+
+    first_viz.normal(size=100)
+    assert np.array_equal(first_mcl.normal(size=16), second_mcl.normal(size=16))
+    assert np.array_equal(
+        second_viz.normal(size=16), expected_viz.normal(size=16))
+
+
+def test_random_generator_rejects_invalid_negative_seed():
+    """Only -1 has the documented nondeterministic seed meaning."""
+    with np.testing.assert_raises(ValueError):
+        make_random_generators(-2)
 
 
 def test_mcl_proposal_resamples_only_below_configured_ess():
@@ -329,6 +348,33 @@ def test_slip_detector_enters_immediately_for_large_innovation():
 
     assert update.entered and update.active
     assert update.score > 2.0
+
+
+def test_disabled_slip_update_clears_an_active_detector():
+    """No-ICP A/B cannot retain scan-dependent slip noise indefinitely."""
+    detector = SlipDetector(
+        translation_threshold_m=0.15,
+        yaw_threshold_rad=0.15,
+        enter_score=1.0,
+        recover_score=0.5,
+        enter_updates=1,
+        recover_updates=3,
+        immediate_score=2.0,
+    )
+    detector.update(
+        np.array([0.40, 0.0, 0.0]),
+        0.0,
+        True,
+        np.zeros(3),
+        True,
+    )
+
+    update = detector.disabled_update()
+
+    assert not update.active
+    assert not update.evidence_valid
+    assert update.score == 0.0
+    assert not detector.active
 
 
 def test_slip_jump_guard_bypass_requires_all_safety_conditions():

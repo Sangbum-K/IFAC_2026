@@ -43,6 +43,7 @@ from particle_filter.mcl_core import (
     likelihoods_from_log_table,
     LocalizationQualityTracker,
     LocalizationReadinessTracker,
+    make_random_generators,
     posterior_from_likelihood,
     prepare_mcl_proposal,
     QualityState,
@@ -118,6 +119,12 @@ class ParticleFiler(Node):
         self.declare_parameter('theta_discretization')
         self.declare_parameter('range_method')
         self.declare_parameter('rangelib_variant')
+        # Identifies the immutable launch-time A/B overlay in diagnostics.
+        # It does not change behavior by itself.
+        self.declare_parameter('pf_profile_label', 'unprofiled')
+        # Negative keeps production nondeterministic.  Offline A/B replay
+        # supplies one fixed non-negative seed to every feature profile.
+        self.declare_parameter('random_seed', -1)
         self.declare_parameter('fine_timing')
         self.declare_parameter('publish_odom')
         self.declare_parameter('viz')
@@ -244,6 +251,7 @@ class ParticleFiler(Node):
         self.declare_parameter('stationary_scan_yaw_rad', 0.04)
         # The matcher runs on the existing 73 downsampled beams: four small
         # O(B^2) ICP passes, independent of the 2000-particle raycast budget.
+        self.declare_parameter('scan_match_enabled', True)
         self.declare_parameter('scan_match_max_correspondence_m', 0.40)
         self.declare_parameter('scan_match_trim_fraction', 0.90)
         self.declare_parameter('scan_match_iterations', 4)
@@ -276,6 +284,9 @@ class ParticleFiler(Node):
         self.THETA_DISCRETIZATION = self.get_parameter('theta_discretization').value
         self.WHICH_RM             = self.get_parameter('range_method').value
         self.RANGELIB_VAR         = self.get_parameter('rangelib_variant').value
+        self.PF_PROFILE_LABEL = str(self.get_parameter(
+            'pf_profile_label').value).strip() or 'unprofiled'
+        self.RANDOM_SEED = int(self.get_parameter('random_seed').value)
         self.SHOW_FINE_TIMING     = self.get_parameter('fine_timing').value
         self.PUBLISH_ODOM         = self.get_parameter('publish_odom').value
         self.DO_VIZ               = self.get_parameter('viz').value
@@ -438,6 +449,8 @@ class ParticleFiler(Node):
             'stationary_scan_translation_m').value)
         self.STATIONARY_SCAN_YAW = float(self.get_parameter(
             'stationary_scan_yaw_rad').value)
+        self.SCAN_MATCH_ENABLED = bool(self.get_parameter(
+            'scan_match_enabled').value)
         self.SCAN_MATCH_MAX_CORRESPONDENCE = float(self.get_parameter(
             'scan_match_max_correspondence_m').value)
         self.SCAN_MATCH_TRIM_FRACTION = float(self.get_parameter(
@@ -600,7 +613,8 @@ class ParticleFiler(Node):
         self.last_prior_ess_ratio = 1.0
         self.last_posterior_ess_ratio = 1.0
         self.last_resampled = False
-        self.mcl_rng = np.random.default_rng()
+        self.mcl_rng, self.viz_rng = make_random_generators(
+            self.RANDOM_SEED)
         self.quality_tracker = LocalizationQualityTracker(
             self.QUALITY_OK_INLIER_FRACTION,
             self.QUALITY_LOST_INLIER_FRACTION,
@@ -716,9 +730,18 @@ class ParticleFiler(Node):
         self.filter_worker.start()
 
         self.get_logger().info(
-            'Finished initializing: odom/IMU buffer=%d/%d, '
+            'Finished initializing PF profile %s: RangeLib variant=%d, '
+            'ground-filter=%s, deskew=%s, scan-match/slip=%s; seed=%s; '
+            'odom/IMU buffer=%d/%d, '
             'latest-scan worker<=%.1fHz; autonomy waits for /initialpose '
             'and %d consecutive quality-OK updates' % (
+                self.PF_PROFILE_LABEL,
+                self.RANGELIB_VAR,
+                'ON' if self.GROUND_FILTER_ENABLED else 'OFF',
+                'ON' if self.DESKEW_ENABLED else 'OFF',
+                'ON' if self.SCAN_MATCH_ENABLED else 'OFF',
+                str(self.RANDOM_SEED)
+                if self.RANDOM_SEED >= 0 else 'random',
                 self.ODOM_BUFFER_SIZE,
                 self.IMU_BUFFER_SIZE,
                 self.MAX_UPDATE_RATE_HZ,
@@ -860,8 +883,11 @@ class ParticleFiler(Node):
             # publish a downsampled version of the particle distribution to avoid a lot of latency
             if self.MAX_PARTICLES > self.MAX_VIZ_PARTICLES:
                 # randomly downsample particles
-                proposal_indices = np.random.choice(self.particle_indices, self.MAX_VIZ_PARTICLES, p=self.weights)
-                # proposal_indices = np.random.choice(self.particle_indices, self.MAX_VIZ_PARTICLES)
+                proposal_indices = self.viz_rng.choice(
+                    self.particle_indices,
+                    self.MAX_VIZ_PARTICLES,
+                    p=self.weights,
+                )
                 self.publish_particles(self.particles[proposal_indices,:])
             else:
                 self.publish_particles(self.particles)
@@ -1227,12 +1253,12 @@ class ParticleFiler(Node):
         self.get_logger().info(str([base_pose[0], base_pose[1]]))
         with self.state_lock:
             self.weights = np.ones(self.MAX_PARTICLES) / float(self.MAX_PARTICLES)
-            self.particles[:,0] = laser_pose[0] + np.random.normal(
+            self.particles[:,0] = laser_pose[0] + self.mcl_rng.normal(
                 loc=0.0, scale=0.5, size=self.MAX_PARTICLES)
-            self.particles[:,1] = laser_pose[1] + np.random.normal(
+            self.particles[:,1] = laser_pose[1] + self.mcl_rng.normal(
                 loc=0.0, scale=0.5, size=self.MAX_PARTICLES)
             self.particles[:,2] = self.wrap_angle(
-                laser_pose[2] + np.random.normal(
+                laser_pose[2] + self.mcl_rng.normal(
                     loc=0.0, scale=0.4, size=self.MAX_PARTICLES))
             self.inferred_pose = np.copy(laser_pose)
             self.readiness_tracker.accept_initial_pose()
@@ -1252,12 +1278,13 @@ class ParticleFiler(Node):
         with self.state_lock:
             self.readiness_tracker.clear_initial_pose()
             permissible_x, permissible_y = np.where(self.permissible_region == 1)
-            indices = np.random.randint(0, len(permissible_x), size=self.MAX_PARTICLES)
+            indices = self.mcl_rng.integers(
+                0, len(permissible_x), size=self.MAX_PARTICLES)
 
             permissible_states = np.zeros((self.MAX_PARTICLES,3))
             permissible_states[:,0] = permissible_y[indices]
             permissible_states[:,1] = permissible_x[indices]
-            permissible_states[:,2] = np.random.random(
+            permissible_states[:,2] = self.mcl_rng.random(
                 self.MAX_PARTICLES) * np.pi * 2.0
 
             Utils.map_to_world(permissible_states, self.map_info)
@@ -1354,17 +1381,17 @@ class ParticleFiler(Node):
             2.0,
         )
         noise_scale *= max(1.0, float(noise_multiplier))
-        proposal_dist[:,0] += np.random.normal(
+        proposal_dist[:,0] += self.mcl_rng.normal(
             loc=0.0,
             scale=self.MOTION_DISPERSION_X * noise_scale,
             size=self.MAX_PARTICLES,
         )
-        proposal_dist[:,1] += np.random.normal(
+        proposal_dist[:,1] += self.mcl_rng.normal(
             loc=0.0,
             scale=self.MOTION_DISPERSION_Y * noise_scale,
             size=self.MAX_PARTICLES,
         )
-        proposal_dist[:,2] += np.random.normal(
+        proposal_dist[:,2] += self.mcl_rng.normal(
             loc=0.0,
             scale=self.MOTION_DISPERSION_THETA * noise_scale,
             size=self.MAX_PARTICLES,
@@ -1896,6 +1923,9 @@ class ParticleFiler(Node):
             raise ValueError('max_pending_scan_age_sec must be positive')
         if self.MAX_UPDATE_RATE_HZ <= 0.0:
             raise ValueError('max_update_rate_hz must be positive')
+        if self.RANDOM_SEED < -1:
+            raise ValueError(
+                'random_seed must be -1 or a non-negative integer')
         if self.SYNC_DIAGNOSTICS_PERIOD_SEC <= 0.0:
             raise ValueError('sync_diagnostics_period_sec must be positive')
         if self.MAX_LOCALIZATION_UPDATE_AGE_SEC <= 0.0:
@@ -2213,8 +2243,10 @@ class ParticleFiler(Node):
             action = self.filter_low_speed_action(
                 raw_action, odom_sample.linear_speed)
 
-            icp_ranges = np.copy(scan_ranges)
-            icp_ranges[~required_beam_mask] = self.MAX_RANGE_METERS
+            icp_ranges = None
+            if self.SCAN_MATCH_ENABLED:
+                icp_ranges = np.copy(scan_ranges)
+                icp_ranges[~required_beam_mask] = self.MAX_RANGE_METERS
             if geometry_degraded:
                 scan_motion = np.zeros(3)
                 scan_motion_valid = False
@@ -2226,7 +2258,7 @@ class ParticleFiler(Node):
                 scan_motion, scan_motion_valid = self.estimate_scan_action(
                     previous_ranges,
                     previous_angles,
-                    icp_ranges,
+                    scan_ranges if icp_ranges is None else icp_ranges,
                     scan_angles,
                     raw_action,
                 )
@@ -2255,13 +2287,19 @@ class ParticleFiler(Node):
                 <= self.STATIONARY_SCAN_TRANSLATION
                 and abs(scan_motion[2]) <= self.STATIONARY_SCAN_YAW
             )
-            slip_update = self.slip_detector.update(
-                raw_action,
-                imu_delta_yaw,
-                imu_valid,
-                scan_motion,
-                scan_motion_valid,
-            )
+            if self.SCAN_MATCH_ENABLED:
+                slip_update = self.slip_detector.update(
+                    raw_action,
+                    imu_delta_yaw,
+                    imu_valid,
+                    scan_motion,
+                    scan_motion_valid,
+                )
+            else:
+                # Slip recovery requires valid scan and IMU evidence.  An ICP
+                # A/B with no scan evidence must therefore clear, not latch,
+                # the detector and its motion-noise multiplier.
+                slip_update = self.slip_detector.disabled_update()
             self.last_slip_update = slip_update
             self.handle_slip_transition(slip_update, scan.stamp_ns)
 
@@ -2411,9 +2449,11 @@ class ParticleFiler(Node):
                 self.previous_filter_odom = odom_sample
                 self.previous_filter_scan_stamp_ns = scan.stamp_ns
                 self.previous_filter_scan_ranges = (
-                    None if geometry_degraded else np.copy(icp_ranges))
+                    None if geometry_degraded or icp_ranges is None
+                    else np.copy(icp_ranges))
                 self.previous_filter_scan_angles = (
-                    None if geometry_degraded else np.copy(scan_angles))
+                    None if geometry_degraded or icp_ranges is None
+                    else np.copy(scan_angles))
 
         # This is also the control-node lease heartbeat. Keep DDS publication
         # outside state_lock so a slow subscriber cannot delay pose resets.
@@ -2508,7 +2548,8 @@ class ParticleFiler(Node):
             self, previous_ranges, previous_angles,
             current_ranges, current_angles, odom_action):
         """Run the bounded scan matcher and apply its confidence gate."""
-        if previous_ranges is None or previous_angles is None:
+        if (not self.SCAN_MATCH_ENABLED
+                or previous_ranges is None or previous_angles is None):
             self.last_scan_motion_valid = False
             self.last_scan_motion[:] = 0.0
             self.last_scan_match_rmse_m = -1.0
@@ -2729,7 +2770,7 @@ class ParticleFiler(Node):
             'deskew-max-motion %.3fm/%.1fdeg, '
             'geometry %s ground/offplane/degraded/sync-miss/fallback '
             '%d/%d/%d/%d/%d, '
-            'attitude-buffer %d/%d level %s, shape-drop %d' % (
+            'attitude-buffer %d/%d level %s, shape-drop %d, profile %s' % (
                 rate_hz,
                 compute_ms,
                 turnaround_ms,
@@ -2802,6 +2843,7 @@ class ParticleFiler(Node):
                 self.IMU_BUFFER_SIZE,
                 'ready' if self.level_reference.ready else 'waiting',
                 self.scan_shape_drop_count,
+                self.PF_PROFILE_LABEL,
             )
         )
         self.last_sync_diagnostic_time = now

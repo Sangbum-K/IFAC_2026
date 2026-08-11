@@ -6,6 +6,8 @@ import json
 import math
 from pathlib import Path
 
+from compare_pf_replay import OdomInterpolator
+from compare_pf_replay import TOPICS as PF_TOPICS
 from compare_pf_replay import base_to_laser_pose
 from compare_pf_replay import compose
 from compare_pf_replay import correction_metrics
@@ -13,7 +15,6 @@ from compare_pf_replay import inverse
 from compare_pf_replay import map_fit_metrics
 from compare_pf_replay import nearest_by_stamp
 from compare_pf_replay import new_update_poses
-from compare_pf_replay import OdomInterpolator
 from compare_pf_replay import old_update_poses
 from compare_pf_replay import output_timing
 from compare_pf_replay import pose_2d
@@ -21,7 +22,6 @@ from compare_pf_replay import read_bag
 from compare_pf_replay import replay_diagnostics
 from compare_pf_replay import stamp_ns
 from compare_pf_replay import text_table
-from compare_pf_replay import TOPICS as PF_TOPICS
 from compare_pf_replay import update_timing
 
 import numpy as np
@@ -134,7 +134,8 @@ def autonomous_moving_fit_summary(
     autonomous = []
     for sample in samples:
         timestamp = sample['timestamp_ns']
-        index = int(np.searchsorted(output_stamps, timestamp, side='right') - 1)
+        index = int(
+            np.searchsorted(output_stamps, timestamp, side='right') - 1)
         if index < 0:
             continue
         age_ns = timestamp - mux_outputs[index][0]
@@ -335,10 +336,27 @@ def moving_fit_summary(samples, minimum_speed=0.5):
     }, moving
 
 
-def analyze(path, settle_sec, angle_step, held_out_stride):
-    """Calculate no-ground-truth PF metrics for one recorded run."""
+def analyze(
+        path, settle_sec, angle_step, held_out_stride,
+        command_path=None):
+    """Calculate no-ground-truth PF metrics for one recorded run.
+
+    ``command_path`` may name the original driving bag when ``path`` is a PF
+    replay output.  PF geometry and runtime then come from ``path``, while the
+    exact ackermann_mux source classification comes from the immutable input
+    bag.  Matching by the original ROS timestamps avoids replay scheduling or
+    recorder latency changing the driving-mode label.
+    """
     bag_path = resolve_bag(path)
-    data = read_bag(bag_path, topics=PF_TOPICS | COMMAND_TOPICS)
+    data_topics = PF_TOPICS if command_path else PF_TOPICS | COMMAND_TOPICS
+    data = read_bag(bag_path, topics=data_topics)
+    if command_path is None:
+        command_bag_path = bag_path
+        command_data = data
+    else:
+        command_bag_path = resolve_bag(command_path)
+        command_data = read_bag(
+            command_bag_path, topics=COMMAND_TOPICS)
     odom = OdomInterpolator(data['/odom'])
     settle_ns = int(odom.stamps[0] + settle_sec * 1e9)
 
@@ -394,7 +412,7 @@ def analyze(path, settle_sec, angle_step, held_out_stride):
     intervals = bad_intervals(fit_samples)
     moving_summary, moving_samples = moving_fit_summary(fit_samples)
     moving_intervals = bad_intervals(moving_samples)
-    mux_outputs, mux_summary = classify_mux_outputs(data)
+    mux_outputs, mux_summary = classify_mux_outputs(command_data)
     autonomy_summary, autonomy_samples = autonomous_moving_fit_summary(
         fit_samples, mux_outputs)
     autonomy_intervals = bad_intervals(autonomy_samples)
@@ -402,6 +420,7 @@ def analyze(path, settle_sec, angle_step, held_out_stride):
     return {
         'name': bag_path.parent.name,
         'path': str(bag_path),
+        'command_path': str(command_bag_path),
         'timestamp_mode': timestamp_mode,
         'scan_rate_hz': message_rate(data['/scan']),
         'odom_rate_hz': message_rate(data['/odom']),
@@ -537,7 +556,14 @@ def main():
     parser.add_argument('--settle-sec', type=float, default=10.0)
     parser.add_argument('--angle-step', type=int, default=10)
     parser.add_argument('--held-out-stride', type=int, default=10)
+    parser.add_argument(
+        '--command-bag',
+        help=(
+            'read /ackermann_cmd and mux source topics from this original '
+            'driving bag while analyzing replay output bags'),
+    )
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--output', help='also write the rendered report')
     args = parser.parse_args()
     if args.settle_sec < 0.0:
         parser.error('--settle-sec must be non-negative')
@@ -550,10 +576,14 @@ def main():
             args.settle_sec,
             args.angle_step,
             args.held_out_stride,
+            command_path=args.command_bag,
         )
         for path in args.bags
     ]
-    print(json.dumps(results, indent=2) if args.json else render(results))
+    report = json.dumps(results, indent=2) if args.json else render(results)
+    print(report)
+    if args.output:
+        Path(args.output).write_text(report + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':

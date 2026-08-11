@@ -482,6 +482,21 @@ class SlipDetector:
         self.consecutive_slip = 0
         self.consecutive_recovery = 0
 
+    def disabled_update(self):
+        """Return a neutral update after clearing all slip state."""
+        self.reset()
+        return SlipUpdate(
+            active=False,
+            entered=False,
+            recovered=False,
+            evidence_valid=False,
+            score=0.0,
+            translation_innovation_m=0.0,
+            scan_odom_yaw_innovation_rad=0.0,
+            odom_imu_yaw_innovation_rad=0.0,
+            scan_imu_yaw_innovation_rad=0.0,
+        )
+
     def update(
             self, odom_action, imu_delta_yaw, imu_valid,
             scan_action, scan_valid):
@@ -555,6 +570,25 @@ class SlipDetector:
             odom_imu_yaw_innovation_rad=odom_imu_yaw,
             scan_imu_yaw_innovation_rad=scan_imu_yaw,
         )
+
+
+def make_random_generators(random_seed):
+    """Create independent algorithm and visualization random streams.
+
+    A non-negative seed makes bag replay repeatable.  ``-1`` preserves the
+    production behavior of drawing fresh operating-system entropy at startup.
+    Keeping visualization on its own stream prevents RViz subscriptions from
+    changing the MCL proposal sequence.
+    """
+    seed = int(random_seed)
+    if seed < -1:
+        raise ValueError('random_seed must be -1 or a non-negative integer')
+    root = np.random.SeedSequence(None if seed == -1 else seed)
+    algorithm_seed, visualization_seed = root.spawn(2)
+    return (
+        np.random.default_rng(algorithm_seed),
+        np.random.default_rng(visualization_seed),
+    )
 
 
 def _transform_points(points, pose):

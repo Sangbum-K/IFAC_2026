@@ -20,13 +20,69 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
-from launch.actions import DeclareLaunchArgument
-from ament_index_python.packages import get_package_share_directory
 import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 import yaml
+
+
+PF_AB_PROFILES = (
+    'current',
+    'variant0',
+    'variant0_no_ground',
+    'variant0_no_ground_no_deskew',
+    'variant0_no_ground_no_deskew_no_icp',
+)
+
+
+def _launch_particle_filter(context, *args, **kwargs):
+    """Validate and layer one named A/B profile over the base PF config."""
+    profile = LaunchConfiguration('pf_profile').perform(context).strip()
+    if profile not in PF_AB_PROFILES:
+        raise RuntimeError(
+            'Unknown pf_profile:=%r. Choose one of: %s'
+            % (profile, ', '.join(PF_AB_PROFILES)))
+
+    base_config = LaunchConfiguration('localize_config').perform(context)
+    if not os.path.isfile(base_config):
+        raise RuntimeError(
+            'PF base config does not exist: %s' % base_config)
+
+    profile_config = os.path.join(
+        get_package_share_directory('particle_filter'),
+        'config',
+        'profiles',
+        profile + '.yaml',
+    )
+    if not os.path.isfile(profile_config):
+        raise RuntimeError(
+            'PF A/B profile is not installed: %s. Rebuild and source '
+            'localization_ws.' % profile_config)
+
+    return [
+        LogInfo(msg=(
+            '[PF A/B] profile=%s; base=%s; overlay=%s'
+            % (profile, base_config, profile_config))),
+        Node(
+            package='particle_filter',
+            executable='particle_filter',
+            name='particle_filter',
+            output='screen',
+            # ROS parameter files are applied left-to-right. The small named
+            # profile therefore changes only the feature under test while the
+            # production localize.yaml remains the common baseline.
+            parameters=[
+                base_config,
+                profile_config,
+                {'use_sim_time': LaunchConfiguration('use_sim_time')},
+            ],
+        ),
+    ]
+
 
 def generate_launch_description():
     # config and args
@@ -54,19 +110,21 @@ def generate_launch_description():
         ),
         description='Map yaml path used by the PF map_server.',
     )
-    ld = LaunchDescription([localize_la, use_sim_time_la, map_yaml_path_la])
+    pf_profile_la = DeclareLaunchArgument(
+        'pf_profile',
+        default_value='current',
+        description=(
+            'PF A/B overlay: %s. current preserves production behavior.'
+            % ', '.join(PF_AB_PROFILES)),
+    )
+    ld = LaunchDescription([
+        localize_la,
+        use_sim_time_la,
+        map_yaml_path_la,
+        pf_profile_la,
+    ])
 
     # nodes
-    pf_node = Node(
-        package='particle_filter',
-        executable='particle_filter',
-        name='particle_filter',
-        output='screen',
-        parameters=[
-            LaunchConfiguration('localize_config'),
-            {'use_sim_time': LaunchConfiguration('use_sim_time')},
-        ]
-    )
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
@@ -90,6 +148,6 @@ def generate_launch_description():
     # finalize
     ld.add_action(nav_lifecycle_node)
     ld.add_action(map_server_node)
-    ld.add_action(pf_node)
+    ld.add_action(OpaqueFunction(function=_launch_particle_filter))
 
     return ld

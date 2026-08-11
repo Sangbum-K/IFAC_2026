@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Inner half of tools/hbl — runs *inside* the container. Not meant to be
+# called directly. $1 is the caller's cwd, $2.. the command.
+set -uo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+CALLER_CWD=$1; shift
+# Distrobox inherits the host IDE environment.  Clear a sourced host ROS
+# distribution before loading Humble so Jazzy paths cannot leak into builds or
+# replay imports.
+unset ROS_DISTRO ROS_VERSION ROS_PYTHON_VERSION
+unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH
+unset PYTHONPATH LD_LIBRARY_PATH
+set +u
+source /opt/ros/humble/setup.bash
+for ws in planning perception control integration hardware localization; do
+  [ -f "$ROOT/${ws}_ws/install/setup.bash" ] && source "$ROOT/${ws}_ws/install/setup.bash"
+done
+set -u
+cd "$CALLER_CWD" || cd "$ROOT"
+exec "$@"
