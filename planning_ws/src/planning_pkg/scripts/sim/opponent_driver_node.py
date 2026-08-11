@@ -53,7 +53,7 @@ class OpponentDriverNode(Node):
         self.declare_parameter('opponent/size_m', 0.3)
         self.declare_parameter('opponent/drive_rate_hz', 40.0)
         self.declare_parameter('opponent/wheelbase_m', 0.33)
-        self.declare_parameter('opponent/max_steer_rad', 0.36)
+        self.declare_parameter('opponent/max_steer_rad', 0.3578)
         # sim_race.launch.py 가 PARK_POSES[map] 로 항상 덮어쓴다. 아래 기본값은
         # 단독 실행용이며, 옛 Spielberg 좌표(-79.81/-31.26)는 현행 기본 맵
         # my_track0807 과 무관해서 제거했다.

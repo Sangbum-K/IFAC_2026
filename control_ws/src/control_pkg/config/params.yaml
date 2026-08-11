@@ -93,8 +93,8 @@ control:
     "map/backstop_path_error_m": 0.25
 
     # [트리거 2] 조향포화 램프의 **시작점** (트리거점이 아니다).
-    # 포화율 = |조향각| / vehicle/max_steering_angle_rad. 0.36 rad 기준
-    # 0.85 = 17.5°다. 조향각은 calc_steering_angle 말미에서 ±max로 클램프되므로
+    # 포화율 = |조향각| / vehicle/max_steering_angle_rad. 0.3578 rad 기준
+    # 0.85 = 17.4°다. 조향각은 calc_steering_angle 말미에서 ±max로 클램프되므로
     # 포화율은 1.0을 넘지 못한다 → 램프 끝은 1.0 고정이고 별도 파라미터가 없다.
     #
     # 2026-08-08 이전에는 이 값을 넘는 순간 하한으로 **즉시** 잘랐다. 그게
@@ -147,15 +147,19 @@ control:
     "vehicle/max_speed_mps": 1.0
     # Limited by servo_max (0.70) on the right side: beyond servo ~0.7196 the
     # servo stalls against a mechanical stop, so hardware clips at 0.70.
-    # With the 2026-08-10 calibration (gain -0.8320 / offset 0.3941) that is
-    #   right (0.70-0.3941)/-0.8320 = -0.3677 rad (21.07 deg)  <- binding side
-    #   left  (0.05-0.3941)/-0.8320 = +0.4136 rad (23.70 deg)
-    # 0.36 keeps 2.1% inside the binding side. Do NOT raise it to 0.3677:
-    # TUNING_STATUS.md section 11 measured the steering neutral jumping up to
-    # 0.036 servo between runs, which drags the right limit down to 0.321 rad.
+    # With the 2026-08-11 calibration (gain -0.8564 / offset 0.3935) that is
+    #   right (0.70-0.3935)/-0.8564 = -0.357894 rad (20.51 deg)  <- binding side
+    #   left  (0.05-0.3935)/-0.8564 = +0.401098 rad (22.98 deg)
+    # 0.3578 is the binding limit itself, rounded down only enough to stay
+    # inside it (0.03%). The previous 0.36 came from the older -0.8320 fit and
+    # would OVERRUN this limit by 0.6%, so it could not be kept.
+    # ⚠️ No margin is left for the unresolved neutral jump (TUNING_STATUS.md
+    # section 11: up to 0.036 servo between runs). When the neutral drifts
+    # right, near-full-lock commands clip at servo_max, so the controller's
+    # saturation ratio reads 1.0 while the car is still under-steering.
     # Must stay equal to planning spliner/vehicle_max_steering_rad and
     # deployment_profiles.MAX_STEER -- resolve() rejects a mismatch.
-    "vehicle/max_steering_angle_rad": 0.36
+    "vehicle/max_steering_angle_rad": 0.3578
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5
     # 2026-07-31: 7.0 -> 4.0 (run_0731_223152 실측 제동 ~4.2 m/s²). 7.0이면

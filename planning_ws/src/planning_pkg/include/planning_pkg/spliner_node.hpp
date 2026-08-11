@@ -549,7 +549,7 @@ private:
   bool sp_mapping_attempted_{false};
   double sp_mapping_max_residual_m_{0.5};
   double vehicle_wheelbase_m_{0.33};
-  double vehicle_max_steering_rad_{0.36};
+  double vehicle_max_steering_rad_{0.3578};
   double vehicle_max_steering_rate_radps_{2.0};
   // 계획 게이트가 쓰는 "실제로 달성되는 곡률 / kinematic 자전거모델 예측"
   // 비율. 1.0이면 tan(delta_max)/L 그대로 (예전 동작).
