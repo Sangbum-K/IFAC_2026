@@ -484,3 +484,48 @@ def test_static_cylinder_model_cannot_understate_extent():
         assert open_space >= radius, (
             f"{env_name}: open_space {open_space} 가 고정 반지름 {radius} 미만 "
             "— 표면이 벽에 닿는 클러스터까지 고정하게 된다")
+
+
+def test_bridge_reads_only_fields_that_exist_on_perception_obstacle():
+    """브릿지가 **입력** 메시지에 없는 필드를 읽지 않는지.
+
+    입력(f1tenth_perception_msgs/Obstacle)과 출력(f1tenth_planning_msgs)은
+    이름이 비슷하고 필드가 다르다 — 입력엔 is_dynamic, 출력엔 is_static 이
+    있다. 2026-08-12 고정 원통 커밋이 입력에서 src.is_static 을 읽어 **첫
+    장애물 프레임에서** AttributeError 로 노드가 죽었고, 스트림이 끊기자
+    spliner 가 fail-safe stop 을 발행해 차가 섰다. 위 파라미터 테스트들은
+    YAML 숫자만 봐서 이걸 전혀 잡지 못했다.
+
+    ROS 런타임 없이 .msg 정의와 소스 AST 만으로 본다.
+    """
+    msg_path = (WORKSPACE / "planning_ws" / "src" / "f1tenth_perception_msgs" /
+                "msg" / "Obstacle.msg")
+    fields = set()
+    for line in msg_path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            fields.add(parts[1])
+    assert "is_dynamic" in fields, "Obstacle.msg 파싱 실패 (테스트가 무력해짐)"
+
+    source = (PKG / "scripts" / "planner" /
+              "perception_obstacle_bridge_node.py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    # 입력 메시지를 담는 루프 변수. 이름이 바뀌면 아래 assert 가 알려준다.
+    loop_var = "src"
+    used = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == loop_var
+    }
+    assert used, (
+        f"{source.name}: '{loop_var}.*' 접근이 하나도 없다 — 루프 변수 이름이 "
+        "바뀌었으면 이 테스트도 같이 고칠 것")
+    missing = sorted(used - fields)
+    assert not missing, (
+        f"{source.name}: 입력 Obstacle 에 없는 필드를 읽는다: {missing} "
+        f"(정의된 필드: {sorted(fields)})")

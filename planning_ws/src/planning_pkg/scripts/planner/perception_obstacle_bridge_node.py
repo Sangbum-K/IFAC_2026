@@ -619,7 +619,15 @@ class PerceptionObstacleBridgeNode(Node):
             #
             # 맵 미수신(wall_distance None)이면 적용하지 않는다: 벽 근처인지
             # 모르는 채 extent 를 줄이는 것이 이 변경의 유일한 위험 방향이다.
-            if src.is_static and self.cyl_lo <= raw_half <= self.cyl_hi:
+            # ⚠️ 입력(f1tenth_perception_msgs/Obstacle)에는 is_static 이 없다 —
+            # is_dynamic 이다. is_static 은 이 노드가 아래에서 만들어 내보내는
+            # **출력**(planning) 필드다. 여기서 src.is_static 을 읽어 노드가
+            # 죽었다(첫 장애물 프레임에서 AttributeError -> 스트림 중단 ->
+            # spliner fail-safe stop). 여기서는 원시 분류를 그대로 쓴다:
+            # unsettled_class 로 정적 취급된 트랙까지 포함시키면 "분류가 아직
+            # 안 선" 물체의 extent 를 줄이게 되고, 그건 이 변경의 유일한 위험
+            # 방향이다.
+            if (not src.is_dynamic) and self.cyl_lo <= raw_half <= self.cyl_hi:
                 wd = self.wall_distance(x, y)
                 if wd is not None and wd > self.cyl_open_space:
                     half = self.cyl_radius
