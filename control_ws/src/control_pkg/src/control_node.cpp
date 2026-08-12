@@ -350,6 +350,8 @@ public:
       "map/backstop_steer_sat_ratio", 0.85);
     backstop_min_speed_ = this->declare_parameter<double>(
       "map/backstop_min_speed_mps", 1.5);
+    backstop_sat_min_err_m_ = this->declare_parameter<double>(
+      "map/backstop_sat_min_path_error_m", 0.12);
     max_curvature_reference_ = this->declare_parameter<double>(
       "map/max_curvature_reference", 0.8);
     velocity_steer_gain_max_ = this->declare_parameter<double>(
@@ -489,6 +491,10 @@ private:
       backstop_err_m_ <= 0.0 || backstop_err_m_ > 5.0 ||
       backstop_sat_ratio_ <= 0.0 || backstop_sat_ratio_ > 1.0 ||
       backstop_min_speed_ < 0.0 || backstop_min_speed_ > 10.0 ||
+      // 0 = 비활성(포화 단독 발화). 경로오차 임계 이상으로 두면 이 분기가
+      // 경로오차 분기에 흡수돼 무의미해지므로 그 위는 막는다.
+      backstop_sat_min_err_m_ < 0.0 ||
+      backstop_sat_min_err_m_ >= backstop_err_m_ ||
       max_curvature_reference_ <= 0.0 || max_curvature_reference_ > 5.0 ||
       velocity_steer_gain_max_ < 1.0 || velocity_steer_gain_max_ > 3.0 ||
       nearest_search_horizon_ < 0.5 || nearest_search_horizon_ > 20.0 ||
@@ -1015,7 +1021,28 @@ private:
         // 신호가 끊기면 즉시 원복 — 게이팅은 fail-closed 여야 한다.
         const bool escape_now = escape_active &&
           (now - escape_active_stamp).seconds() < kEscapeActiveTimeoutSec;
-        if (sat > backstop_sat_ratio_ && !escape_now) {
+        // ── 2026-08-12: 조향포화 분기에 경로오차 조건을 AND 로 묶는다 ──────
+        // 이 분기의 전제는 "조향이 포화면 기하를 못 만들고 있다"이지만,
+        // **추종이 완벽한데도** 계획된 레이스라인 자체가 큰 조향을 요구하면
+        // 포화만 뜬다. 그때 깎는 것은 방어가 아니라 순손실이다.
+        //   run_0812_013630 실측 오발화 12건 (경로오차 2~10cm = 추종 완벽):
+        //     경로오차 0.06m / 포화 99% -> 3.80 -> 1.54 m/s  (-59%)
+        //     경로오차 0.10m / 포화 92% -> 3.61 -> 2.53      (-30%)
+        //     경로오차 0.07m / 포화 93% -> 3.05 -> 2.28      (-25%)
+        //     경로오차 0.02m / 포화 90% -> 2.95 -> 2.62      (-11%)
+        //   (0808 run_202157 의 apex 5곳 오발화와 같은 패턴이 램프 전환 후에도
+        //    남아 있었다 — 램프가 낙폭을 줄였을 뿐 발화 자체는 그대로다.)
+        // 포화가 **실제 추종 실패로 나타나기 시작할 때**만 개입하게 한다.
+        // 임계는 경로오차 분기(backstop_path_error_m 0.25)의 절반 아래로 둬서
+        // 그 분기보다 항상 먼저 열리게 한다 — 포화는 선행 지표로 남는다.
+        //   ⚠️ 이 값을 0 으로 두면 옛 동작(포화 단독 발화)으로 돌아간다.
+        //   ⚠️ 반대로 backstop_path_error_m 이상으로 올리면 이 분기가 경로오차
+        //      분기에 완전히 흡수돼 사실상 비활성이 된다.
+        const bool sat_err_ok =
+          !std::isfinite(backstop_sat_min_err_m_) ||
+          backstop_sat_min_err_m_ <= 0.0 ||
+          (std::isfinite(path_err) && path_err > backstop_sat_min_err_m_);
+        if (sat > backstop_sat_ratio_ && !escape_now && sat_err_ok) {
           // 조향이 포화면 기하를 못 만들고 있다. 다만 경로오차 분기와 같은
           // **비례 램프**로 깎는다. 0808 run_202157에서 하한 즉시 캡은
           // 오발화했다: apex 5곳에서 경로오차가 3~7cm(= 추종은 완벽)인데
@@ -1380,6 +1407,8 @@ private:
   double backstop_err_m_{0.25};
   double backstop_sat_ratio_{0.85};
   double backstop_min_speed_{1.5};
+  // 조향포화 분기가 열리기 위한 최소 경로오차 [m]. 0 이면 옛 동작(포화 단독).
+  double backstop_sat_min_err_m_{0.12};
   double max_curvature_reference_{0.8};
   double velocity_steer_gain_max_{1.0};
   double nearest_search_horizon_{3.0};

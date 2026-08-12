@@ -66,6 +66,9 @@ private:
   double minimum_horizon_sec_{1.5};
   double minimum_braking_decel_mps2_{2.5};
   double minimum_stop_buffer_m_{1.5};
+  // 회피 경로가 빈 배열로 바뀐 뒤 직전 속도 상한을 유지할 시간 [s].
+  // 0 이면 홀드 없음(옛 fail-open). 근거는 cpp 의 declare_parameter 주석.
+  double avoidance_loss_hold_sec_{0.5};
 
   // State
   std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_;
@@ -79,6 +82,10 @@ private:
   std::chrono::steady_clock::time_point avoidance_arrival_time_{};
   int64_t avoidance_source_stamp_ns_{0};
   int64_t last_avoidance_source_stamp_ns_{0};
+  // 회피 상실 홀드용: 직전 **비어있지 않은** 회피 경로의 선두 속도와 그 시각.
+  double last_avoidance_head_speed_{-1.0};
+  std::chrono::steady_clock::time_point last_avoidance_nonempty_time_{};
+  bool has_avoidance_head_speed_{false};
   std::mutex mutex_global_waypoints_;
   std::mutex mutex_frenet_odom_;
   std::mutex mutex_avoidance_;

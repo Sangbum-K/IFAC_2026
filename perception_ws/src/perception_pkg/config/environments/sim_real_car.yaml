@@ -68,12 +68,14 @@ obstacle_detector_node:
     # (track_timeout_sec 0.80 이 base 에서 이미 우선 적용되므로 이 프레임 값은
     #  지금은 fallback 일 뿐이지만, real_car.yaml 과 형태를 맞춰 둔다.)
     track_timeout: 19
-    # real_car.yaml과 동일 값을 **명시**한다 (test_sim_real_car_profiles_
-    # mirror_real_car). 시뮬 detector 가 실제로 이 상한 근처까지 가려면
-    # gym 이 실차와 같은 20/30ms 이봉 스캔 지터를 내야 한다 — 그건 파라미터가
-    # 아니라 gym_bridge 쪽(sim_race.launch.py vehicle:=real_car 의
-    # sensor_publish_rate_hz)이 담당한다.
-    process_rate_hz: 20.0
+    # real_car.yaml 과 동일 (근거는 그쪽 주석). 스로틀 사실상 해제 = 스캔당 1회.
+    # 여기를 안 맞추면 sim 은 15.5Hz, 실차는 40Hz 로 갈려 min_hits(3) 의 벽시계
+    # 검출지연이 sim 에서만 2.5배로 남는다 — 회피 타이밍 재현이 안 된다.
+    # ⚠️ 다만 시뮬 detector 가 실제로 이 상한 근처까지 가려면 gym 이 실차와 같은
+    # 20/30ms 이봉 스캔 지터를 내야 한다 — 그건 파라미터가 아니라 gym_bridge
+    # 쪽(sim_race.launch.py vehicle:=real_car 의 sensor_publish_rate_hz)이
+    # 담당한다. 여기만 60 으로 올려도 gym 이 느리면 벽시계 지연은 그대로다.
+    process_rate_hz: 60.0
     # ---- 맵 벽 필터 ----
     # 파라미터 이름은 real_car.yaml과 반드시 같아야 한다. 노드가 선언하지 않은
     # 이름(구 map_filter_enabled/map_wall_dist_min_m)을 주면 rclpy는 에러 없이

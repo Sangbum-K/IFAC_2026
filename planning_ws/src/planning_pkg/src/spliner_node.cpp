@@ -1556,10 +1556,46 @@ bool SplinerNode::TryLaneSwitch(
     // 항상 먼저 도는 구조라 DoSpline 의 가드는 사실상 도달하지 않는 코드였다.
     // 여기서 false 를 돌려도 geom_infeasible 플래그를 세우지 않으므로 Tier3는
     // 정지가 아니라 trailing_retry_speed 감속으로 받는다 — 가로지르기보다 안전.
-    const bool committed_side = std::abs(cur_d_) > side_switch_d_tresh_ &&
-                                !last_ot_side_.empty() &&
-                                ((cur_d_ > 0.0) ? (last_ot_side_ == "left")
-                                                : (last_ot_side_ == "right"));
+    // OtSideCommitFresh: 이 가드는 "지금 회피 중"일 때만 의미가 있다. 예전엔
+    // last_ot_side_ 가 영구히 남아서, 장애물이 없던 구간의 추종오차(직선 |d|
+    // p95 0.26 > 문턱 0.20)만으로도 반대편 후보가 통째로 사라졌다.
+    // (empty() 검사는 OtSideCommitFresh 안에 포함돼 있다.)
+    // SideKeepActive 를 그대로 쓰지 않는 이유: 그쪽 (1)번 같은-장애물 잠금은
+    // |d| 가 작은 접근 구간에서도 참이라, 여기에 쓰면 유지 사이드가 막혔을 때
+    // 반대편 후보까지 못 만들어 "모든 레인 막힘 -> 정지"가 된다
+    // (0807 run_164645 헤어핀 전패와 같은 형태). 여기서는 "몸이 이미 그쪽으로
+    // 나가 있다"는 원래 조건을 유지하고 수명만 건다.
+    bool committed_side = OtSideCommitFresh() &&
+                          std::abs(cur_d_) > side_switch_d_tresh_ &&
+                          ((cur_d_ > 0.0) ? (last_ot_side_ == "left")
+                                          : (last_ot_side_ == "right"));
+
+    // 2026-08-12: **잠금은 잠긴 쪽이 아직 성립할 때만 유효하다.**
+    // 잠긴 사이드가 벽 클램프로 이미 막혔는데도 잠금을 유지하면 남는 선택이
+    // "막힌 쪽을 붙잡고 감속" 하나뿐이라 회피 실패로 직결된다.
+    // run_0812_013630 에서 이 거부가 lane 쪽 86 프레임 / OT 쪽 78 프레임
+    // 발동했고, 로그로 확인된 7회 전부 **반대쪽은 성립**했다 (1:15 / 2:20).
+    // 임계값 0.20 자체가 노이즈 바닥 아래다 — 장애물 없는 구간에서도
+    // |d| > 0.20 인 시간이 36.4%(p90 0.288, p95 0.330)이므로 이 조건은
+    // 회피 의도가 아니라 평상시 추종 흔들림에 걸린다.
+    // 아래 루프의 clears 판정과 같은 식을 미리 한 번 돌린다 (부작용 없음).
+    const auto side_clears = [&](const std::string &side) {
+        const bool group_ok = (side == "left") ? left_all : right_all;
+        if (group_ok) {
+            return true;
+        }
+        const double apex = ApexFor(side, closest_obs);
+        const double need_c = RequiredObstacleClearance(closest_obs);
+        return (side == "left") ? (apex >= closest_obs.d_left + need_c)
+                                : (apex <= closest_obs.d_right - need_c);
+    };
+    if (committed_side && !side_clears(last_ot_side_)) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+            "LaneSwitch 사이드 잠금 양보: 잠긴 %s가 막혔다 (cur_d=%.2f) — "
+            "반대쪽 후보를 허용한다", last_ot_side_.c_str(), cur_d_);
+        NoteReject("lane_side_switch_yielded");
+        committed_side = false;
+    }
 
     // 후보 레인: 우선 사이드 → 반대 사이드. 목표 오프셋 d_hold = ApexFor
     // (장애물 가장자리 + evasion_dist, 벽 클램프). 벽 클램프로 검증기 요구
@@ -1903,10 +1939,39 @@ bool SplinerNode::BuildLaneSwitch(
         //      원 주석이 막으려던 "안쪽 오프셋이 그립을 흔드는" 경우는 그대로 걸린다.
         // 속도 캡(entry_speed_cap)은 이미 available(= 장애물까지 전체 거리)
         // 기준으로 계산됐으므로 여기서 더 느려지지 않는다.
+        // ── 2026-08-12: 전부-아니면-전무 -> 통과하는 최대 스팬 탐색 ──────
+        // 예전에는 **가장 긴 스팬 하나만** 시험하고 실패하면 조기 전환을 통째로
+        // 포기했다. BlendKappaMax 가 구간 **최댓값**이라 스팬 끝에 코너가 하나만
+        // 걸려도 전부 취소된다 — run_0812_013630 실측 ok_early_switch 2회 / 254초.
+        //
+        // 이게 "일찍 시작하면 코너에서 오히려 회피를 포기한다"는 관찰의 정체다.
+        // 스팬을 늘리면 kappa_track 최댓값이 올라가고, 기하 하한
+        // 6A/L² + |kappa_track| <= 0.92*SteerKappaMax(=1.049) 에서 기동에 남는
+        // 예산이 줄어 **요구 거리가 오히려 길어진다.** 실측 환산:
+        //   kappa 0.01 -> 남는 예산 1.039(99%), 0.5m 이동에 1.70 m 필요
+        //   kappa 0.30 -> 0.749(71%), 2.00 m
+        //   kappa 0.52 -> 0.529(50%), 2.38 m
+        //   kappa 0.75 -> 0.299(29%), 3.17 m
+        // 즉 1.5 m 뒤로 늘려 활주로를 벌어도 kappa 0.75 구간을 끌어들이면
+        // 요구가 1.47 m 늘어 순이득이 0이 된다. 늘리는 것 자체가 아니라
+        // **코너를 스팬에 끌어들이는 것**이 문제였다.
+        //
+        // 이제 긴 쪽에서 짧은 쪽으로 내려가며 두 게이트를 통과하는 첫 스팬을
+        // 쓴다. 코너가 앞에 있으면 그 앞까지만 늘어나고, 직선이면 전부 늘어난다.
+        // 게이트 자체는 그대로 — 통과 기준을 약화시키지 않고 후보만 늘린다.
+        //
+        // TODO(후속): 벽 게이트 `room >= |d_hold|` 는 구조적으로 과보수다.
+        // 진입 구간은 d 가 cur_d_ -> d_hold 로 **램프**하므로 상류에서는 |d| 가
+        // 훨씬 작은데, min(벽) 과 max(|d|) 를 서로 다른 위치에서 뽑아 비교한다.
+        // 점별(|d(s)| <= wall(s) - boundary) 검사로 바꾸면 이 트랙(폭 중앙 1.2m)
+        // 에서 조기 전환이 더 열린다. 이번 수정 범위에서는 건드리지 않았다.
         if (early_switch_kappa_max_ > 0.0) {
-            const double early_span =
+            const double early_span_max =
                 std::max(std::min(hold_start, blend_dist_max_m_), 0.0);
-            if (early_span > blend_in) {
+            // 스팬 후보 간격. wpnt_dist_ 가 촘촘하면 반복이 과해지므로 하한 0.25m.
+            const double span_step = std::max(wpnt_dist_, 0.25);
+            for (double early_span = early_span_max;
+                 early_span > blend_in + 1e-6; early_span -= span_step) {
                 const double s_from = Mod(cur_s_, track_len_);
                 const double s_to = Mod(cur_s_ + early_span, track_len_);
                 double wall_l, wall_r;
@@ -1925,12 +1990,15 @@ bool SplinerNode::BuildLaneSwitch(
                 if (room >= std::abs(d_hold) &&
                     kappa_early <= early_switch_kappa_max_) {
                     RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                        "LaneSwitch 조기 전환: 진입 %.2f -> %.2fm "
+                        "LaneSwitch 조기 전환: 진입 %.2f -> %.2fm / 최대 %.2fm "
                         "(구간 벽여유 %.2f >= |d_hold| %.2f, kappa %.3f)",
-                        blend_in, early_span, room, std::abs(d_hold),
-                        kappa_early);
-                    NoteReject("ok_early_switch");
+                        blend_in, early_span, early_span_max, room,
+                        std::abs(d_hold), kappa_early);
+                    NoteReject(early_span >= early_span_max - 1e-6
+                                   ? "ok_early_switch"
+                                   : "ok_early_switch_partial");
                     blend_in = early_span;
+                    break;
                 }
             }
         }
@@ -2308,19 +2376,34 @@ bool SplinerNode::DoSpline(
             // 통과 직후 4랩(85.22 / 109.26 / 122.09 / 134.19)에 발생했고,
             // 로컬 경로가 반대편으로 점프하면서 control 추종 백스톱을
             // 발화시켰다(경로오차 0.37~0.63m -> 속도 1.5 m/s).
-            // 여기서 false를 돌려도 lane_switch/free_spline_geom_infeasible_
-            // 플래그를 세우지 않으므로 Tier3는 정지가 아니라
-            // trailing_retry_speed 감속으로 받는다 — 가로지르기보다 안전하다.
-            const bool committed_to_desired =
+            //
+            // ⚠️ 2026-08-12: **이 분기에서는 그 가드를 적용하지 않는다.**
+            // 여기는 `kept_ok == false` 분기다 = 잠긴 사이드가 이미 막혔고,
+            // 바로 위에서 `proposed_ok == true` 로 반대쪽이 성립함을 확인했다.
+            // 그 상태에서 전환을 막으면 남는 선택은 "막힌 쪽을 붙잡고 감속"
+            // 하나뿐이고, 그건 회피 실패로 직결된다.
+            //   run_0812_013630 실측: 이 거부가 7회 발동했고 **7회 모두**
+            //   직전 로그가 "OT side ... -> 반대쪽 폴백 (성립)" 이었다.
+            //   1:15 관통 / 2:20 관통(2건)이 전부 이 경로다.
+            //   그리고 거부 시점 |cur_d| 가 0.20 0.25 0.22 0.20 0.26 0.20 0.21
+            //   — 전부 임계값(0.20) +6cm 안이다. 장애물이 없는 구간에서도
+            //   |d| > 0.20 인 시간이 36.4%(p90 0.288)이므로, 이 임계값은
+            //   "회피 중"이 아니라 **평상시 추종 흔들림**을 잡고 있었다.
+            // 가로지르기 자체의 위험은 여기서 막을 일이 아니다 — 아래
+            // BlendGeomFloor(가로지르는 **더 큰 진폭**으로 계산됨) 와
+            // CheckPathCollision 이 그대로 판정한다. 이 가드는 원래 양쪽이
+            // 모두 성립할 때의 **불필요한** 가로지르기를 막는 사전 필터였다.
+            // OtSideCommitFresh 는 TryLaneSwitch 의 committed_side 와 같은
+            // 수명 조건이다. 여기서는 거부가 아니라 **로그/카운터 조건**이므로
+            // 낡은 커밋에서 헛로그가 뜨는 것만 막는다.
+            if (OtSideCommitFresh() &&
                 std::abs(cur_d_) > side_switch_d_tresh_ &&
-                ((cur_d_ > 0.0) ? (desired == "left") : (desired == "right"));
-            if (committed_to_desired) {
+                ((cur_d_ > 0.0) ? (desired == "left") : (desired == "right"))) {
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
-                    "OT side 전환 거부: 이미 %s로 회피 중 (cur_d=%.2f) — "
-                    "가로지르지 않고 감속",
-                    desired.c_str(), cur_d_);
-                NoteReject("side_switch_blocked_mid_evasion");
-                return false;
+                    "OT side 전환 허용: %s 막힘 + %s 성립 (cur_d=%.2f) — "
+                    "기하/충돌 검증에 맡긴다",
+                    desired.c_str(), more_space.c_str(), cur_d_);
+                NoteReject("side_switch_crossed_while_committed");
             }
             pitwall::Event("사이드 전환 (" + desired + " -> " + more_space + ")");
             CommitOtSide(more_space, closest_obs);
@@ -3961,18 +4044,32 @@ void SplinerNode::CommitOtSide(
     const std::string &side,
     const f1tenth_planning_msgs::msg::Obstacle &obs) {
     last_ot_side_ = side;
+    // 스탬프는 s_center 유효성과 무관하게 **항상** 갱신한다 — 이 시각이
+    // OtSideCommitFresh 의 기준(= 마지막으로 이 사이드로 회피 경로를 만든
+    // 시각)이므로, s_center 가 NaN 인 프레임에서 갱신을 건너뛰면 진행 중인
+    // 회피가 만료된 것으로 보인다. 같은-장애물 잠금(has_ot_side_obs_)만
+    // s_center 에 의존한다.
+    ot_side_stamp_ = this->now();
     if (std::isfinite(obs.s_center)) {
         ot_side_obs_s_ = Mod(obs.s_center, std::max(track_len_, 1e-3));
-        ot_side_stamp_ = this->now();
         has_ot_side_obs_ = true;
     } else {
         has_ot_side_obs_ = false;
     }
 }
 
+bool SplinerNode::OtSideCommitFresh() const {
+    if (last_ot_side_.empty()) {
+        return false;
+    }
+    const double age = (this->now() - ot_side_stamp_).seconds();
+    return age >= 0.0 && age <= kOtSideCommitValidSec;
+}
+
 bool SplinerNode::SideKeepActive(
     const f1tenth_planning_msgs::msg::Obstacle &obs) const {
-    if (last_ot_side_.empty()) {
+    // 커밋이 만료됐으면 유지할 사이드가 없다 (헤더 OtSideCommitFresh 주석).
+    if (!OtSideCommitFresh()) {
         return false;
     }
     // (1) 같은 장애물을 계속 회피하는 중이면 |cur_d_|와 무관하게 유지한다.

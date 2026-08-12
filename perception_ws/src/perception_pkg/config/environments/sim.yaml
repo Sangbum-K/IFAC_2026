@@ -43,7 +43,12 @@ obstacle_detector_node:
     # (track_timeout_sec 0.80 이 base 에서 이미 우선 적용되므로 지금은 fallback)
     track_timeout: 19
     # real_car.yaml과 동일 값을 명시. 없으면 노드 기본값으로 조용히 갈린다.
-    process_rate_hz: 20.0
+    # 2026-08-12: 20.0 -> 60.0. real_car.yaml/sim_real_car.yaml 과 세트
+    # (근거는 real_car.yaml 주석 — 스로틀 사실상 해제 = 스캔당 1회 처리).
+    # 여기를 안 맞추면 sim 의 min_hits(3) 벽시계 검출지연이 실차의 2.5배로
+    # 남아 회피 타이밍 재현이 안 된다. test_sim_profiles_mirror_real_car 가
+    # 이 표류를 잡는다 (실제로 이 값 누락으로 실패했다).
+    process_rate_hz: 60.0
     # ---- 이하 검출/필터: real_car.yaml과 동일 (근거·실측표는 그쪽 주석) ----
     # 벽 fringe 억제. 상한은 검출률이 정한다(10 이상이면 벽에 붙은 장애물
     # 검출이 94% -> 59%로 무너진다).

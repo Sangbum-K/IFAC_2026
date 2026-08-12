@@ -63,6 +63,13 @@ class PerceptionObstacleBridgeNode(Node):
         # detector가 이미 min_hits로 트랙을 확정한다. 브릿지에서 저신뢰 트랙을
         # 삭제하면 가려지는 순간 장애물이 사라지므로 안전 기본값은 0이다.
         self.declare_parameter('bridge/min_confidence', 0.0)
+        # min_confidence 를 **외삽(coasting) 트랙에만** 적용할지.
+        #   True  → is_visible(이번 프레임 실측)이면 confidence 와 무관하게 통과.
+        #           confidence 는 존재 확률이 아니라 정적/동적 분류 진행률이므로
+        #           존재 필터로 쓰면 실측된 장애물이 지워진다 (아래 사용부 주석의
+        #           run_0812_013630 3:14 사고). 분류 미확정은 삭제 대신 '정적 취급'.
+        #   False → 옛 동작(실측이든 외삽이든 confidence 로 삭제). A/B 용.
+        self.declare_parameter('bridge/visible_bypasses_confidence', True)
         self.declare_parameter('bridge/wall_margin_m', 0.10)
         # 큰 extent를 축소/삭제하지 않고 진단하는 임계값. 유령 제거는
         # footprint-corridor overlap과 opt-in map filter가 담당한다.
@@ -108,6 +115,8 @@ class PerceptionObstacleBridgeNode(Node):
         p = self.get_parameter
         self.target_frame = str(p('bridge/target_frame').value).strip()
         self.min_confidence = float(p('bridge/min_confidence').value)
+        self.visible_bypasses_confidence = bool(
+            p('bridge/visible_bypasses_confidence').value)
         self.wall_margin = float(p('bridge/wall_margin_m').value)
         self.lpf_alpha = float(p('bridge/vel_lpf_alpha').value)
         self.max_abs_vs = float(p('bridge/max_abs_vs_mps').value)
@@ -478,8 +487,47 @@ class PerceptionObstacleBridgeNode(Node):
                     f'비유한/음수 obstacle 입력(id={src.id}); frame 거부',
                     throttle_duration_sec=2.0)
                 return
+            # ── 존재 판정과 분류 안정성을 분리한다 (2026-08-12) ──────────────
+            # confidence 는 "존재 확률"이 **아니다**. classifier.cpp:78 의
+            #   confidence = static_streak / n_release   (정적 트랙)
+            # 즉 "정적/동적 판정까지의 진행률"이다. 그리고 static_streak 은
+            #   moving = (speed >= v_thresh 0.40) or (spread >= dynamic_pos_std 0.30)
+            # 이 **한 프레임만** 참이면 0으로 리셋된다.
+            #
+            # 그 진행률을 존재 필터로 쓰면 범주 오류가 된다. 실제 사고:
+            #   run_0812_013630 3:14 — 트랙 205 는 id 가 끊긴 적 없고
+            #   is_visible=1(매 프레임 LiDAR 실측, misses=0)이었는데, 접근 중
+            #   콘의 단면이 바뀌며(radius 0.22->0.21->0.19->0.16) 중심점이 몇 cm
+            #   튀어 한 프레임이 moving 으로 읽혔다. confidence 0.45 -> 0.00.
+            #   그 뒤 0.05/프레임으로 회복해 0.20 에 닿기까지 **4프레임=0.25s**,
+            #   그동안 이 게이트가 콘을 지웠다. 플래너는 "앞이 비었다"로 보고
+            #   계획 속도를 5.00 -> 6.50 m/s 로 올렸고, 장애물이 1.99m 앞에서
+            #   돌아왔을 때는 어떤 회피도 성립하지 않았다.
+            #
+            # 교차표 (같은 백, 원시 검출 2087 트랙-프레임):
+            #             vis=1(실측)  vis=0(외삽)
+            #   conf>=0.2      839         510   <- 유령 510건이 통과 (게이트가 샌다)
+            #   conf< 0.2      217         521   <- 실물 217건이 삭제 (위 사고)
+            # 초기 획득 거리 손실은 0.00 m 다 — min_hits(3)가 이미 그 역할을 하므로
+            # 이 게이트의 손실은 전부 **주행 중 리셋**에서 나오고, 하필 근거리에서 터진다.
+            #
+            # 그래서 게이트를 없애지 않고 **적용 대상만 좁힌다**:
+            #   · is_visible(이번 프레임 실측) 이면 통과 — 존재는 측정이 증명한다
+            #   · 외삽(coasting) 이면 종전대로 confidence 게이트 유지
+            # 두 축 모두에서 종전보다 나쁘지 않다: 실물 217건을 되살리고,
+            # 코스팅 처리는 그대로다(= 가려진 실물을 새로 버리지 않는다).
+            # 남은 누수(conf>=0.2 인 코스팅 510건)는 여기서 더 조이지 않았다 —
+            # 조이면 짧게 가려진 **실물**을 지우게 되고, 그건 같은 사고의 반대
+            # 방향이다. 그쪽은 footprint-corridor overlap 이 담당한다.
+            measured = bool(src.is_visible)
             if src.confidence < self.min_confidence:
-                continue
+                if not (self.visible_bypasses_confidence and measured):
+                    continue
+            # 분류 진행률이 낮은 트랙은 **버리지 않고 보수적으로 취급**한다.
+            # 정적으로 보면 기하 회피(회랑 판정)로 처리되고, 동적으로 잘못 보면
+            # 없는 운동을 예측해 회랑을 엉뚱하게 비운다 — 후자가 더 위험하다.
+            # (spliner 의 cls_* 가 몇 프레임 뒤 어차피 재분류한다.)
+            unsettled_class = src.confidence < self.min_confidence
             x, y = src.position.x, src.position.y
             if tf is not None:
                 x, y = cos_y * x - sin_y * y + tx, sin_y * x + cos_y * y + ty
@@ -613,6 +661,14 @@ class PerceptionObstacleBridgeNode(Node):
             obs.vd_var = vel_var
             obs.size = 2.0 * half
             obs.is_static = not src.is_dynamic  # 초기값 — spliner cls_*가 재분류
+            if unsettled_class and not obs.is_static:
+                # 위 주석 참조: 분류 미확정 트랙은 정적으로 눌러 통과시킨다.
+                # 삭제(옛 동작)와 달리 장애물은 그대로 남고, 취급만 보수적이다.
+                obs.is_static = True
+                self.get_logger().info(
+                    f'분류 미확정(conf={src.confidence:.2f} < '
+                    f'{self.min_confidence:.2f}, id={src.id}) — 정적으로 취급',
+                    throttle_duration_sec=2.0)
             # detector 의 실제 관측 여부를 그대로 전달한다. 예전에는 True 로
             # 하드코딩돼 있어 coasting 외삽이 측정과 구분되지 않았다.
             obs.is_visible = bool(src.is_visible)

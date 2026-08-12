@@ -81,6 +81,21 @@ LocalTrajectoryNode::LocalTrajectoryNode(
   this->declare_parameter("local_trajectory/minimum_horizon_sec", 1.5);
   this->declare_parameter("local_trajectory/minimum_braking_decel_mps2", 2.5);
   this->declare_parameter("local_trajectory/minimum_stop_buffer_m", 1.5);
+  // ── 회피 경로 상실 시 속도 홀드 (2026-08-12) ─────────────────────────────
+  // otwpnts 가 **빈 배열**로 오면(스플라이너는 살아 있고 회피만 못 만든 상태)
+  // 예전에는 순수 레이스라인을 그대로 발행했다. 그러면 장애물을 잃은 순간
+  // 계획 속도가 그 구간 레이스라인 값으로 **올라간다** — fail-open 이다.
+  //   run_0812_013630 3:14 실측: 인지가 0.25s(5프레임) 빈 배열을 발행하는 동안
+  //   local 선두 속도가 5.00 -> 6.50 m/s 로 올랐고 실측 속도도 4.84 -> 5.27 로
+  //   따라 올랐다. 장애물이 1.99m 앞에서 돌아왔을 때는 통과 가능 속도(3.67)를
+  //   훨씬 넘겨 어떤 회피도 성립하지 않았다. 위험 드롭아웃 8건 관측
+  //   (공백 중앙 275ms / 최대 745ms).
+  // 이제 직전 회피 경로의 선두 속도를 이 시간만큼 상한으로 유지한다.
+  // **감속이 아니다** — 직전에 성립했던 속도를 넘지 못하게만 한다.
+  //   0 으로 두면 이 홀드가 꺼지고 옛 fail-open 동작으로 돌아간다.
+  //   길게 두면 유령 때문에 잃은 경우에도 오래 눌려 랩타임을 먹는다. 관측된
+  //   공백 중앙값(275ms)의 약 2배인 0.5s 가 기본값이다.
+  this->declare_parameter("local_trajectory/avoidance_loss_hold_sec", 0.5);
 
   loop_rate_hz_ = this->get_parameter("local_trajectory/loop_rate_hz").as_double();
   num_local_waypoints_ =
@@ -105,6 +120,8 @@ LocalTrajectoryNode::LocalTrajectoryNode(
     this->get_parameter("local_trajectory/minimum_braking_decel_mps2").as_double();
   minimum_stop_buffer_m_ =
     this->get_parameter("local_trajectory/minimum_stop_buffer_m").as_double();
+  avoidance_loss_hold_sec_ =
+    this->get_parameter("local_trajectory/avoidance_loss_hold_sec").as_double();
 
   const std::array<double, 9> safety_values = {
     loop_rate_hz_, avoidance_timeout_sec_, frenet_odom_timeout_sec_,
@@ -461,6 +478,58 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
       this->get_logger(), *get_clock(), 1000,
       "Invalid avoidance trajectory rejected; local publish stopped");
     return;
+  }
+
+  // ── 회피 상실 시 속도 홀드 (fail-closed) ────────────────────────────────
+  // 회피 경로가 있을 때는 그 선두 속도를 기억하고, 빈 배열로 바뀌면 잠시
+  // 그 값을 상한으로 유지한다. 장애물을 잃은 것이 **가속 신호가 되지 않게**
+  // 하는 것이 목적이다 (근거는 위 declare_parameter 주석).
+  // 감속은 하지 않는다 — 직전에 성립했던 속도를 넘지 못하게만 한다.
+  if (avoidance_loss_hold_sec_ > 0.0) {
+    const auto now_steady = std::chrono::steady_clock::now();
+    if (avoidance_is_fresh && !avoidance_copy.empty()) {
+      // 선두 몇 점의 최솟값을 쓴다 — 선두 한 점만 보면 그 점이 이미 지나간
+      // 뒤의 값일 수 있어 상한이 실제 계획보다 높아진다.
+      const std::size_t look =
+        std::min<std::size_t>(avoidance_copy.size(), 5U);
+      double head = std::numeric_limits<double>::infinity();
+      for (std::size_t i = 0; i < look; ++i) {
+        const double v = avoidance_copy[i].vx_mps;
+        if (std::isfinite(v) && v >= 0.0) {
+          head = std::min(head, v);
+        }
+      }
+      if (std::isfinite(head)) {
+        last_avoidance_head_speed_ = head;
+        last_avoidance_nonempty_time_ = now_steady;
+        has_avoidance_head_speed_ = true;
+      }
+    } else if (has_avoidance_head_speed_ && last_avoidance_head_speed_ >= 0.0) {
+      const double since = std::chrono::duration<double>(
+        now_steady - last_avoidance_nonempty_time_).count();
+      if (std::isfinite(since) && since >= 0.0 &&
+        since <= avoidance_loss_hold_sec_)
+      {
+        int capped = 0;
+        for (auto & w : local_waypoints.wpnts) {
+          if (std::isfinite(w.vx_mps) && w.vx_mps > last_avoidance_head_speed_) {
+            w.vx_mps = last_avoidance_head_speed_;
+            ++capped;
+          }
+        }
+        if (capped > 0) {
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *get_clock(), 1000,
+            "회피 경로 상실 %.2fs — 속도 상한 %.2f m/s 유지 (%d점 캡). "
+            "장애물 상실이 가속으로 이어지지 않게 한다",
+            since, last_avoidance_head_speed_, capped);
+        }
+        pitwall::Log("avoidance_loss_hold", 1.0);
+      } else {
+        has_avoidance_head_speed_ = false;
+        pitwall::Log("avoidance_loss_hold", 0.0);
+      }
+    }
   }
 
   // 실제로 치환된 개수를 보고한다. 예전엔 수신한 회피 배열의 크기를 그대로

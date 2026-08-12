@@ -287,6 +287,27 @@ private:
   // 모두 반대 사이드로 폴백하므로 데드락이 되지 않는다.
   bool SideKeepActive(const f1tenth_planning_msgs::msg::Obstacle & obs) const;
 
+  // "지금 회피 중이라 커밋된 사이드가 유효한가" = last_ot_side_ 의 수명.
+  //
+  // 2026-08-12 추가 (mina 8fd816c). CommitOtSide 는 세팅만 하고 **어디에서도
+  // 지우지 않았다** — 첫 회피 이후 last_ot_side_ 가 주행이 끝날 때까지 남았고,
+  // 위 주석이 이미 지적한 "|d| 조건은 정상 추종오차 안이라 38~96% 시간 동안
+  // 참"과 맞물려 사이드 유지가 사실상 영구 라치가 됐다.
+  //   rosbag0812 run_0812_013630: 장애물 없는 정상 주행에서도 직선 |d| p95
+  //   0.26 > side_switch_d_tresh 0.20 이라 반대편이 1.1m 비어 있어도 후보를
+  //   만들지 않고 trailing 으로 떨어졌다.
+  //
+  // CommitOtSide 는 회피 경로를 실제로 만든 사이클마다 호출되므로, 스탬프가
+  // 오래됐다는 것은 곧 "지금 회피 중이 아니다" 이다.
+  //
+  // ⚠️ 이 수명은 **진입 시점의 첫 사이드 결정**만 고친다. 회피가 시작되면
+  // 커밋이 매 사이클 갱신되므로 항상 신선하고, 그 구간의 오판은 아래
+  // side_clears 양보(TryLaneSwitch)와 DoSpline 의 가로지르기 허용이 담당한다.
+  // run_0812_013630 실측: 장애물 접근 53회 중 |d|가 0.20을 처음 넘는 순간에
+  // 커밋이 낡아 있던 건 3회(115.7/143.5/152.1s)뿐이고, 관통 사고 4건은 전부
+  // age=0.00 이었다. 두 수정은 겹치지 않는다.
+  bool OtSideCommitFresh() const;
+
   // last_ot_side_ 와 사이드 잠금(대상 s + 시각)을 **함께** 갱신한다.
   // 따로 갱신하면 잠금이 옛 장애물을 가리킨 채 남아, 다음 장애물의 사이드를
   // 엉뚱하게 고정한다.
@@ -646,6 +667,14 @@ private:
   bool has_ot_side_obs_{false};
   static constexpr double kOtSideLockDistM{1.5};   // 같은 장애물로 볼 s 오차
   static constexpr double kOtSideLockSec{1.0};     // 잠금 유효 시간
+  // 커밋된 사이드 자체의 유효 시간 (OtSideCommitFresh). kOtSideLockSec 과 같은
+  // 1.0s 라 (1) 같은-장애물 잠금의 동작은 바뀌지 않고, (2) |cur_d_| 기반
+  // 유지만 만료를 얻는다. 1.0s = spliner/obs_timeout_sec(0.30)의 3배 —
+  // 인지 드롭아웃으로 몇 사이클 회피 생성이 끊겨도 유지되고(그보다 긴 공백은
+  // 어차피 상위에서 perception_stale fail-safe 로 처리된다), 장애물을 통과한
+  // 뒤에는 확실히 풀린다 (4~6 m/s 에서 1.0s = 4~6 m 주행).
+  // ⚠️ 미실측 판단값 — 다음 백에서 회피 중 경로생성 공백을 재서 확정할 것.
+  static constexpr double kOtSideCommitValidSec{1.0};
   // 연쇄 회피 그룹 상한. 콘이 줄지어 있어도 hold 가 무한정 늘어나지 않게
   // 막는다 (구간 상한은 별도로 lookahead_m_ 가 잡는다).
   static constexpr size_t kEvasionGroupMax{4};
