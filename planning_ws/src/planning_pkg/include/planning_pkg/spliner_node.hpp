@@ -222,8 +222,10 @@ private:
   // 거리를 상수로 두면 횡가속이 v^2로 커져 그립을 넘는다 (6 m/s에서 1.5g 실측 계산).
   // lat_acc <= 0 이면 blend_lat_acc_max_(또는 마찰원 잔여)를 쓴다.
   // kappa_track: 그 구간 레이스라인 곡률 [1/m] (BlendGeomFloor로 전달).
+  // s_from: 블렌드 시작 s [m]. >= 0 이면 BlendGeomFloor 가 스칼라 근사 대신
+  //   지점별 검사를 쓴다. 음수면 "s 문맥 없음"(기존 보수식).
   double BlendDist(double amplitude, double speed, double lat_acc = -1.0,
-                   double kappa_track = 0.0) const;
+                   double kappa_track = 0.0, double s_from = -1.0) const;
 
   // 속도와 무관한 조향 기하 하한 [m]. smoothstep 횡이동 amplitude의 피크
   // 곡률 6A/L²이 조향 한계를 넘지 않는 최소 L. 가용 거리가 이보다 짧으면
@@ -243,8 +245,30 @@ private:
   // FreeSpline 기각의 67% 가 이 모델에서는 성립한다.
   // 대신 기동 끝에서 헤딩이 kappa*L 만큼 남으므로(3.8 m/s, A=0.46 에서 41도)
   // 반드시 복귀 블렌드와 세트로만 써야 한다 — BuildEscapeArc 참조.
+  // s_from >= 0 이면 **지점별** 검사로 하한을 구한다 (아래 BlendGeomFeasible).
+  // 스칼라 식은 `max|kappa_track|`(구간 최대)과 `6A/L²`(기동 피크)을 더하는데,
+  // 이 둘은 **같은 지점에서 일어나지 않는다** — smoothstep 의 |d''| 는 블렌드
+  // 양 끝에서 피크고 중앙에서 0 이다. 게다가 부호를 버려서, 코너 **바깥**으로
+  // 비키는 기동(= 코너 조향을 푸는 방향)까지 더하는 것으로 친다.
+  //   my_track0811 s=19.88, A=-0.44(우측), L=2.40 실측 재구성:
+  //     스칼라 가정 피크 1.191 (= 0.733 + 0.458) -> 한계 1.042 초과 -> 거부
+  //     실제 경로 피크 0.836 @ s=22.08 (한계의 80%) -> 통과
+  //   kappa 피크 지점(s=20.11)의 참 조향 요구는 0.351 인데 1.191 로 봤다(3.4배).
+  // 트랙 곡률과 기동 곡률이 실제로 **더해지는** 경우(코너 안쪽 회피, 그리고
+  // 어떤 블렌드든 복귀하는 후반부)에는 지점별 결과가 스칼라 식과 같아진다 —
+  // 즉 이 경로는 더 느슨해지지 않는다. 0807 run_164216 회귀는 유지된다.
   double BlendGeomFloor(double amplitude, double kappa_track = 0.0,
-                        bool one_sided = false) const;
+                        bool one_sided = false, double s_from = -1.0) const;
+
+  // 길이 L 의 블렌드가 조향 한계 안에 들어오는가 — 지점별·부호 유지 검사.
+  //   |kappa_track(s) + d''(s)/geom_floor_margin_| <= kappa_steer_max
+  // 근사 여유(geom_floor_margin_)는 "실제 샘플 피크가 smoothstep 근사보다
+  // 크다"를 흡수하는 것이므로 **기동 항에만** 건다 (스칼라 식과 같은 이유).
+  // 상쇄 크레딧은 (1-geom_floor_kappa_ratio_)*kappa_steer_max 로 제한한다 —
+  // 레이스라인 kappa 는 d=0 기준이고 자차는 추종 오차만큼 벗어나 있으므로
+  // "코너가 대신 돌아준다"를 무한정 믿지 않는다.
+  bool BlendGeomFeasible(double amplitude, double blend_len, double s_from,
+                         bool one_sided) const;
 
   // 계획이 달성 가능하다고 보는 최대 곡률 [1/m].
   //   steer_kappa_scale_ * tan(|delta_max|) / wheelbase
@@ -258,8 +282,23 @@ private:
   // 회피 가부를 "지금 속도에서 되나?"(이진 거부)가 아니라 "되는 속도는
   // 얼마인가?"로 바꾸는 함수다 — 정적 장애물은 속도가 자유 변수이므로
   // 감속으로 성립시킬 수 있는데도 매번 Tier3(정지)로 떨어지고 있었다.
+  // s_from >= 0 이면 기하 가부를 "최소 하한 계산 후 비교"가 아니라 **실제로
+  // 쓸 길이(= available)에서 지점별로** 판정한다. 블렌드는 available 을 그대로
+  // 쓰므로 이쪽이 근사 없이 정확하다.
   double BlendSpeedCap(double amplitude, double available,
-                       double lat_acc = -1.0, double kappa_track = 0.0) const;
+                       double lat_acc = -1.0, double kappa_track = 0.0,
+                       double s_from = -1.0) const;
+
+  // 경로 웨이포인트의 **기하부**를 채운다 (vx_mps 는 호출부 몫).
+  // 2026-08-13 이전에는 이 11개 대입이 5곳에 복제돼 있었다
+  // (BuildLaneSwitch / DoSpline / BuildEscapeArc / BuildSpLaneChange /
+  //  BuildSpExit). 다섯 벌 모두 완전히 동일했지만, 복제라는 사실 때문에
+  //  d_left/d_right 부호 규약을 한 곳만 고치면 조용히 어긋날 수 있었다.
+  // vx_mps 는 사이트마다 규칙이 실제로 다르므로(추월 페이스 하한, 그립 캡,
+  // sp 라인 속도 등) 일부러 여기서 정하지 않는다 — 그 차이는 복제 표류가
+  // 아니라 의도된 것이고, 호출부에 남아 있어야 읽힌다.
+  f1tenth_planning_msgs::msg::Wpnt MakeBaseWpnt(
+      int idx, double s, double d, double x, double y, int gb_idx) const;
 
   // [s_from, s_to] 구간 레이스라인 |kappa|의 최대값 [1/m]. BlendGeomFloor에
   // 넘길 트랙 곡률항. 최대값을 쓰는 이유는 기하 하한이 구간 내 가장 조향이
@@ -391,9 +430,14 @@ private:
   // require_current_feasible=false는 충돌 회피보다 최대 제동 명령 발행이
   // 우선인 trailing에만 사용한다. 반환 false면 현재 상태에서 물리적으로
   // 도달할 수 없는 회피 경로다.
+  // steer_reject_ratio_override > 0 이면 곡률 기각 배율을 그 값으로 바꾼다
+  // (escape 원호 전용 — escape_steer_kappa_reject_ratio_ 주석 참조).
+  // 밴드를 넘긴 샘플만 살아나는 것이 아니라, 밴드 **안**의 샘플은 그대로
+  // sqrt(a_lat/k) 횡가속 캡을 받아 속도가 강하게 눌린다는 점에 주의.
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
-    bool require_current_feasible = true) const;
+    bool require_current_feasible = true,
+    double steer_reject_ratio_override = -1.0) const;
 
   // local_trajectory의 modulo splice는 한 바퀴 이상 경로를 표현할 수 없다.
   bool PlanSpanAllowed(double span) const;
@@ -638,6 +682,22 @@ private:
   // 1.0이면 조향 한계를 1e-3 이라도 넘는 샘플 하나에 경로 전체가 죽는다.
   // 1.0보다 크면 그 밴드 안의 샘플은 살리되 횡가속 캡으로 속도만 눌린다.
   double steer_kappa_reject_ratio_{1.0};
+  // escape 원호 전용 곡률 기각 배율 (2026-08-12).
+  // escape 경로는 포물선 원호가 끝나는 지점에서 hold(기울기 0)로 급전환하며
+  // 잔여 헤딩 2A/L 을 한 점에서 꺾는다. 그 접합부 곡률이 1.14~1.77 로 나와
+  // 통상 배율(1.15 -> 문턱 1.303)에 걸려 **escape 가 한 번도 발행되지 못했다**
+  // (2026-08-12 시뮬: escape_speed_profile 91, escape_active 0).
+  // 이 배율을 크게 주면 꺾인 경로가 그대로 발행된다 — 차가 그 꺾임을 못 따라가
+  // **밖으로 밀리는(언더스티어) 거동을 실제로 관측**하기 위한 것이다.
+  // 근본 해결은 접합부에 기울기 완화 구간을 넣어 꺾임 자체를 없애는 것이고,
+  // 그러면 접합 곡률이 0.785 로 떨어져 이 배율이 다시 필요 없어진다.
+  double escape_steer_kappa_reject_ratio_{2.0};
+  // 위 두 완화(require_current_feasible 면제 + 곡률 밴드 확대)를 켜는 스위치.
+  // **기본 false = 커밋된 동작 그대로.** true 로 켜면 escape 원호가 자기
+  // 접합부 꺾임을 안은 채로 발행되고, 차가 그걸 못 따라가 밖으로 밀리는
+  // 거동을 관측할 수 있다. 관측 전용이며 실차에 켠 채로 올리면 안 된다.
+  // 근본 해결(접합부 기울기 완화)이 들어가면 이 스위치는 삭제 대상이다.
+  bool escape_relax_for_observation_{false};
   bool lc_active_{false};
 
   // State
