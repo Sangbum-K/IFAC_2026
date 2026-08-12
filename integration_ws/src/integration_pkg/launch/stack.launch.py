@@ -63,8 +63,10 @@ def launch_setup(context, *args, **kwargs):
         #   - perception/planning/control 이 environments/sim_real_car.yaml 사용
         #     (거동 파라미터는 real_car.yaml과 동일, 배선만 sim)
         #   - pf:=true      : GT가 아니라 진짜 particle_filter로 위치추정
-        #   - vehicle:=real_car : gym 차량 물리를 실측값(mu 0.75 / a_max 3.5 /
-        #     s_max 0.36 / v_max 7.0)으로 — 고속 슬립이 실차와 같은 지점에서 나게 한다
+        #   - vehicle:=real_car : gym 차량 물리를 실측값(mu 0.90 / a_max 4.5 /
+        #     s_max 0.3578 / v_max 7.0)으로 — 고속 슬립이 실차와 같은 지점에서 나게 한다
+        #     (단일 기준은 sim_race.launch.py REAL_CAR_VEHICLE. 여기 적힌
+        #      mu 0.75 / a_max 3.5 / s_max 0.36 은 08-10 동기화 이전 값이었다)
         #   - map 기본값도 실차가 지금 달리는 트랙
         real_car_like = (env == 'sim_real_car')
         pf_arg = LaunchConfiguration('pf').perform(context).strip().lower()
@@ -74,8 +76,10 @@ def launch_setup(context, *args, **kwargs):
             launch_arguments={
                 # 맵은 호출자가 준다. sim / sim_real_car 의 차이는 맵이 아니라
                 # 프로파일이다:
-                #   sim          = gym 기본 물리 + params.yaml(저속) + GT odom
+                #   sim          = gym 기본 물리 + real_car 파라미터 + GT odom
                 #   sim_real_car = 실측 물리 + real_car 파라미터 + PF
+                # (2026-08-12부터 둘의 **파라미터는 같다**. 차이는 위치추정과
+                #  차량물리뿐이라, sim 은 "빠른 확인", sim_real_car 는 "실차 근사"다.)
                 #
                 # ⚠️ 어떤 맵이든 "그 맵의 raceline이 지금 배포된 종방향 상수로
                 # 생성됐는지"는 별개다 (V_MAX / A_ACC / A_DEC_PLANNED / MU_PROFILE,
@@ -91,7 +95,8 @@ def launch_setup(context, *args, **kwargs):
                 'tracker': 'false',
                 'perception': 'lidar',
                 # planner_stack이 environments/<env>.yaml을 덮어쓰게 한다.
-                # env:=sim 은 sim.yaml이 비어 있어 params.yaml 기본값 그대로.
+                # env:=sim 도 2026-08-12부터 sim.yaml 이 real_car 거동을 덮어쓴다
+                # (예전엔 비어 있어서 params.yaml 저속 기본값 그대로였다).
                 'env': env,
                 # pf:=true — GT 대신 particle_filter. bridge/use_map_filter 처럼
                 # "임계값이 PF 오차보다 큰가"를 묻는 로직은 GT에선 무조건

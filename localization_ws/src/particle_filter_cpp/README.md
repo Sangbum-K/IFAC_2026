@@ -29,7 +29,17 @@ colcon test --packages-select particle_filter_cpp
 colcon test-result --verbose
 ```
 
-The CMake build expects the RangeLib source checkout at `~/range_libc`.
+The CMake build needs a RangeLib source checkout (headers only). It is looked up in
+this order, first hit wins:
+
+1. `-DRANGELIBC_ROOT=<path>`
+2. `$RANGE_LIBC`
+3. `~/range_libc`
+4. `<workspace>/range_libc`, `<workspace sibling>/range_libc`
+5. `/opt/range_libc`
+
+`setup_deps.sh` and `build_all.sh` search the same list and export `RANGE_LIBC` so
+CMake resolves to the identical checkout.
 
 ## Real-car launch
 

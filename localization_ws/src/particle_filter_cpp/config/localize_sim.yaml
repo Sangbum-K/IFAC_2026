@@ -61,6 +61,17 @@ particle_filter:
     max_pose_jump_translation_m: 0.30
     max_pose_jump_yaw_rad: 0.35
     rangelib_variant: 0
+    # 2026-08-12: 이 두 줄이 없어서 sim만 **실차가 끈 필터 두 개를 켠 채** 돌고
+    # 있었다. 둘 다 C++ 노드 기본값이 true 라(particle_filter_node.cpp:283-284)
+    # yaml 에서 빠지면 조용히 켜진다 — "안 적었으니 실차와 같다"가 아니다.
+    #   deskew_enabled       : 실차는 raw scan 타임스탬프를 쓴다. 파이썬 deskew
+    #                          경로가 0809 백에서 회귀를 냈고 런타임에서 빠졌다.
+    #   ground_filter_enabled: 0809 회귀 + 측정되지 않은 IMU extrinsic 을 요구해서
+    #                          실차 C++ 프로파일이 끈 채로 배포된다. gym 은 IMU 를
+    #                          아예 발행하지 않으므로 sim 에서 켜 둘 근거가 없다.
+    # (근거 원문은 localize.yaml 의 같은 두 키 주석)
+    deskew_enabled: false
+    ground_filter_enabled: false
 
 # map_server는 sim_race.launch.py가 nav2_map_server로 이미 띄운다
 # (PF는 /map_server/map 서비스로 맵을 받으므로 여기서 또 띄우면 이름 충돌).

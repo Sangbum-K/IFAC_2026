@@ -7,7 +7,10 @@
 #   ./run_sim.sh <맵이름>              실차 최대 근사 — env:=sim_real_car
 #                                      (PF + 실차 차량물리 + 실차 파라미터)
 #   ./run_sim.sh <맵이름> --gt         위치추정을 gym GT로 (pf:=false, 빠른 확인용)
-#   ./run_sim.sh <맵이름> --wall-filter 브릿지 맵 벽거리 필터 켜기 (map_filter:=true)
+#   ./run_sim.sh <맵이름> --wall-filter 브릿지 맵 벽거리 필터 강제 ON (map_filter:=true)
+#                                      ⓘ 기본 프로파일(sim_real_car)과 sim 은 이미
+#                                        yaml 에서 켜져 있어 no-op 이다. 끄고 A/B 를
+#                                        보려면 map_filter:=false 를 넘길 것.
 #   ./run_sim.sh <맵이름> --plain      기존 sim 프로파일 (env:=sim, gym 기본 물리)
 #   ./run_sim.sh <맵이름> --no-rviz    RViz 없이
 #   ./run_sim.sh <맵이름> suffix:=...  그 외 인자는 ros2 launch로 그대로 전달
@@ -18,7 +21,7 @@
 setopt noequals
 
 ROOT=${0:A:h}
-GYM_WS=${GYM_WS:-$HOME/sim_ws}
+GYM_WS=${GYM_WS:-}     # 빈 값이면 아래에서 자동 탐색 (source 단계)
 
 fail() { print -P "%F{red}✗ $1%f"; exit 1 }
 info() { print -P "%F{cyan}▶ $1%f" }
@@ -75,9 +78,34 @@ fi
 # ── source (zsh에서 setup.bash는 깨진다 — setup.zsh만 쓸 것) ────────
 source /opt/ros/humble/setup.zsh || fail "ROS 2 Humble source 실패"
 
-[[ -f $GYM_WS/install/setup.zsh ]] || fail \
-  "gym 워크스페이스가 없습니다: $GYM_WS
-  f1tenth_gym_ros를 거기서 빌드하거나 GYM_WS=<경로> 로 지정하세요."
+# ── gym 워크스페이스 찾기 ───────────────────────────────────────────
+# 우선순위: GYM_WS 명시 > 저장소 안 벤더링 사본 > 홈의 옛 사본.
+#
+# 예전에는 $HOME/sim_ws 하드코딩이었다. 그런데 f1tenth_gym_ros 는 이 저장소로
+# 편입(vendoring)됐고, 그 사본은 upstream 이 아니라 **로컬 수정본**이다 —
+# vehicle.*(mu/a_max/s_max/...) 와 sensor_publish_rate_hz 파라미터를 받도록
+# 고쳐 놨고 sim_race.launch.py 의 vehicle:=real_car 가 거기에 실측값을 넣는다.
+# 홈에 옛 사본이 남아 있으면 그쪽이 잡혀서 그 파라미터가 **조용히 무시되고**
+# (에러도 경고도 없다) 실차 물리가 안 걸린 채 돈다. 그래서 저장소 사본을
+# 기본으로 삼고, 밖의 사본을 쓰게 되면 반드시 경고한다.
+# 새로 클론한 머신에서 $HOME/sim_ws 가 없어 그냥 죽던 문제도 같이 없어진다.
+if [[ -n $GYM_WS ]]; then
+  [[ -f $GYM_WS/install/setup.zsh ]] || fail \
+    "GYM_WS 로 지정한 곳에 빌드 결과가 없습니다: $GYM_WS
+  거기서 'colcon build' 를 했는지 확인하세요."
+elif [[ -f $ROOT/sim_ws/install/setup.zsh ]]; then
+  GYM_WS=$ROOT/sim_ws
+elif [[ -f $HOME/sim_ws/install/setup.zsh ]]; then
+  GYM_WS=$HOME/sim_ws
+  warn "저장소 밖의 gym 사본을 씁니다: $GYM_WS"
+  print "  저장소 사본($ROOT/sim_ws)이 빌드돼 있지 않습니다. 두 사본은 내용이 다를 수 있고,"
+  print "  옛 사본이면 vehicle:=real_car 의 차량물리가 조용히 무시됩니다."
+  print "  권장:  ./build_all.sh sim   (gym 도 여기서 같이 빌드된다)"
+else
+  fail "gym 워크스페이스를 찾을 수 없습니다.
+  빌드하세요:  ./build_all.sh sim     (gym 을 포함해 전부 빌드한다)
+  다른 곳의 gym 을 쓰려면:  GYM_WS=<경로> $0 ..."
+fi
 source $GYM_WS/install/setup.zsh
 
 # 순서 중요: planning이 메시지 패키지를 갖고 있어 먼저.
@@ -90,7 +118,7 @@ done
 
 info "map:=$map_arg env:=$env_arg ${extra[*]}"
 if [[ $env_arg == sim_real_car ]]; then
-  print "  실차 근사: particle_filter / mu 0.75·a_max 3.5·조향 ±0.36 / LiDAR 40 Hz"
+  print "  실차 근사: particle_filter / mu 0.90·a_max 4.5·조향 ±0.3578 / LiDAR 40 Hz"
   print "  ⓘ 벽이 장애물로 잡혀 차가 출발 안 할 수 있습니다 (실차 08-04와 같은 현상)."
 fi
 

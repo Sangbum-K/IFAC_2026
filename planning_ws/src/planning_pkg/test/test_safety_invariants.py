@@ -129,15 +129,14 @@ def test_environment_nominal_speed_matches_control_cap():
     # base(params.yaml) 프로파일도 검사한다. 예전엔 real_car/race_map 만 봐서
     # base 의 velocity_scale 이 v-max 6.0 시절 값(0.6667)으로 남아 sim control
     # cap 4.0 을 17% 초과하는 것을 못 잡았다 (integration stack env:=sim 경로).
-    for env_name in ("sim", "real_car", "race_map"):
-        if env_name == "sim":
-            planning_scale = global_base["global_trajectory/velocity_scale"]
-        else:
-            planning_env = _yaml(
-                PKG / "config" / "environments" / f"{env_name}.yaml")
-            planning_scale = _ros_params(
-                planning_env, "global_trajectory_node"
-            )["global_trajectory/velocity_scale"]
+    for env_name in ("sim", "sim_real_car", "real_car", "race_map"):
+        # 오버레이에 velocity_scale 이 있으면 그것, 없으면 base(params.yaml).
+        # 예전엔 env:=sim 만 "sim.yaml 이 비어 있다"는 전제로 base 를 직접 읽었는데,
+        # 2026-08-12 에 sim.yaml 이 real_car 거동으로 채워지면서 그 전제가 깨졌다.
+        # 이제 실제 파라미터 해석 순서(base <- 오버레이)를 그대로 따라간다.
+        planning_scale = _env_profile_flat(PKG, env_name).get(
+            "global_trajectory_node.global_trajectory/velocity_scale",
+            global_base["global_trajectory/velocity_scale"])
         control_env_path = (
             WORKSPACE / "control_ws" / "src" / "control_pkg" /
             "config" / "environments" / f"{env_name}.yaml"
@@ -150,12 +149,28 @@ def test_environment_nominal_speed_matches_control_cap():
         control_scale = _ros_params(
             control_env, "control"
         )["vehicle/speed_scale"]
-        assert math.isclose(
-            csv_vmax * planning_scale, control_cap,
-            rel_tol=0.0, abs_tol=0.02,
-        ), env_name
+        # 계획 최고속이 control cap 을 넘으면 control 이 전 구간을 clamp 해서
+        # (a) 속도 프로파일이 cap 상수로 뭉개지고 (b) 조향 LUT 를 wpnt 속도로
+        # 조회하는 구조(control_node calc_steering_angle) 때문에 실제 필요조향의
+        # 1.7~2.0 배가 나온다. 그걸 막는 게 이 단언이다.
+        #
+        # 2026-08-12: 예전엔 등식(csv_vmax*scale == cap)이었다. 08-10 타이어 교체로
+        # real_car 가 velocity_scale 0.96 을 쓰면서 6.72 != 7.0 이 되어 깨졌는데,
+        # real_car.yaml 은 그 7.0 을 "클램프가 걸리지 않는 안전 상한"으로
+        # **의도적으로** 남긴다고 명시한다 (control real_car.yaml vehicle/max_speed_mps
+        # 주석). 즉 낡은 쪽은 등식이지 설정이 아니다.
+        # 등식이 실제로 지키던 사고(base velocity_scale 이 v-max 6.0 시절 값
+        # 0.6667 로 남아 sim cap 4.0 을 17% 초과)는 이 부등식이 그대로 잡는다.
+        assert csv_vmax * planning_scale <= control_cap + 0.02, env_name
+        # 허용오차는 위 단언과 같은 0.02 m/s. 예전엔 1e-6 이라 race_map 의
+        # velocity_scale 0.1429(= 1.0/7.0 을 소수 4자리로 **올림**한 값)가
+        # 계획 최고속을 cap 보다 6.7e-5 m/s 넘기는 것을 실패로 봤다. 그건
+        # 설정 오류가 아니라 4자리 반올림 잔차이고, 조향 중립이 런 사이 2.5°
+        # 튀는 차에서 측정 가능한 양이 아니다 (TUNING_STATUS §11).
+        # 이 단언이 실제로 잡아야 하는 것은 "cap 이 프로파일 상단을 잘라
+        # 조향 LUT 조회가 뭉개지는" 수준의 초과이고, 그건 0.02 로 충분히 걸린다.
         assert actual_csv_vmax * planning_scale * control_scale <= \
-            control_cap + 1e-6, env_name
+            control_cap + 0.02, env_name
 
 
 def test_real_profiles_require_exact_time_and_fresh_inputs():
@@ -192,23 +207,38 @@ def test_control_profiles_disable_reverse_and_supervisor_not_required():
 
 
 def test_sim_controller_matches_planner_speed_model():
+    """플래너가 명령에 곱하는 배율과 컨트롤러가 쓰는 배율이 같아야 한다.
+
+    어긋나면 동적 상대 trailing 에서 상대보다 느리게 따라가 격차가 벌어진다.
+    경로가 둘이라 따로 본다:
+      (1) 파이썬 waypoint_tracker (sim_race tracker:=true). 통합 스택은 항상
+          tracker:=false 라 레거시 경로고, tracker/speed_scale 0.30 은 드리프트가
+          아니라 "pure-pursuit 이 이 트랙 R~1.4m 헤어핀을 오버슛 없이 따라가려면
+          저속이어야 한다"는 그 컨트롤러 자체의 한계다 (params.yaml 주석).
+          그래서 base 안에서만 짝을 본다.
+      (2) C++ control_node (통합 스택의 실제 경로). env 오버레이가 양쪽을 다
+          덮으므로 **실효값**끼리 봐야 한다 — 2026-08-12 이전엔 base 의 0.30 과
+          control sim.yaml 의 0.30 을 비교해서, env:=sim 이 real_car 거동으로
+          올라간 뒤에도 통과할 수 없는 형태였다.
+    """
     planning = _ros_params(_yaml(PARAMS), "spliner_node")
     tracker = _ros_params(_yaml(PARAMS), "waypoint_tracker_node")
-    control_sim = _ros_params(
-        _yaml(WORKSPACE / "control_ws" / "src" / "control_pkg" /
-              "config" / "environments" / "sim.yaml"),
-        "control",
-    )
     assert math.isclose(
         planning["spliner/cmd_speed_scale"],
         tracker["tracker/speed_scale"],
         rel_tol=0.0, abs_tol=1e-9,
     )
-    assert math.isclose(
-        planning["spliner/cmd_speed_scale"],
-        control_sim["vehicle/speed_scale"],
-        rel_tol=0.0, abs_tol=1e-9,
-    )
+
+    control_pkg = WORKSPACE / "control_ws" / "src" / "control_pkg"
+    for env_name in ("sim", "sim_real_car", "real_car"):
+        planner_scale = _env_profile_flat(PKG, env_name).get(
+            "spliner_node.spliner/cmd_speed_scale",
+            planning["spliner/cmd_speed_scale"])
+        control_scale = _env_profile_flat(control_pkg, env_name)[
+            "control.vehicle/speed_scale"]
+        assert math.isclose(
+            planner_scale, control_scale, rel_tol=0.0, abs_tol=1e-9,
+        ), env_name
 
 
 def test_perception_defaults_use_exact_source_time():
@@ -326,6 +356,29 @@ SIM_REAL_CAR_WIRING_EXEMPT = {
     },
 }
 
+# env:=sim 이 real_car.yaml 과 **의도적으로** 다를 수 있는 키.
+# sim_real_car 의 배선 예외에 더해, pf:=false(위치추정이 gym GT) 때문에 생기는
+# 예외가 얹힌다 — 그 셋 말고는 env:=sim 도 실차와 같은 거동을 써야 한다.
+SIM_WIRING_EXEMPT = {
+    name: set(keys) for name, keys in SIM_REAL_CAR_WIRING_EXEMPT.items()
+}
+SIM_WIRING_EXEMPT["planning"] |= {
+    # pf:=false 라 /pf/pose/odom 발행자가 없다 -> gym GT 를 쓴다.
+    "recovery_supervisor_node.recovery/pose_odom_topic",
+}
+SIM_WIRING_EXEMPT["control"] |= {
+    "control.odom_topic",
+    # 게이트는 /pf/localization_ready 를 요구하는데 pf:=false 면 발행자가 없다.
+    # 켜면 차가 영원히 출발하지 않으므로 env:=sim 에서는 반드시 꺼져 있어야 한다.
+    "control.localization_gate/enabled",
+}
+SIM_WIRING_EXEMPT["perception"] |= {
+    # odom 프레임 자체가 없으므로 time-travel lookup 을 쓸 수 없다.
+    "obstacle_detector_node.tf_fixed_frame",
+}
+SIM_WIRING_EXEMPT["integration"] |= {"integration.odom_topic"}
+
+
 SIM_REAL_CAR_PACKAGES = {
     "planning": PKG,
     "perception": WORKSPACE / "perception_ws" / "src" / "perception_pkg",
@@ -361,6 +414,29 @@ def test_sim_real_car_profiles_mirror_real_car():
             if key not in exempt and real.get(key) != sim.get(key))
         assert not drifted, (
             f"{name}: sim_real_car.yaml 이 real_car.yaml 과 어긋남 -> "
+            + ", ".join(
+                f"{key} (real={real.get(key, '<absent>')!r}, "
+                f"sim={sim.get(key, '<absent>')!r})" for key in drifted))
+
+
+def test_sim_profiles_mirror_real_car():
+    """env:=sim 도 배선(+pf:=false 파생)만 다르고 거동은 실차와 같아야 한다.
+
+    2026-08-12 이전에는 sim.yaml 이 비어 있거나 저속 값이라, env:=sim 이
+    velocity_scale 0.5714 / cmd_speed_scale 0.30 / lookahead 10 m 로 실차와
+    전혀 다른 동작점에서 회피를 검증했다. 그 상태의 "sim에선 됐다"는 실차와
+    대응되지 않는다. sim 과 sim_real_car 의 차이는 파라미터가 아니라 launch
+    (pf / vehicle) 여야 한다.
+    """
+    for name, pkg_root in SIM_REAL_CAR_PACKAGES.items():
+        real = _env_profile_flat(pkg_root, "real_car")
+        sim = _env_profile_flat(pkg_root, "sim")
+        exempt = SIM_WIRING_EXEMPT[name]
+        drifted = sorted(
+            key for key in set(real) | set(sim)
+            if key not in exempt and real.get(key) != sim.get(key))
+        assert not drifted, (
+            f"{name}: sim.yaml 이 real_car.yaml 과 어긋남 -> "
             + ", ".join(
                 f"{key} (real={real.get(key, '<absent>')!r}, "
                 f"sim={sim.get(key, '<absent>')!r})" for key in drifted))

@@ -55,9 +55,13 @@ cd ~/IFAC_ws
   "로컬 소스"로 인식해 헛되이 apt에서 찾지 않습니다.
   `laser_proc`(urg_node)·`serial_driver`(vesc_driver)·`tf_transformations`·
   `transforms3d` 등이 여기서 깔립니다.
-- **`range_libc`** 는 rosdep 밖의 유일한 수동 의존입니다 (실차만). `~/range_libc`
-  소스에서 빌드하므로 없으면 먼저 클론하세요:
+- **`range_libc`** 는 rosdep 밖의 유일한 수동 의존입니다 (헤더만 쓰므로 별도 빌드는
+  불필요). 없으면 먼저 클론하세요:
   `git clone https://github.com/f1tenth/range_libc ~/range_libc`
+  위치는 강제가 아닙니다 — `$RANGE_LIBC` → `~/range_libc` → `<저장소>/range_libc`
+  → `<저장소 옆>/range_libc` → `/opt/range_libc` 순으로 찾고,
+  `setup_deps.sh`·`build_all.sh`·`particle_filter_cpp/CMakeLists.txt` 가 같은 순서를
+  씁니다. 홈에 둘 수 없으면 `RANGE_LIBC=<경로> ./build_all.sh` 로 넘기세요.
 
 ### `build_all.sh` — 매번
 

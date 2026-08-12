@@ -6,7 +6,8 @@
 #
 # 사용법:
 #   ./build_all.sh        # 실차: planning perception control integration hardware localization
-#   ./build_all.sh sim    # 시뮬: hardware/localization 제외
+#   ./build_all.sh sim    # 시뮬: sim(gym) + planning perception control integration localization
+#                         #       (hardware 만 제외. gym 도 여기서 같이 빌드된다)
 #
 # set -e/-u 는 쓰지 않는다 — ROS setup.zsh 가 unset 변수를 건드려 오작동하기 때문.
 
@@ -18,9 +19,15 @@ car_ws=(hardware localization)
 
 MODE=${1:-car}
 case $MODE in
+  # sim_ws(gym)를 맨 앞에 둔다 — 우리 패키지에 대한 의존이 없어 순서는 자유지만
+  # run_sim.sh 의 source 순서와 맞춰 둔다. 예전에는 여기서 빼놔서 "gym은 따로
+  # colcon build" 라는 수동 단계가 남아 있었고, 새 머신에서 그걸 빠뜨리면
+  # run_sim.sh 가 저장소 밖 사본으로 폴백하거나 아예 못 찾고 죽었다.
+  # f1tenth_gym_ros 는 ament_python 이라 install/ 에 절대경로가 박힌다 —
+  # 빌드 산출물을 저장소에 넣을 수 없으므로 머신마다 이 단계가 필요하다(~1초).
   # localization은 sim에도 필요하다 — sim_race.launch.py pf:=true 가
   # particle_filter를 gym 위에 올려 실차와 같은 위치추정 오차를 재현한다.
-  sim) build_ws=($common_ws localization) ;;
+  sim) build_ws=(sim $common_ws localization) ;;
   car) build_ws=($common_ws $car_ws) ;;
   *)   print "사용법: $0 [car|sim]"; exit 2 ;;
 esac
@@ -65,9 +72,19 @@ source /opt/ros/humble/setup.zsh || fail "ROS 2 Humble source 실패"
 # PF 가 C++ 가 된 뒤로 이건 런타임 임포트가 아니라 *컴파일* 의존이다 —
 # 헤더가 없으면 particle_filter_cpp 가 CMake configure 단계에서 죽는다.
 if (( ${build_ws[(I)localization]} )); then
-  [[ -f $HOME/range_libc/includes/RangeLib.h ]] \
-    || fail "RangeLib C++ 헤더 없음 — 먼저 './setup_deps.sh' 를 한 번 실행하세요 (차량당 1회)"
-  ok "PF 의존성 확인 (RangeLib C++ headers)"
+  # 위치를 $HOME 에 못박지 않는다. setup_deps.sh · particle_filter_cpp/CMakeLists.txt
+  # 와 **같은 순서**로 찾고, 찾은 값을 RANGE_LIBC 로 export 해서 CMake 가 반드시
+  # 같은 체크아웃을 쓰게 한다 (여기서 OK 인데 CMake 는 다른 걸 잡는 일 방지).
+  rangelibc_root=
+  for c in ${RANGE_LIBC:+$RANGE_LIBC} $HOME/range_libc $ROOT/range_libc \
+           ${ROOT:h}/range_libc /opt/range_libc; do
+    [[ -f $c/includes/RangeLib.h ]] && { rangelibc_root=${c:A}; break }
+  done
+  [[ -n $rangelibc_root ]] \
+    || fail "RangeLib C++ 헤더 없음 — 먼저 './setup_deps.sh $MODE' 를 실행하세요 (머신당 1회).
+  이미 어딘가에 받아 뒀다면:  RANGE_LIBC=<경로> $0 $MODE"
+  export RANGE_LIBC=$rangelibc_root
+  ok "PF 의존성 확인 (RangeLib C++ headers: $rangelibc_root)"
 fi
 
 # ── colcon build (순서 보장 · --base-paths src · 빌드 후 source) ─────

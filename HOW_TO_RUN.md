@@ -169,9 +169,11 @@ cd ~/IFAC_ws
 ```
 
 - **`setup_deps.sh`** (차량당 1회) — `rosdep`으로 `tf_transformations`·`transforms3d`·
-  `laser_proc`·`serial_driver` 등 설치(apt라 sudo 비밀번호를 물어봄) + `range_libc` 빌드.
+  `laser_proc`·`serial_driver` 등 설치(apt라 sudo 비밀번호를 물어봄) + `range_libc` 확인.
   `range_libc` 소스가 없으면 clone 명령을 안내:
   `git clone https://github.com/f1tenth/range_libc ~/range_libc`.
+  위치는 강제가 아니다 — 못 찾으면 후보 경로들을 출력하고, 다른 곳에 있으면
+  `RANGE_LIBC=<경로>` 로 넘기면 된다 (README.md 참조).
 - **`build_all.sh`** (매번) — 빌드 순서(planning 먼저 — 메시지 패키지가 여기 있음)와
   `--base-paths src`를 보장하며 **colcon build 만** 한다. 차량이 같으면 의존성은 이미
   있으므로 다시 설치하지 않는다. 시작 시 numpy·PF 의존성만 빠르게 확인하고 안 돼

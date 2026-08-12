@@ -6,12 +6,16 @@
 # /perception/obstacles는 쓰지 않는다 — sim에선 virtual_obstacle_node가 같은
 # 이름으로 f1tenth_planning_msgs를 발행하므로 타입 충돌을 피해야 한다.
 #
-# env:=sim 은 GT odom + Python 트래커 기준의 "가벼운" 프로파일이라 플래닝
-# 속도/시야는 params.yaml 기본값(느린 쪽)을 따른다. 반면 **검출 파라미터는
-# real_car.yaml과 같게 유지한다** — 벽을 큰 클러스터로 잡는 현상은 gym에서도
-# 그대로 나므로(실측 radius 1.0~3.2 m), 필터가 빠져 있으면 sim만 유령 장애물로
-# 정지하고 그게 인지 문제인지 플래닝 문제인지 구분할 수 없게 된다.
-# 실차와 최대한 같은 조건으로 보려면 env:=sim_real_car 를 쓸 것.
+# 2026-08-12부터 env:=sim 의 **거동 파라미터는 real_car.yaml과 같다**. 예전엔
+# 플래닝 속도/시야가 params.yaml 기본값(저속)이라 여기 range_max 도 그 짝인
+# 10 m 였는데, 그 상태로는 "sim에선 됐다"가 실차와 대응되지 않았다.
+# 벽을 큰 클러스터로 잡는 현상은 gym에서도 그대로 나므로(실측 radius 1.0~3.2 m),
+# 필터가 빠져 있으면 sim만 유령 장애물로 정지하고 그게 인지 문제인지 플래닝
+# 문제인지 구분할 수 없게 된다.
+#
+# env:=sim 이 env:=sim_real_car 와 다른 점은 파라미터가 아니라 launch 다:
+# sim 은 pf:=false(GT odom) + vehicle:=gym_default(관대한 물리)라 "빠른 확인"용이고,
+# 실차 판정 근거로 쓸 수 있는 건 sim_real_car 쪽뿐이다.
 obstacle_detector_node:
   ros__parameters:
     # --- 배선: sim ---
@@ -29,10 +33,17 @@ obstacle_detector_node:
     # 기본이라 odom 프레임 자체가 없다 (sim_odom_drift_node는 pf:=true에서만
     # 뜬다). 실차와 같은 map->odom->base_link 체인으로 보려면 env:=sim_real_car.
     #
-    # sim 플래닝 기본값(spliner/lookahead_m 10.0)과 짝. 실차는 12.0/12.0.
-    range_max: 10.0
-    # gym LiDAR는 결측/반사가 없어 트랙 유지가 쉬우므로 실차(8)보다 길게 둔다.
-    track_timeout: 12
+    # 2026-08-12: 10.0 -> 12.0. env:=sim 의 플래닝이 저속·lookahead 10 m 프로파일을
+    # 쓰던 시절의 짝이었는데, 그 플래닝이 real_car 와 같아지면서(spliner/lookahead_m
+    # 12.0) 여기만 10 m 로 남으면 sim 만 12 m 에서 이미 보이는 장애물을 10 m 까지
+    # 버린다 — 조기 레인스위치가 안 되고 정적 장애물 앞 정지 가능 속도가 낮아진다.
+    range_max: 12.0
+    # 2026-08-12: 12 -> 19. real_car.yaml/sim_real_car.yaml 과 값이 갈리면 sim 이
+    # 실차와 다른 트래킹 지속시간으로 돌아 회피 검증이 대응되지 않는다.
+    # (track_timeout_sec 0.80 이 base 에서 이미 우선 적용되므로 지금은 fallback)
+    track_timeout: 19
+    # real_car.yaml과 동일 값을 명시. 없으면 노드 기본값으로 조용히 갈린다.
+    process_rate_hz: 20.0
     # ---- 이하 검출/필터: real_car.yaml과 동일 (근거·실측표는 그쪽 주석) ----
     # 벽 fringe 억제. 상한은 검출률이 정한다(10 이상이면 벽에 붙은 장애물
     # 검출이 94% -> 59%로 무너진다).

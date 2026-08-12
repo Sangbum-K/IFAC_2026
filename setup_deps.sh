@@ -23,9 +23,14 @@ MODE=${1:-car}
 # 같아야 한다: 여기서 localization 을 빼면 RangeLib 헤더가 안 깔린 채
 # ./build_all.sh sim 이 CMake configure 에서 죽고, 안내대로 setup_deps 를 다시
 # 돌려도 여전히 안 깔려 빠져나갈 수 없다.
+# build_all.sh 의 build_ws 와 반드시 같아야 한다. sim 에 sim(gym)이 들어가는 이유:
+# rosdep 이 f1tenth_gym_ros/package.xml 을 봐야 nav2_map_server ·
+# nav2_lifecycle_manager · xacro · joint_state_publisher · teleop_twist_keyboard ·
+# transforms3d 가 깔린다. 예전엔 sim_ws 를 아예 안 넘겨서 이것들이 rosdep 대상이
+# 아니었고, 새 머신에서 gym launch 가 런타임에 죽었다.
 case $MODE in
-  sim) build_ws=($common_ws localization); need_rangelibc=1 ;;
-  car) build_ws=($common_ws $car_ws);      need_rangelibc=1 ;;
+  sim) build_ws=(sim $common_ws localization); need_rangelibc=1 ;;
+  car) build_ws=($common_ws $car_ws);          need_rangelibc=1 ;;
   *)   print "사용법: $0 [car|sim]"; exit 2 ;;
 esac
 
@@ -39,11 +44,22 @@ np=$($PY -c 'import numpy;print(numpy.__version__+" "+numpy.__file__)' 2>/dev/nu
   || fail "numpy import 실패 — $PY 환경이 깨졌습니다"
 np_ver=${np%% *}; np_file=${np#* }
 if [[ $np_file == $HOME/.local/* || ${np_ver%%.*} != 1 ]]; then
-  print -P "%F{red}⚠ numpy 오염: $np%f"
-  print   "  고치기: $PY -m pip uninstall -y numpy   # → apt 1.x 복귀 후 재실행"
-  fail "numpy 가 apt 1.x 가 아님 (ROS C확장 ABI 붕괴)"
+  # build_all.sh 와 **같은 규칙**이어야 한다. 예전엔 여기만 모드와 무관하게
+  # hard fail 이라, 시뮬용으로 제대로 세팅된 머신(user-site numpy + skimage +
+  # numba)에서 './setup_deps.sh sim' 이 첫 줄에서 죽었다 — 문서가 안내하는
+  # 순서(setup_deps -> build_all)를 시작조차 할 수 없었다.
+  if [[ $MODE == sim ]]; then
+    print -P "%F{yellow}⚠ numpy 가 apt 1.x 가 아님: $np%f"
+    print   "  sim 모드라 계속합니다 (gym numba / build_map skimage 가 이 스택을 씁니다)."
+    print   "  실차 셋업(./setup_deps.sh)에서는 이게 fail 입니다."
+  else
+    print -P "%F{red}⚠ numpy 오염: $np%f"
+    print   "  고치기: $PY -m pip uninstall -y numpy   # → apt 1.x 복귀 후 재실행"
+    fail "numpy 가 apt 1.x 가 아님 (ROS C확장 ABI 붕괴)"
+  fi
+else
+  ok "numpy $np_ver (apt)"
 fi
-ok "numpy $np_ver (apt)"
 
 # ── ROS 2 Humble ────────────────────────────────────────────────────
 source /opt/ros/humble/setup.zsh || fail "ROS 2 Humble source 실패"
@@ -58,10 +74,14 @@ if command -v rosdep >/dev/null; then
   info "rosdep install (${#build_ws} workspaces) — apt는 sudo 비밀번호를 물어봄"
   rosdep_ok=1
   rosdep install --from-paths $src_paths --ignore-src -r -y || rosdep_ok=0
-  # rosdep 의 pip installer 가 numpy 를 오염시켰는지 재확인
+  # rosdep 의 pip installer 가 numpy 를 오염시켰는지 재확인.
+  # "지금 ~/.local 인가" 가 아니라 "rosdep 때문에 **바뀌었나**" 를 본다.
+  # 전자로 보면 시뮬 머신(원래부터 user-site numpy)이 rosdep 이 아무 짓도
+  # 안 했는데 실패한다.
   np2=$($PY -c 'import numpy;print(numpy.__file__)' 2>/dev/null)
-  [[ $np2 == $HOME/.local/* ]] && \
-    fail "rosdep 이 ~/.local numpy 를 설치함 — '$PY -m pip uninstall -y numpy' 후 재실행"
+  if [[ $np2 != $np_file && $np2 == $HOME/.local/* ]]; then
+    fail "rosdep 이 ~/.local numpy 를 설치함 ($np_file -> $np2) — '$PY -m pip uninstall -y numpy' 후 재실행"
+  fi
   if (( rosdep_ok )); then
     ok "rosdep 완료"
   else
@@ -96,12 +116,34 @@ if (( ${#missing_overlay} )); then
 fi
 ok "rviz_2d_overlay_msgs / rviz_2d_overlay_plugins OK"
 
-# ── RangeLib C++ headers (rosdep 밖 수동 의존, 실차만) ──────────────
+# ── RangeLib C++ headers (rosdep 밖 수동 의존) ──────────────────────
+# 위치를 $HOME 에 못박지 않는다. particle_filter_cpp/CMakeLists.txt 와 **같은
+# 순서**로 찾아야 "스크립트는 OK 인데 빌드는 못 찾는" 어긋남이 안 생긴다.
 if (( need_rangelibc )); then
-  if [[ -f ~/range_libc/includes/RangeLib.h ]]; then
-    ok "RangeLib C++ headers 확인 (~/range_libc/includes/RangeLib.h)"
+  rangelibc_candidates=(
+    ${RANGE_LIBC:+$RANGE_LIBC}
+    $HOME/range_libc
+    $ROOT/range_libc
+    ${ROOT:h}/range_libc
+    /opt/range_libc
+  )
+  rangelibc_root=
+  for c in $rangelibc_candidates; do
+    [[ -f $c/includes/RangeLib.h ]] && { rangelibc_root=${c:A}; break }
+  done
+  if [[ -n $rangelibc_root ]]; then
+    ok "RangeLib C++ headers 확인 ($rangelibc_root)"
+    [[ $rangelibc_root == ${HOME:A}/range_libc ]] || \
+      print "  (기본 위치가 아닙니다 — 빌드 시 RANGE_LIBC=$rangelibc_root 를 그대로 쓰세요)"
   else
-    fail "~/range_libc 없음. 먼저:  git clone https://github.com/f1tenth/range_libc ~/range_libc"
+    print -P "%F{red}✗ range_libc 를 찾을 수 없습니다%f"
+    print   "  아래 중 아무 곳이나 있으면 됩니다:"
+    for c in $rangelibc_candidates; do print "    $c"; done
+    print   "  가장 간단한 방법:"
+    print   "    git clone https://github.com/f1tenth/range_libc ~/range_libc"
+    print   "  이미 다른 곳에 있다면:"
+    print   "    RANGE_LIBC=<경로> ./setup_deps.sh $MODE   (빌드에도 같은 값을 넘길 것)"
+    exit 1
   fi
 fi
 

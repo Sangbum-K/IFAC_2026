@@ -14,17 +14,32 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
+# range_libc (헤더 전용 의존, rosdep 밖). 위치를 $HOME 에 못박지 않는다:
+#   1) -DRANGELIBC_ROOT=<경로>  — 이미 캐시에 있으면 find_path 가 그대로 둔다
+#   2) RANGE_LIBC 환경변수      — setup_deps.sh / build_all.sh 가 찾은 값을 넘긴다
+#   3) $HOME/range_libc         — 기존 동작 (기존 머신은 그대로 잡힌다)
+#   4) 저장소 안/옆              — 홈에 못 두는 환경(CI·컨테이너·공용 계정)용
 find_path(
   RANGELIBC_ROOT
   NAMES includes/RangeLib.h
-  PATHS "$ENV{HOME}/range_libc"
+  PATHS
+    "$ENV{RANGE_LIBC}"
+    "$ENV{HOME}/range_libc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../range_libc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../range_libc"
+    "/opt/range_libc"
   NO_DEFAULT_PATH
 )
 if(NOT RANGELIBC_ROOT)
   message(FATAL_ERROR
-    "range_libc C++ headers not found. Clone it to $HOME/range_libc "
-    "with ./setup_deps.sh before building particle_filter_cpp.")
+    "range_libc C++ headers not found.\n"
+    "  Fix: git clone https://github.com/f1tenth/range_libc ~/range_libc\n"
+    "  Or point at an existing checkout:\n"
+    "    RANGE_LIBC=<path> ./build_all.sh sim\n"
+    "    colcon build --cmake-args -DRANGELIBC_ROOT=<path>\n"
+    "  (./setup_deps.sh checks the same locations.)")
 endif()
+message(STATUS "particle_filter_cpp: range_libc at ${RANGELIBC_ROOT}")
 
 add_library(particle_filter_cpp_core src/mcl_core.cpp)
 target_compile_features(particle_filter_cpp_core PUBLIC cxx_std_17)

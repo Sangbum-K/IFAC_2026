@@ -11,6 +11,22 @@ control:
     autonomous_on_start: true
     "recovery/require_supervisor": false
 
+    # real_car.yaml과 동일. 여기만 빠져 있어 base params.yaml의 false가 남았고,
+    # 그 결과 sim은 **실차에 있는 출발 게이트가 통째로 없는** 상태로 돌았다
+    # (test_sim_real_car_profiles_mirror_real_car 가 잡아낸 유일한 드리프트).
+    # sim에서 이 게이트가 실제로 성립하는지 확인한 근거:
+    #   · env:=sim_real_car 는 pf:=true 라 실차와 같은 particle_filter_cpp 가 돈다.
+    #     ready_pub_ 는 조건 없이 생성되고(particle_filter_node.cpp:135,
+    #     transient_local) 토픽 기본값도 /pf/localization_ready 로 같다.
+    #   · ready = initial_pose_accepted && quality == kOk (mcl_core.cpp:426).
+    #     초기 포즈는 sim_odom_drift_node 가 /initialpose 로 쏜다
+    #     (sim_race.launch.py drift/init_pose_*), 품질 문턱은 localize_sim.yaml 에
+    #     없지만 **노드 기본값이 실차 localize.yaml 과 같은 값**이다
+    #     (0.70/0.40/3/5 — particle_filter_node.cpp:122-125).
+    # 즉 게이트가 sim에서 영구히 닫히지 않는다. 막히면 원인은 이 값이 아니라
+    # PF 미수렴이므로 /pf/localization_quality 를 볼 것.
+    "localization_gate/enabled": true
+
     # 조향 LUT만은 sim 것을 유지한다. LUT는 하드웨어 한계가 아니라 타이어 모델이라
     # gym 차량 모델(f110_gym single-track)에 실차 Pacejka LUT를 물리면 요구 조향이
     # 어긋나 실차와 무관한 추적오차가 생긴다. 실차 LUT로 비교하려면 아래를

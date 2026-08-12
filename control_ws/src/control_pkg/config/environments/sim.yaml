@@ -1,11 +1,41 @@
+# --- gym sim (빠른 확인용) control 프로파일 (stack.launch.py env:=sim) ---
+# 거동/명령한계는 real_car.yaml과 같게 두고, 배선만 sim이다.
+# env:=sim 과 env:=sim_real_car 의 차이는 파라미터가 아니라 launch 다
+# (pf:=false + vehicle:=gym_default) — 근거는 planning environments/sim.yaml 상단.
 control:
   ros__parameters:
+    # ⚠️ 배선: pf:=false 라 PF가 없다. gym GT odom 을 쓴다.
     odom_topic: /ego_racecar/odom
-    ackermann_topic: /drive
+    ackermann_topic: /drive          # gym 입력 (실차: /autonomy/ackermann_cmd)
     autonomous_on_start: true
     "recovery/require_supervisor": false
+
+    # ⚠️ localization_gate 는 여기서 **켜지 않는다** (real_car/sim_real_car 는 true).
+    # 게이트는 /pf/localization_ready 를 요구하는데 env:=sim 은 pf:=false 라
+    # 그 토픽의 발행자가 아예 없다 — 켜면 차가 영원히 출발하지 않는다.
+    # 실차와 같은 출발 게이트까지 검증하려면 env:=sim_real_car 를 쓸 것.
+
+    # 조향 LUT만은 sim 것을 유지한다. LUT는 하드웨어 한계가 아니라 타이어 모델이라
+    # gym 차량 모델에 실차 Pacejka LUT를 물리면 실차와 무관한 추적오차가 생긴다.
     "map/steering_lut_file": "SIM_linear_lookup_table.csv"
-    "vehicle/max_speed_mps": 4.0
-    # planning_pkg의 tracker/speed_scale 및 spliner/cmd_speed_scale과 동일.
-    # tracker:=false로 C++ control을 써도 동적 trailing 속도 모델이 달라지지 않는다.
-    "vehicle/speed_scale": 0.30
+
+    # --- 명령 한계: real_car.yaml과 동일 ---
+    # 2026-08-12: 4.0/0.30 -> 7.0/1.0. 4.0 은 v-max 6.0 시절 cap 이라 raceline
+    # 상단(6.72 m/s)이 통째로 잘렸고, control 이 전 구간을 clamp 하면 조향 LUT 를
+    # wpnt 속도로 조회하는 구조 때문에 조향까지 과다해진다. speed_scale 0.30 은
+    # planning 의 spliner/cmd_speed_scale 과 짝은 맞았지만 그 짝 자체가 실차(1.0)와
+    # 달라서, sim 만 동적 상대 trailing 을 3분의 1 속도로 돌고 있었다.
+    "vehicle/max_speed_mps": 7.0
+    "vehicle/speed_scale": 1.0
+
+    # --- gym 에는 VESC plant 가 없으므로 명령단에서 차의 가감속/조향 한계를 건다 ---
+    # 값의 단일 기준은 planning_pkg/scripts/deployment_profiles.py
+    # (A_ACC_MAX / A_DEC_PLANNED / MAX_STEER / MAX_STEER_RATE).
+    # sim_real_car.yaml 과 같은 값이고 근거 주석도 그쪽에 있다.
+    # ⚠️ env:=sim 은 vehicle:=gym_default (mu 1.0489 / a_max 9.51 / s_max 0.4189)
+    #    라 gym 물리 자체는 실차보다 관대하다. 이 명령단 한계가 없으면 sim 이
+    #    실차가 낼 수 없는 가감속·조향으로 돌아 검증이 통째로 낙관적이 된다.
+    "vehicle/max_steering_angle_rad": 0.3578
+    "vehicle/max_steering_rate_radps": 2.0
+    "vehicle/max_accel_mps2": 4.5
+    "vehicle/max_decel_mps2": 2.38

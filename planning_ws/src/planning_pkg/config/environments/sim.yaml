@@ -1,0 +1,104 @@
+# --- gym sim (빠른 확인용) 플래너 프로파일 (stack.launch.py env:=sim) ---
+#
+# 2026-08-12까지 이 파일은 **비어 있었다**. 그래서 env:=sim 은 params.yaml 기본값을
+# 그대로 썼고, 그 기본값은 v-max 6.0 / control cap 4.0 시절의 저속 프로파일이라
+#   velocity_scale 0.5714 (계획 최고 4.0 m/s) · cmd_speed_scale 0.30 · lookahead 10 m
+# 로 실차와 전혀 다른 속도·시야에서 회피를 검증하고 있었다. 그 상태로 "sim에선
+# 됐다"를 말해도 실차와의 대응이 없다 — 그래서 **거동 파라미터를 real_car.yaml과
+# 같게** 맞춘다 (sim_real_car.yaml과 같은 규칙).
+#
+# env:=sim 이 env:=sim_real_car 와 여전히 다른 점은 **파라미터가 아니라 launch**다:
+#   env:=sim          pf:=false (gym GT odom) + vehicle:=gym_default
+#                     (mu 1.0489 / a_max 9.51 / s_max 0.4189 — 실차보다 관대)
+#   env:=sim_real_car pf:=true  (진짜 particle_filter) + vehicle:=real_car
+#                     (mu 0.90 / a_max 4.5 / s_max 0.3578 — 실측 물리)
+# 즉 sim 은 "위치추정·차량물리를 이상화한 빠른 확인", sim_real_car 는 "실차 근사"다.
+# 실차 판정 근거로 쓸 수 있는 건 sim_real_car 쪽뿐이다.
+#
+# 아래에서 real_car.yaml과 다른 것은 배선 2개뿐이고, 둘 다 pf:=false 때문이다
+# (test_sim_profiles_mirror_real_car 의 SIM_WIRING_EXEMPT 참조).
+global_trajectory_node:
+  ros__parameters:
+    # real_car.yaml / sim_real_car.yaml 과 동일 (근거는 real_car.yaml 주석).
+    global_trajectory/velocity_scale: 0.96
+
+frenet_frame_node:
+  ros__parameters:
+    # ⚠️ 배선: pf:=false 라 /pf/pose/odom 이 없다. gym GT(/ego_racecar/odom)를 쓴다.
+    # (sim_race.launch.py 가 pf 값에 따라 이 키를 launch override 로 다시 덮으므로
+    #  통합 실행에서는 어차피 맞춰지지만, planner_stack 단독 실행에서도 맞도록 명시)
+    frenet_frame/odom_mode: sim_gt
+
+perception_obstacle_bridge_node:
+  ros__parameters:
+    # ⚠️ 배선: sim detector 출력. 나머지는 real_car.yaml과 동일하다.
+    bridge/input_topic: /perception/obstacles_detected
+    bridge/output_topic: /perception/obstacles_frenet
+    bridge/target_frame: map
+    bridge/min_confidence: 0.2
+    bridge/wall_margin_m: 0.10
+    bridge/vel_lpf_alpha: 0.3
+    bridge/track_forget_sec: 2.0
+    bridge/tf_timeout_sec: 0.05
+    bridge/tf_allow_latest_fallback: false
+    bridge/tf_max_age_sec: 0.05
+    bridge/max_source_age_sec: 0.15
+    bridge/source_future_tolerance_sec: 0.05
+    bridge/require_source_stamp: true
+    bridge/projection_window_wpnts: 80
+    bridge/projection_reacquire_distance_m: 1.5
+    bridge/max_abs_vs_mps: 10.0
+    bridge/max_abs_vd_mps: 4.0
+    # A/B로 끄고 싶으면 launch에서 map_filter:=false — yaml을 고치지 말 것
+    # (launch 인자가 env yaml보다 나중에 적용된다).
+    bridge/use_map_filter: true
+    bridge/wall_dist_min_m: 0.30
+    bridge/map_topic: /map
+    bridge/map_timeout_sec: 5.0
+
+# --- 이하 real_car.yaml과 완전히 동일 (근거 주석은 real_car.yaml 참조) ---
+spliner_node:
+  ros__parameters:
+    spliner/obstacle_topic: /perception/obstacles_frenet
+    spliner/escape_arc_enabled: true
+    spliner/escape_arc_lat_acc: 5.5
+    spliner/escape_arc_min_speed: 1.2
+    spliner/escape_arc_max_heading_rad: 0.70
+    spliner/commit_break_requires_visible: true
+    spliner/lookahead_m: 12.0
+    spliner/loop_rate_hz: 30.0
+    spliner/blend_lat_acc_max: 5.0
+    spliner/blend_dist_max_m: 8.0
+    spliner/path_lat_acc_max: 7.85
+    spliner/path_decel_max: 6.0
+    spliner/lane_blend_out_m: 5.0
+    spliner/early_switch_kappa_max: 0.10
+    spliner/obs_traj_tresh: 0.45
+    spliner/evasion_dist: 0.35
+    spliner/path_check_margin: 0.15
+    spliner/boundary_tracking_margin_m: 0.10
+    # control 의 vehicle/speed_scale 과 반드시 같은 값 (실차·sim 모두 1.0).
+    # 예전엔 여기가 base 의 0.30 이었고 control sim.yaml 도 0.30 이라 짝은
+    # 맞았지만, 그 짝이 실차(1.0)와 달라 동적 상대 trailing 속도 모델이
+    # sim 에서만 3분의 1이었다.
+    spliner/cmd_speed_scale: 1.0
+
+opponent_predictor_node:
+  ros__parameters:
+    predictor/obstacle_topic: /perception/obstacles_frenet
+
+recovery_supervisor_node:
+  ros__parameters:
+    recovery/obstacle_topic: /perception/obstacles_frenet
+    recovery/stuck_timeout_sec: 1.5
+    recovery/boundary_stop_margin_m: 0.10
+    recovery/boundary_persist_sec: 0.10
+    recovery/rear_check_dist_m: 2.0
+    recovery/allow_reverse: false
+    recovery/rear_coverage_confirmed: false
+    recovery/recovery_reverse_speed_mps: 0.30
+    recovery/recovery_max_reverse_distance_m: 0.4
+    recovery/recovery_max_attempts: 1
+    recovery/align_speed_mps: 0.4
+    # ⚠️ 배선: pf:=false 라 /pf/pose/odom 이 없다 (frenet odom_mode와 같은 이유).
+    recovery/pose_odom_topic: /ego_racecar/odom
