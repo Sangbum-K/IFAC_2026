@@ -30,7 +30,7 @@ sa #전체 소스
 mapp my_track0728   # 맵 이름 — 날짜 등으로 매번 새 이름을 쓸 것
 ```
 > `maps/`는 다른 어떤 폴더보다 먼저 검색되므로, 기존 맵이나 패키지 맵
-> (`particle_filter/maps`)과 같은 이름으로 저장하면 그 맵이
+> (`particle_filter_cpp/maps`, `planning_pkg/maps`)과 같은 이름으로 저장하면 그 맵이
 > 조용히 가려집니다. 그래서 이름이 겹치면 **주행 시작 전에** launch가 거부합니다.
 > 정말 덮어쓸 때만 `mapp <이름> overwrite:=true` (기존 파일은 `.bak`으로 백업됨).
 플래닝용 csv파일생성
@@ -74,7 +74,7 @@ rc my_track0728   # mapp/mkcsv와 같은 이름 — 생략하면 기본 맵(my_t
 # 맵 이름은 원하는대로 바꿔서 설정할 수 있음
 # 위 명령어들은 젯슨에 alias 설정함
 #   → RViz(monitor.rviz)가 뜨면 "2D Pose Estimate"로 실제 차 위치 클릭+드래그
-#   → 파티클 수렴하면 자율 스택 자동 시작 → 조이스틱 버튼 5로 자율주행 모드 실행
+#   → initialpose 적용 + quality 연속 OK면 자동 시작 → 버튼 5로 자율주행 모드 실행
 ```
 
 > 💻 **주행은 노트북 원격 RViz가 권장 구성입니다** (차량 부하 0).
@@ -156,7 +156,7 @@ LiDAR /scan
 | `control_ws` | ✅ | ✅ |
 | `integration_ws` | ✅ | ✅ |
 | `hardware_ws` (LiDAR·VESC·odom·TF·mux·조이스틱) | — | ✅ |
-| `localization_ws` (particle_filter) | — | ✅ |
+| `localization_ws` (`particle_filter_cpp`) | — | ✅ |
 | `sim_ws` (f1tenth_gym_ros) | ✅ 별도 | — |
 
 빌드는 두 단계입니다 — 의존성은 **차량당 1회**, 코드 빌드는 **고칠 때마다**.
@@ -178,7 +178,7 @@ cd ~/IFAC_ws
   있으면 `./setup_deps.sh`를 실행하라며 멈춘다. 끝에 실행용 source 블록(아래 2장) 출력.
 
 > ⚠️ **numpy는 apt 1.x 고정.** `pip install --user`로 numpy 2.x가 깔리면
-> scipy·pythran·ROS C확장이 ABI로 깨지고 particle_filter가 조용히 죽습니다.
+> scipy·pythran·ROS Python 확장이 ABI로 깨집니다.
 > 스크립트가 시작할 때 검사하며, 오염됐다면: `python3 -m pip uninstall -y numpy`.
 
 > ⚠️ **시뮬(`sim_ws`)은 `build_all.sh` 대상이 아닙니다** — 별도로 빌드해야 합니다.
@@ -373,8 +373,9 @@ ros2 launch integration_pkg real_car.launch.py
    (파티클/InferredPose 디스플레이를 `monitor.rviz`에 병합해 뒀습니다).
    같이 뜨는 `monitor_node`가 랩타임/CTE/속도 오버레이를 채웁니다
    (자율 스택이 뜬 뒤부터).
-3. `wait_for_localization` 게이트가 파티클 수렴을 감시하며 1초마다 상태 로그
-4. **수렴이 확인되면 자율 스택(perception+planning+control)을 자동 시작**
+3. `wait_for_localization`이 `/initialpose` 적용과 scan-map quality 연속 OK를 감시
+4. **readiness가 확인되면 자율 스택(perception+planning+control)을 자동 시작**
+5. 실차 control은 readiness heartbeat가 false/stale이면 계속 0 명령만 발행
 
 사람이 할 일은 **RViz에서 `2D Pose Estimate` 한 번 찍는 것뿐**입니다
 (방법은 아래 4-1의 "초기 위치 찍는 순서" 참고).
@@ -383,10 +384,9 @@ ros2 launch integration_pkg real_car.launch.py
 
 ```
 대기 중: /scan 없음 — 하드웨어(LiDAR)가 안 떴습니다
-대기 중: map -> base_link TF 없음 — PF가 아직 TF를 안 냅니다
-대기 중: 파티클이 아직 흩어져 있음 (spread=3.42m > 0.35m) — RViz에서 2D Pose Estimate로 초기 위치를 찍으세요
-수렴 확인 중 (spread=0.12m, 6/10)
-수렴 완료 (파티클 spread=0.11m) — 자율 스택을 시작합니다.
+대기 중: /initialpose 미적용 — RViz 2D Pose Estimate로 실제 위치와 방향을 지정하세요
+대기 중: 연속 scan-map quality OK 대기 중 (현재 STARTUP)
+초기 위치 적용 + 연속 quality OK 확인 완료 - 자율 스택을 시작합니다.
 ```
 
 옵션:
@@ -398,7 +398,7 @@ ros2 launch integration_pkg real_car.launch.py hardware:=false
 # 화면 없이 / 자율 스택은 수동으로
 ros2 launch integration_pkg real_car.launch.py rviz:=false autostart:=false
 
-# 2분 안에 수렴 못 하면 자율 스택을 아예 띄우지 않음
+# 2분 안에 ready가 안 되면 자율 스택을 아예 띄우지 않음
 ros2 launch integration_pkg real_car.launch.py wait_timeout:=120.0
 ```
 
@@ -443,13 +443,13 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 #   맵을 안 주면 localize.yaml 의 map: 을 따른다 (현재 my_track0807).
 
 # 다른 맵을 쓰려면 map:=<이름> — ~/IFAC_ws/maps 를 먼저, 없으면
-# particle_filter/maps 를 찾는다. 매핑으로 만든 맵은 재빌드 없이 바로 쓰인다.
+# particle_filter_cpp/maps 를 찾는다. 매핑으로 만든 맵은 재빌드 없이 바로 쓰인다.
 ros2 launch localization_bringup localization.launch.py backend:=particle_filter map:=my_track2
 ```
 
 #### 초기 위치 잡기 (필수) — 파티클 필터 초기화
 
-파티클 필터는 켜지는 순간 파티클(차 위치 후보 3000개)을 **맵 전체에 흩뿌린
+파티클 필터는 켜지는 순간 파티클(차 위치 후보 2000개)을 **맵 전체에 흩뿌린
 상태**로 시작합니다(로그 `GLOBAL INITIALIZATION`). 즉 차가 어디 있는지 아직
 모릅니다. 이 상태에서 C를 띄우면 엉터리 위치로 차가 튑니다. **내가 실제
 위치를 찍어줘야** 파티클이 모이고 LiDAR 스캔 매칭으로 수렴합니다.
@@ -469,7 +469,7 @@ ros2 launch localization_bringup localization.launch.py backend:=particle_filter
 rviz2 -d $(ros2 pkg prefix --share monitor_pkg)/rviz/monitor.rviz
 
 # 초기 위치만 보는 최소 구성
-rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz
+rviz2 -d $(ros2 pkg prefix --share particle_filter_cpp)/rviz/pf.rviz
 ```
 
 **초기 위치 찍는 순서:**
@@ -482,7 +482,8 @@ rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz
    (화살표 = 위치 + 헤딩)
 5. 파티클이 그 지점으로 확 모임 → 차를 손으로 살짝 밀거나 천천히 전진시키면
    한 점으로 수렴 (`/pf/viz/particles` 구름이 작게 뭉치고
-   `/pf/viz/inferred_pose`가 차 위에 얹힘)
+   `/pf/viz/inferred_pose`가 차 위에 얹힘). PF는 scan-map fit 5회 연속 OK 후
+   `/pf/localization_ready=true`를 냄
 
 | RViz 도구 | 용도 |
 |---|---|
@@ -497,10 +498,14 @@ rviz2 -d $(ros2 pkg prefix --share particle_filter)/rviz/pf.rviz
 > ```
 > (x·y = 맵 좌표, orientation = 헤딩 쿼터니언)
 
-**C를 띄우기 전에 반드시** `/pf/pose/odom`과 `map` TF가 수렴된 값으로 나오는지 확인:
+**C를 띄우기 전에 반드시** readiness와 `map` TF가 맞는지 확인:
 
 ```bash
-ros2 topic hz /pf/pose/odom               # 값이 나와야 함
+ros2 topic echo /pf/initialpose_received --once  # RViz 클릭이 PF에 도착: true
+ros2 topic echo /pf/initialpose_accepted --once  # TF 확인 후 파티클 적용: true
+ros2 topic echo /pf/localization_quality --once  # data: OK
+ros2 topic echo /pf/localization_ready --once    # data: true
+ros2 topic hz /pf/pose/odom                     # 값이 나와야 함
 ros2 run tf2_ros tf2_echo map base_link   # map→base_link TF가 실제 차 위치와 맞아야 함
 ```
 
@@ -671,7 +676,7 @@ alias·함수는 **전부 차량에서(SSH로) 실행**합니다. 하드웨어�
 | `tune <맵>` | ✅ | 웹앱. `ssh -L 8770:localhost:8770` 후 노트북 브라우저. 아래 참고 |
 
 **매핑을 원격으로** — 노트북에서 맵이 그려지는 걸 보며 조이스틱으로 한 바퀴 돕니다.
-`mapp`이 쓰는 설정은 `particle_filter/rviz/pf.rviz`인데 노트북엔 그 패키지가 없으므로,
+`mapp`이 쓰는 설정은 `particle_filter_cpp/rviz/pf.rviz`인데 노트북엔 그 패키지가 없으므로,
 이미 빌드해 둔 `monitor.rviz`(`rv`)를 쓰면 됩니다 — Map(`/map`)·LaserScan(`/scan`)·TF가
 들어 있어 매핑 확인에 충분합니다.
 
@@ -820,7 +825,7 @@ ros2 launch integration_pkg stack.launch.py
 # 실차 (source 실차용 블록 후, 터미널 1개):
 ros2 launch integration_pkg real_car.launch.py
 #   → RViz가 자동으로 뜸. "2D Pose Estimate"로 실제 차 위치 클릭+드래그.
-#   → 파티클이 수렴하면 자율 스택이 자동 시작됨. 버튼 5로 자율 명령 인가.
+#   → initialpose 적용 + quality 연속 OK면 자동 시작됨. 버튼 5로 자율 명령 인가.
 # ⚠️ 비상정지(E-stop)는 배선 안 돼 있음 — 4번 맨 위 경고 / "실차 안전장치" 참고
 
 # ── 노트북 원격 RViz (권장 구성, 상세는 4-4) ──

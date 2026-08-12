@@ -1,13 +1,13 @@
 #!/usr/bin/env zsh
 # setup_deps.sh — 차량(머신)당 최초 1회: 시스템 의존성 설치.
 #
-# rosdep 의존성 + range_libc(소스 빌드) + numpy ABI 검사.
+# rosdep 의존성 + RangeLib C++ 헤더 + numpy ABI 검사.
 # 코드만 고칠 땐 필요 없다 → 그건 ./build_all.sh 가 담당.
 # 의존성을 새로 추가했거나 머신을 새로 세팅할 때만 다시 실행하면 된다.
 #
 # 사용법:
-#   ./setup_deps.sh        # 실차 (range_libc 포함)
-#   ./setup_deps.sh sim    # 시뮬 (range_libc 불필요)
+#   ./setup_deps.sh        # 실차 (RangeLib C++ 헤더 포함)
+#   ./setup_deps.sh sim    # 시뮬 (hardware_ws 만 뺀다 — RangeLib 은 sim 도 필요)
 #
 # set -e/-u 는 쓰지 않는다 — ROS setup.zsh 가 unset 변수를 건드려 오작동하기 때문.
 
@@ -18,9 +18,14 @@ common_ws=(planning perception control integration)
 car_ws=(hardware localization)
 
 MODE=${1:-car}
+# sim 도 localization 을 빌드한다 — sim_race.launch.py pf:=true 가 실차와 같은
+# particle_filter_cpp 를 gym 위에 올린다. build_all.sh 의 build_ws 와 반드시
+# 같아야 한다: 여기서 localization 을 빼면 RangeLib 헤더가 안 깔린 채
+# ./build_all.sh sim 이 CMake configure 에서 죽고, 안내대로 setup_deps 를 다시
+# 돌려도 여전히 안 깔려 빠져나갈 수 없다.
 case $MODE in
-  sim) build_ws=($common_ws);          need_rangelibc=0 ;;
-  car) build_ws=($common_ws $car_ws);  need_rangelibc=1 ;;
+  sim) build_ws=($common_ws localization); need_rangelibc=1 ;;
+  car) build_ws=($common_ws $car_ws);      need_rangelibc=1 ;;
   *)   print "사용법: $0 [car|sim]"; exit 2 ;;
 esac
 
@@ -44,7 +49,7 @@ ok "numpy $np_ver (apt)"
 source /opt/ros/humble/setup.zsh || fail "ROS 2 Humble source 실패"
 
 # ── rosdep (빌드할 워크스페이스 전부, 한 번에) ──────────────────────
-# tf_transformations, transforms3d(pip), laser_proc, serial_driver 등 자동 설치.
+# laser_proc, serial_driver 등 ROS 패키지 의존성을 자동 설치한다.
 # 모든 src 를 한 호출에 넘겨야 크로스-ws 소스 의존(f1tenth_perception_msgs 등)을
 # "로컬 소스"로 인식해 헛되이 설치하려 들지 않는다.
 if command -v rosdep >/dev/null; then
@@ -91,24 +96,13 @@ if (( ${#missing_overlay} )); then
 fi
 ok "rviz_2d_overlay_msgs / rviz_2d_overlay_plugins OK"
 
-# ── range_libc (rosdep 밖 유일한 진짜 수동 의존, 실차만) ────────────
+# ── RangeLib C++ headers (rosdep 밖 수동 의존, 실차만) ──────────────
 if (( need_rangelibc )); then
-  if $PY -c 'import range_libc' 2>/dev/null; then
-    ok "range_libc 이미 설치됨"
-  elif [[ -d ~/range_libc/pywrapper ]]; then
-    info "range_libc 없음 — 소스에서 빌드 (~/range_libc, CPU)"
-    ( cd ~/range_libc/pywrapper && $PY setup.py install --user ) || fail "range_libc 빌드 실패"
-    $PY -c 'import range_libc' 2>/dev/null && ok "range_libc 빌드 완료" \
-      || fail "range_libc 빌드했으나 import 실패"
+  if [[ -f ~/range_libc/includes/RangeLib.h ]]; then
+    ok "RangeLib C++ headers 확인 (~/range_libc/includes/RangeLib.h)"
   else
     fail "~/range_libc 없음. 먼저:  git clone https://github.com/f1tenth/range_libc ~/range_libc"
   fi
-
-  # PF 런타임 의존성 최종 검증 — '빌드는 되는데 실행 시 죽는' 클래스 사전 차단
-  info "particle_filter 런타임 의존성 검증"
-  $PY -c 'import range_libc, tf_transformations, transforms3d' 2>/dev/null \
-    && ok "range_libc / tf_transformations / transforms3d OK" \
-    || fail "PF 의존성 import 실패 — 위 rosdep/range_libc 로그 확인"
 fi
 
 # ── 안내 ────────────────────────────────────────────────────────────

@@ -12,8 +12,8 @@ mapping.launch.py가 띄우며, 저장 시점은 두 가지다:
 보내기 때문에 slam_toolbox가 이미 죽는 중이라 자주 실패한다. 캐시본을
 직접 쓰면 ROS 통신이 필요 없어 항상 성공한다.
 
-출력 형식은 nav2 map_server / particle_filter가 읽는 표준 포맷이며,
-particle_filter/maps/my_map.yaml과 동일한 키 구성을 따른다.
+출력 형식은 nav2 map_server / particle_filter_cpp가 읽는 표준 포맷이며,
+particle_filter_cpp/maps/my_map.yaml과 동일한 키 구성을 따른다.
 """
 
 import math

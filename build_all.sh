@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # build_all.sh — 코드 빌드 전용 (매번 실행).
 #
-# 시스템 의존성(rosdep·range_libc) 설치는 여기 없다 → 차량당 1회 ./setup_deps.sh.
+# 시스템 의존성(rosdep·RangeLib) 설치는 여기 없다 → 차량당 1회 ./setup_deps.sh.
 # 이 스크립트는 순서대로 colcon build 만 한다. 의존성이 없으면 멈추고 안내한다.
 #
 # 사용법:
@@ -31,13 +31,14 @@ info() { print -P "%F{cyan}▶ $1%f"; }
 
 # ── numpy ABI 가드 (싸니까 매번) ────────────────────────────────────
 # ~/.local 에 pip numpy 2.x 가 깔리면 scipy/ROS C확장이 ABI로 깨지고
-# particle_filter 가 조용히 죽는다. 빌드 낭비 전에 먼저 막는다.
+# ROS Python 노드(planning / monitor / integration 스크립트)가 조용히 죽는다.
+# 빌드 낭비 전에 먼저 막는다. PF 는 C++ 로 옮겨갔으니(2026-08-11 머지) 더는
+# 이 가드가 지키는 대상이 아니지만, 파이썬 노드가 남아 있어 가드는 그대로 둔다.
 #
 # ⚠️ 단, 시뮬 데스크탑은 user-site numpy 를 **필요로 한다**: f110_gym 이 쓰는
 # numba 와 build_map.py 가 쓰는 skimage/scipy 가 거기에만 있고 그 numpy 에 맞춰
 # 빌드돼 있다. PYTHONNOUSERSITE=1 로 apt 1.21 을 강제하면 gym 이 안 뜬다.
-# 그래서 sim 모드에서는 경고만 하고 진행한다 — 가드가 막으려는 대상
-# (particle_filter/range_libc C확장)은 car 모드에서 터지는 문제다.
+# 그래서 sim 모드에서는 경고만 하고 진행한다.
 np=$($PY -c 'import numpy;print(numpy.__version__+" "+numpy.__file__)' 2>/dev/null) \
   || fail "numpy import 실패 — $PY 환경이 깨졌습니다"
 np_ver=${np%% *}; np_file=${np#* }
@@ -61,10 +62,12 @@ source /opt/ros/humble/setup.zsh || fail "ROS 2 Humble source 실패"
 # ── 의존성 게이트 (설치 안 됐으면 setup_deps 로 안내하고 멈춤) ──────
 # 매번 설치하지 않고, 있는지만 빠르게 확인한다.
 # sim 모드도 localization을 빌드하므로(pf:=true) 모드가 아니라 build_ws로 판정한다.
+# PF 가 C++ 가 된 뒤로 이건 런타임 임포트가 아니라 *컴파일* 의존이다 —
+# 헤더가 없으면 particle_filter_cpp 가 CMake configure 단계에서 죽는다.
 if (( ${build_ws[(I)localization]} )); then
-  $PY -c 'import range_libc, tf_transformations, transforms3d' 2>/dev/null \
-    || fail "particle_filter 의존성 미설치 — 먼저 './setup_deps.sh' 를 한 번 실행하세요 (차량당 1회)"
-  ok "PF 의존성 확인 (range_libc / tf_transformations / transforms3d)"
+  [[ -f $HOME/range_libc/includes/RangeLib.h ]] \
+    || fail "RangeLib C++ 헤더 없음 — 먼저 './setup_deps.sh' 를 한 번 실행하세요 (차량당 1회)"
+  ok "PF 의존성 확인 (RangeLib C++ headers)"
 fi
 
 # ── colcon build (순서 보장 · --base-paths src · 빌드 후 source) ─────

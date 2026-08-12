@@ -72,16 +72,21 @@
     #    servo_max instead of steering -- the car understeers exactly when it is
     #    asking for maximum steering. Watch for it at the hairpin.
     port: /dev/ttyACM0
+    # Physical frame used by the AHRS quaternion. bringup_launch.py publishes
+    # base_link -> this frame from sensors.yaml.
+    imu_frame_id: vesc_imu
     # NOTE: duty_cycle_* only clips the "commands/motor/duty_cycle" topic in
     # vesc_driver. Nothing in this stack publishes there -- ackermann_to_vesc
     # emits commands/motor/{speed,current,brake} and commands/servo/position --
-    # so these two are inert today. If a duty-cycle publisher is ever added,
-    # note that min (0.05) > max (0.0) makes CommandLimit::clip collapse every
-    # command to one of those two bounds; fix the pair before using it.
+    # so these two are inert today. min was 0.05 until the localization_upgrade
+    # merge (2026-08-11); paired with max 0.0 that inversion would have made
+    # CommandLimit::clip collapse every command onto one of the two bounds. The
+    # pair is now 0.0/0.0, so a future duty-cycle publisher gets clamped to zero
+    # instead -- still wrong, but no longer inverted. Widen it before using it.
     # (Soft-starting the sensorless motor is NOT done here: throttle_interpolator
     #  is commented out in bringup_launch.py, so max_acceleration below is dead
     #  too. The live ramp is control_node's launch envelope.)
-    duty_cycle_min: 0.05
+    duty_cycle_min: 0.0
     duty_cycle_max: 0.0
     current_min: 0.0
     current_max: 100.0

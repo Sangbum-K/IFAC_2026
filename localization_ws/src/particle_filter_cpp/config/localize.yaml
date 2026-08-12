@@ -1,0 +1,167 @@
+particle_filter:
+  ros__parameters:
+    # topic names for the real car stack
+    scan_topic: '/scan'
+    odometry_topic: '/odom'
+    imu_topic: '/sensors/imu/raw'
+    map_frame: 'map'
+    odom_frame: 'odom'
+    base_frame: 'base_link'
+    laser_frame: 'laser'
+    # 1081-beam LiDAR: 2000 particles x 73 beams = 146k raycasts/update.
+    # The previous 3000 x 109 setup required 327k raycasts/update.
+    angle_step: 15
+    max_particles: 2000
+    squash_factor: 2.2
+    # visualization
+    viz: 1
+    max_viz_particles: 60
+    # ray marching method
+    range_method: 'glt'
+    theta_discretization: 112
+    # range data filtering
+    max_range: 10
+    fine_timing: 0
+    publish_odom: 1
+    # sensor model constants
+    z_short: 0.01
+    z_max: 0.07
+    z_rand: 0.12
+    z_hit: 0.75
+    sigma_hit: 4.0
+    # motion model dispersion constants
+    motion_dispersion_x: 0.05
+    motion_dispersion_y: 0.025
+    motion_dispersion_theta: 0.08
+    # Timestamp synchronization for the Jetson Orin Nano. The PF worker is
+    # capped at 15 Hz while /pf/pose/odom is propagated at the odom input rate.
+    odom_buffer_size: 150
+    imu_buffer_size: 150
+    odom_sync_wait_sec: 0.04
+    imu_sync_wait_sec: 0.02
+    max_odom_interp_gap_sec: 0.06
+    max_imu_interp_gap_sec: 0.06
+    max_pending_scan_age_sec: 0.10
+    max_update_rate_hz: 15.0
+    sync_diagnostics_period_sec: 1.0
+    # Stop publishing fresh-looking poses if LiDAR correction has actually
+    # stalled; downstream odom timeouts then trigger the race safety stop.
+    max_localization_update_age_sec: 0.50
+    # Scale process noise with scan-to-scan motion. At zero action only 8% of
+    # the old fixed noise is injected, avoiding artificial stopped-pose shake.
+    motion_noise_min_scale: 0.08
+    motion_noise_reference_translation_m: 0.25
+    motion_noise_reference_yaw_rad: 0.15
+    # Resample only after the posterior degenerates below 50% effective
+    # particles. Systematic resampling is O(N) and lower variance than choice.
+    resample_ess_ratio: 0.50
+    # Ignore beams likely caused by moving obstacles. If more than half of a
+    # scan disagrees, restore every beam because the PF itself may be lost.
+    beam_skip_enabled: true
+    beam_skip_distance_m: 0.20
+    beam_skip_min_particle_fraction: 0.30
+    beam_skip_max_fraction: 0.50
+    # Only unexpected short returns can be moving obstacles. Keeping long
+    # mismatches prevents map/extrinsic errors from being hidden from MCL.
+    beam_skip_short_only: true
+    # Scan-map health hysteresis. quality_gate_enabled controls PF pose output;
+    # the separate autonomy readiness below is always fail-closed at startup.
+    quality_ok_inlier_fraction: 0.70
+    quality_lost_inlier_fraction: 0.40
+    quality_bad_updates_to_lost: 3
+    quality_good_updates_to_recover: 5
+    quality_gate_enabled: false
+    # Latched status + per-processed-scan heartbeat. Readiness requires an
+    # accepted /initialpose and the five consecutive quality-OK updates above.
+    localization_ready_topic: /pf/localization_ready
+    localization_quality_topic: /pf/localization_quality
+    initialpose_received_topic: /pf/initialpose_received
+    initialpose_accepted_topic: /pf/initialpose_accepted
+    # Freeze only when wheel odom, timestamp-integrated IMU, and scan-to-scan
+    # motion all agree that the car is stationary. VESC raw units are deg/s and
+    # g; these scales convert them to rad/s and m/s^2 inside the PF.
+    freeze_stationary_filter: true
+    # The production C++ path uses the raw scan timestamp. The earlier Python
+    # deskew path regressed the 0809 bag and is no longer part of the runtime.
+    deskew_enabled: false
+    deskew_max_scan_duration_sec: 0.05
+    deskew_slip_translation_scale: 0.0
+    imu_angular_velocity_scale: 0.017453292519943295
+    imu_linear_acceleration_scale: 9.80665
+    # Full IMU attitude + measured 6DoF base_link->laser TF reject continuous
+    # floor intersections before both scan ICP and MCL. Continuity is evaluated
+    # on all 1081 raw beams, then projected onto the fixed 73-ray RangeLib mask;
+    # raycast count and allocation therefore remain unchanged.
+    base_to_imu_rpy_deg: [0.0, 0.0, 0.0]
+    level_reference_samples: 20
+    level_reference_max_gyro_rad_s: 0.12
+    level_reference_accel_tolerance_mps2: 2.5
+    # The IMU ground filter also regressed 0809 and required unmeasured
+    # extrinsics, so the C++ production profile keeps it disabled.
+    ground_filter_enabled: false
+    ground_z_m: 0.0
+    ground_range_tolerance_m: 0.08
+    ground_range_tolerance_ratio: 0.04
+    ground_endpoint_z_tolerance_m: 0.05
+    ground_min_component_beams: 6
+    ground_min_component_angle_deg: 4.0
+    ground_min_component_span_m: 0.30
+    max_planar_elevation_deg: 4.0
+    degraded_offplane_fraction: 0.55
+    degraded_ground_fraction: 0.70
+    # VESC AHRS roll/pitch is acceleration-sensitive. Above this tilt, require
+    # a long expected-ground component or very few valid returns; otherwise
+    # fall back to the measured static LiDAR extrinsic for this scan.
+    attitude_fallback_tilt_deg: 4.0
+    attitude_ground_evidence_fraction: 0.05
+    attitude_ground_evidence_min_beams: 6
+    # Side walls can have the same sec(angle) curve as a floor intersection.
+    # Use the front sector to validate AHRS tilt, then mask the complete scan.
+    attitude_evidence_max_abs_angle_deg: 80.0
+    degraded_valid_fraction: 0.25
+    ground_min_retained_beams: 20
+    stationary_imu_yaw_rate_rad_s: 0.06
+    stationary_imu_horizontal_accel_mps2: 1.60
+    stationary_scan_translation_m: 0.04
+    stationary_scan_yaw_rad: 0.04
+    # Robust scan-to-scan ICP runs on the existing 73 downsampled beams. It is
+    # used as independent motion evidence, not as a second PF correction.
+    scan_match_max_correspondence_m: 0.40
+    scan_match_trim_fraction: 0.90
+    scan_match_iterations: 4
+    scan_match_min_points: 12
+    scan_match_min_inlier_fraction: 0.55
+    scan_match_max_rmse_m: 0.15
+    # Persistent wheel/IMU/scan innovation declares slip. While active, hold is
+    # disabled and process noise is expanded so LiDAR can recover the cloud.
+    slip_translation_innovation_m: 0.15
+    slip_yaw_innovation_rad: 0.15
+    slip_enter_score: 1.0
+    # A >=30 cm or >=17 deg innovation enters immediately rather than waiting
+    # for the normal two-update hysteresis.
+    slip_immediate_score: 2.0
+    slip_recover_score: 0.50
+    slip_enter_updates: 2
+    slip_recover_updates: 5
+    slip_motion_noise_multiplier: 2.5
+    # Reject scan updates that would snap the filter too far from its
+    # odom-propagated prediction in a single frame.
+    pose_jump_guard_enabled: true
+    max_pose_jump_translation_m: 0.30
+    max_pose_jump_yaw_rad: 0.35
+    # Slip can bypass the normal guard only when scan-map support is strong and
+    # the correction remains inside this absolute safety envelope.
+    slip_jump_bypass_min_scan_fit: 0.75
+    slip_jump_bypass_max_translation_m: 0.80
+    slip_jump_bypass_max_yaw_rad: 0.80
+    # 가드가 영구 거부권이 되지 않도록: 연속 거부가 이 횟수에 닿으면 보정을
+    # 한 번 받아들여 재동기화한다. 0 = 비활성(구 동작 = 영구 차단 위험).
+    # PF ~15Hz -> 10회는 약 0.7초. 그 안에 못 붙으면 예측이 틀린 것이다.
+    max_consecutive_jump_rejects: 10
+    # Native C++ GiantLUT repeat-angle raycasting.
+    rangelib_variant: 0
+
+map_server:
+  ros__parameters:
+    # assuming map file is in particle_filter_cpp/maps
+    map: 'my_track0807'

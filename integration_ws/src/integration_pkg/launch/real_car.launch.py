@@ -3,8 +3,8 @@
   ros2 launch integration_pkg real_car.launch.py
 
 기존에 터미널 3개로 나눠 하던 A/B/C를 하나로 합친 것이다. 사람이 할 일은
-RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, 파티클이
-수렴하면 자율 스택이 알아서 뜬다.
+RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, PF가
+/initialpose 적용과 연속 scan-map quality OK를 확인하면 자율 스택이 뜬다.
 
   A) f1tenth_stack bringup_launch.py       (LiDAR, VESC, joy, mux, TF)
   B) localization_bringup localization.launch.py backend:=particle_filter
@@ -12,7 +12,7 @@ RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, �
   M) monitor_pkg monitor.launch.py env:=real_car
      초기 위치 지정 + 주행 모니터를 겸하는 RViz 창 하나. B와 같이 뜬다.
      (pf.rviz는 안 띄운다 — monitor.rviz에 파티클/InferredPose를 병합해 뒀다)
-  G) wait_for_localization                  — 파티클 수렴까지 대기하는 게이트
+  G) wait_for_localization                  — initialpose + quality OK 시작 게이트
   C) integration_pkg stack.launch.py env:=real_car   — G가 통과하면 자동 실행
 
 맵을 바꾸려면 (PF 맵 + planner CSV 3종이 한 번에 따라간다):
@@ -28,14 +28,14 @@ RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, �
   hardware:=false      이미 A가 떠 있을 때
   localization:=false  이미 B가 떠 있을 때
   rviz:=false          화면 없이
-  autostart:=false     C를 자동으로 안 띄우고, 수렴만 확인하고 끝
-  wait_timeout:=120.0  이 시간(초) 안에 수렴 못 하면 C를 띄우지 않음 (0=무한대기)
+  autostart:=false     C를 자동으로 안 띄우고, readiness만 확인하고 끝
+  wait_timeout:=120.0  이 시간(초) 안에 ready가 안 되면 C를 띄우지 않음 (0=무한대기)
 
 전제 source: ros humble -> planning_ws -> perception_ws -> control_ws
   -> integration_ws -> hardware_ws -> localization_ws  (sim_ws는 source 금지)
 """
 
-from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -58,6 +58,10 @@ from launch_ros.actions import Node
 # 두 launch 는 서로 다른 워크스페이스라 import 할 수 없어 사본으로 둔다.
 # test/test_line_variant_routing.py 가 두 사본의 동기화를 강제한다.
 LINE_VARIANTS = ('tuned',)
+PF_AB_PROFILES = (
+    'variant0_no_ground_no_deskew',
+    'variant0_no_ground_no_deskew_no_icp',
+)
 
 
 def split_line_variant(name):
@@ -89,6 +93,11 @@ def launch_setup(context, *args, **kwargs):
     rviz = LaunchConfiguration('rviz').perform(context)
     autostart = _is_true(LaunchConfiguration('autostart').perform(context))
     wait_timeout = LaunchConfiguration('wait_timeout').perform(context)
+    pf_profile = LaunchConfiguration('pf_profile').perform(context)
+    if pf_profile not in PF_AB_PROFILES:
+        raise RuntimeError(
+            '알 수 없는 pf_profile:=%r. 사용 가능: %s'
+            % (pf_profile, ', '.join(PF_AB_PROFILES)))
     # 빈 값이면 각 하위 launch의 기존 기본값(localize.yaml / params.yaml)을 쓴다.
     map_name = LaunchConfiguration('map').perform(context)
     # map:=<맵>_tuned 는 '다른 맵'이 아니라 '같은 맵의 사람 튜닝 라인'이다.
@@ -98,6 +107,9 @@ def launch_setup(context, *args, **kwargs):
     map_base, line_variant = split_line_variant(map_name)
 
     actions = []
+
+    actions.append(LogInfo(msg=(
+        '[real_car] C++ PF profile=%s' % pf_profile)))
 
     if line_variant:
         actions.append(LogInfo(msg=(
@@ -116,8 +128,8 @@ def launch_setup(context, *args, **kwargs):
         ))
 
     if localization:
-        # /scan·/odom이 먼저 흐르게 잠깐 두고 PF를 띄운다. PF는 시작 직후
-        # laser->base_link TF를 조회하는데, 그게 없으면 초기 포즈 클릭이 무시된다.
+        # /scan·/odom이 먼저 흐르게 잠깐 두고 PF를 띄운다. RViz 초기 포즈는
+        # transient-local로 보존되고 PF도 TF가 준비될 때까지 최신 pose를 재시도한다.
         # RViz는 localization 쪽(pf.rviz)이 아니라 monitor_pkg가 띄운다 — 초기
         # 위치 지정과 주행 모니터를 한 창에서 하려고 monitor.rviz에 PF 파티클
         # 디스플레이를 병합해 뒀다. 여기서 rviz:=false로 pf.rviz를 막지 않으면
@@ -127,6 +139,7 @@ def launch_setup(context, *args, **kwargs):
             'mode': 'localization',
             'use_sim_time': 'false',
             'rviz': 'false',
+            'pf_profile': pf_profile,
         }
         if map_base:
             loc_args['map'] = map_base
@@ -186,7 +199,7 @@ def launch_setup(context, *args, **kwargs):
 
     def on_gate_exit(event, _context):
         if event.returncode != 0:
-            return [LogInfo(msg='localization 수렴 실패 — 자율 스택을 시작하지 '
+            return [LogInfo(msg='localization readiness 실패 — 자율 스택을 시작하지 '
                                 '않습니다. 위 로그를 확인하세요.')]
         return [
             LogInfo(msg='[3/3] 자율 스택 시작 (perception + planning + control)...'),
@@ -223,8 +236,12 @@ def generate_launch_description():
         DeclareLaunchArgument('wait_timeout', default_value='0.0',
                               description='수렴 대기 제한시간(초). 0이면 무한 대기'),
         DeclareLaunchArgument('map', default_value='',
-                              description='맵 이름. PF 맵(particle_filter/maps/<이름>.yaml)과 '
+                              description='맵 이름. PF 맵(particle_filter_cpp/maps/<이름>.yaml)과 '
                                           'planner CSV 3종을 한 번에 전환한다. '
                                           '빈 값이면 localize.yaml / params.yaml 기본값 유지'),
+        DeclareLaunchArgument(
+            'pf_profile',
+            default_value='variant0_no_ground_no_deskew',
+            description='C++ PF 프로파일'),
         OpaqueFunction(function=launch_setup),
     ])

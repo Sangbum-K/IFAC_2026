@@ -264,9 +264,9 @@ def launch_setup(context, *args, **kwargs):
     #                          (레이스라인 생성에 쓰는 MU_PROFILE 0.80은 계획용
     #                           derate라 다른 값 — 그건 CSV에 이미 반영돼 있다)
     #   a_max 9.51   -> 4.5   : deployment_profiles.A_ACC_MAX
-    #   s_max 0.4189 -> 0.3578 : deployment_profiles.MAX_STEER
-    #                          (c0aceaf 조향 재적합. gain -0.8564 대칭 한계 자체,
-    #                           TUNING_STATUS.md §4)
+    #   s_max 0.4189 -> 0.3578: deployment_profiles.MAX_STEER
+    #                          (2026-08-11 gain -0.8564/offset 0.3935 에서 우측
+    #                           servo 포화 한계 20.51deg 자체, TUNING_STATUS.md §1)
     #   v_max 20.0   -> 7.0   : deployment_profiles.RACELINE_V_MAX
     #                          (vesc.yaml speed_max 32000 / gain 4255.1 = 7.52 이
     #                           하드웨어 천장이라 7.0이 그 아래로 들어간다)
@@ -285,8 +285,8 @@ def launch_setup(context, *args, **kwargs):
     #    옛 값으로 남아 있었다 — 실차가 달리는 my_track0809/0810 레이스라인은
     #    새 상수(A_ACC 4.5 / A_DEC_PLANNED 2.38 / MU_PROFILE 0.80)로 생성돼 있어
     #    gym 차량이 계획된 가속을 못 내고 코너에서 먼저 미끄러졌다.)
-    #   (2026-08-11 동기화: s_max/s_min 0.36 -> 0.3578. c0aceaf 조향 재적합이
-    #    deployment_profiles.MAX_STEER 를 옮겼는데 여기만 안 따라가 test_sim_gym_
+    #   (2026-08-11 동기화: s_max/s_min 0.36 -> 0.3578. gain 재적합(-0.8564)으로
+    #    대칭 조향 한계가 0.357894 rad 로 내려갔는데 여기만 안 따라가 test_sim_gym_
     #    vehicle_matches_measured_plant 가 레드였다 — sim 이 실차보다 0.6% 더
     #    꺾을 수 있다고 믿은 채였다.)
     # ⚠️ gym의 accl_constraints는 가감속이 대칭(-a_max)이라 A_DEC_PLANNED 2.38을
@@ -450,7 +450,7 @@ def launch_setup(context, *args, **kwargs):
     # --- pf:=true 전용 노드 2개 ---
     pf_nodes = []
     if use_pf:
-        pf_share = get_package_share_directory('particle_filter')
+        pf_share = get_package_share_directory('particle_filter_cpp')
         pf_config = os.path.join(pf_share, 'config', 'localize_sim.yaml')
         if not os.path.isfile(pf_config):
             raise RuntimeError(
@@ -472,13 +472,17 @@ def launch_setup(context, *args, **kwargs):
                 output='screen',
             ),
             Node(
-                package='particle_filter',
-                executable='particle_filter',
+                package='particle_filter_cpp',
+                executable='particle_filter_cpp_node',
+                # 노드 이름은 'particle_filter' 그대로 — localize_sim.yaml 의
+                # ros__parameters 키가 이 이름에 걸려 있고, C++ 판도 실차
+                # localize_launch.py 에서 같은 이름으로 뜬다.
                 name='particle_filter',
                 parameters=[pf_config],
                 # ⚠️ /clicked_point 충돌 회피 (sim 전용 리맵).
-                # particle_filter.clicked_pose()는 PointStamped를 받으면
-                # initialize_global() — 즉 파티클을 맵 전체에 다시 뿌린다.
+                # PF는 이 토픽으로 PointStamped를 받으면 initialize_global()
+                # — 즉 파티클을 맵 전체에 다시 뿌린다 (C++ 판도 동일:
+                # particle_filter_node.cpp 의 /clicked_point 구독).
                 # 그런데 sim에서는 virtual_obstacle_node가 **같은 토픽**으로
                 # 가상 장애물을 스폰한다(RViz "Publish Point"). 그대로 두면
                 # 회피를 시험하려고 장애물을 찍는 순간 위치추정이 날아간다
@@ -552,7 +556,7 @@ def generate_launch_description():
                                           '빈 값이면 params.yaml 기본값만 사용.'),
         DeclareLaunchArgument('vehicle', default_value='gym_default',
                               description='gym 차량 물리 프로파일: gym_default | real_car. '
-                                          'real_car는 mu 0.75 / a_max 3.5 / s_max 0.36 / '
+                                          'real_car는 mu 0.90 / a_max 4.5 / s_max 0.3578 / '
                                           'v_max 7.0 등 실측값을 넣어 고속 슬립까지 '
                                           '실차에 맞춘다.'),
         DeclareLaunchArgument('map_filter', default_value='',
