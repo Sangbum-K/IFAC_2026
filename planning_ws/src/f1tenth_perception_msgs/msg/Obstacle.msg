@@ -1,5 +1,10 @@
 int32 id                          # 트랙 ID (프레임 간 동일 물체 유지)
-geometry_msgs/Point position       # x, y (laser/base_link frame 기준)
+# ⚠️ 2026-08-12 정정: 이 주석은 "laser/base_link frame 기준"이었으나 발행값은
+# 실제로 **target_frame(= 보통 map)** 이다. obstacle_detector_node 가 ①.5 에서
+# laser -> target_frame 변환을 마친 뒤 트래킹하기 때문이다. rosbag_0812_013630
+# 으로 세 가설을 대조해 확정했다 — 검출 중심에서 최근접 스캔점까지의 거리가
+# map 0.027 m / laser 0.522 m / base_link 0.546 m (p50, n=1056).
+geometry_msgs/Point position       # x, y [m] (target_frame = map)
 geometry_msgs/Vector3 velocity     # vx, vy [m/s]
 bool is_dynamic                    # true: 동적 장애물, false: 정적 장애물
 float32 confidence                 # 분류 확신도 (0.0 ~ 1.0)

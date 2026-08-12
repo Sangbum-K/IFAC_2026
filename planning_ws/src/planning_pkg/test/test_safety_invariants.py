@@ -440,3 +440,47 @@ def test_sim_profiles_mirror_real_car():
             + ", ".join(
                 f"{key} (real={real.get(key, '<absent>')!r}, "
                 f"sim={sim.get(key, '<absent>')!r})" for key in drifted))
+
+
+def test_static_cylinder_model_cannot_understate_extent():
+    """정적 장애물 고정 원통이 extent 를 예측 불가능하게 줄이지 않는지.
+
+    브릿지는 대역 안에서만 radius 를 고정한다. 그래서 **실제로 잃는 extent 의
+    상한 = 대역 상한 - 고정값** 이고, 이 값이 회피 판정 마진(실측 6 cm)을
+    크게 넘으면 "판정을 여는 방향"으로 밀린다. 근거는 rosbag run_0812_013630
+    실측 — perception_obstacle_bridge_node.py 선언부 주석 참조.
+    """
+    for env_name in ("real_car", "sim_real_car", "sim"):
+        # 벽 판정선은 base params.yaml 이 0.0(비활성)이고 env 에서 켜진다.
+        perception = _ros_params(
+            _yaml(WORKSPACE / "perception_ws" / "src" / "perception_pkg" /
+                  "config" / "environments" / f"{env_name}.yaml"),
+            "obstacle_detector_node",
+        )
+        env = _ros_params(
+            _yaml(PKG / "config" / "environments" / f"{env_name}.yaml"),
+            "perception_obstacle_bridge_node",
+        )
+        radius = env["bridge/static_cylinder_radius_m"]
+        lo, hi = env["bridge/static_cylinder_band_m"]
+        open_space = env["bridge/static_cylinder_open_space_m"]
+
+        assert 0.0 < lo < hi, f"{env_name}: 대역이 뒤집혔다"
+        assert lo <= radius <= hi, (
+            f"{env_name}: 고정값이 대역 밖이면 적용 여부가 값 자체와 모순된다")
+        # 최대 피해량. 0.15 여유는 차 반폭이고, 그 이상을 잃으면 벽까지의
+        # 가짜 통로가 차폭에 근접한다.
+        assert hi - radius <= 0.15, (
+            f"{env_name}: 최대 extent 손실 {hi - radius:.3f}m 가 너무 크다")
+        # detector 가 벽으로 거르는 크기를 넘어서까지 "콘"이라고 우기면 안 된다.
+        max_cluster = perception["max_cluster_radius_m"]
+        assert hi <= max_cluster, (
+            f"{env_name}: 대역 상한 {hi} > detector 벽 판정선 {max_cluster}")
+        # 벽 근처 클러스터는 벽 점에 오염돼 extent 가 실제로 커진다(실측
+        # 중심 0~0.30 m 에서 radius p50 0.20, 그 바깥은 0.13).
+        # 이 조건은 **중심 기준**이므로, 오염 경계를 덮으려면 고정 반지름
+        # 이상이어야 한다 — 중심이 radius 만큼만 떨어져 있으면 표면이 벽에
+        # 닿아 클러스터가 붙는다.
+        assert open_space >= radius, (
+            f"{env_name}: open_space {open_space} 가 고정 반지름 {radius} 미만 "
+            "— 표면이 벽에 닿는 클러스터까지 고정하게 된다")

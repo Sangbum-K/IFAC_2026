@@ -137,6 +137,22 @@ perception_obstacle_bridge_node:
     #    (perception real_car.yaml max_view_ahead_m 주석의 s19.4~20.2 참조)라
     #    맵을 다시 뜬 뒤 재평가할 것.
     bridge/wall_dist_min_m: 0.30
+    # 정적 장애물 고정 원통 (근거 주석은 perception_obstacle_bridge_node.py
+    # 선언부). detector radius 가 매 프레임 재측정되어 같은 콘의 트랙 내
+    # 변동폭이 p50 0.14 m 이고, 그게 obs.d_left/d_right 를 ±0.07 m 흔든다 —
+    # 회피 레인 개폐 마진(6 cm)보다 크다. run_0812_013630 실측.
+    # ⚠️ radius 는 대회 기준(최대 지름 30 cm)이다. 더 큰 콘으로 테스트하는
+    #    동안에는 그 콘 값으로 올릴 것 — 안 그러면 매 프레임 작게 본다.
+    bridge/static_cylinder_radius_m: 0.15
+    # 상한 = 최대 피해량의 상한 (0.25 - 0.15 = 0.10 m). 0.22 이하로 내리면
+    # 흔들림을 만드는 소수 프레임이 대역 밖으로 빠져 이득이 0 이 된다.
+    bridge/static_cylinder_band_m: [0.05, 0.25]
+    # 장애물 **중심**이 벽에서 이만큼 떨어져야 고정한다. 벽 근처는 클러스터가
+    # 벽 점을 물어 extent 가 실제로 커진다 — 중심 0~0.30 m 에서만 radius p50 이
+    # 0.20 으로 뜨고, 0.30~0.50 m 는 0.13 으로 오히려 가장 깨끗하다.
+    # 가장자리 기준(wd - raw_half)으로 두면 사실상 0.48 을 요구해 그 깨끗한
+    # 구간을 버린다 — 적용률 34% vs 69%, 위험은 동일. 근거는 브릿지 선언부.
+    bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
 

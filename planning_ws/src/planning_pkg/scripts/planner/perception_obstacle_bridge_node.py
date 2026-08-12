@@ -86,6 +86,48 @@ class PerceptionObstacleBridgeNode(Node):
         # 많이 막았다 (rosbag_0811 분석). 존재 불확실성은 min_confidence 와
         # is_visible 이 담당하고, 여기서는 위치 불확실성만 유한하게 둔다.
         self.declare_parameter('bridge/confidence_var_inflation_max_m', 0.10)
+        # ── 정적 장애물 고정 원통 모델 ────────────────────────────────────
+        # detector 의 radius 는 "중심에서 가장 먼 점까지"라 **매 프레임 다시**
+        # 측정된다. LiDAR 는 앞쪽 호만 보므로 거리·각도·빔 개수에 따라 값이
+        # 흔들린다 — 실차 run_0812_013630 실측(정적·is_visible 트랙 36개 /
+        # 894프레임)에서 **같은 콘의 트랙 내 변동폭이 p50 0.14 m** (p90 0.19,
+        # max 0.21) 였다. 그런데 아래에서 obs.d_left/d_right = d ± half 이므로
+        # **장애물 가장자리가 프레임마다 ±0.07 m 움직인다.**
+        # 회피 레인 개폐를 결정한 마진이 6 cm 였다(우측 d_hold -0.40 vs 필요
+        # -0.46) — 판정 노이즈가 판정 마진보다 컸다.
+        #
+        # 크기를 매번 재지 않고 알려진 원통으로 고정한다. 세 조건을 모두
+        # 만족할 때만 적용하고, 하나라도 어긋나면 측정값을 그대로 둔다.
+        #   ① is_static      — 동적 상대는 크기가 실제로 다르다
+        #   ② band 안        — 밖은 콘이라고 믿을 근거가 없다
+        #   ③ 벽에서 떨어짐  — 아래 open_space 주석
+        #
+        # ⚠️ radius 는 **실제로 트랙에 놓는 물체**에 맞춰야 한다. 0.15 는
+        #    대회 기준(최대 지름 30 cm)이다. 그보다 큰 콘으로 테스트하는
+        #    동안에는 이 값을 그 콘에 맞게 올릴 것 — 큰 물체를 0.15 로
+        #    퉁치면 매 프레임 그 차이만큼 **작게** 본다.
+        self.declare_parameter('bridge/static_cylinder_radius_m', 0.15)
+        # 적용 대역 [m]. 상한이 곧 **최대 피해량의 상한**이다:
+        #   실제로 잃는 extent <= (상한 - radius) = 0.25 - 0.15 = 0.10 m
+        # 상한 근거(같은 백): 콘 프레임의 97% 가 0.25 이하. 0.22 이하로
+        # 낮추면 크게 측정된 소수 프레임이 대역 밖으로 빠지는데, 가장자리
+        # 흔들림을 만드는 게 바로 그 프레임들이라 **이득이 0 이 된다**
+        # (트랙 내 변동폭 중앙값: 상한 0.18/0.20/0.22 모두 0.084 m 그대로,
+        #  0.25 에서 0.000 m). 0.25~0.35 구간(전체의 3%)은 애매하므로 원시값
+        # 유지. 0.35 초과는 detector 가 이미 벽으로 거른다
+        # (obstacle_detector_node max_cluster_radius_m).
+        self.declare_parameter('bridge/static_cylinder_band_m', [0.05, 0.25])
+        # 장애물 **중심**이 벽에서 이만큼 떨어져 있을 때만 고정한다.
+        # 벽에 붙으면 클러스터가 벽 점을 같이 물어 extent 가 실제로 커진다 —
+        # 같은 백에서 벽거리 0~0.30 m 구간의 radius p50 이 0.20 으로, 그 바깥
+        # (0.30~0.50 m)의 0.13 보다 크다. 거기서 0.15 로 줄이면 **회랑이 가장
+        # 좁은 곳에서 판정을 여는 방향으로** 최대 0.10 m 밀린다. 차폭짜리
+        # 가짜 통로가 생기진 않았지만(874프레임 중 0건) 레인 판정을 뒤집기엔
+        # 충분하다(실측 레인 개폐 마진 6 cm).
+        # 0.30 근거: 오염이 관측되는 경계가 정확히 여기다. 그리고 중심 0.30 은
+        # 표면이 벽에서 0.15 m 떨어졌다는 뜻이라 클러스터가 안 붙는다.
+        # 적용률 69%(733/1056) — 이 조건을 아예 빼도 80% 라 손실이 작다.
+        self.declare_parameter('bridge/static_cylinder_open_space_m', 0.30)
         self.declare_parameter('bridge/velocity_var_floor', 0.25)
         # 속도를 아직 유한차분으로 못 잰 첫 프레임의 속도 표준편차 prior [m/s].
         # max_abs_v(클립 한계)를 분산으로 쓰던 것을 대체한다 — 근거는 아래
@@ -125,6 +167,11 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/position_var_floor').value)
         self.conf_inflation_max = float(
             p('bridge/confidence_var_inflation_max_m').value)
+        self.cyl_radius = float(p('bridge/static_cylinder_radius_m').value)
+        _band = [float(v) for v in p('bridge/static_cylinder_band_m').value]
+        self.cyl_lo, self.cyl_hi = (_band + [0.0, 0.0])[:2]
+        self.cyl_open_space = float(
+            p('bridge/static_cylinder_open_space_m').value)
         self.velocity_var_floor = float(
             p('bridge/velocity_var_floor').value)
         self.init_vel_std = float(p('bridge/init_vel_std_mps').value)
@@ -164,6 +211,11 @@ class PerceptionObstacleBridgeNode(Node):
                 or not 0.1 <= self.max_abs_vs <= 50.0
                 or not 0.1 <= self.max_abs_vd <= 20.0
                 or not 1e-6 <= self.position_var_floor <= 100.0
+                # 대역이 뒤집히거나 radius 가 대역 밖이면 "고정"이 오히려
+                # extent 를 키우거나 줄이는 방향을 예측할 수 없게 된다.
+                or not 0.0 < self.cyl_lo < self.cyl_hi <= 1.0
+                or not self.cyl_lo <= self.cyl_radius <= self.cyl_hi
+                or not 0.0 <= self.cyl_open_space <= 2.0
                 or not 1e-6 <= self.velocity_var_floor <= 2500.0
                 or not 0.0 <= self.init_vel_std <= 50.0
                 or not 0.1 <= self.forget_sec <= 10.0
@@ -552,12 +604,34 @@ class PerceptionObstacleBridgeNode(Node):
                     f'large obstacle extent preserved: id={src.id}, '
                     f'radius={raw_half:.2f}m',
                     throttle_duration_sec=2.0)
+            # 고정 원통 모델 (선언부 주석의 세 조건).
+            # 벽거리는 **중심 기준**이다. 가장자리 기준(wd - raw_half)으로 두면
+            # 사실상 wd > 0.30 + raw_half ~= 0.48 을 요구하게 되어, 실측상 가장
+            # 깨끗한 구간(벽거리 0.30~0.50 m, 457프레임, radius p50 0.13 —
+            # 가정값 0.15 와 거의 일치)이 통째로 빠진다. 오염이 실제로 관측되는
+            # 건 중심이 0.30 m 안쪽일 때뿐이다(거기서만 radius p50 이 0.20 으로
+            # 뜬다). 물리적으로도 같은 결론이다 — 중심 0.30 이면 표면이 벽에서
+            # 0.15 m 떨어져 있어 클러스터가 벽 점까지 물지 못한다.
+            # 실측 A/B(run_0812_013630, 36트랙): 가장자리 기준은 적용률 34% /
+            # 변동폭 0.140->0.107 m, 중심 기준은 69% / 0.140->0.084 m 이고
+            # 적용당 위험 비율(11% vs 13%)과 최대 손실(0.098 vs 0.099 m)은
+            # 사실상 같다 — 가장자리 기준은 더 안전한 게 아니라 덜 할 뿐이다.
+            #
+            # 맵 미수신(wall_distance None)이면 적용하지 않는다: 벽 근처인지
+            # 모르는 채 extent 를 줄이는 것이 이 변경의 유일한 위험 방향이다.
+            if src.is_static and self.cyl_lo <= raw_half <= self.cyl_hi:
+                wd = self.wall_distance(x, y)
+                if wd is not None and wd > self.cyl_open_space:
+                    half = self.cyl_radius
 
             # centroid가 아니라 obstacle footprint와 drivable corridor의 overlap을
             # 본다. 벽 가까운 실제 물체가 차로로 돌출하면 삭제하면 안 된다.
+            # ⚠️ 여기는 **raw_half** 를 쓴다 (고정 전 값). 삭제 판정이라
+            # extent 를 줄이면 "살짝 걸친 진짜 물체"를 지우는 쪽으로 움직인다 —
+            # 고정 원통은 보고값에만 적용하고 존재 판정은 원시 extent 로 둔다.
             corridor_lo = -d_right_bound + self.wall_margin
             corridor_hi = d_left_bound - self.wall_margin
-            if d - half > corridor_hi or d + half < corridor_lo:
+            if d - raw_half > corridor_hi or d + raw_half < corridor_lo:
                 continue
 
             # 맵 벽거리 필터: frenet d는 코너에서 실제 벽거리와 어긋나
