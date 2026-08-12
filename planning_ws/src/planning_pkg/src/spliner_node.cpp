@@ -1093,11 +1093,28 @@ void SplinerNode::Run() {
             // (control_node.cpp:1057) 코스아웃의 직접 원인이 됐다.
             if (!evasion_valid) {
                 // 정지가 정당한 경우:
-                //  - 정적: Tier1/2가 조향 기하 하한 초과로 거부했을 때만
-                //  - 동적: 트레일링은 원래 "따라가기"이므로 그대로 (v_target=상대속도)
+                //  - 동적: 트레일링은 원래 "따라가기"이므로 그대로 (v_target=상대속도).
+                //    여기를 빼면 정지한 상대 뒤에서 trailing_retry_speed(1.5)를
+                //    바닥으로 깔고 들이받는다 — 반드시 남긴다.
+                //  - 정적: **더 이상 정지 사유가 아니다.**
+                //
+                // 2026-08-13: geom_blocked 를 정지 사유에서 뺀다. 옛 근거는
+                // "조향 기하 하한 초과 = 어떤 속도로도 불가 = 서라" 였는데,
+                // 그건 트레일링이 d 를 raceline 으로 되돌릴 때만 성립했다.
+                // 이제 트레일링이 회피 목표를 유지하며 매 사이클 d 를 목표
+                // 쪽으로 옮기므로(BuildTrailing 의 retry_d_target_ / d_profile),
+                // 남은 진폭이 줄고 필요 진입거리도 같이 준다 — 기하 불가는
+                // **영구 조건이 아니라 일시 조건**이 됐다. 정지시키면 그
+                // 수렴을 스스로 끊고, 실측상 과도한 감속으로 나타났다.
+                // 정적 장애물에서는 이제 trailing_retry_speed 감속만 걸고
+                // 횡이동이 끝나는 대로 raceline 으로 복귀한다.
+                //
+                // ⚠️ 트레이드: 정적에 대해 "완전 정지" 경로가 사라진다.
+                // 횡이동이 끝나기 전에 장애물에 도달하면 1.5 m/s 로 접촉한다.
+                // 남는 방어선은 컨트롤러 백스톱과 recovery_supervisor 뿐이다.
                 const bool geom_blocked = lane_switch_geom_infeasible_ ||
                                           free_spline_geom_infeasible_;
-                const bool allow_stop = geom_blocked || !closest.is_static;
+                const bool allow_stop = !closest.is_static;
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks,
@@ -1105,8 +1122,10 @@ void SplinerNode::Run() {
                 used_trailing = evasion_valid;
                 if (used_trailing && closest.is_static &&
                     !static_stop_active_) {
+                    // 정적은 이제 어느 쪽이든 정지가 아니라 감속이다
+                    // (allow_stop = !is_static). 문구를 거동에 맞춘다.
                     pitwall::Event(geom_blocked
-                        ? "정적 장애물 정지 (회피 기하 불성립)"
+                        ? "정적 장애물 감속 (회피 기하 불성립 — 횡이동 유지)"
                         : "정적 장애물 감속 (회피 일시 실패 — 재시도)");
                 }
                 static_stop_now = used_trailing && closest.is_static;
@@ -1736,6 +1755,17 @@ bool SplinerNode::BuildLaneSwitch(
     //   이 기준으로는 가용 = 2.07 - 0.275 + 0.1 = 1.895 로 성립한다.
     //   (그 런은 아래 kappa 항 때문에 여전히 불가로 남는다 — 그게 옳다.)
     const double entry_avail = std::max(dist_front - vehicle_half_length_m_, 0.0);
+    // 진입 블렌드의 예산은 **한 곳에서만** 정의한다. 아래 두 소비처가
+    // 어긋나 있으면 안 된다:
+    //   (1) BlendSpeedCap 의 available — "이 거리 안에서 되는 속도"를 구한다.
+    //   (2) blend_in_cap — 실제로 블렌드에 허용하는 길이 상한.
+    // 예전에는 (1)만 + wpnt_dist_ 를 달고 (2)는 hold_start + hold_overrun_max
+    // (= entry_avail) 라서 정확히 wpnt_dist_ 만큼 (1) > (2) 였다. 캡이 물리는
+    // 순간 need_in = cap*sqrt(6A/a_lat) = (1) 이므로 need_in 은 (2)를 **정의상**
+    // 초과한다 → lane_blend_truncated 가 매 사이클 확정 발동하고, blend_in 이
+    // 설계 의도인 need_in*1.2 대신 need_in 아래로 눌려 기동 피크 횡가속이
+    // a_lat/1.44 대신 a_lat 를 그대로 먹는다(여유 20% -> 0%).
+    const double entry_budget = entry_avail + wpnt_dist_;
 
     // 진입/복귀 거리는 상수가 아니라 그립 예산으로 정한다. 상수(1.5m 하한 /
     // 2.5m 복귀)를 쓰면 횡가속이 v^2로 커져 6 m/s에서 1.5g를 요구한다.
@@ -1807,7 +1837,7 @@ bool SplinerNode::BuildLaneSwitch(
         //   m/s면 성립했다. 정지가 필요했던 건 0건이다.
         // 감속으로도 못 살리는 경우는 조향 기하 하한(속도 무관)을 못 채울
         // 때뿐이고, 그때만 false를 돌려 상위 정지 로직으로 넘긴다.
-        double available = entry_avail + wpnt_dist_;
+        double available = entry_budget;
         double cap = BlendSpeedCap(d_hold - cur_d_, available, a_lat, kappa_in,
                                    blend_s0);
         if (!(cap > 0.0) && relax_possible) {
@@ -1913,11 +1943,12 @@ bool SplinerNode::BuildLaneSwitch(
         // plan_speed_floor(1.5)로 되올리는 순간 need_in 이 가용을 넘기 때문에
         // 드문 경로도 아니다.
         // 이제 상한을 명시적으로 두고, 크리프 탈출일 때만 예외로 푼다.
-        const double hold_overrun_max =
-            std::max(0.5 - vehicle_half_length_m_, 0.0);
+        // 2026-08-13: 상한을 entry_budget 으로 통일한다. hold_start +
+        // hold_overrun_max 는 dist_front > 0.5 에서 정확히 entry_avail 과 같아
+        // 속도 캡 예산보다 wpnt_dist_ 만큼 작았다 (위 entry_budget 주석 참조).
         const double blend_in_cap = creep_relaxed
             ? std::max(hold_end, wpnt_dist_)
-            : std::min(hold_start + hold_overrun_max, blend_dist_max_m_);
+            : std::min(entry_budget, blend_dist_max_m_);
         blend_in = std::clamp(need_in * 1.2,
                               std::min(need_in, blend_in_cap),
                               std::max(blend_in_cap, wpnt_dist_));
@@ -3175,7 +3206,20 @@ bool SplinerNode::BuildTrailing(
     // 유지한다. 되돌리면 다음 사이클의 횡이동 잔량이 그대로라 회피가 영원히
     // 성립하지 않는다 — 근거는 retry_d_target_ 주석(run_0809_231809 4랩).
     double d_goal = 0.0;
-    if (!emergency_stop && !allow_stop && has_retry_d_) {
+    // 2026-08-13: allow_stop 을 여기서 뺀다. allow_stop 은 **속도** 결정
+    // (정지까지 갈 것인가 / trailing_retry_speed 로 버틸 것인가)이지 횡 목표
+    // 결정이 아니다. 예전에는 geom_blocked(= 조향 기하 하한 초과)가 서면
+    // allow_stop 이 켜지면서 d_goal 까지 0(raceline 복귀)으로 떨어졌는데,
+    // **기하가 모자란 상황이야말로 횡 진행을 남겨야 하는 경우다** — 되돌리면
+    // 다음 사이클의 횡 잔량이 그대로라 "못 하니까 안 한다 -> 안 했으니까 계속
+    // 못 한다"는 교착이 된다 (바로 위 retry_d_target_ 주석과 같은 근거).
+    //   my_track0811 s=0.5 정적: 첫 탐지 5.48m/6.35m/s 에서 필요 진입 5.43m,
+    //   가용 5.19m 로 4.6% 부족 -> geom_floor -> d_goal=0 -> 다음 사이클도
+    //   진폭 0.83m 그대로. 랩마다 같은 자리에서 같은 실패를 반복했다.
+    // 정지 보장은 아래 속도 프로파일이 그대로 한다. 정지하더라도 장애물
+    // s_start **뒤에서** 서므로 그 시점의 횡 위치는 안전과 무관하고, 경계
+    // 침범은 아래 ramp_ok 가 종전대로 막는다.
+    if (!emergency_stop && has_retry_d_) {
         const double age = (this->now() - retry_d_stamp_).seconds();
         if (age >= 0.0 && age <= kRetryDHoldSec) {
             d_goal = retry_d_target_;
@@ -3188,14 +3232,42 @@ bool SplinerNode::BuildTrailing(
     auto ramp_len_for = [&](double goal) {
         return std::max(1.0, BlendDist(goal - cur_d_, cur_vs_));
     };
+    // ── 오프셋 유지 구간 ──────────────────────────────────────────────
+    // 2026-08-13: 회피 오프셋은 **장애물 뒤 0.5m 까지만** 유지하고 그 뒤로는
+    // raceline 으로 복귀한다. 예전에는 d_goal 을 경로 끝(장애물 + extend 5m)
+    // 까지 그대로 들고 갔다 — t = min(dist/len, 1) 이라 램프가 끝나면 d_goal
+    // 이 상수로 남는다. 그 5m 하류가 좁아지는 구간이면 오프셋이 **필요하지도
+    // 않은 곳**에서 WithinTrackBoundary 가 깨지고, 그 한 점 때문에 ramp_ok 가
+    // false 를 돌려 d_goal 이 통째로 0(raceline 복귀)으로 내려갔다.
+    //   my_track0811: 장애물 s=0.5, 유지 오프셋 +0.5 를 s=4~5 까지 끌고 가는데
+    //   그 구간 d_left 가 0.82 -> 0.45 로 좁아진다. 실측 로그의 트레일링이
+    //   v_target 과 무관하게 **전부** "d -0.2x -> 0.00" 이었던 이유가 이것이다.
+    // 회피 목표를 유지하라고 만든 retry_d_target_ 이 이 한 줄 때문에 한 번도
+    // 발현되지 않았다.
+    const double hold_until = Mod(obs.s_end - cur_s_, track_len_) + 0.5;
+    auto back_len_for = [&](double goal) {
+        return std::max(1.0, BlendDist(goal, cur_vs_));
+    };
+    // dist 지점의 d: [진입 램프] -> [장애물 통과까지 유지] -> [raceline 복귀].
+    auto d_profile = [&](double dist, double goal, double len, double back) {
+        if (dist <= len) {
+            const double t = std::min(dist / std::max(len, 1e-3), 1.0);
+            return cur_d_ + (goal - cur_d_) * t;
+        }
+        if (dist <= hold_until || std::abs(goal) <= 0.02) {
+            return goal;
+        }
+        const double t = std::min((dist - hold_until) / std::max(back, 1e-3), 1.0);
+        return goal * (1.0 - t);
+    };
     // 램프 전 구간이 트랙 경계 안인가.
     auto ramp_ok = [&](double goal, double len) {
+        const double back = back_len_for(goal);
         for (int i = 0; i < n; ++i) {
             const double dist = i * wpnt_dist_;
             const double s = Mod(cur_s_ + dist, track_len_);
             const int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
-            const double t = std::min(dist / std::max(len, 1e-3), 1.0);
-            const double d = cur_d_ + (goal - cur_d_) * t;
+            const double d = d_profile(dist, goal, len, back);
             if (!WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
                 return false;
             }
@@ -3203,11 +3275,13 @@ bool SplinerNode::BuildTrailing(
         return true;
     };
     double d_ramp_len = ramp_len_for(d_goal);
+    double d_back_len = back_len_for(d_goal);
     bool hold_current_d = emergency_stop;
     if (!hold_current_d && !ramp_ok(d_goal, d_ramp_len)) {
         // 회피 목표 유지가 경계를 침범하면 예전 동작(raceline 복귀)으로 내려간다.
         d_goal = 0.0;
         d_ramp_len = ramp_len_for(0.0);
+        d_back_len = back_len_for(0.0);
         if (std::abs(cur_d_) > 0.02 && !ramp_ok(0.0, d_ramp_len)) {
             // 안전한 raceline 복귀 기하도 없으면 빈 경로 대신 현재 d에서
             // 정지한다. 빈 경로는 곧 전속 global path이므로 금지.
@@ -3237,11 +3311,9 @@ bool SplinerNode::BuildTrailing(
         double d;
         if (hold_current_d) {
             d = cur_d_;
-        } else if (std::abs(d_goal - cur_d_) > 0.05) {
-            const double t = std::min(dist / std::max(d_ramp_len, 1e-3), 1.0);
-            d = cur_d_ + (d_goal - cur_d_) * t;
         } else {
-            d = d_goal;
+            // ramp_ok 가 검증한 것과 **같은** 프로파일을 쓴다.
+            d = d_profile(dist, d_goal, d_ramp_len, d_back_len);
         }
         w.d_m = d;
         if (std::abs(d) > 0.02) {
