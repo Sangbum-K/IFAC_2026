@@ -59,6 +59,22 @@ perception_obstacle_bridge_node:
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
+    # ── 랩 기억 — real_car.yaml 과 동일 (근거 주석은 전부 그쪽) ──────────
+    # 세 프로파일이 같은 값을 갖는다. 켤 때는 셋을 같이 켠다 —
+    # test_sim_profiles_mirror_real_car 가 그것을 강제한다.
+    bridge/memory_enabled: false
+    bridge/memory_confirm_laps: 2
+    bridge/memory_forget_misses: 2
+    bridge/memory_match_s_m: 0.60
+    bridge/memory_match_d_m: 0.35
+    bridge/memory_inject_ahead_m: 12.0
+    bridge/memory_close_requires_match_m: 3.0
+    bridge/memory_dynamic_poison_min_dist_m: 1.0
+    bridge/memory_dynamic_suppress_m: 1.5
+    bridge/memory_relevant_margin_m: 0.25
+    bridge/memory_pos_std_m: 0.12
+    bridge/ego_frenet_topic: /car_state/frenet/odom
+    bridge/ego_frenet_timeout_sec: 0.5
 
 # --- 이하 real_car.yaml과 완전히 동일 (근거 주석은 real_car.yaml 참조) ---
 spliner_node:

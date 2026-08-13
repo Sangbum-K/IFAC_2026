@@ -37,6 +37,8 @@ import tf2_ros
 
 from nav_msgs.msg import OccupancyGrid
 
+from nav_msgs.msg import Odometry
+
 from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 from f1tenth_perception_msgs.msg import ObstacleArray as PerceptionObstacleArray
 
@@ -51,6 +53,11 @@ except ImportError:      # scipy 없는 환경(다른 개발 PC 등)은 맵 필�
 # 예전엔 ROS 파라미터(bridge/max_extent_m)였는데 어떤 yaml 에도 없었고
 # 출력에 전혀 영향이 없어서 '크기 상한'으로 오해를 샀다 — 상수로 되돌린다.
 _LARGE_EXTENT_WARN_M = 1.50
+
+# 랩 기억 장애물에 부여하는 id 대역. detector id 와 절대 겹치면 안 된다
+# (겹치면 spliner 의 cls_tracks_ / committed 상태가 서로 오염된다).
+# detector 의 next_id_ 는 0 부터 단조 증가하고 실측 22랩에서 240 이었다.
+_MEMORY_ID_BASE = 900000
 
 
 class PerceptionObstacleBridgeNode(Node):
@@ -148,6 +155,78 @@ class PerceptionObstacleBridgeNode(Node):
         # 직접 판정한다. 맵 미수신/scipy 부재 시 기존 frenet 필터만으로 폴백.
         # ⚠️ 실차 적용 전 PF 수렴 상태에서 정지 장애물 좌표 산포를 먼저 잴 것 —
         #    wall_dist_min이 PF 오차보다 작으면 유령이 새고, 크면 진짜를 버린다.
+        # ── 랩 기억 (정적 장애물 Frenet 앵커 레지스트리) ────────────────────
+        # 인지 트랙 id 는 랩을 못 넘는다 — run_0813_165312 실측으로 22랩 동안
+        # 발급된 id 240개 중 랩 경계를 넘은 것은 **0개**이고, 수명 p50 0.43s /
+        # max 4.72s 다 (상한은 track_timeout_sec 0.80 + reid_timeout_sec 1.0).
+        # 그래서 같은 콘을 매 랩 처음부터 다시 알아보고, 판단은 늘 5~6 m 에서
+        # 내려진다(반응 예산 p50 1.20s / p10 0.09s).
+        #
+        # 기억이 주는 것은 두 가지이고 **정확도 쪽이 더 크다**:
+        #  ① 시간   : 첫 인지 5.77 m -> lookahead 전체. S/F 기준 예산 0.94 -> 2.5s
+        #  ② 정확도 : 판단이 내려지는 5~8 m 구간의 d 추정 표준편차 0.091 m 인데
+        #             근접(0~0.5 m) 관측은 0.029 m 다. 랩 간 재현성은 s std
+        #             0.022~0.131 / d std 0.007~0.062 m 로 그보다도 좁다.
+        #             실제로 #178 은 4 m 시점에 왼쪽 끝을 +0.09 로 봤는데
+        #             수렴값은 -0.07 이었다 (좌측 회랑 0.16 m 과소평가).
+        #  -> 기억은 "지난 랩의 근접 관측"을 이번 랩의 판단 시점에 갖다 준다.
+        #
+        # 기본값은 **비활성**이다. 켜는 것은 실차 프로파일의 명시적 선택이어야
+        # 한다 — 아래 4개 대책이 전부 이 트랙 실측에 맞춰진 값이기 때문이다.
+        self.declare_parameter('bridge/memory_enabled', False)
+        # 확정 조건 ①: 서로 다른 랩에서 이만큼 관측돼야 주입을 시작한다.
+        # 유령은 랩마다 위치가 흔들려 같은 앵커에 두 번 모이지 못한다
+        # (실측: 회랑 안 |d|<0.4 에서 3 m 이상 보였다가 사라진 트랙 0건,
+        #  사라진 7건은 전부 d -0.53~-0.82 = 우벽 밖 파편이었다).
+        self.declare_parameter('bridge/memory_confirm_laps', 2)
+        # 같은 물리 장애물로 볼 (s, d) 반경. 랩 간 재현성 실측(s std <=0.131,
+        # d std <=0.062)의 3배 이상이되 두 콘 간격(실측 ~1.7 m)보다는 작아야
+        # 한다 — 크면 서로 다른 콘이 한 앵커로 합쳐진다.
+        self.declare_parameter('bridge/memory_match_s_m', 0.60)
+        self.declare_parameter('bridge/memory_match_d_m', 0.35)
+        # 주입 거리. spliner/lookahead_m(실차 12.0) 안쪽만 의미가 있다.
+        self.declare_parameter('bridge/memory_inject_ahead_m', 12.0)
+        # 대책 ③: 살아 있는 **동적** 트랙이 기억 위치에서 이 거리 안에 있으면
+        # 주입하지 않는다. 상대차가 기억 옆을 지날 때 기억이 사이드 선택을
+        # 왜곡해 상대와 벽 사이에 갇히는 것을 막는다. 동적이 항상 우선.
+        self.declare_parameter('bridge/memory_dynamic_suppress_m', 1.5)
+        # 대책 ① 의 단서: "동적으로 보였으면 기억하지 않는다"를 거리 무관하게
+        # 걸면 **살려야 할 기억이 첫 접촉에 파괴된다.** run_0813_165312 의
+        # 정적->동적 전환 7건은 전부 최근접 통과 0.05~0.47 m 에서 났고,
+        # 통과 직후 is_visible=0 외삽 프레임에서 넘어갔다 — 콘이 스치며
+        # 밀렸거나 근거리에서 중심점이 걸어간 것이지 상대차가 아니다.
+        # 그래서 **이 거리보다 먼 곳에서** 동적으로 보인 경우만 독으로 친다.
+        # 진짜 상대차는 멀리서부터 움직이므로 이 게이트를 반드시 통과한다.
+        self.declare_parameter('bridge/memory_dynamic_poison_min_dist_m', 1.0)
+        # 관련성 밴드: raceline 주행 시 요구 여유를 침범하는 것만 기억한다.
+        # |d| - half - 차반폭 > 이 값이면 앵커를 만들지 않는다.
+        self.declare_parameter('bridge/memory_relevant_margin_m', 0.25)
+        # 근거리 주입 게이트. 이 거리보다 가까워지면, **이번 통과에서 실측이
+        # 한 번이라도 붙은** 기억만 계속 주입한다.
+        #
+        # 기억의 존재 이유는 검출이 불안정한 원거리(5~12 m)를 덮는 것이고,
+        # 근거리는 라이다가 가장 잘 보는 구간이다. 재생 검증 실측:
+        # confirm=2/forget=2 에서 5 m 안쪽 주입 프레임의 56% 가 그 랩에 실물이
+        # 없던 것이었다(= 유령을 코앞까지 끌고 감). 반대로 이 게이트를 그냥
+        # 거리로만 자르면 run_0813 1:44 처럼 실물이 1.84 m 에서 인지에서
+        # 사라지는 경우(드롭아웃 57건)를 못 덮는다.
+        # 그래서 자르는 기준을 거리가 아니라 **이번 랩의 실측 유무**로 둔다:
+        #   · 실물  -> 5.7 m 에서 이미 matched -> 근거리까지 계속 주입 (드롭아웃 커버)
+        #   · 유령  -> 한 번도 matched 안 됨   -> 이 거리에서 주입 중단
+        self.declare_parameter('bridge/memory_close_requires_match_m', 3.0)
+        # 대책 ④: free-space carving. 기억 위치를 지나갔는데 그 통과 동안
+        # 대응하는 실측이 한 번도 없으면 miss 를 올리고, 이만큼 쌓이면 지운다.
+        # "N초 뒤 잊는다"가 아니라 **부정 증거**로 지우는 것이 핵심이다 —
+        # 시간 만료는 있는 것도 없는 것도 못 맞춘다.
+        self.declare_parameter('bridge/memory_forget_misses', 2)
+        # 기억이 보고하는 위치 불확실성 하한 [m]. 랩 간 d std 실측 최대
+        # 0.062 의 두 배 — 기억을 실측보다 더 확신하지 않게 한다.
+        self.declare_parameter('bridge/memory_pos_std_m', 0.12)
+        # ego Frenet 위치 토픽 (랩 카운트 + 주입 거리 판정).
+        self.declare_parameter('bridge/ego_frenet_topic',
+                               '/car_state/frenet/odom')
+        self.declare_parameter('bridge/ego_frenet_timeout_sec', 0.5)
+
         self.declare_parameter('bridge/use_map_filter', False)
         self.declare_parameter('bridge/map_topic', '/map')
         self.declare_parameter('bridge/wall_dist_min_m', 0.20)
@@ -193,6 +272,24 @@ class PerceptionObstacleBridgeNode(Node):
         self.map_timeout = float(p('bridge/map_timeout_sec').value)
         self.map_filter_required = bool(
             p('bridge/map_filter_required').value)
+        self.memory_enabled = bool(p('bridge/memory_enabled').value)
+        self.memory_confirm_laps = int(p('bridge/memory_confirm_laps').value)
+        self.memory_match_s = float(p('bridge/memory_match_s_m').value)
+        self.memory_match_d = float(p('bridge/memory_match_d_m').value)
+        self.memory_inject_ahead = float(
+            p('bridge/memory_inject_ahead_m').value)
+        self.memory_dynamic_suppress = float(
+            p('bridge/memory_dynamic_suppress_m').value)
+        self.memory_poison_min_dist = float(
+            p('bridge/memory_dynamic_poison_min_dist_m').value)
+        self.memory_relevant_margin = float(
+            p('bridge/memory_relevant_margin_m').value)
+        self.memory_close_requires_match = float(
+            p('bridge/memory_close_requires_match_m').value)
+        self.memory_forget_misses = int(p('bridge/memory_forget_misses').value)
+        self.memory_pos_std = float(p('bridge/memory_pos_std_m').value)
+        self.ego_frenet_timeout = float(
+            p('bridge/ego_frenet_timeout_sec').value)
 
         finite_values = (
             self.min_confidence, self.wall_margin,
@@ -226,7 +323,21 @@ class PerceptionObstacleBridgeNode(Node):
                 or not 4 <= self.projection_window <= 10000
                 or not 0.1 <= self.projection_reacquire_distance <= 20.0
                 or not 0.0 <= self.wall_dist_min <= 2.0
-                or not 0.1 <= self.map_timeout <= 60.0):
+                or not 0.1 <= self.map_timeout <= 60.0
+                # 기억 파라미터. 비활성이어도 검증한다 — 켜는 시점에 값이
+                # 이상하면 그때는 이미 주행 중이다.
+                or not 1 <= self.memory_confirm_laps <= 20
+                or not 0.05 <= self.memory_match_s <= 2.0
+                or not 0.05 <= self.memory_match_d <= 1.0
+                or not 0.0 <= self.memory_inject_ahead <= 30.0
+                or not 0.0 <= self.memory_dynamic_suppress <= 10.0
+                or not 0.0 <= self.memory_poison_min_dist <= 5.0
+                or not 0.0 <= self.memory_relevant_margin <= 2.0
+                or not 0.0 <= self.memory_close_requires_match
+                <= self.memory_inject_ahead
+                or not 1 <= self.memory_forget_misses <= 20
+                or not 0.01 <= self.memory_pos_std <= 1.0
+                or not 0.05 <= self.ego_frenet_timeout <= 5.0):
             raise RuntimeError('invalid bridge safety parameters')
 
         self.wpnts = None        # [N, 6]: s, x, y, psi, d_right, d_left
@@ -238,6 +349,18 @@ class PerceptionObstacleBridgeNode(Node):
         self.map_res = 0.0
         self.start_time = self.get_clock().now()
         self.last_source_ns = None
+
+        # ── 랩 기억 상태 ────────────────────────────────────────────────
+        # anchor: dict(s, d, half, laps:set, confirmed, misses, poisoned,
+        #              best_dist, best_s, best_d, best_half, mem_id,
+        #              matched_this_pass, pass_open)
+        self.memory = []
+        self.memory_next_id = _MEMORY_ID_BASE
+        self.ego_s = None
+        self.ego_d = None
+        self.ego_stamp_sec = None
+        self.lap_index = 0
+        self._last_ego_s = None
 
         self.tf_buffer = tf2_ros.Buffer()
         # cb_obs 안의 exact-time lookup이 executor를 기다리는 동안 /tf callback이
@@ -260,6 +383,12 @@ class PerceptionObstacleBridgeNode(Node):
         output_qos = QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(WpntArray, '/global_waypoints', self.cb_gb, waypoint_qos)
+        if self.memory_enabled:
+            ego_topic = str(p('bridge/ego_frenet_topic').value).strip()
+            if not ego_topic:
+                raise RuntimeError('memory_enabled requires ego_frenet_topic')
+            self.create_subscription(
+                Odometry, ego_topic, self.cb_ego_frenet, sensor_qos)
         input_topic = str(p('bridge/input_topic').value).strip()
         output_topic = str(p('bridge/output_topic').value).strip()
         map_topic = str(p('bridge/map_topic').value).strip()
@@ -287,6 +416,287 @@ class PerceptionObstacleBridgeNode(Node):
         self.get_logger().info(
             f"perception 브릿지 시작: {input_topic} "
             f"(f1tenth_perception_msgs) -> {output_topic} (f1tenth_planning_msgs)")
+
+    # ── 랩 기억 ────────────────────────────────────────────────────────
+    def cb_ego_frenet(self, msg: Odometry):
+        """ego Frenet 위치 + 랩 카운트. s 가 크게 뒤로 점프하면 랩 경계."""
+        s = float(msg.pose.pose.position.x)
+        d = float(msg.pose.pose.position.y)
+        if not (math.isfinite(s) and math.isfinite(d)):
+            return
+        stamp = Time.from_msg(msg.header.stamp)
+        self.ego_stamp_sec = (stamp.nanoseconds * 1e-9 if stamp.nanoseconds
+                              else self.get_clock().now().nanoseconds * 1e-9)
+        self.ego_s, self.ego_d = s, d
+        if self.track_length > 0.0 and self._last_ego_s is not None:
+            # 전진 중 s 가 반 바퀴 이상 줄면 결승선 통과. 후진/PF 점프는
+            # 이 조건에 안 걸린다 (점프는 보통 반 바퀴보다 작다).
+            if self._last_ego_s - s > self.track_length * 0.5:
+                self.lap_index += 1
+                self._on_lap_boundary()
+        self._last_ego_s = s
+
+    def _on_lap_boundary(self):
+        """랩 경계에서 이번 랩 통과를 정산한다.
+
+        ① 실측이 있었으면 그 랩의 **최근접** 관측으로 앵커를 갱신하고
+           miss 를 0 으로 되돌린다 (긍정 증거).
+        ② 기억 위치를 시야에 넣고 지나갔는데 실측이 한 번도 없었으면
+           miss 를 올린다 (부정 증거 = free-space carving). 시간 만료가
+           아니라 이쪽이 삭제 기준이다.
+        """
+        for a in self.memory:
+            if math.isfinite(a['best_dist']):
+                # 확정 전에는 최근접 관측을 그대로 받고, 확정 뒤에는 절반씩
+                # 섞는다 (랩 간 재현성 실측 d std 0.007~0.062 m 수준이라
+                # 급격히 따라갈 이유가 없다).
+                w = 0.5 if a['confirmed'] else 1.0
+                a['s'] = (a['s'] + w * self._ds_signed(a['best_s'], a['s'])) \
+                    % self.track_length
+                a['d'] += w * (a['best_d'] - a['d'])
+                a['half'] += w * (a['best_half'] - a['half'])
+                a['misses'] = 0
+            elif a['pass_open']:
+                a['misses'] += 1
+            a['pass_open'] = False
+            a['matched_this_pass'] = False
+            a['best_dist'] = float('inf')
+        self._merge_memory()
+        self._prune_memory()
+
+    def _merge_memory(self):
+        """수렴한 뒤 서로 밴드 안에 들어온 앵커를 합친다.
+
+        같은 콘이 랩마다 다른 앵커로 갈라지는 것을 막는다. 원거리 s 추정이
+        근접 수렴값보다 +0.36 m 앞서 있어(실측) 새 트랙의 첫 관측이 기존
+        앵커 밴드 밖에 떨어지는 일이 생기고, 그렇게 생긴 조각들은 각자
+        2랩씩 헛주입을 하다 carving 으로 사라진다. 갱신이 끝난 **뒤**
+        합치면 그 왕복이 없어진다.
+        """
+        merged = True
+        while merged and len(self.memory) > 1:
+            merged = False
+            for i in range(len(self.memory)):
+                for j in range(i + 1, len(self.memory)):
+                    a, b = self.memory[i], self.memory[j]
+                    if abs(self._ds_signed(a['s'], b['s'])) > self.memory_match_s \
+                            or abs(a['d'] - b['d']) > self.memory_match_d:
+                        continue
+                    # 관측 랩이 많은 쪽을 살리고, 확정/독 상태는 보수적으로
+                    # 합친다 (한쪽이 독이면 합친 것도 독).
+                    keep, drop = (a, b) if len(a['laps']) >= len(b['laps']) else (b, a)
+                    keep['laps'] |= drop['laps']
+                    keep['poisoned'] = keep['poisoned'] or drop['poisoned']
+                    keep['misses'] = min(keep['misses'], drop['misses'])
+                    keep['half'] = max(keep['half'], drop['half'])
+                    if not keep['confirmed'] and \
+                            len(keep['laps']) >= self.memory_confirm_laps:
+                        keep['confirmed'] = True
+                    self.memory.remove(drop)
+                    merged = True
+                    break
+                if merged:
+                    break
+
+    def _prune_memory(self):
+        keep = []
+        for a in self.memory:
+            if a['poisoned'] or a['misses'] >= self.memory_forget_misses:
+                self.get_logger().info(
+                    f"랩 기억 삭제: s={a['s']:.2f} d={a['d']:+.2f} "
+                    f"(misses={a['misses']}, poisoned={a['poisoned']})")
+                continue
+            keep.append(a)
+        self.memory = keep
+
+    def _ds_signed(self, a, b):
+        """a - b 를 [-L/2, L/2) 로 감아서 돌려준다."""
+        return ((a - b + self.track_length / 2.0) % self.track_length
+                - self.track_length / 2.0)
+
+    def _find_anchor(self, s, d):
+        """밴드 안에서 **가장 가까운** 앵커. 첫 매칭이 아니다.
+
+        첫 매칭으로 두면 같은 콘이 랩마다 새 앵커로 갈라진다 — 원거리
+        s 추정이 근접 수렴값보다 +0.36 m 앞서 있기 때문이다(실측). 재생
+        검증에서 S/F 콘 하나가 앵커 8개로 쪼개졌고, 그 조각들이 서로
+        free-space carving 으로 지워지며 확정이 매 랩 리셋됐다.
+        """
+        best, best_cost = None, float('inf')
+        for a in self.memory:
+            ds = abs(self._ds_signed(s, a['s']))
+            dd = abs(d - a['d'])
+            if ds > self.memory_match_s or dd > self.memory_match_d:
+                continue
+            cost = (ds / max(self.memory_match_s, 1e-6)) ** 2 + \
+                   (dd / max(self.memory_match_d, 1e-6)) ** 2
+            if cost < best_cost:
+                best, best_cost = a, cost
+        return best
+
+    def memory_observe(self, s, d, half, fwd, is_dynamic, measured):
+        """실측 프레임 하나를 기억에 반영한다.
+
+        `fwd` 는 ego 기준 **부호 있는** 전방거리 [-L/2, L/2) 다. 감기지 않은
+        (s - ego) % L 을 쓰면 방금 지나친 장애물이 "31.9 m 앞"이 되어 아래
+        거리 게이트가 통째로 뒤집힌다 — 재생 검증에서 실제로 S/F 콘이
+        매 랩 POISON 됐다.
+
+        확정 조건(대책 ①②): **실측 프레임**(is_visible)만 적립하고, 멀리서
+        동적으로 보인 앵커는 영구히 독을 먹인다. 위치는 그 랩의 **전방
+        최근접 관측**으로만 갱신한다 — 그게 기억이 주는 정확도의 전부다
+        (근접 std 0.029 vs 판단거리 std 0.091).
+        """
+        if not self.memory_enabled or self.track_length <= 0.0:
+            return
+        # 근거리 동적 전환은 콘이 스치며 밀린 것이거나 근거리 중심점 걸음이다
+        # (선언부 주석의 7건 실측). 그 거리에서 나온 동적 표는 무시한다.
+        far_dynamic = is_dynamic and fwd >= self.memory_poison_min_dist
+        a = self._find_anchor(s, d)
+        if a is None:
+            if far_dynamic or not measured:
+                return          # 동적/외삽으로는 새 앵커를 만들지 않는다
+            if is_dynamic:
+                return          # 근거리 동적은 새 앵커 근거로도 쓰지 않는다
+            # ── 관련성 밴드 ────────────────────────────────────────────
+            # 레이스라인을 실제로 밀어내지 못하는 것은 기억하지 않는다.
+            # 기준은 "raceline(d=0) 을 그대로 달릴 때 이 물체와의 여유가
+            # 요구 간격보다 좁은가" 다. 실측 근거: 접촉 5건과 s12 크리프의
+            # 앵커는 전부 |d| <= 0.31 이고, 한 번도 문제가 없던 벽 근처
+            # 파편은 |d| >= 0.53 이다. 이 밴드가 없으면 재생 검증 기준
+            # 주입이 프레임당 1.28개까지 늘어난다 (레지스트리 12개 중
+            # 절반이 |d| 0.74~1.8 의 벽 구조물).
+            if abs(d) - half - self.cyl_radius > self.memory_relevant_margin:
+                return
+            a = {
+                's': s, 'd': d, 'half': half,
+                'laps': set(), 'confirmed': False, 'misses': 0,
+                'poisoned': False, 'best_dist': float('inf'),
+                'best_s': s, 'best_d': d, 'best_half': half,
+                'mem_id': self.memory_next_id,
+                'matched_this_pass': False, 'pass_open': False,
+            }
+            self.memory_next_id += 1
+            self.memory.append(a)
+        if far_dynamic:
+            # 대책 ①: 먼 거리에서 상대차로 보인 자리는 영구히 기억하지 않는다.
+            a['poisoned'] = True
+            return
+        if is_dynamic or not measured:
+            # 근거리 동적 표는 독으로 치지 않되 위치 근거로도 쓰지 않는다
+            # (그 프레임의 중심점이 실제로 흔들린 상태이므로).
+            # 다만 "지나가면서 실제로 봤다"는 사실은 남겨 free-space carving 이
+            # 멀쩡한 기억을 지우지 않게 한다.
+            if measured:
+                a['matched_this_pass'] = True
+            return
+        a['matched_this_pass'] = True
+        # 위치 갱신은 **전방** 관측만 쓴다. 지나친 뒤의 프레임은 근거리
+        # 중심점 걸음이 가장 심한 구간이라(정적->동적 전환 7건이 전부 거기)
+        # 정확도를 올리려는 목적과 정반대로 움직인다.
+        if 0.0 <= fwd < a['best_dist']:
+            a['best_dist'] = fwd
+            a['best_s'], a['best_d'], a['best_half'] = s, d, half
+        a['laps'].add(self.lap_index)
+        if not a['confirmed'] and len(a['laps']) >= self.memory_confirm_laps:
+            a['confirmed'] = True
+            self.get_logger().info(
+                f"랩 기억 확정: s={a['s']:.2f} d={a['d']:+.2f} "
+                f"half={a['half']:.2f} (랩 {sorted(a['laps'])})")
+
+    def memory_inject(self, out, live_entries, now_sec):
+        """확정된 기억 중 이번 프레임에 실측이 없는 것을 장애물로 주입한다.
+
+        주입된 장애물은 **is_visible=False** 다. 이것이 계약이다 — 기억은
+        측정이 아니므로, is_visible 을 요구하는 하류 게이트(BuildEscapeArc 의
+        escape_not_visible_static 등)는 기억만으로는 발동하지 않는다.
+        반대로 회랑 기하와 속도 상한에는 그대로 쓰인다(비대칭 사용).
+        """
+        if not self.memory_enabled or self.ego_s is None:
+            return
+        if self.ego_stamp_sec is not None and \
+                now_sec - self.ego_stamp_sec > self.ego_frenet_timeout:
+            return          # ego Frenet 이 낡으면 주입하지 않는다 (fail-closed)
+        for a in self.memory:
+            if a['poisoned']:
+                continue
+            ahead = (a['s'] - self.ego_s) % self.track_length
+            if ahead > self.memory_inject_ahead:
+                continue
+            # 통과 판정 창을 연다: 기억 위치가 시야에 들어온 순간부터
+            # 지나갈 때까지가 "이번 통과"다. **확정 여부와 무관하게** 연다 —
+            # 확정된 것만 열면 미확정 앵커는 miss 를 못 쌓아 free-space
+            # carving 이 안 걸리고 레지스트리가 영원히 자란다.
+            a['pass_open'] = True
+            if not a['confirmed']:
+                continue
+            # 근거리 게이트 (선언부 주석): 이번 통과에서 실측이 한 번도 안
+            # 붙은 기억은 여기서 손을 뗀다. 유령을 코앞까지 끌고 가지 않고,
+            # 실물은 이미 matched 라 드롭아웃 구간까지 그대로 덮는다.
+            if ahead < self.memory_close_requires_match and \
+                    not a['matched_this_pass']:
+                continue
+            # 라이브가 있으면 라이브가 이긴다 — 기억은 절대 실측을 덮지 않는다.
+            if any(abs(self._ds_signed(a['s'], e[0])) <= self.memory_match_s and
+                   abs(a['d'] - e[1]) <= self.memory_match_d
+                   for e in live_entries):
+                continue
+            # 대책 ③: 살아 있는 동적 트랙 근처에서는 주입하지 않는다.
+            if any(e[2] and abs(self._ds_signed(a['s'], e[0]))
+                   <= self.memory_dynamic_suppress for e in live_entries):
+                continue
+            half = max(a['half'], 0.05)
+            obs = Obstacle()
+            obs.id = int(a['mem_id'])
+            try:
+                x, y = self.frenet_to_cartesian(a['s'], a['d'])
+            except RuntimeError:
+                continue
+            obs.position.x, obs.position.y = float(x), float(y)
+            obs.s_center = a['s']
+            obs.d_center = a['d']
+            obs.s_start = (a['s'] - half) % self.track_length
+            obs.s_end = (a['s'] + half) % self.track_length
+            obs.d_left = a['d'] + half
+            obs.d_right = a['d'] - half
+            obs.vs = 0.0
+            obs.vd = 0.0
+            var = max(self.memory_pos_std ** 2, self.position_var_floor)
+            obs.s_var = var
+            obs.d_var = var
+            obs.vs_var = self.velocity_var_floor
+            obs.vd_var = self.velocity_var_floor
+            obs.size = 2.0 * half
+            obs.is_static = True
+            obs.is_visible = False
+            out.obstacles.append(obs)
+
+    def frenet_to_cartesian(self, s, d):
+        """기억 앵커를 map 좌표로 되돌린다.
+
+        cartesian_to_frenet 의 정확한 역이어야 한다 — 거기서 psi 는 저장된
+        psi_rad 가 아니라 **세그먼트 방향**이므로 여기서도 세그먼트로 푼다
+        (둘이 어긋나면 왕복이 닫히지 않아 기억 위치가 조금씩 흐른다).
+        """
+        if self.wpnts is None or self.track_length <= 0.0:
+            raise RuntimeError('waypoints unavailable')
+        n = len(self.wpnts)
+        i = int(np.searchsorted(self.wpnts[:, 0], s % self.track_length)) - 1
+        i = min(max(i, 0), n - 1)
+        j = (i + 1) % n
+        p0 = self.wpnts[i, 1:3]
+        p1 = self.wpnts[j, 1:3]
+        seg = p1 - p0
+        seg_len = float(np.linalg.norm(seg))
+        if seg_len < 1e-9:
+            raise RuntimeError('degenerate waypoint segment')
+        ds = ((self.wpnts[j, 0] - self.wpnts[i, 0]) % self.track_length)
+        u = 0.0 if ds <= 1e-9 else float(
+            np.clip((s % self.track_length - self.wpnts[i, 0]) / ds, 0.0, 1.0))
+        proj = p0 + u * seg
+        psi = math.atan2(float(seg[1]), float(seg[0]))
+        return (float(proj[0]) - d * math.sin(psi),
+                float(proj[1]) + d * math.cos(psi))
 
     def cb_map(self, msg: OccupancyGrid):
         """노드 수명 중 1회: 셀별 최근접 벽거리 테이블(EDT) 계산."""
@@ -519,8 +929,17 @@ class PerceptionObstacleBridgeNode(Node):
             now_sec = arrival_sec
             out.header.stamp = self.get_clock().now().to_msg()
         seen_ids = set()
+        # 랩 기억용: 이번 프레임에 살아남은 장애물의 (s, d, is_dynamic).
+        live_entries = []
 
         for src in msg.obstacles:
+            if int(src.id) >= _MEMORY_ID_BASE:
+                # detector id 가 기억 대역에 침범하면 두 상태가 섞인다.
+                # 조용히 버리지 않고 프레임을 거부해 원인을 드러낸다.
+                self.get_logger().error(
+                    f'detector id={src.id}가 기억 id 대역({_MEMORY_ID_BASE}+)과 '
+                    '충돌; frame 거부', throttle_duration_sec=2.0)
+                return
             if int(src.id) < 0 or int(src.id) in seen_ids:
                 self.get_logger().error(
                     f'negative/duplicate obstacle id={src.id}; frame rejected',
@@ -755,6 +1174,15 @@ class PerceptionObstacleBridgeNode(Node):
             # 하드코딩돼 있어 coasting 외삽이 측정과 구분되지 않았다.
             obs.is_visible = bool(src.is_visible)
             out.obstacles.append(obs)
+
+            live_entries.append((s, d, bool(src.is_dynamic)))
+            if self.memory_enabled and self.ego_s is not None:
+                self.memory_observe(
+                    s, d, half, self._ds_signed(s, self.ego_s),
+                    bool(src.is_dynamic), measured)
+
+        # 랩 기억 주입 — 실측 뒤에 붙인다 (라이브가 항상 우선).
+        self.memory_inject(out, live_entries, arrival_sec)
 
         # 오래 안 보인 트랙 정리
         stale = [i for i, t in self.tracks.items()

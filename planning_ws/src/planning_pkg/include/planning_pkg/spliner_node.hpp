@@ -648,6 +648,11 @@ private:
   visualization_msgs::msg::MarkerArray committed_mrks_;
   double committed_start_s_{-1.0};
   double committed_until_s_{-1.0};
+  /// 커밋을 만들게 한 장애물의 뒷 가장자리 s. 커밋 조기 해제(새 장애물이
+  /// 커밋 경로 밖에 나타났을 때)가 "아직 그 장애물 옆을 지나는 중"인지
+  /// 구별하는 데 쓴다 — 기동 중에 커밋을 풀면 raceline 전속 경로로
+  /// 순간 전환돼 반대편 벽을 친다(커밋 도입 근거와 같은 실측).
+  double committed_obs_end_s_{-1.0};
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
   double active_speed_scale_{1.0};
 

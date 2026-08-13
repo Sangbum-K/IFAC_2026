@@ -91,7 +91,11 @@ obstacle_detector_node:
     use_track_filter: true
     global_waypoints_topic: /global_waypoints
     track_bound_inflation_m: 0.10
-    max_view_ahead_m: 6.0
+    # 2026-08-13: 6.0 -> 8.0. real_car.yaml 과 동일 (근거·실측표는 그쪽 주석).
+    # 08-13 커밋이 real_car.yaml 만 올리고 여기를 두고 갔다. sim_real_car 는
+    # "실차 근사"가 존재 이유이므로 인지 시야가 실차보다 짧으면 이 프로파일의
+    # 회피 판정을 실차 판정 근거로 쓸 수 없다.
+    max_view_ahead_m: 8.0
     max_view_behind_m: 2.0
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발)
     # ⚠️ 벽/장애물 구분을 여기서 잡으려면 이 폴리곤이 제일 확실한 손잡이다.

@@ -155,6 +155,59 @@ perception_obstacle_bridge_node:
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
+    # ── 랩 기억 (정적 장애물 Frenet 앵커) ────────────────────────────────
+    # ⚠️ 실차 미검증이라 **기본 off** 다. 켜는 것은 명시적 선택이어야 한다 —
+    #    이 기능은 인지가 보지 못한 장애물을 플래너에 **주입**하므로, 잘못되면
+    #    없는 것을 피하려고 감속한다(최악은 trailing_retry_speed 1.5 m/s).
+    #    켜려면 아래 memory_enabled 한 줄만 true 로 바꾼다.
+    #
+    # 아래 값은 전부 rosbag_0813/run_0813_165312(22랩) 오프라인 재생으로
+    # 정한 것이다 (tools/bag_analysis_0813/memory_replay.py).
+    #   · 랩 간 위치 재현성 : s std 0.022~0.131 m / d std 0.007~0.062 m
+    #   · 판단거리(5~8 m) d 추정 std 0.091 vs 근접(0~0.5 m) 0.029  -> 3배 정확
+    #   · 접촉 5건(전부 S/F) 선행 인지거리 5.7 m -> 11.8~12.0 m
+    #   · POISON 0건 (근거리 동적 오분류 7건이 기억을 파괴하지 않음)
+    #
+    # confirm/forget 조합 실측 (헛발질 = 주입했는데 그 랩에 실물이 없던 통과):
+    #   confirm=2 forget=1 : 헛발질 28%, 그러나 **접촉 1건이 보호를 잃는다**
+    #   confirm=2 forget=2 : 헛발질 39%, 접촉 5/5 보호        <- 채택
+    #   confirm=3 forget=1 : 헛발질 24%, 접촉 3건 보호 상실
+    #   confirm=3 forget=2 : 헛발질 33%, 접촉 2건 보호 상실
+    # 즉 5건 전부를 덮는 조합은 2/2 뿐이고, 그 대가가 헛발질 39% 다.
+    bridge/memory_enabled: false
+    bridge/memory_confirm_laps: 2
+    bridge/memory_forget_misses: 2
+    # 같은 물리 장애물로 볼 반경. 0.6~1.0 스윕에서 결과가 사실상 같아
+    # (앵커 6개 / 선행거리 동일) 실측 std 근거가 있는 작은 값을 쓴다.
+    bridge/memory_match_s_m: 0.60
+    bridge/memory_match_d_m: 0.35
+    # spliner/lookahead_m(12.0)과 같은 값. 더 크게 줘도 spliner 가 자른다.
+    bridge/memory_inject_ahead_m: 12.0
+    # 근거리 게이트: 이번 통과에 실측이 안 붙은 기억은 이 거리에서 손을 뗀다.
+    # 실측 스윕(5 m 안쪽 주입 프레임 중 헛발질 비율):
+    #   0.0 m -> 56%   2.0 m -> 43%   3.0 m -> 34%   4.0 m -> 22%
+    # 어느 값에서도 접촉 5건 선행거리는 11.8~12.0 m 로 **손실 0** 이다.
+    # 3.0 은 실측 첫 탐지거리 p50(3.69 m)보다 작아서, 정상 검출되는 물체는
+    # 이 게이트가 걸리기 전에 이미 matched 다. 4.0 은 그 가정을 넘어선다.
+    bridge/memory_close_requires_match_m: 3.0
+    # 먼 거리에서 동적으로 보인 자리만 영구 배제한다. 이 거리를 0 으로 두면
+    # (=거리 무관 배제) run_0813 의 접촉 후 오분류 7건이 그대로 기억을
+    # 파괴한다 — 그 7건은 전부 최근접 0.05~0.47 m 에서 났다.
+    bridge/memory_dynamic_poison_min_dist_m: 1.0
+    # 살아 있는 동적 트랙 반경 안에서는 주입하지 않는다 (동적 우선).
+    # ⚠️ 이 백에는 동적 장애물이 없어 **이 경로만 미검증**이다.
+    bridge/memory_dynamic_suppress_m: 1.5
+    # raceline 을 실제로 밀어내는 것만 기억한다: |d| - half - 차반폭 > 이 값이면
+    # 앵커를 만들지 않는다. 접촉 5건과 s12 크리프의 앵커는 전부 |d| <= 0.31,
+    # 한 번도 문제가 없던 벽 근처 파편은 |d| >= 0.53 이다.
+    # 이 밴드가 없으면 주입이 프레임당 0.69 -> 1.28 개로 늘고 레지스트리의
+    # 절반이 |d| 0.74~1.8 의 벽 구조물이 된다.
+    bridge/memory_relevant_margin_m: 0.25
+    # 기억이 보고하는 위치 표준편차. 랩 간 d std 실측 최대 0.062 의 두 배 —
+    # 기억을 실측보다 더 확신하지 않게 한다.
+    bridge/memory_pos_std_m: 0.12
+    bridge/ego_frenet_topic: /car_state/frenet/odom
+    bridge/ego_frenet_timeout_sec: 0.5
 
 # (제거) pose_odom_bridge_node: localization particle_filter가 /pf/pose/odom을
 # 직접 발행하므로 브릿지 불필요. PF가 죽으면 /pf/pose/odom이 끊겨

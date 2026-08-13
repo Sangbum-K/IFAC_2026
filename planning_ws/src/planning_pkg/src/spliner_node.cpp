@@ -908,6 +908,7 @@ void SplinerNode::Run() {
             evasion_valid = BuildTrailing(stop, evasion_wpnts, mrks);
             used_trailing = evasion_valid;
             committed_until_s_ = -1.0;
+            committed_obs_end_s_ = -1.0;
             lc_active_ = false;
             RCLCPP_ERROR_THROTTLE(this->get_logger(), *get_clock(), 2000,
                 "Perception obstacle stream stale/malformed: publishing fail-safe stop");
@@ -929,7 +930,58 @@ void SplinerNode::Run() {
             // 안정성 판정은 관측 이력(ClassifyObstacles가 채우는 cls_tracks_)의
             // 관측 수로 한다 — perception의 min_hits와 같은 성격의 게이트다.
             const auto stable_ahead = StableObstacles(all_ahead_now);
-            if (pos < span &&
+            // ── 커밋 조기 해제 (2026-08-13) ───────────────────────────────
+            // 커밋 유지 조건이 "커밋 경로 끝에 물리적으로 도달할 때까지"였다.
+            // 그런데 CheckPathCollision 은 **커밋 경로 위**의 충돌만 본다 —
+            // 커밋 경로가 끝나는 지점보다 더 앞에 있는 새 장애물은 충돌로
+            // 잡히지 않으므로, 그 장애물은 커밋이 만료될 때까지 통째로
+            // 무시된다. run_0813_165312 실측: S/F 장애물 #166/#178/#191 이
+            // 전부 5.7~5.8m 에서 처음 보였는데 committed_hold 가 유지돼
+            // 2.7~3.1m 에서야 처음 평가됐다(0.5초 · 3m 손실). 그 3m 가
+            // 라인스위치 성립/불성립을 가르는 구간이다.
+            //
+            // 그래서 "커밋 경로가 덮지 못하는 안정 장애물이 전방
+            // lookahead 안에 있으면" 커밋을 즉시 해제한다. 다만 커밋을 만든
+            // 장애물 옆을 **아직 지나는 중**이면 해제하지 않는다 — 기동
+            // 중간에 raceline 으로 전환되는 것이 커밋을 도입한 이유다.
+            //
+            // 판정 대상은 stable_ahead 가 아니라 all_ahead_now + 관측수 게이트다.
+            // stable_ahead 는 commit_break_requires_visible 로 코스팅/기억
+            // 장애물을 뺀 목록인데, 그 게이트의 목적은 "외삽 유령이 이미 성립한
+            // 회피를 깨는 것"을 막는 것이다. 여기는 반대 상황 — 이미 지나간
+            // 장애물의 커밋을 놓아 주고 **다음** 장애물을 계획하자는 것이므로
+            // 그 게이트가 걸리면 안 된다 (랩 기억 장애물은 정의상 is_visible=0).
+            auto stable_for_release =
+                [&](const f1tenth_planning_msgs::msg::Obstacle &o) {
+                    auto it = cls_tracks_.find(o.id);
+                    const int seen = (it == cls_tracks_.end())
+                        ? 0 : static_cast<int>(it->second.s_hist.size());
+                    return seen >= commit_break_min_obs_;
+                };
+            bool new_obs_beyond_commit = false;
+            if (committed_obs_end_s_ >= 0.0) {
+                const double past_obs = Mod(cur_s_ - committed_obs_end_s_, track_len_);
+                const bool committed_obs_passed =
+                    past_obs > 0.0 && past_obs < track_len_ * 0.5;
+                if (committed_obs_passed) {
+                    for (const auto &o : all_ahead_now) {
+                        if (!stable_for_release(o)) {
+                            continue;
+                        }
+                        const double start_ahead =
+                            Mod(o.s_start - cur_s_, track_len_);
+                        const double beyond =
+                            Mod(o.s_start - committed_until_s_, track_len_);
+                        if (start_ahead <= lookahead_m_ &&
+                            beyond > 0.0 && beyond < track_len_ * 0.5)
+                        {
+                            new_obs_beyond_commit = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (pos < span && !new_obs_beyond_commit &&
                 CheckPathCollision(committed_wpnts_.wpnts, stable_ahead, nullptr)) {
                 evasion_wpnts.wpnts = committed_wpnts_.wpnts;
                 mrks = committed_mrks_;
@@ -942,9 +994,15 @@ void SplinerNode::Run() {
                 // 커밋 파기는 드물지만 그대로 정지/급조향으로 이어지므로 반드시
                 // 남긴다 (가설 (c) "성립했다가 깨진다"의 유일한 직접 증거).
                 RCLCPP_WARN(this->get_logger(),
-                    "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu",
-                    pos, span, stable_ahead.size());
+                    "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu reason=%s",
+                    pos, span, stable_ahead.size(),
+                    new_obs_beyond_commit ? "new_obs_beyond_commit"
+                                          : (pos < span ? "path_collision" : "path_end"));
+                if (new_obs_beyond_commit) {
+                    NoteReject("commit_released_new_obs");
+                }
                 committed_until_s_ = -1.0;
+                committed_obs_end_s_ = -1.0;
             }
         }
 
@@ -1147,6 +1205,8 @@ void SplinerNode::Run() {
                 committed_mrks_ = mrks;
                 committed_start_s_ = evasion_wpnts.wpnts.front().s_m;
                 committed_until_s_ = evasion_wpnts.wpnts.back().s_m;
+                // 조기 해제 판정용: 이 커밋이 대상으로 삼은 장애물의 뒷 끝.
+                committed_obs_end_s_ = Mod(closest.s_end, track_len_);
             }
         } else if (lc_active_ && !evasion_valid &&
                    sp_lane_change_ && has_sp_) {
@@ -3260,8 +3320,11 @@ bool SplinerNode::BuildTrailing(
         const double t = std::min((dist - hold_until) / std::max(back, 1e-3), 1.0);
         return goal * (1.0 - t);
     };
-    // 램프 전 구간이 트랙 경계 안인가.
-    auto ramp_ok = [&](double goal, double len) {
+    // 램프 전 구간이 트랙 경계 안인가. 실패하면 구속 지점을 돌려준다
+    // (bind_s / bind_d / bind_limit) — 어느 점이 물었는지가 로그에 없어서
+    // run_0813_165312 분석에서 이 게이트의 인과를 재구성으로만 세울 수 있었다.
+    auto ramp_ok = [&](double goal, double len, double *bind_s = nullptr,
+                       double *bind_d = nullptr, double *bind_limit = nullptr) {
         const double back = back_len_for(goal);
         for (int i = 0; i < n; ++i) {
             const double dist = i * wpnt_dist_;
@@ -3269,6 +3332,15 @@ bool SplinerNode::BuildTrailing(
             const int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
             const double d = d_profile(dist, goal, len, back);
             if (!WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
+                if (bind_s != nullptr) {
+                    *bind_s = s;
+                    *bind_d = d;
+                    const double margin =
+                        RequiredBoundaryMargin(spline_bound_mindist_);
+                    *bind_limit = d >= 0.0
+                        ? std::abs(gb_wpnts_[gi].d_left) - margin
+                        : -(std::abs(gb_wpnts_[gi].d_right) - margin);
+                }
                 return false;
             }
         }
@@ -3277,12 +3349,60 @@ bool SplinerNode::BuildTrailing(
     double d_ramp_len = ramp_len_for(d_goal);
     double d_back_len = back_len_for(d_goal);
     bool hold_current_d = emergency_stop;
-    if (!hold_current_d && !ramp_ok(d_goal, d_ramp_len)) {
-        // 회피 목표 유지가 경계를 침범하면 예전 동작(raceline 복귀)으로 내려간다.
-        d_goal = 0.0;
-        d_ramp_len = ramp_len_for(0.0);
-        d_back_len = back_len_for(0.0);
-        if (std::abs(cur_d_) > 0.02 && !ramp_ok(0.0, d_ramp_len)) {
+    double bind_s = 0.0, bind_d = 0.0, bind_limit = 0.0;
+    if (!hold_current_d &&
+        !ramp_ok(d_goal, d_ramp_len, &bind_s, &bind_d, &bind_limit))
+    {
+        // ── 성립하는 최대 오프셋 탐색 (2026-08-13) ──────────────────────
+        // 예전에는 여기서 곧장 d_goal = 0 (raceline 복귀)이었다. 그런데
+        // ramp_ok 는 [진입 램프 -> 유지 -> 복귀 블렌드] 프로파일 **전 구간**을
+        // 훑고 **한 점이라도** 경계를 넘으면 false 다. 복귀 블렌드는 장애물보다
+        // 한참 하류까지 뻗고 그 길이는 속도에 비례하므로, 장애물이 멀수록 꼬리가
+        // 길어져 좁은 구간에 닿는다 — 즉 **시간이 남아 있을수록 회피 의도가
+        // 지워진다.** run_0813_165312 실측: 트레일링 28건 중 gap>=1.7m 인
+        // 10건에서 9건이 d_goal=0 이 됐고(gap<=1.0m 14건은 14건 전부 유지),
+        // S/F 접촉 5건이 여기서 나왔다. 재구성상 구속 지점은 7m 하류
+        // s≈4.4 의 한 점이고 여유가 5mm 였다.
+        //
+        // 전부-아니면-전무를 없앤다: 0 과 d_goal 사이에서 성립하는 **최대**
+        // 오프셋을 이분 탐색으로 찾는다. 부호는 유지하고(반대쪽으로 넘어가지
+        // 않는다) 검사 자체는 종전대로 전 구간을 그대로 본다 — 경로 생성
+        // 루프(아래)가 같은 경계 검사로 한 점이라도 어긋나면 경로를 통째로
+        // 버리므로, 검사 범위를 줄이면 "오프셋 축소"가 "경로 없음"이 된다.
+        const double full_goal = d_goal;
+        double lo = 0.0;          // 항상 성립한다고 가정하지 않는다 (아래 재확인)
+        double hi = 1.0;          // 성립하지 않음이 위에서 확인된 배율
+        for (int it = 0; it < 12; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            const double cand = full_goal * mid;
+            if (ramp_ok(cand, ramp_len_for(cand))) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        d_goal = full_goal * lo;
+        // 수 cm 미만의 잔량은 유지할 값어치가 없다 (d_profile 도 0.02 이하를
+        // "오프셋 없음"으로 취급한다).
+        if (std::abs(d_goal) <= 0.02) {
+            d_goal = 0.0;
+        }
+        d_ramp_len = ramp_len_for(d_goal);
+        d_back_len = back_len_for(d_goal);
+        if (std::abs(d_goal) > 0.02) {
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                "Trailing 횡목표 축소: %.2f -> %.2f (구속 s=%.2f d=%.2f 한계 %.2f)",
+                full_goal, d_goal, bind_s, bind_d, bind_limit);
+        } else {
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                "Trailing 횡목표 포기: %.2f -> 0 (구속 s=%.2f d=%.2f 한계 %.2f)",
+                full_goal, bind_s, bind_d, bind_limit);
+        }
+        NoteReject(std::abs(d_goal) > 0.02 ? "trailing_d_goal_shrunk"
+                                           : "trailing_d_goal_zeroed");
+        if (std::abs(cur_d_) > 0.02 && d_goal == 0.0 &&
+            !ramp_ok(0.0, d_ramp_len))
+        {
             // 안전한 raceline 복귀 기하도 없으면 빈 경로 대신 현재 d에서
             // 정지한다. 빈 경로는 곧 전속 global path이므로 금지.
             hold_current_d = true;

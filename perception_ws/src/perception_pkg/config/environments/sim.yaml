@@ -74,7 +74,13 @@ obstacle_detector_node:
     use_track_filter: true
     global_waypoints_topic: /global_waypoints
     track_bound_inflation_m: 0.10
-    max_view_ahead_m: 6.0
+    # 2026-08-13: 6.0 -> 8.0. real_car.yaml 과 동일 (근거·실측표는 그쪽 주석).
+    # 08-13 커밋이 real_car.yaml 만 올리고 여기를 두고 가서, sim 이 실차보다
+    # 2m 짧은 시야로 회피를 검증하고 있었다 — 이 값은 검출 **시점**을 직접
+    # 정하므로(run_0813_165312: s갭 6.10m 0점 / 6.00m 9점) 어긋난 채로는
+    # sim 의 "회피 늦음"이 파라미터 탓인지 물리 탓인지 구분되지 않는다.
+    # real_car.yaml 이 아직 안 돌린 6.0 vs 8.0 유령율 A/B 를 돌릴 자리도 여기다.
+    max_view_ahead_m: 8.0
     max_view_behind_m: 2.0
     # boundary_polygon_xy: 미설정 = 비활성 (빈 리스트 []는 rclpy 타입오류 유발 — 쓰지 말 것)
 

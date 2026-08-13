@@ -81,6 +81,25 @@ perception_obstacle_bridge_node:
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
+    # ── 랩 기억 — 값은 real_car.yaml 과 동일 (근거 주석도 그쪽) ──────────
+    # memory_enabled 를 여기만 true 로 두고 싶었지만
+    # test_sim_real_car_profiles_mirror_real_car 가 막는다. 그 테스트가 옳다 —
+    # sim 이 실차와 **다른 행동**으로 돌면 "sim 에선 됐다"가 실차와 대응되지
+    # 않는다. 그래서 세 프로파일(real_car / sim_real_car / sim)이 같은 값을
+    # 갖고, 켤 때는 셋을 같이 켠다.
+    bridge/memory_enabled: false
+    bridge/memory_confirm_laps: 2
+    bridge/memory_forget_misses: 2
+    bridge/memory_match_s_m: 0.60
+    bridge/memory_match_d_m: 0.35
+    bridge/memory_inject_ahead_m: 12.0
+    bridge/memory_close_requires_match_m: 3.0
+    bridge/memory_dynamic_poison_min_dist_m: 1.0
+    bridge/memory_dynamic_suppress_m: 1.5
+    bridge/memory_relevant_margin_m: 0.25
+    bridge/memory_pos_std_m: 0.12
+    bridge/ego_frenet_topic: /car_state/frenet/odom
+    bridge/ego_frenet_timeout_sec: 0.5
 
 # --- 이하 real_car.yaml과 완전히 동일 (근거 주석은 real_car.yaml 참조) ---
 spliner_node:
