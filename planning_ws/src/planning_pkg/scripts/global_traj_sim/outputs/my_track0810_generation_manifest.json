@@ -1,16 +1,16 @@
 {
   "files": [
     {
-      "bytes": 32586,
+      "bytes": 32594,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0810_sp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "sp_0",
-      "sha256": "ba05aeceddd6cfac7e38431d989e91d94cf7128afce01d3b7013823a21910474"
+      "sha256": "e9b6e9c102bdca617727c5afd9bcf8d8bdc8c8e966e3486b36f941363c441c6b"
     },
     {
-      "bytes": 32586,
+      "bytes": 32594,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0810_sp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "sp_1",
-      "sha256": "ba05aeceddd6cfac7e38431d989e91d94cf7128afce01d3b7013823a21910474"
+      "sha256": "e9b6e9c102bdca617727c5afd9bcf8d8bdc8c8e966e3486b36f941363c441c6b"
     },
     {
       "bytes": 7685,
@@ -25,20 +25,20 @@
       "sha256": "3032c0b57dc139b03728ce78f326deb3579ff0e371e22b73a5b602ba16ffc1b8"
     },
     {
-      "bytes": 32798,
+      "bytes": 32803,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0810_iqp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "main_output",
-      "sha256": "ceafa456792bec722baa6eb5719fced93012f00d0613cfd07abb56241166eb03"
+      "sha256": "6fd559a5b42271ee6322dfab3232a3304a257e7c62a941260ea4b47f9672db8a"
     },
     {
-      "bytes": 32798,
+      "bytes": 32803,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0810_iqp_max7.00ms_margin0.08m_mu0.80.csv",
       "role": "main_runtime",
-      "sha256": "ceafa456792bec722baa6eb5719fced93012f00d0613cfd07abb56241166eb03"
+      "sha256": "6fd559a5b42271ee6322dfab3232a3304a257e7c62a941260ea4b47f9672db8a"
     }
   ],
-  "generation_content_sha256": "2bbafb8c92b359086e7c6d269603af8b0c10795044a4ea652c2567a80d073cb9",
-  "generation_id": "08c03df1ca5c43e08b48c1295df8ad50",
+  "generation_content_sha256": "641a8ced3ec23d0743d54acfbc11fc0ce56e5b676d8f99619e27820dac01f193",
+  "generation_id": "cc1e0e03506a4eea9f12083cf7c1ce5b",
   "main": "my_track0810_iqp_max7.00ms_margin0.08m_mu0.80.csv",
   "map": "my_track0810",
   "schema_version": 1,
@@ -59,16 +59,16 @@
       "width_min": 1.375
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 43,
+      "binding_pts": 51,
       "corner_pts": 259,
       "enabled": true,
-      "limited_pts": 158,
-      "raw_v_min": 3.055555555555556,
-      "slope_max": 0.09,
+      "limited_pts": 141,
+      "raw_v_min": 2.9816513761467895,
+      "slope_max": 0.109,
       "slope_min": 0.03,
-      "smoothed_pts": 162,
+      "smoothed_pts": 165,
       "total_pts": 323,
-      "v_min": 3.2142857142857144
+      "v_min": 3.2695101157112525
     },
     "advisory_profiles": [
       "python_sim_tracker"
@@ -84,11 +84,11 @@
       "ax_sign_flips_before_smoothing": 11,
       "decel_limit_min": 2.2,
       "jerk_limit": 30.0,
-      "jerk_max": 125.49219326932499,
-      "jerk_over_pts": 22,
-      "jerk_p50": 1.5489144605217169,
-      "jerk_p99": 81.77855076079751,
-      "jerk_p99_before_smoothing": 175.7449858481279,
+      "jerk_max": 160.28701990272484,
+      "jerk_over_pts": 25,
+      "jerk_p50": 1.2986173833806538,
+      "jerk_p99": 75.96490114569794,
+      "jerk_p99_before_smoothing": 193.5149912551502,
       "smooth_passes": 2
     },
     "mu_profile": 0.8,
@@ -108,21 +108,33 @@
         "controller_speed_scale": 0.3,
         "max_speed_mps": 7.0,
         "name": "python_sim_tracker",
-        "planner_speed_scale": 0.5714,
+        "planner_speed_scale": 0.96,
         "plant": "ideal"
       }
     ],
     "raceline_v_max_mps": 7.0,
+    "speed_lookahead": {
+      "enabled": false,
+      "lookahead_s": 0.0,
+      "profile": "cpp_real_car",
+      "raised_pts": 0,
+      "total_pts": 323,
+      "v_drop_max": 0.0,
+      "v_mean_after": 4.735973741857107,
+      "v_mean_before": 4.735973741857107,
+      "window_max_m": 0.0
+    },
     "velocity_profile_settings": {
       "corner_accel_mps2": 2.2,
       "corner_decel_mps2": 2.2,
-      "lat_err_corner_s": 0.09,
+      "lat_err_corner_s": 0.109,
       "lat_err_exit_decay_m": 0.8,
       "lat_err_kappa_window_m": 2.0,
       "lat_err_straight_s": 0.03,
       "longitudinal_smooth_m": 0.55,
       "longitudinal_smooth_passes": 2,
       "mu_profile": 0.8,
+      "speed_lookahead_s": 0.0,
       "v_max_mps": 7.0,
       "width_cap_smooth_m": 0.55,
       "width_cap_smooth_max_gain": 1.2

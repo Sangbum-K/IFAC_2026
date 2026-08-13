@@ -190,22 +190,51 @@ MIN_ISLAND_M2 = 0.3
 #      된다: 08-05/08-06 백 168 s(전류 포화 24 A) 구간에서 달성 가속도는 속도대
 #      0~5.5 m/s 전 구간에 걸쳐 p50 0.7~1.6 / p90 1.2~1.7 로, 1.8 은 이미 p95 위다
 V_MAX      = RACELINE_V_MAX
-MU         = 0.96    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
-                     # 2026-07-31 run_0731_223152 IMU 실측 |a_lat| p95 7.0~7.9 m/s²
-                     # → 0.75(7.36)가 실측과 일치하는 '물리' 값이다.
-                     # ⚠️ 2026-08-11 0.90 -> 0.96 (9.42 m/s²). 실측 근거가 아니라
-                     # 게이트를 통과시키기 위한 값이다. 965badf 의 완화
-                     # (LAT_ERR_CORNER_S 0.090->0.075, LAT_ERR_KAPPA_HIGH
-                     # 0.30->0.50)로 |k| 0.30~0.50 스위퍼가 코너 판정에서 빠져
-                     # A_*_CORNER(2.2) 대신 A_ACC_MAX(4.5)를 받게 되었고, 횡가속이
-                     # MU_PROFILE 캡(7.85)에 붙은 지점에서 hypot(7.85,4.5)=9.05 가
-                     # 구조적으로 나온다 (my_track0811 s=32.65 랩어라운드에서
-                     # 요구 9.28 로 FAIL). 따라서 이 값은 "타이어가 안 미끄러진다"를
-                     # 뜻하지 않는다 — "합성 요구가 0.96g 를 안 넘는다"는 뜻뿐이다.
-                     # 실차 슬립 없이 실증된 최대는 여전히 0.70g 다.
-                     # 되돌리는 조건: A_*_CORNER 커플링을 끊거나(ax 임계만 0.30
-                     # 고정) 종가감속을 sqrt((mu*g)^2 - a_lat^2)로 곡률 연동하면
-                     # 0.90 으로 복귀 가능하다.
+MU         = 1.05    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
+                     #
+                     # ⚠️ 이 값은 물리량이 아니다. "합성 요구가 이 값을 안 넘는다"
+                     # 는 뜻뿐이고, 실차에서 슬립 없이 실증된 최대는 0.70g 다
+                     # (2026-07-31 run_0731_223152 IMU 실측 |a_lat| p95 7.0~7.9).
+                     # 물리값으로 읽지 말 것.
+                     #
+                     # 이력: 0.90 -> 0.96 (08-11, 게이트 통과용) -> 1.05 (08-13).
+                     #
+                     # 08-13 에 왜 또 올렸나. my_track0813(코리도 min 1.25 m)이
+                     # 요구 9.59 로 FAIL 했다. 원인을 끝까지 따라가 보면 그립도
+                     # 라인도 아니었다 — velocity_profile() 은 이미 마찰 타원을
+                     # 강제하고 있고 계획의 hypot(ax, v²k) max 는 정확히 7.85 =
+                     # MU_PROFILE*g, 위반 0 이다. 초과분은 전부 **컨트롤러가 속도
+                     # 기준을 v*T_la(=0.25 s) 앞에서 읽어서** 생기는 계획/실행
+                     # 어긋남이다. 헤어핀 탈출 s=21.89 한 점:
+                     #     v 4.05 (계획 3.71)  a_lat 8.84 (계획 7.30)
+                     #     a_long 3.72 (계획 2.20)  합성 9.59 (계획 7.62)
+                     # 즉 1 m 앞의 속도를 미리 받아 실행한 결과다.
+                     #
+                     # 이건 상한 쪽에서 정확히 상쇄할 수 있다 —
+                     # SPEED_LOOKAHEAD_COMPENSATION 을 켜면 네 맵의 요구가
+                     #     0810 9.07->7.54  0811 8.94->7.58
+                     #     0812 8.79->7.93  0813 9.59->7.39
+                     # 로 내려가고 MU 0.90 으로 복귀할 수 있다. 실행 횡가속도
+                     # 9.27 -> 7.34 로 계획 예산 안에 들어온다. 대신 폐루프 랩이
+                     # +0.2~0.3 s 느려진다. 08-13 에 랩타임을 지키기로 하고 그
+                     # 보정을 끈 채 커트라인을 올리는 쪽을 택했다.
+                     #
+                     # 1.05 의 근거는 순전히 관측 분포다. 보정 OFF 에서 네 맵의
+                     # 요구 최대는 8.79 / 8.94 / 9.07 / 9.59 (최악 0.978 g) 이고
+                     # 맵 간 편차가 ±9% 라, 최악에 그만큼 얹어 10.30 으로 잡았다.
+                     # 맵이 바뀌어도 이 게이트 하나 때문에 다시 막히지 않게 하는
+                     # 것이 목적이다.
+                     #
+                     # ⚠️ 대가: 이 커트라인은 조향 LUT 자신의 포화점에 거의 닿아
+                     # 있다. LUT 최대 횡가속은 v=3.5 에서 10.08, v>=4.0 에서
+                     # 10.4~10.9 다. 즉 10.30 위로는 모델이 애초에 못 올라가므로
+                     # **마찰 게이트는 v<4 구간을 빼면 사실상 발화하지 않는다.**
+                     # 이제 CSV 를 실제로 막아 주는 것은 마찰이 아니라
+                     #   footprint 벽 침범 / 조향각·조향속도 한계 / |lat err| /
+                     #   plant 가감속 실측 한계
+                     # 네 가지다. 마찰 초과를 다시 진짜 게이트로 쓰고 싶으면
+                     # 값을 되돌리는 게 아니라 SPEED_LOOKAHEAD_COMPENSATION 을
+                     # 켜서 요구 자체를 내려야 한다.
 # 속도 프로파일 계획용 mu. MU(물리 한계)보다 낮춰서, 컨트롤러의
 # 추종 보정(조향 수정 + 제동 겹침)이 남은 마진 안에서 소화되게 한다.
 # 2026-07-31 폐루프 스윕: 프로파일 mu 0.75(마진 0)는 scale 0.71부터 friction
@@ -624,6 +653,55 @@ WIDTH_CAP_SMOOTH_MAX_GAIN = 1.20
 # ⚠️ 실차 미검증. 첫 주행에서 /pitwall/lat_err 와 백스톱 발화 빈도를 볼 것.
 A_ACC_CORNER = 2.2    # 코너 내 종가속 상한 [m/s²]
 A_DEC_CORNER = 2.2    # 코너 내 종감속 상한 [m/s²]
+
+# --- 컨트롤러 speed lookahead 보정 -------------------------------------------
+# velocity_profile() 은 각 점의 v 를 그 점의 곡률로 마찰 타원 안에 넣는다.
+# 그런데 컨트롤러는 속도 기준을 자기 위치가 아니라 speed_lookahead 초 **앞의**
+# 점에서 읽는다. 그래서 계획과 실행이 호 길이 v*T_la 만큼 어긋난다:
+# 호 위치 p 의 차가 실제로 실행하는 속도는 vx(p) 가 아니라 vx(p + v*T_la) 다.
+#
+# 이 어긋남이 게이트 마진을 통째로 먹고 있었다 (2026-08-13 my_track0813 실측).
+# 계획은 마찰 타원에 정확히 붙어 있다 — hypot(ax, v²k) max = 7.85 = mu_profile*g,
+# 위반 0. 그런데 같은 CSV 를 폐루프로 돌리면 요구가 9.59 까지 올라간다.
+# 헤어핀(R 1.43 m) 탈출부 s=21.89 한 점을 뜯어보면:
+#       v        4.05 m/s   (계획 3.71, +9.2%)   <- 1 m 앞의 속도를 미리 받음
+#       a_lat    8.84       (계획 7.30)
+#       a_long   3.72       (계획 2.20)          <- 앞점과의 차이를 slew 로 메움
+#       합성     9.59       (계획 7.62)
+# 즉 초과분은 그립 부족도 라인 문제도 아니고 **계획을 1 m 앞에서 읽는 것** 하나다.
+# 4 m/s × 0.25 s = 1 m, 그 1 m 동안 계획은 ax 2.2 로 올라가는 중이라
+# v² 가 2*2.2*1 만큼 앞서 붙는다.
+#
+# 이 어긋남을 상수(MU)로 덮으면 맵마다 도박이 된다. 같은 설정으로 네 맵의
+# 폐루프 요구 최대치를 재보면 (한계 9.42):
+#       my_track0810  9.07      my_track0812  8.79
+#       my_track0811  8.94      my_track0813  9.59  <- FAIL
+# 통과 여부는 그 맵의 최소 반경 코너가 하필 가속 구간과 겹치느냐로 갈린다.
+# 실제로 MU 는 이 초과를 덮으려고 0.90 -> 0.96 으로 올라간 적이 있다 (MU 주석).
+#
+# 그래서 상한 쪽을 고친다: 점 q 의 속도는 q 자신뿐 아니라 **직전 v*T_la 구간**
+# 에서도 안전해야 한다 (lookahead_max_kappa). 코너 진입은 영향 없고 — 앞에서
+# 읽으면 일찍 감속이라 안전하다 — 코너 탈출에서만 재가속이 lookahead 거리만큼
+# 늦춰진다. 이건 손해가 아니라 원래 물리다: 정점을 막 지난 차는 아직 그 곡률
+# 안에 있다.
+#
+# 값은 여기 베껴 적지 않는다. 실차가 읽는 control YAML 의 map/speed_lookahead
+# 가 단일 기준이고, 그 값이 바뀌면 CSV 도 따라 바뀌어야 한다.
+# (게이트 프로파일이 cpp_real_car 라서 실차 값을 쓴다. python_sim_tracker 는
+#  0.3 배속이라 이 상한에 걸리는 일이 없다.)
+#
+# ⚠️ 기본값 False — 2026-08-13 결정. 이 보정은 게이트 마진은 확실히 되찾지만
+# (아래 표) 계획 프로파일을 실제로 늦춘다. 폐루프 랩 기준 +0.2~0.3 s 다.
+# 랩타임을 그대로 두고 게이트 커트라인(MU)을 올리는 쪽을 택했다.
+# True 로 켜면 코너 탈출 재가속이 lookahead 거리만큼 늦춰지고, 대신 실행
+# 횡가속이 계획 예산(MU_PROFILE*g) 안으로 들어온다. 언제 켤 만한가:
+#   - 실차에서 코너 탈출 언더스티어/벽 접근이 보일 때
+#   - 게이트 요구를 실측 그립(0.70g) 근처까지 낮추고 싶을 때
+SPEED_LOOKAHEAD_COMPENSATION = False
+_SPEED_LOOKAHEAD_PROFILE = "cpp_real_car"
+SPEED_LOOKAHEAD_S = float(
+    controller_profile(_SPEED_LOOKAHEAD_PROFILE)["speed_lookahead_s"]
+) if SPEED_LOOKAHEAD_COMPENSATION else 0.0
 
 # 종방향 스무딩 패스 횟수. 각 패스는 (1) v 를 전장 창으로 평활해 국소 피크를
 # 깎고 (2) 그 결과를 상한으로 velocity_profile 을 다시 투영한다. 투영은 속도를
@@ -1430,6 +1508,48 @@ def recent_max_kappa(s, kappa, window_m=None, decay_m=_DEFAULT):
     return stacked.max(axis=0)
 
 
+def lookahead_max_kappa(s, kappa, v, lookahead_s=_DEFAULT):
+    """각 점에서 '직전 v*lookahead_s 안에 지나온' 최대 |kappa|.
+
+    컨트롤러는 속도 기준을 자기 위치가 아니라 **speed_lookahead 초 앞의 점**에서
+    읽는다 (control_node 의 map/speed_lookahead, PurePursuitSim._speed_target).
+    즉 호 위치 p 에 있는 차가 실제로 실행하는 속도는 vx(p) 가 아니라
+    vx(p + v*T_la) 다. 그래서 CSV 의 점 q 에 적힌 속도는 q 자신뿐 아니라
+    **그 뒤 [q - v*T_la, q] 구간**에서도 안전해야 한다 — 그 구간에 있는 차가
+    q 의 속도를 미리 받아 실행하기 때문이다.
+
+    코너 진입은 이 보정의 영향을 받지 않는다 (앞에서 읽으면 일찍 감속 = 안전).
+    묶이는 것은 코너 **탈출**뿐이다: 정점을 지난 뒤 lookahead 거리만큼은
+    아직 정점의 곡률로 속도가 묶인다. 실차에서 "정점 지나자마자 밟는데
+    아직 많이 꺾여 있는" 바로 그 구간이다.
+
+    recent_max_kappa 와 창의 방향(직전)은 같지만 목적이 다르다 — 저쪽은
+    횡추적오차 기울기 예측용이고 감쇠가 있다. 여기는 마찰 예산이라 감쇠 없이
+    hard max 를 쓴다. 창 길이도 점마다 v 에 비례해 달라진다.
+    """
+    lookahead_s = (SPEED_LOOKAHEAD_S if lookahead_s is _DEFAULT
+                   else lookahead_s)
+    s = np.asarray(s, dtype=float)
+    k = np.abs(np.asarray(kappa, dtype=float))
+    n = len(k)
+    if n == 0 or not lookahead_s or float(lookahead_s) <= 0.0:
+        return k
+    speed = np.broadcast_to(np.asarray(v, dtype=float), (n,))
+    if not np.isfinite(speed).all() or np.any(speed < 0.0):
+        raise ValueError("lookahead 창을 만들 속도가 음수/비유한값")
+    total = float(s[-1]) if s[-1] > 0 else float(n)
+    ds = total / max(n, 1)
+    # 창을 올림으로 잡아 격자 때문에 짧아지지 않게 한다 (fail-closed).
+    back = np.clip(
+        np.ceil(speed * float(lookahead_s) / max(ds, 1e-6)).astype(int),
+        0, max(n - 1, 0))
+    max_back = int(back.max()) if n else 0
+    out = k.copy()
+    for shift in range(1, max_back + 1):
+        out = np.where(back >= shift, np.maximum(out, np.roll(k, shift)), out)
+    return out
+
+
 def lat_err_slope(s, kappa):
     """점별 |lat err|/v 기울기 [s] — 직전 곡률로 보간.
 
@@ -1617,9 +1737,29 @@ def build_trajectory(geo, v_max=None, mu=None, margin=None):
     v = velocity_profile(
         s, kappa, v_cap, mu, accel_lim, decel_lim,
         segment_ds=ds)
+    # 컨트롤러가 속도를 v*T_la 앞에서 읽는 것을 상한 쪽에서 상쇄한다
+    # (SPEED_LOOKAHEAD_COMPENSATION 주석). 창 길이는 보정 전 프로파일 v 로
+    # 잡는다 — kappa_plan >= kappa 라 재투영은 속도를 낮추기만 하므로, 여기
+    # 쓰는 v 는 최종 v 보다 크고 따라서 창이 짧아지지 않는다 (fail-closed).
+    kappa_plan = lookahead_max_kappa(s, kappa, v)
+    lookahead_info = {
+        "enabled": bool(SPEED_LOOKAHEAD_COMPENSATION),
+        "lookahead_s": float(SPEED_LOOKAHEAD_S),
+        "profile": _SPEED_LOOKAHEAD_PROFILE,
+        "window_max_m": float(np.max(v) * SPEED_LOOKAHEAD_S),
+        "raised_pts": int(np.sum(kappa_plan > np.abs(kappa) + 1e-9)),
+        "total_pts": int(len(kappa)),
+    }
+    v_before = v
+    v = velocity_profile(
+        s, kappa_plan, v_cap, mu, accel_lim, decel_lim,
+        segment_ds=ds)
+    lookahead_info["v_drop_max"] = float(np.max(v_before - v))
+    lookahead_info["v_mean_before"] = float(np.mean(v_before))
+    lookahead_info["v_mean_after"] = float(np.mean(v))
     raw_diag = longitudinal_diagnostics(
         v, (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds), s, ds)
-    v = smooth_longitudinal(v, s, kappa, ds, mu, accel_lim, decel_lim)
+    v = smooth_longitudinal(v, s, kappa_plan, ds, mu, accel_lim, decel_lim)
     ax = (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds)
     long_info = longitudinal_diagnostics(v, ax, s, ds)
     long_info["ax_sign_flips_before_smoothing"] = raw_diag["ax_sign_flips"]
@@ -1645,11 +1785,13 @@ def build_trajectory(geo, v_max=None, mu=None, margin=None):
             "psi": geo["psi"], "kappa": kappa, "vx": v, "ax": ax,
             "width_speed_info": width_speed_info,
             "longitudinal_info": long_info,
+            "speed_lookahead_info": lookahead_info,
             "safe_dist_info": geo.get("safe_dist_info")}
 
 
 # 웨이포인트 배열이 아니라 생성 요약인 키. roll/flip 대상이 아니다.
-TRAJ_META_KEYS = ("safe_dist_info", "width_speed_info", "longitudinal_info")
+TRAJ_META_KEYS = ("safe_dist_info", "width_speed_info", "longitudinal_info",
+                  "speed_lookahead_info")
 
 
 def loop_orientation(xy):
@@ -2575,6 +2717,7 @@ def profile_settings_manifest():
         "corner_decel_mps2": A_DEC_CORNER,
         "longitudinal_smooth_passes": LONGITUDINAL_SMOOTH_PASSES,
         "longitudinal_smooth_m": LONGITUDINAL_SMOOTH_M,
+        "speed_lookahead_s": SPEED_LOOKAHEAD_S,
     }
 
 
@@ -2945,6 +3088,14 @@ def main():
               f"{width_info['total_pts']} · 상한 최저 "
               f"{width_info.get('raw_v_min', float('nan')):.2f} -> "
               f"{width_info['v_min']:.2f} m/s")
+    la_info = traj.get("speed_lookahead_info") or {}
+    if la_info.get("enabled"):
+        print(f"      [speed lookahead 보정] {la_info['profile']} "
+              f"{la_info['lookahead_s']:.2f} s → 창 최대 "
+              f"{la_info['window_max_m']:.2f} m · 직전 곡률로 상한이 올라간 점 "
+              f"{la_info['raised_pts']}/{la_info['total_pts']} · v 평균 "
+              f"{la_info['v_mean_before']:.2f} -> {la_info['v_mean_after']:.2f} "
+              f"m/s (최대 -{la_info['v_drop_max']:.2f})")
     for line in report_longitudinal(traj):
         print(line)
     for line in report_speed_pairing(traj, profiles + advisory_profiles):
@@ -3094,6 +3245,7 @@ def main():
             # '실제로 쓴 값' 이라, 나중에 어떤 설정의 산출물인지 추적할 수 있다.
             "velocity_profile_settings": profile_settings_manifest(),
             "longitudinal": traj.get("longitudinal_info"),
+            "speed_lookahead": traj.get("speed_lookahead_info"),
         })
 
     # 4) 플롯 ---------------------------------------------------------------
