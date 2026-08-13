@@ -3,13 +3,9 @@
 
 mapping.launch.py가 띄우며, 저장 시점은 두 가지다:
 
-  1. Ctrl+C (종료)       — 캐시된 마지막 /map을 pgm + yaml로 저장 (기본 동작)
-  2. /save_map 서비스    — 주행 중 아무 때나 중간 저장
+  1. Ctrl+C (종료)      — 캐시된 마지막 /map을 pgm + yaml로 저장 (기본 동작)
+  2. /save_map 서비스   — 주행 중 아무 때나 중간 저장
         ros2 service call /save_map std_srvs/srv/Trigger
-
-Ctrl+R은 2초 안에 두 번 누르면 slam_toolbox의 pose graph를 비우고 현재
-위치부터 처음부터 다시 매핑한다. 한 번만 눌러서는 지워지지 않는다. 이미 디스크에
-저장한 pgm/yaml은 안전을 위해 삭제하지 않고, 다음 Ctrl+C 또는 서비스 저장 때 교체한다.
 
 핵심은 "/map을 미리 캐시해 둔다"는 점이다. 종료 시점에 slam_toolbox에
 서비스를 호출하는 방식은, launch가 SIGINT를 프로세스 그룹 전체에 동시에
@@ -31,7 +27,6 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
 from nav_msgs.msg import OccupancyGrid
-from slam_toolbox.srv import Reset
 from std_srvs.srv import Trigger
 
 # nav2 map_server 기본 임계값. yaml에도 같은 값을 기록해 로드 시 일치시킨다.
@@ -57,22 +52,13 @@ class MapSaverNode(Node):
         self.declare_parameter('map_topic', '/map')
         # 종료(Ctrl+C) 시 자동 저장 여부. false면 /save_map 서비스로만 저장한다.
         self.declare_parameter('save_on_exit', True)
-        self.declare_parameter('reset_service', '/slam_toolbox/reset')
 
         self.map_dir = os.path.expanduser(self.get_parameter('map_dir').value)
         self.map_name = self.get_parameter('map_name').value
         self.save_on_exit = bool(self.get_parameter('save_on_exit').value)
-        self.reset_service = self.get_parameter('reset_service').value
 
         self.grid = None      # 마지막으로 받은 OccupancyGrid
         self.saved = False    # 중복 저장 방지 (서비스 저장 후 종료 등)
-        self.reset_in_flight = False
-        self.awaiting_fresh_map = False
-        self.grid_before_reset = None
-        self.reset_future = None
-        self.reset_timeout_timer = self.create_timer(
-            10.0, self.reset_timed_out)
-        self.reset_timeout_timer.cancel()
 
         # slam_toolbox의 /map은 transient_local(latched) + reliable로 나간다.
         # QoS가 어긋나면 구독은 되는데 메시지가 한 개도 안 오므로 반드시 맞춘다.
@@ -86,31 +72,21 @@ class MapSaverNode(Node):
             self.map_cb, map_qos)
 
         self.create_service(Trigger, '/save_map', self.save_service_cb)
-        self.create_service(Trigger, '/reset_map', self.reset_service_cb)
-        self.reset_client = self.create_client(Reset, self.reset_service)
 
         self.get_logger().info(
             '맵 저장 대기 중 — 저장 위치: %s'
             % os.path.join(self.map_dir, self.map_name + '.{pgm,yaml}'))
         self.get_logger().info(
-            '키: Ctrl+R 두 번=처음부터 다시, Ctrl+C=저장 후 종료. '
-            '주행 중 저장: '
-            '"ros2 service call /save_map std_srvs/srv/Trigger".')
+            '주행이 끝나면 Ctrl+C — 그 시점의 맵이 자동 저장됩니다. '
+            '중간 저장은 "ros2 service call /save_map std_srvs/srv/Trigger".')
 
     def map_cb(self, msg):
-        # reset 서비스가 pose graph를 비우는 동안 도착한 것은 reset 전 latched
-        # /map일 수 있다. 성공 응답 뒤 처음 오는 맵만 새 세대로 받아들인다.
-        if self.reset_in_flight:
-            return
         first = self.grid is None
         self.grid = msg
         if first:
-            prefix = '재시작 후 첫' if self.awaiting_fresh_map else '첫'
-            self.awaiting_fresh_map = False
             self.get_logger().info(
-                '%s /map 수신 (%dx%d, %.3f m/px) — slam_toolbox 정상 동작 중'
-                % (prefix, msg.info.width, msg.info.height,
-                   msg.info.resolution))
+                '첫 /map 수신 (%dx%d, %.3f m/px) — slam_toolbox 정상 동작 중'
+                % (msg.info.width, msg.info.height, msg.info.resolution))
 
     def save_service_cb(self, _request, response):
         ok, message = self.save()
@@ -118,18 +94,8 @@ class MapSaverNode(Node):
         response.message = message
         return response
 
-    def reset_service_cb(self, _request, response):
-        ok, message = self.request_reset()
-        response.success = ok
-        response.message = message
-        return response
-
     def save(self):
         """캐시된 OccupancyGrid를 pgm + yaml로 기록. (성공여부, 메시지) 반환."""
-        if self.reset_in_flight:
-            msg = 'SLAM 초기화 중이라 이전 맵을 저장하지 않습니다. 잠시 후 다시 누르세요.'
-            self.get_logger().warn(msg)
-            return False, msg
         if self.grid is None:
             msg = ('/map을 한 번도 받지 못해 저장할 게 없습니다 '
                    '(slam_toolbox가 안 떴거나 /scan이 없음)')
@@ -219,78 +185,6 @@ class MapSaverNode(Node):
         msg = '맵 저장 완료: %s (+ .pgm, %dx%d)' % (yaml_path, width, height)
         self.get_logger().info(msg)
         return True, msg
-
-    def request_reset(self):
-        """slam_toolbox 초기화를 시작한다. (요청 수락 여부, 메시지) 반환."""
-        if self.reset_in_flight:
-            message = 'SLAM 초기화가 이미 진행 중입니다.'
-            self.get_logger().warn(message)
-            return False, message
-        if not self.reset_client.service_is_ready():
-            message = ('%s 서비스가 아직 없습니다. slam_toolbox 시작을 확인하세요.'
-                       % self.reset_service)
-            self.get_logger().error(message)
-            return False, message
-
-        self.grid_before_reset = self.grid
-        self.reset_in_flight = True
-        request = Reset.Request()
-        # reset 직후 들어오는 스캔부터 새 맵을 만들도록 일시정지하지 않는다.
-        request.pause_new_measurements = False
-        self.get_logger().warn(
-            '[Ctrl+R] 현재 pose graph를 초기화합니다. 차량을 멈춘 상태여야 하며, '
-            '현재 위치가 새 시작점입니다.')
-        self.reset_future = self.reset_client.call_async(request)
-        self.reset_future.add_done_callback(self.reset_done)
-        self.reset_timeout_timer.reset()
-        return True, 'SLAM 초기화 요청을 보냈습니다.'
-
-    def reset_done(self, future):
-        # 타임아웃 뒤 늦게 도착한 응답은 이미 복구한 상태를 바꾸지 않는다.
-        if not self.reset_in_flight:
-            return
-        self.reset_timeout_timer.cancel()
-        try:
-            response = future.result()
-            success_code = getattr(response, 'RESULT_SUCCESS', 0)
-            success = response.result == success_code
-        except Exception as error:  # rclpy Future가 서비스 예외를 전달한다.
-            self.get_logger().error('SLAM 초기화 호출 실패: %s' % error)
-            success = False
-
-        if success:
-            # map_saver 캐시까지 지워야 종료/서비스 저장이 reset 전 맵을 쓰지 않는다.
-            self.grid = None
-            self.saved = False
-            self.awaiting_fresh_map = True
-            self.get_logger().warn(
-                'SLAM 초기화 완료 — 현재 위치부터 새 맵을 만들고 있습니다. '
-                '새 /map 수신 전에는 저장할 수 없습니다.')
-        else:
-            self.grid = self.grid_before_reset
-            self.get_logger().error(
-                'SLAM 초기화가 거부되었습니다. 기존 메모리 맵을 계속 사용합니다.')
-        self.grid_before_reset = None
-        self.reset_in_flight = False
-        self.reset_future = None
-
-    def reset_timed_out(self):
-        """reset 서버가 죽거나 응답하지 않아도 저장 기능을 다시 살린다."""
-        self.reset_timeout_timer.cancel()
-        if not self.reset_in_flight:
-            return
-        old_grid = self.grid_before_reset
-        future = self.reset_future
-        self.grid_before_reset = None
-        self.reset_in_flight = False
-        self.reset_future = None
-        # cancel()이 done callback을 즉시 부를 수 있어 상태를 먼저 복구한다.
-        if future is not None:
-            future.cancel()
-        self.grid = old_grid
-        self.get_logger().error(
-            'SLAM 초기화가 10초 안에 끝나지 않았습니다. 기존 메모리 맵을 '
-            '복구했으며, slam_toolbox 상태를 확인하세요.')
 
     def save_on_shutdown(self):
         """종료 경로에서 호출. ROS 통신 없이 캐시본만 쓰므로 항상 동작한다."""

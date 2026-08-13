@@ -126,13 +126,9 @@ cd ~/IFAC_ws
 
 ### 매핑
 
-조이스틱으로 트랙을 한 바퀴 돌고 **`Ctrl+C`** 하면 마지막 맵을 저장하고
-종료합니다. `Ctrl+R`을 2초 안에 두 번 누르면 현재 메모리 맵을 비우고
-현재 위치부터 다시 시작합니다.
-저장된 맵은
+조이스틱으로 트랙을 한 바퀴 돌고 **`Ctrl+C`** 하면 그 시점의 맵이
 `~/IFAC_ws/maps/<이름>.{pgm,yaml}` (nav2 `map_server` 표준 PGM+YAML)로 저장됩니다.
-주행 중 중간 저장은 `ros2 service call /save_map std_srvs/srv/Trigger`,
-초기화는 `ros2 service call /reset_map std_srvs/srv/Trigger`로도 할 수 있습니다.
+주행 중 중간 저장은 `ros2 service call /save_map std_srvs/srv/Trigger`.
 주요 인자: `map_name`(저장 이름), `map_dir`(기본 `~/IFAC_ws/maps`),
 `hardware:=false`(이미 bringup이 떠 있을 때), `rviz:=false`, `save_on_exit:=false`.
 
