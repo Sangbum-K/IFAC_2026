@@ -9,7 +9,8 @@
   D) map_saver_node                      — /map을 캐시했다가 파일로 저장
 
 사람이 할 일: **조이스틱으로 트랙을 한 바퀴 천천히 돌고 Ctrl+C.**
-Ctrl+C 하는 순간 맵이 `map_dir/map_name.{pgm,yaml}`로 저장된다.
+Ctrl+R은 2초 안에 두 번 누르면 현재 pose graph를 버리고 현재 위치부터
+다시 매핑한다. Ctrl+C는 저장 후 종료한다.
 
 저장 위치는 기본이 **~/IFAC_ws/maps/** 다 (워크스페이스 공용 맵 폴더).
 
@@ -19,6 +20,7 @@ Ctrl+C 하는 순간 맵이 `map_dir/map_name.{pgm,yaml}`로 저장된다.
   hardware:=false       이미 A가 떠 있을 때
   rviz:=false           화면 없이
   save_on_exit:=false   Ctrl+C 자동 저장을 끄고 /save_map 서비스로만 저장
+  keyboard_controls:=false  Ctrl+R 터미널 단축키 비활성화
   overwrite:=false      이름이 이미 쓰일 때만 거부. 기본은 덮어쓰기 허용
 
 이름이 겹치면 **주행 전에** 막는다: map_dir 은 localization / raceline_tuner /
@@ -29,6 +31,9 @@ build_map / sim_race 가 모두 먼저 뒤지는 폴더라, 기존 맵이나 패
 주행 중 중간 저장:
   ros2 service call /save_map std_srvs/srv/Trigger
 
+터미널이 없을 때 처음부터 다시:
+  ros2 service call /reset_map std_srvs/srv/Trigger
+
 저장 후 그 맵으로 주행하려면 — **재빌드 불필요**:
   ros2 launch integration_pkg real_car.launch.py map:=track1
   (localization.launch.py 의 map:= 이 ~/IFAC_ws/maps 를 먼저 찾는다.
@@ -38,24 +43,181 @@ build_map / sim_race 가 모두 먼저 뒤지는 폴더라, 기존 맵이나 패
 """
 
 import os
+import select
+import termios
+import threading
+import time
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+import rclpy
+from rclpy.context import Context
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node as RclpyNode
+from rclpy.signals import SignalHandlerOptions
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     TimerAction,
 )
+from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from std_srvs.srv import Trigger
 
 # 워크스페이스 공용 맵 폴더. localization.launch.py 의 map:= 가 이 폴더를
 # 먼저 뒤지므로, 여기에 저장하면 재빌드 없이 바로 map:=<이름> 으로 주행할 수 있다.
 DEFAULT_MAP_DIR = os.path.expanduser('~/IFAC_ws/maps')
+CTRL_R = b'\x12'
+RESET_CONFIRM_SEC = 2.0
+
+
+class MappingKeyboardController:
+    """Read mapping hotkeys in the launch process and call saver services.
+
+    ROS launch children receive a pipe as stdin, so the child map_saver_node
+    cannot portably read the user's terminal.  The launch process owns that
+    terminal and forwards key intent through ROS services instead.
+    """
+
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.stop_lock = threading.Lock()
+        self.stopped = False
+        self.key_thread = None
+        self.spin_thread = None
+        self.ros_context = None
+        self.node = None
+        self.executor = None
+        self.reset_client = None
+        self.reset_armed_until = 0.0
+
+    @staticmethod
+    def report(message):
+        print('[mapping-keys] %s' % message, flush=True)
+
+    def start(self, _context, *args, **kwargs):
+        try:
+            self.ros_context = Context()
+            rclpy.init(
+                args=[], context=self.ros_context,
+                signal_handler_options=SignalHandlerOptions.NO)
+            self.node = RclpyNode(
+                'mapping_keyboard_controller', context=self.ros_context)
+            self.reset_client = self.node.create_client(Trigger, '/reset_map')
+            self.executor = SingleThreadedExecutor(context=self.ros_context)
+            self.executor.add_node(self.node)
+            self.spin_thread = threading.Thread(
+                target=self.executor.spin, name='mapping-keyboard-ros',
+                daemon=True)
+            self.spin_thread.start()
+            self.key_thread = threading.Thread(
+                target=self.keyboard_loop, name='mapping-keyboard-input',
+                daemon=True)
+            self.key_thread.start()
+            self.report(
+                'Ctrl+R 두 번=처음부터 다시 | Ctrl+C=저장 후 종료')
+        except Exception as error:
+            self.report('키보드 제어 시작 실패: %s' % error)
+            self.stop(_context)
+        return []
+
+    def call_trigger(self, client, label):
+        if self.stop_event.is_set():
+            return
+        if client is None or not client.service_is_ready():
+            self.report('%s 서비스가 아직 준비되지 않았습니다.' % label)
+            return
+        future = client.call_async(Trigger.Request())
+
+        def done(completed):
+            try:
+                response = completed.result()
+                state = '성공' if response.success else '실패'
+                self.report('%s %s: %s' % (label, state, response.message))
+            except Exception as error:
+                self.report('%s 호출 실패: %s' % (label, error))
+
+        future.add_done_callback(done)
+
+    def keyboard_loop(self):
+        fd = None
+        old_attrs = None
+        try:
+            try:
+                fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                if not os.isatty(0):
+                    raise
+                fd = os.dup(0)
+                os.set_blocking(fd, False)
+            old_attrs = termios.tcgetattr(fd)
+            attrs = list(old_attrs)
+            attrs[6] = list(old_attrs[6])
+            # 터미널 흐름 제어 키를 실수로 눌러 출력이 멈추는 것도 방지한다.
+            # Ctrl+R은 Enter 없이 한 글자씩 읽는다.
+            attrs[0] &= ~(termios.IXON | termios.IXOFF)
+            if hasattr(termios, 'IXANY'):
+                attrs[0] &= ~termios.IXANY
+            attrs[3] &= ~(termios.ICANON | termios.ECHO)
+            # ISIG는 유지하므로 Ctrl+C는 launch의 정상 종료 신호로 남는다.
+            attrs[6][termios.VMIN] = 0
+            attrs[6][termios.VTIME] = 1
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+            while not self.stop_event.is_set():
+                readable, _, _ = select.select([fd], [], [], 0.10)
+                if not readable:
+                    continue
+                key = os.read(fd, 1)
+                if key == CTRL_R:
+                    now = time.monotonic()
+                    if now > self.reset_armed_until:
+                        self.reset_armed_until = now + RESET_CONFIRM_SEC
+                        self.report(
+                            '[Ctrl+R] 차량을 멈추고, 초기화하려면 2초 안에 '
+                            'Ctrl+R을 한 번 더 누르세요.')
+                    else:
+                        self.reset_armed_until = 0.0
+                        self.report('[Ctrl+R] 처음부터 다시 매핑 요청')
+                        self.call_trigger(self.reset_client, '/reset_map')
+        except (OSError, termios.error) as error:
+            self.report(
+                '키보드 제어 비활성(터미널 없음: %s). /save_map 및 '
+                '/reset_map 서비스를 사용하세요.' % error)
+        finally:
+            if fd is not None and old_attrs is not None:
+                try:
+                    termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
+                except (OSError, termios.error):
+                    pass
+            if fd is not None:
+                os.close(fd)
+
+    def stop(self, _context=None, *args, **kwargs):
+        # start() 실패 뒤에도 OnShutdown이 호출될 수 있으므로 정리를 멱등하게 한다.
+        with self.stop_lock:
+            if self.stopped:
+                return []
+            self.stopped = True
+            self.stop_event.set()
+            if self.key_thread is not None:
+                self.key_thread.join(timeout=0.5)
+            if self.executor is not None:
+                self.executor.shutdown(timeout_sec=0.5)
+            if self.spin_thread is not None:
+                self.spin_thread.join(timeout=0.5)
+            if self.node is not None:
+                self.node.destroy_node()
+                self.node = None
+            if self.ros_context is not None and self.ros_context.ok():
+                rclpy.shutdown(context=self.ros_context)
+        return []
 
 
 def _is_true(value):
@@ -109,6 +271,8 @@ def _name_conflicts(map_dir, map_name):
 def launch_setup(context, *args, **kwargs):
     hardware = _is_true(LaunchConfiguration('hardware').perform(context))
     rviz = _is_true(LaunchConfiguration('rviz').perform(context))
+    keyboard_controls = _is_true(
+        LaunchConfiguration('keyboard_controls').perform(context))
     map_name = LaunchConfiguration('map_name').perform(context)
     map_dir = os.path.expanduser(LaunchConfiguration('map_dir').perform(context))
     save_on_exit = _is_true(LaunchConfiguration('save_on_exit').perform(context))
@@ -185,15 +349,22 @@ def launch_setup(context, *args, **kwargs):
         }],
     ))
 
+    if keyboard_controls:
+        keyboard = MappingKeyboardController()
+        actions.append(RegisterEventHandler(OnShutdown(
+            on_shutdown=[OpaqueFunction(function=keyboard.stop)])))
+        actions.append(OpaqueFunction(function=keyboard.start))
+
     actions.append(LogInfo(msg=(
         '\n'
         '=========================================================\n'
         ' [3/3] 맵 작성 준비 완료\n'
         '   1. 조이스틱으로 트랙을 천천히 한 바퀴 도세요\n'
         '      (RViz에서 맵이 채워지는 걸 확인하며 — 급회전은 정합 실패 유발)\n'
-        '   2. 출발선으로 돌아와 루프가 닫히면 Ctrl+C\n'
-        '   3. 저장 위치: %s\n'
-        '   (중간 저장: ros2 service call /save_map std_srvs/srv/Trigger)\n'
+        '   2. 잘못 그렸으면 Ctrl+R 두 번 (현재 위치부터 처음부터 다시)\n'
+        '   3. 출발선으로 돌아와 루프가 닫히면 Ctrl+C (저장 후 종료)\n'
+        '   4. 저장 위치: %s\n'
+        '   (서비스: /save_map=저장, /reset_map=처음부터 다시)\n'
         '=========================================================\n'
         % os.path.join(map_dir, map_name + '.{pgm,yaml}')
     )))
@@ -213,6 +384,8 @@ def generate_launch_description():
                               description='맵 확인용 RViz 실행 여부'),
         DeclareLaunchArgument('save_on_exit', default_value='true',
                               description='Ctrl+C 시 자동 저장 여부'),
+        DeclareLaunchArgument('keyboard_controls', default_value='true',
+                              description='Ctrl+R 두 번 초기화 단축키'),
         DeclareLaunchArgument('overwrite', default_value='true',
                               description='기존 맵/패키지 맵과 이름이 겹쳐도 진행 '
                                           '(기본). false면 launch 단계에서 거부. '

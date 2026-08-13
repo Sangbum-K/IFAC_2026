@@ -102,3 +102,21 @@ extern "C" void raycast_many(
     }
   }
 }
+
+// Pairwise variant used by scan-deskew analysis: pose[i] and angle[i] describe
+// one beam acquired at one timestamp.  raycast_many() intentionally keeps its
+// Cartesian-product API for the particle-filter replay path.
+extern "C" void raycast_pairs(
+    const int8_t* map, int width, int height, float resolution,
+    float origin_x, float origin_y, float origin_yaw,
+    const float* poses, const float* angles, int count,
+    float maximum_range, float* ranges) {
+#pragma omp parallel for schedule(static)
+  for (int index = 0; index < count; ++index) {
+    const float* pose = poses + index * 3;
+    ranges[index] = cast_one(
+        map, width, height, resolution,
+        origin_x, origin_y, origin_yaw,
+        pose[0], pose[1], pose[2], angles[index], maximum_range);
+  }
+}

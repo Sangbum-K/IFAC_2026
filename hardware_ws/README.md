@@ -53,7 +53,7 @@ ros2 launch f1tenth_stack bringup_launch.py
 - `vesc_to_odom_node` — VESC 속도 + IMU 상대 yaw 기반 `/odom` + `odom→base_link` TF
 - `urg_node` — 라이다 → `/scan`
 - `ackermann_mux` — teleop/estop/navigation 먹스 → `ackermann_cmd`
-- `static_baselink_to_laser` — `base_link→laser` static TF (0.27, 0, 0.11)
+- `static_baselink_to_laser` — `base_link→laser` static TF (0.28, 0, 0.1374)
 
 > `throttle_interpolator`는 원본과 동일하게 정의만 되어 있고 기본 비활성(주석)입니다.
 

@@ -45,8 +45,21 @@ matplotlib 3.10.9 가 서로 맞게 깔려 있고, **skimage는 거기에만 있
 
 ### 1. 맵 만들기 (SLAM) — `mapp <이름>`
 ```bash
-mapp my_track0727     # 조이스틱으로 한 바퀴 -> Ctrl+C
+mapp my_track0727     # 조이스틱으로 한 바퀴 -> Ctrl+C 저장 후 종료
                       # -> ~/IFAC_ws/maps/my_track0727.{pgm,yaml}
+```
+매핑 터미널 단축키:
+
+- `Ctrl+R` 두 번(2초 이내): 현재 메모리 맵을 버리고 현재 위치부터 다시 시작
+- `Ctrl+C`: 마지막 맵 저장 후 종료
+
+`Ctrl+R`은 디스크에 이미 저장된 맵은 지우지 않는다. 새 맵을 `Ctrl+C` 또는
+`/save_map`으로 저장할 때 기존 파일을 `.bak`으로 남기고 교체한다. 터미널이 없는
+환경에서는 `keyboard_controls:=false`로 실행하고 아래 서비스를 사용한다.
+
+```bash
+ros2 service call /save_map std_srvs/srv/Trigger
+ros2 service call /reset_map std_srvs/srv/Trigger
 ```
 이미 맵 파일이 있으면 **이 폴더(`~/IFAC_ws/maps/`)** 에 두고
 yaml의 `image:` 줄이 실제 이미지 파일명과 같은지 확인:
