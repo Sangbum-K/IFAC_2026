@@ -327,6 +327,7 @@ public:
     t_clip_max_ = this->declare_parameter<double>("map/t_clip_max", 8.0);
     m_l1_ = this->declare_parameter<double>("map/m_l1", 0.47);
     q_l1_ = this->declare_parameter<double>("map/q_l1", -0.2);
+    curvature_factor_ = this->declare_parameter<double>("map/curvature_factor", 0.0);
     speed_lookahead_ = this->declare_parameter<double>("map/speed_lookahead", 0.25);
     // Keep the ETH speed correction available, but disable it for initial
     // steering validation so planner target speed passes through unchanged.
@@ -442,18 +443,22 @@ public:
       "Localization autonomy gate: %s topic=%s timeout=%.2fs",
       localization_gate_enabled_ ? "ENABLED" : "disabled",
       localization_ready_topic.c_str(), localization_ready_timeout_);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Unicorn L1 curvature preview: waypoint offsets [10, 20), factor=%.3f",
+      curvature_factor_);
   }
 
 private:
   void validate_parameters()
   {
-    const std::array<double, 37> finite_values = {
+    const std::array<double, 38> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       localization_ready_timeout_,
       recovery_command_timeout_, recovery_pair_max_skew_,
       recovery_max_reverse_speed_, recovery_max_forward_override_,
-      t_clip_min_, t_clip_max_, m_l1_, q_l1_, speed_lookahead_,
+      t_clip_min_, t_clip_max_, m_l1_, q_l1_, curvature_factor_, speed_lookahead_,
       lat_err_coeff_, acc_scaler_for_steer_, dec_scaler_for_steer_,
       start_scale_speed_, end_scale_speed_, downscale_factor_,
       speed_lookahead_for_steer_, max_lateral_error_,
@@ -479,6 +484,7 @@ private:
       recovery_max_forward_override_ > 3.0 ||
       t_clip_min_ < 0.05 || t_clip_max_ < t_clip_min_ || t_clip_max_ > 20.0 ||
       m_l1_ <= 0.0 || m_l1_ > 5.0 || q_l1_ < -5.0 || q_l1_ > 10.0 ||
+      curvature_factor_ < 0.0 || curvature_factor_ > 5.0 ||
       speed_lookahead_ < 0.0 || speed_lookahead_ > 2.0 ||
       speed_lookahead_for_steer_ < 0.0 || speed_lookahead_for_steer_ > 2.0 ||
       lat_err_coeff_ < 0.0 || lat_err_coeff_ > 1.0 ||
@@ -1158,18 +1164,34 @@ private:
   {
     idx_nearest_waypoint_ = nearest_waypoint(position, waypoints);
 
-    if (waypoints.size() - idx_nearest_waypoint_ > 2) {
+    // Match Unicorn's curvature preview: average |kappa| over waypoint
+    // offsets [nearest + 10, nearest + 20). The local path is forward-only;
+    // near a short horizon, use the available suffix instead of producing an
+    // empty/NaN mean like an unchecked array slice would.
+    constexpr std::size_t kCurvaturePreviewBeginOffset = 10U;
+    constexpr std::size_t kCurvaturePreviewEndOffset = 20U;
+    const std::size_t remaining = waypoints.size() - idx_nearest_waypoint_;
+    if (remaining > kCurvaturePreviewBeginOffset) {
+      const std::size_t preview_begin =
+        idx_nearest_waypoint_ + kCurvaturePreviewBeginOffset;
+      const std::size_t preview_end = idx_nearest_waypoint_ + std::min(
+        remaining, kCurvaturePreviewEndOffset);
       double curvature_sum = 0.0;
-      for (std::size_t index = idx_nearest_waypoint_; index < waypoints.size(); ++index) {
+      for (std::size_t index = preview_begin; index < preview_end; ++index) {
         curvature_sum += std::abs(waypoints[index].kappa_radpm);
       }
       curvature_waypoints_ = curvature_sum /
-        static_cast<double>(waypoints.size() - idx_nearest_waypoint_);
+        static_cast<double>(preview_end - preview_begin);
     } else {
       curvature_waypoints_ = 0.0;
     }
 
-    double l1_distance = q_l1_ + speed_now * m_l1_;
+    // Unicorn adaptive L1 (normal-driving branch): one final distance, not
+    // competing speed- and curvature-selected target points.
+    //   L1 = m*v + q - curvature_factor*mean(|kappa_preview|)*v^2
+    double l1_distance =
+      m_l1_ * speed_now + q_l1_ -
+      curvature_factor_ * curvature_waypoints_ * speed_now * speed_now;
     const double lower_bound = std::min(
       std::max(t_clip_min_, std::sqrt(2.0) * lateral_error), t_clip_max_);
     l1_distance = std::clamp(l1_distance, lower_bound, t_clip_max_);
@@ -1394,6 +1416,7 @@ private:
   double t_clip_max_{8.0};
   double m_l1_{0.47};
   double q_l1_{-0.2};
+  double curvature_factor_{0.0};
   double speed_lookahead_{0.25};
   double lat_err_coeff_{0.0};
   double acc_scaler_for_steer_{1.0};

@@ -42,16 +42,16 @@ from deployment_profiles import (          # noqa: E402,F401
 import deployment_profiles as _profiles     # noqa: E402
 
 G = 9.81
-MODEL_VERSION = 'tuner-controller-safety-2026-08-08-v4'
+MODEL_VERSION = 'tuner-controller-safety-2026-08-13-v5'
 # Restricted-AST digest of the generator functions that must remain numerically
 # paired with this lightweight copy.  Any generator algorithm edit locks tuner
 # saves until this model and its parity test are deliberately updated.
-# 2026-08-08 v4: velocity_profile now accepts per-waypoint longitudinal limits
-# so corners can run a narrower accel/decel band (build_map A_ACC_CORNER).  The
-# copy above was updated in the same change and the parity test re-run -- a
-# scalar call still reproduces the previous numbers exactly (broadcast).
+# 2026-08-13 v5: the C++ MAP/L1 profile now mirrors Unicorn's adaptive L1:
+# mean absolute curvature at local waypoint offsets [10, 20) subtracts a
+# curvature_factor*kappa*v^2 term from the speed-based lookahead.  The generator
+# and this lightweight copy were updated together and parity-tested.
 GENERATOR_MODEL_AST_SHA256 = (
-    'df30530319dbc3ddd738b5aebd19b734e50e28e38051102c9568d020c1b4b54f')
+    '23c28a7714bda7251413bb017b48c44c5a868d4ce6ee4cf22c0dfcad3d85fc5a')
 VEHICLE_HALF_WIDTH_M = 0.15
 VEHICLE_HALF_LENGTH_M = 0.275
 
@@ -412,9 +412,11 @@ class PurePursuitSim:
         self.max_steer_rate = self.profile['max_steer_rate_radps']
         self.lookahead_gain = self.profile['lookahead_gain']
         self.lookahead_offset = self.profile['lookahead_offset']
+        self.curvature_factor = self.profile.get('curvature_factor', 0.0)
         self.lookahead_clip = (
             self.profile['lookahead_min_m'],
             self.profile['lookahead_max_m'])
+        self.kappa_ref = np.asarray(traj['kappa'], dtype=float)
         # Controller speed-command slew limits (runtime YAML), which are not
         # the same thing as what the car can physically do -- the plant below
         # owns that.  See deployment_profiles.VescLongitudinalPlant.
@@ -506,9 +508,19 @@ class PurePursuitSim:
                 lookahead_min = min(max(
                     lookahead_min, np.sqrt(2.0) * abs(d_error)),
                     self.lookahead_clip[1])
+                local_window = self.local_window(index)
+                preview = local_window[10:min(20, len(local_window))]
+                preview_curvature = (
+                    float(np.mean(np.abs(self.kappa_ref[preview])))
+                    if len(preview) else 0.0)
+                raw_lookahead = (
+                    self.lookahead_gain * abs(speed) + self.lookahead_offset -
+                    self.curvature_factor * preview_curvature * speed * speed)
+            else:
+                raw_lookahead = (
+                    self.lookahead_gain * abs(speed) + self.lookahead_offset)
             lookahead = np.clip(
-                self.lookahead_gain * abs(speed) + self.lookahead_offset,
-                lookahead_min, self.lookahead_clip[1])
+                raw_lookahead, lookahead_min, self.lookahead_clip[1])
             target, target_index = self.lookahead_point(
                 position, index, lookahead)
             dx, dy = target - position

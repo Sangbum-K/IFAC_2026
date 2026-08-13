@@ -2364,9 +2364,11 @@ class PurePursuitSim:
         self.max_steer_rate = self.profile["max_steer_rate_radps"]
         self.lookahead_gain = self.profile["lookahead_gain"]
         self.lookahead_offset = self.profile["lookahead_offset"]
+        self.curvature_factor = self.profile.get("curvature_factor", 0.0)
         self.lookahead_clip = (
             self.profile["lookahead_min_m"],
             self.profile["lookahead_max_m"])
+        self.kappa_ref = np.asarray(traj["kappa"], dtype=float)
         # 컨트롤러 명령 slew 한계 (런타임 YAML). plant 한계와 다른 값이다.
         self.a_acc_max = self.profile["max_accel_mps2"]
         self.a_dec_max = self.profile["max_decel_mps2"]
@@ -2453,9 +2455,21 @@ class PurePursuitSim:
                 lookahead_min = min(max(
                     lookahead_min, np.sqrt(2.0) * abs(d_err)),
                     self.lookahead_clip[1])
+                # control_node.cpp / Unicorn ROS1과 동일하게 local waypoint의
+                # nearest+10 ... nearest+19 절대곡률 평균을 v^2 항으로 뺀다.
+                local_window = self.local_window(idx)
+                preview = local_window[10:min(20, len(local_window))]
+                preview_curvature = (
+                    float(np.mean(np.abs(self.kappa_ref[preview])))
+                    if len(preview) else 0.0)
+                raw_lookahead = (
+                    self.lookahead_gain * abs(v) + self.lookahead_offset -
+                    self.curvature_factor * preview_curvature * v * v)
+            else:
+                raw_lookahead = (
+                    self.lookahead_gain * abs(v) + self.lookahead_offset)
             lookahead = np.clip(
-                self.lookahead_gain * abs(v) + self.lookahead_offset,
-                lookahead_min, self.lookahead_clip[1])
+                raw_lookahead, lookahead_min, self.lookahead_clip[1])
             target, target_idx = self.lookahead_point(pos, idx, lookahead)
             dx, dy = target - pos
             alpha = np.arctan2(dy, dx) - theta

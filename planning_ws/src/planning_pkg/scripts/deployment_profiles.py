@@ -324,7 +324,7 @@ _PROFILE_NUMERIC_FIELDS = (
 # speed_lookahead_s 는 조향 LUT 조회 속도를, steering_lut 는 LUT 파일 자체를,
 # vesc 는 brake_max/gain/entry/overspeed/release 중재를 정한다.
 _PROFILE_SIGNATURE_EXTRA_FIELDS = (
-    "speed_lookahead_s", "steering_lut", "vesc",
+    "curvature_factor", "speed_lookahead_s", "steering_lut", "vesc",
 )
 
 
@@ -344,11 +344,14 @@ def _resolve_cpp_real_car(name, source):
             control, "vehicle/speed_scale", control_src),
         "max_speed_mps": _require_number(
             control, "vehicle/max_speed_mps", control_src),
-        # calc_l1_point(): t = m_l1 * v + q_l1, clip 은 t_clip_min/max.
+        # calc_l1_point(): Unicorn adaptive L1
+        # t = m_l1*v + q_l1 - curvature_factor*mean(|kappa[i+10:i+20]|)*v^2.
         "lookahead_gain": _require_number(
             control, "map/m_l1", control_src, positive=False),
         "lookahead_offset": _require_number(
             control, "map/q_l1", control_src, positive=False),
+        "curvature_factor": _require_number(
+            control, "map/curvature_factor", control_src, positive=False),
         "lookahead_min_m": _require_number(
             control, "map/t_clip_min", control_src),
         "lookahead_max_m": _require_number(
