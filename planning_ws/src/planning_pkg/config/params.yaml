@@ -40,7 +40,11 @@ global_trajectory_node:
     # 가 "row 44 combined 6.889 > 6.671" 로 abort(exit -6) 하고, 그 뒤 전 노드가
     # "Waiting for global waypoints" 로 멈췄다. 이 값은 **CSV 를 재생성할 때마다**
     # manifest 의 validation.mu_profile 과 맞춰야 한다.
-    global_trajectory/validation_mu: 0.80
+    # 2026-08-13: 0.80 -> 0.90. 똑같은 사고를 그대로 반복했다 — build_map
+    # MU_PROFILE 이 0.90 으로 오른 뒤 mu0.90 CSV 로 rc my_track0813 했더니
+    # global_trajectory_node 가 다시 abort(exit -6) 했다. 08-08 주석이 예고한
+    # 그 실패다. MU(1.00, 물리 타이어 한계)가 아니라 MU_PROFILE(0.90)을 쓴다.
+    global_trajectory/validation_mu: 0.90
     global_trajectory/validation_wheelbase_m: 0.33
     # 2026-08-11: 0.36 -> 0.3578 (gain 재적합 후 대칭 한계 자체).
     # CSV 의 |kappa| 상한을 tan(이 값)/wheelbase 로 정하므로 낮추면 검증이
@@ -340,11 +344,12 @@ spliner_node:
     # 6*A*v^2/L^2 로 속도의 제곱에 비례해 커진다. 실제로 복귀 2.5m 고정은
     # 4 m/s에서 0.65g, 6 m/s에서 1.46g를 요구했다 (mu 0.75 한계 0.75g).
     # 아래 예산으로 L = v*sqrt(6A/a_max) 를 매 사이클 계산한다.
-    # 7.85 = deployment_profiles.MU_PROFILE(0.80) * 9.81. path_lat_acc_max와
+    # 8.83 = build_map.py 의 MU_PROFILE(0.90) * 9.81. path_lat_acc_max와
     # 같은 예산으로 통일한다 — 서로 다르면 blend_use_spare_grip 켜짐/꺼짐에
     # 따라 회피 기하가 말없이 달라진다. (실제로 이 값이 쓰이는 곳은
     # blend_use_spare_grip=false일 때와 trailing d램프/return_speed_cap 뿐.)
-    spliner/blend_lat_acc_max: 7.85   # 횡 전환에 배정할 그립 [m/s^2] (0.80g)
+    # 2026-08-13: 7.85 -> 8.83 (MU_PROFILE 0.80 -> 0.90 동반).
+    spliner/blend_lat_acc_max: 8.83   # 횡 전환에 배정할 그립 [m/s^2] (0.90g)
                                       # 3.0(0.31g)은 raceline(0.75g) 대비 과보수 —
                                       # 6 m/s 전환 6.0 m(1s)로 반응이 늦었다. 5.0이면
                                       # 4.6 m(0.77s). 스월브 자체 곡률 상한(1b 패스)이
@@ -383,11 +388,18 @@ spliner_node:
     # 접혀 그 구간 회피가 사실상 불가능했다 (7.85면 5점 = 1.6%).
     #   run_0809_231809 4랩: 횡 0.54m / 가용 3.67m 에서 캡 5.20 < 자차 5.33
     #   -> 거부. 7.85면 캡 5.71 로 성립한다.
-    # ⚠️ MU(0.90, 물리 타이어 한계)가 아니라 MU_PROFILE(0.80)을 쓴다 — 나머지
+    # ⚠️ MU(1.00, 물리 타이어 한계)가 아니라 MU_PROFILE(0.90)을 쓴다 — 나머지
     #    0.10 은 컨트롤러 추종 보정 몫이다. build_map 주석대로 이 구간의 실제
     #    구속은 그립이 아니라 추종오차이므로, 올린 뒤 첫 주행에서 회피 중
     #    /pitwall/lat_err 가 벽 여유(최소 0.35 m) 안인지 확인할 것.
-    spliner/path_lat_acc_max: 7.85    # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE*g)
+    #
+    # 2026-08-13: 7.85 -> 8.83. MU_PROFILE 0.80 -> 0.90 을 따라간 것이다.
+    # 여기만 7.85 로 두면 레이스라인이 배정한 a_lat(최대 8.83)이 예산을 넘어
+    # 잔여 그립 sqrt(예산² - lat_ref²) 가 음수가 되고 하한 2.0 으로 접힌다 —
+    # 08-10 에 고친 그 회피 감속이 그대로 되돌아온다.
+    # ⚠️ 위 검증(회피 중 /pitwall/lat_err 가 벽 여유 0.35 m 안인지)은 아직
+    #    실차에서 하지 않았다. 회피가 걸리는 첫 주행에서 반드시 확인할 것.
+    spliner/path_lat_acc_max: 8.83    # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE*g)
     # 회피 궤적 **정형**용 역방향 감속 한계 [m/s^2]. 플랜트 능력이 아니다 —
     # 그건 아래 plant_decel_mps2 다. 둘을 분리하기 전까지 이 값 하나가 양쪽을
     # 겸했고, 그게 아래 ⚠️ 블록의 미해결 항목이었다.

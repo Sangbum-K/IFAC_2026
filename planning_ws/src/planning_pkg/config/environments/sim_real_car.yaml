@@ -91,17 +91,17 @@ spliner_node:
     # 개가 없으면 sim 은 escape_arc 기능 자체가 꺼진 채로 돈다(코드 기본값
     # false/0). 근거 주석은 real_car.yaml 참조.
     spliner/escape_arc_enabled: true
-    # 2026-08-12: 5.5 -> 7.85 (real_car.yaml 과 동일, 근거는 그쪽 주석).
-    spliner/escape_arc_lat_acc: 7.85
+    # 08-12: 5.5 -> 7.85, 08-13: -> 8.83 (real_car.yaml 과 동일, 근거는 그쪽 주석).
+    spliner/escape_arc_lat_acc: 8.83
     spliner/escape_arc_min_speed: 1.2
     spliner/escape_arc_max_heading_rad: 0.80   # 2026-08-12: 0.70 -> 0.80
     spliner/commit_break_requires_visible: true
     spliner/lookahead_m: 12.0
     spliner/loop_rate_hz: 30.0
-    spliner/blend_lat_acc_max: 7.85            # 2026-08-12: 5.0 -> 7.85
+    spliner/blend_lat_acc_max: 8.83            # 08-12: 5.0 -> 7.85, 08-13: -> 8.83 (MU_PROFILE 0.90)
     spliner/blend_dist_max_m: 8.0
     # 레이스라인 생성 MU_PROFILE(0.80) x g. real_car.yaml 과 동일 (근거는 그쪽 주석).
-    spliner/path_lat_acc_max: 7.85
+    spliner/path_lat_acc_max: 8.83
     spliner/path_decel_max: 6.0
     spliner/lane_blend_out_m: 5.0
     # 조기 라인 스위치 (real_car.yaml과 동일). 곡률이 이보다 작은 직선 구간에서만

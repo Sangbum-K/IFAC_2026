@@ -57,8 +57,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from deployment_profiles import (          # noqa: E402
     A_ACC_MAX, A_DEC_PLANNED, BRAKE_DECEL_PER_AMP, DEFAULT_GATE_TARGET,
     GATE_PROFILE_SETS, MAX_STEER, PKG_ROOT, RACELINE_V_MAX, SIM_LOG_FIELDS,
-    WHEELBASE, WORKSPACE_ROOT, controller_profile, make_longitudinal_plant,
-    profile_brake_max, selected_controller_profiles,
+    WHEELBASE, WORKSPACE_ROOT, backstop_metrics, backstop_report,
+    controller_profile, make_longitudinal_plant, profile_brake_max,
+    selected_controller_profiles,
 )
 
 # ============================================================ 설정 (여기만 고치면 됨)
@@ -131,11 +132,19 @@ from deployment_profiles import (          # noqa: E402
 #     LAT_ERR_CORNER_S        코너에서의 기울기 (크다 = 많이 밀린다)
 #     LAT_ERR_KAPPA_LOW/HIGH  직선/코너 판정 곡률 경계
 #     LAT_ERR_KAPPA_WINDOW_M  '직전 곡률'을 얼마나 뒤까지 볼지
-#     LAT_ERR_EXIT_DECAY_M    코너 탈출 후 얼마나 빨리 직선 취급으로 돌아올지
+#     LAT_ERR_EXIT_LAG_M      코너 탈출 뒤 몇 m 까지 코너와 똑같이 볼지
+#     LAT_ERR_EXIT_DECAY_M    그 뒤 얼마나 빨리 직선 취급으로 돌아올지
 #
 #   ⚠️ 이 값은 상상해서 정하는 게 아니라 **실차 백에서 재는 값**이다.
 #      /pf/pose/odom 을 CSV 에 투영해 |lat err| 를 구하고 속도로 나눈다.
 #      절차는 아래 LAT_ERR_CORNER_S 주석의 실측표 참조.
+#
+#   ⚠️ |lat err| 를 그대로 쓰면 안 된다 — 넓은 쪽으로 밀린 오차는 벽 여유를
+#      안 까먹는데도 기울기를 부풀린다. 폭 상한이 뜻하는 것은 "가용 여유를
+#      1 m/s 당 몇 m 까먹는가" 이므로, 부호를 살려
+#          eff = max(0, (min(d_left,d_right) - 차반폭) - 실제 차체-벽 여유)
+#      를 속도로 나눠야 한다. 2026-08-13 에 두 방식이 정반대 결론을 낸
+#      구간이 있었다 (my_track0813 s 4~7: |d| 기준 0.13 s vs eff 기준 0.00).
 #
 # ── 어느 손잡이가 실제로 랩타임을 움직이나 (my_track0808, 2026-08-09 실측) ──
 #
@@ -155,6 +164,39 @@ from deployment_profiles import (          # noqa: E402
 #     즉 LAT_ERR_CORNER_S 와 트랙 폭(SAFE_DIST_*)을 봐야 한다. MU_PROFILE 은
 #     LAT_ERR_CORNER_S 를 0.085 아래로 내려 곡률 상한이 다시 최저가 된
 #     **다음에야** 의미가 생긴다.
+#
+#   ⚠️ 2026-08-13 로 그 "다음에야" 가 왔다. corner_s 를 0.075 로 내리자
+#      my_track0813 에서 곡률 상한이 최저인 점이 43% -> 절반 가까이로 늘어
+#      MU_PROFILE 0.80 -> 0.90 이 실제로 랩타임을 움직인다 (폐루프 7.93 ->
+#      7.60 s, 보정 OFF 기준). 위 "MU_PROFILE 사실상 0" 표는 corner_s 가
+#      0.117 이던 시절 것이므로 지금은 해당 없다.
+#
+# ── 2026-08-13 rosbag0813 (실차 충돌) 이후 무엇이 바뀌었나 ──────────────────
+#
+#   같은 라인·같은 기하로 튜너 속도만 다르게 한 두 백:
+#     run_0813_171343  12랩 완주, 랩 8.16~8.52 s, 차체-벽 최소 여유 +0.020 m
+#     run_0813_172316  헤어핀만 +0.6~1.2 m/s 더 올림 -> 9랩째 우벽 접촉,
+#                      같은 지점 여유 -0.064 m (9랩 중 3랩이 음수)
+#   ⚠️ 충돌 지점은 속도를 올린 곳(헤어핀 s 18.7~23.3)이 **아니라 그 5 m 뒤**
+#      (s 27.8~28.3, 직선 진입부)다. 올린 속도가 거기까지 실려 간 것이고,
+#      build_map 은 그 지점을 '넓은 직선'으로 보고 상한을 안 걸고 있었다.
+#   그래서 바꾼 것 (전부 아래 각 상수 주석에 근거표 있음):
+#     LAT_ERR_EXIT_LAG_M          신설 4.0   코너 탈출 오차 봉우리를 모델에 넣음
+#     LAT_ERR_EXIT_DECAY_M        0.8 -> 2.0
+#     LAT_ERR_KAPPA_WINDOW_M      2.0 -> 10.0
+#     LAT_ERR_KAPPA_HIGH          0.50 -> 0.35
+#     LAT_ERR_CORNER_S            0.109 -> 0.075   (코너에서 되찾은 몫)
+#     MU_PROFILE                  0.80 -> 0.90     (타이어 교체 후 실측 그립)
+#     SPEED_LOOKAHEAD_COMPENSATION False -> True
+#     MU                          1.05 -> 1.00     (게이트를 다시 무는 값으로)
+#   결과 (my_track0813 폐루프): 랩 7.93 -> 7.83 s, |lat err|max 0.277 ->
+#   0.197 m (백스톱 임계 0.25 대비 여유 21%), 합성 요구 9.59 -> 7.99 m/s².
+#   **더 빠르면서 동시에 더 안전하다** — 느려진 것은 충돌이 난 s 26~30 뿐이고
+#   그 시간은 코너에서 되찾았다.
+#   (같은 날 머지된 curvature-adaptive L1(119d65c)이 |lat err| 를 0.236 ->
+#    0.197 로 더 내렸다. 두 수정은 겹치지 않는다 — adaptive L1 은 preview 창이
+#    nearest+10~+19 라 코너 진입에서만 작동하고, s 26~31 에서는 그 창이 직선을
+#    보므로 L1 단축이 0.5% 뿐이다. 충돌 구간을 잡는 것은 여전히 EXIT_LAG 다.)
 #
 # --- 스케일 ------------------------------------------------------------------
 # 크기(resolution/origin)는 SLAM이 만든 yaml 값을 그대로 쓴다. 아래 값은
@@ -190,14 +232,26 @@ MIN_ISLAND_M2 = 0.3
 #      된다: 08-05/08-06 백 168 s(전류 포화 24 A) 구간에서 달성 가속도는 속도대
 #      0~5.5 m/s 전 구간에 걸쳐 p50 0.7~1.6 / p90 1.2~1.7 로, 1.8 은 이미 p95 위다
 V_MAX      = RACELINE_V_MAX
-MU         = 1.05    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
+MU         = 1.00    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
                      #
                      # ⚠️ 이 값은 물리량이 아니다. "합성 요구가 이 값을 안 넘는다"
                      # 는 뜻뿐이고, 실차에서 슬립 없이 실증된 최대는 0.70g 다
                      # (2026-07-31 run_0731_223152 IMU 실측 |a_lat| p95 7.0~7.9).
                      # 물리값으로 읽지 말 것.
                      #
-                     # 이력: 0.90 -> 0.96 (08-11, 게이트 통과용) -> 1.05 (08-13).
+                     # 이력: 0.90 -> 0.96 (08-11, 게이트 통과용) -> 1.05 (08-13)
+                     #       -> 1.00 (08-13 저녁, 아래).
+                     #
+                     # 1.05 는 SPEED_LOOKAHEAD_COMPENSATION 이 꺼져 있어서
+                     # 필요했던 값이다. 같은 날 저녁 rosbag0813 분석 뒤 그 보정을
+                     # 켰고(그 상수 주석 참조), 그러자 네 맵 × 두 라인의 폐루프
+                     # 합성 요구 최대가 8.36~8.72 로 내려왔다. 커트라인을 다시
+                     # 실제로 무는 값으로 되돌린다 — 최악 8.72 에 12.5% 를 얹은
+                     # 1.00(9.81 m/s²) 이다. 조향 LUT 포화점(10.4~10.9)보다 낮아
+                     # 이제 마찰 게이트가 실제로 발화할 수 있다.
+                     # (119d65c adaptive L1 머지 후 재측정하면 같은 여덟 조합의
+                     #  요구가 7.16~8.55 로 더 내려간다. 1.00 은 그 최악에도
+                     #  14.7% 여유다 — 값을 더 내리는 것은 맵이 더 쌓인 뒤에.)
                      #
                      # 08-13 에 왜 또 올렸나. my_track0813(코리도 min 1.25 m)이
                      # 요구 9.59 로 FAIL 했다. 원인을 끝까지 따라가 보면 그립도
@@ -246,7 +300,23 @@ MU         = 1.05    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
 #   0.68: lap 8.60 s, |lat err|max 0.347 m  <- 채택 (벽여유 min 0.350 이내)
 #   0.70: lap 8.55 s, |lat err|max 0.421 m  <- 벽여유 초과, 실차 검증 전 금지
 # 0.70 승격은 실차에서 헤어핀 |lat err| 실측(<0.25 m) 확인 후에만 할 것.
-MU_PROFILE = 0.8
+#
+# 2026-08-13: 0.80 -> 0.90. 위 "그립은 0.70 까지 실증" 은 **타이어 교체 전**
+# (08-10) 숫자다. rosbag0813 두 백(171343 12랩 / 172316 9랩)의 /pf/pose/odom
+# 에서 실제 주행 궤적의 횡가속 a_lat = v·ωz 를 재면:
+#     171343  p50 4.25  p90 8.67  p99 10.28  max 11.49 m/s²  (p90 = 0.88 g)
+#     172316  p50 4.75  p90 8.92  p99 12.56  max 13.71 m/s²
+# 두 백 모두 스핀·슬라이드 없이 완주했다(172316 의 종료는 그립이 아니라 벽
+# 접촉이고, 위치는 s 27.8~28.3 의 직선 — 횡가속 p99 가 3.8 인 구간이다).
+# IMU |a_y| 로도 p90 0.96 g 로 같은 결론이다. 0.80(7.85 m/s²)은 실측 p90
+# 아래라 **그립이 남는데 곡률 상한이 먼저 물고 있었다.**
+#
+# 0.90(8.83)은 실측 p90(8.67~8.92) 자리다. p99 까지 올리지 않는 이유는
+# 프로파일 mu 가 "컨트롤러 보정이 소화할 마진"을 남겨야 하기 때문 (위 문단).
+# ⚠️ 이 값을 바꾸면 planning_pkg/config/params.yaml 의
+#    global_trajectory/validation_mu 를 같은 값으로 올려야 한다. 안 맞추면
+#    런타임이 CSV 를 거부하고 global_trajectory_node 가 abort 한다.
+MU_PROFILE = 0.90
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -536,7 +606,49 @@ LAT_ERR_STRAIGHT_S = 0.030   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
 # 폐루프 랩 7.88 s, footprint 충돌 0, 합성가속 8.94 < 9.42 m/s².
 # 이 맵에서 다시 내리려면 실차 백으로 벽 여유와 백스톱 미발화를 먼저
 # 확인해야 한다. 이전 맵의 0.070 이하 곡률-상한 결론은 새 맵에 적용하지 않는다.
-LAT_ERR_CORNER_S = 0.109     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
+#
+# 2026-08-13: 0.109 -> 0.075. 이 값 단독으로 본 게 아니라 커널을 고친 뒤의
+# 재스윕이다 (LAT_ERR_EXIT_LAG_M 신설 + WINDOW 10 + DECAY 2.0 + HIGH 0.35).
+# 커널을 안 고치고 이 값만 내리면 08-12 표대로 벽에 붙는다 — **함께 움직여야
+# 하는 값이다.**
+#
+# 근거 백: rosbag0813/run_0813_171343 (레이스 튜너로 코너 속도를 올린 뒤
+# 12랩 연속 완주, 랩 8.16~8.52 s, 회피 0회 — otwpnts 3667 개 전부 빈 배열).
+# 그 백을 배포 CSV 에 투영해 '가까운 벽 쪽으로 실제로 까먹은 여유 / 속도' 를
+# 재면 코너 안(직전 |k| >= 0.45)에서 0.000~0.057 s 다. 즉 0.109 는 코너에서
+# 2~5 배 보수적이었고, 그래서 사람이 튜너로 그 구간을 손으로 올리고 있었다:
+#     튜너 값 / build_map 원본 = 중앙값 1.09, p90 1.29, 최대 1.48
+# 이 상수를 내리는 것은 그 손작업을 코드로 되돌려받는 것이다.
+#
+# 커널 수정 후 my_track0813 폐루프 게이트 (mu_profile 0.90, HIGH 0.35,
+# SPEED_LOOKAHEAD_COMPENSATION ON, 백스톱 임계 0.25 m).
+# ⚠️ 아래 표는 **curvature-adaptive L1 (119d65c) 머지 후** 다시 뽑은 것이다.
+#    머지 전 같은 스윕은 |lat err| 가 칸마다 0.03~0.05 더 높았다 (0.075 에서
+#    0.236, 0.065 에서 0.257). 짧아진 lookahead 가 코너 추종을 그만큼 개선한다.
+#
+#   corner_s   IQP 게이트   폐루프 랩   |lat err|max   합성 요구
+#   0.109      PASS         (미측정)    —              —
+#   0.085      PASS         8.13 s      0.173          8.22
+#   0.080      PASS         7.98 s      0.186          7.88
+#   0.075      PASS         7.83 s      0.197          7.99   <- 채택
+#   0.070      PASS         7.73 s      0.203          7.92
+#   0.065      PASS         7.63 s      0.210          8.06
+#
+# ⚠️ **0.070/0.065 도 게이트는 통과하지만 채택하지 않는다.** 이 표는 시뮬이고,
+#    이 상수를 정하는 것은 실차 실측이다. 근거 백에서 코너(kr >= 0.45)의 실효
+#    기울기는 171343(완주) 0.000~0.057, 172316(충돌) 0.000~0.104 였다.
+#    0.075 는 완주한 쪽의 최대에 1.3 배 여유이고, 0.065 는 1.14 배로 내려가면서
+#    충돌한 쪽이 실제로 보인 0.104 아래로 들어간다. 속도가 오르면 오차도
+#    커지는 순환 구조(위 08-09 ⚠️ 참조)에서 그건 여유가 아니다.
+#    adaptive L1 이 벌어 준 몫은 속도가 아니라 **여유**로 받는다 — 백스톱
+#    임계까지 5.6% 였던 것이 21% 가 됐다. 실차에서 이 설정으로 한 번 달려
+#    코너 실효 기울기를 다시 재고 나서 0.070 으로 가는 것이 순서다.
+#
+# 네 맵 교차 확인 (같은 설정, 머지 후): |lat err|max IQP/SP
+#    0810 0.173/0.164 · 0811 0.180/0.195 · 0812 0.195/0.180 · 0813 0.197/0.176
+#    전부 PASS, 합성 7.16~8.55. (머지 전에는 0812 IQP 가 0.245 로 임계값 2%
+#    앞이었다 — adaptive L1 이 그 맵에서 가장 크게 개선했다.)
+LAT_ERR_CORNER_S = 0.075     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
 LAT_ERR_KAPPA_LOW = 0.05     # [1/m] 이하는 직선 취급 (R >= 20 m)
 # [1/m] 이상은 코너 취급. 2026-08-11: 0.30(R 3.3 m) -> 0.50(R 2.0 m).
 # 이 트랙의 '중간 코너'(|k| 0.30~0.50, R 2.0~3.3 m)는 0.30 기준에서 전부 100%
@@ -549,7 +661,18 @@ LAT_ERR_KAPPA_LOW = 0.05     # [1/m] 이하는 직선 취급 (R >= 20 m)
 #    (ax 임계만 0.30 으로 고정하면 7.123 -> 7.191 s), 나머지는 폭 상한 완화다.
 #    같은 백 실측 종방향 envelope 은 가속 p90 4.39 / 감속 p90 2.05 · p99 2.31
 #    m/s² 이라 A_ACC_MAX 4.5 · A_DEC_PLANNED 2.38 안쪽이다.
-LAT_ERR_KAPPA_HIGH = 0.50
+#
+# 2026-08-13: 0.50 -> 0.35. LAT_ERR_EXIT_LAG_M 을 켜면 '직전 곡률' kr 이
+# 코너 출구에서 4 m 동안 감쇠 없이 유지되므로, 오차가 실제로 최대가 되는
+# 그 지점이 최대 기울기를 받아야 한다. HIGH 0.50 으로 두면 kr 이 0.44 인
+# my_track0813 s=28.0(=충돌 지점)에서 t=0.87 로 깎여 상한이 다시 열린다:
+#     HIGH 0.50 / corner_s 0.075 -> |lat err|max 0.275 ⚠, 합성 9.76
+#     HIGH 0.35 / corner_s 0.075 -> |lat err|max 0.223,   합성 8.89   <- 채택
+# (둘 다 mu_profile 0.80, 보정 OFF 기준. 이 비교만 별도로 뽑은 것이다.)
+# 08-11 에 0.30 -> 0.50 으로 올린 근거(중간 코너를 정상 추종한다)는 여전히
+# 맞지만, 그건 kr 이 코너 **안**을 가리킬 때의 이야기다. lag 커널에서 kr 은
+# 코너 **탈출**을 가리키고, 거기서는 0.35 짜리 곡률도 최대치를 받아야 한다.
+LAT_ERR_KAPPA_HIGH = 0.35
 # '직전 곡률'을 몇 m 뒤까지 볼 것인가 [m]. recent_max_kappa() 가 각 점에서
 # 뒤로 이 거리 안의 |kappa| 최대값을 찾는다 (ds 0.1 m 이므로 2.0 m = 20 칸).
 #
@@ -566,7 +689,12 @@ LAT_ERR_KAPPA_HIGH = 0.50
 #      window 1.0 / 2.0 / 3.0 (decay 0.8) -> 랩 7.59 s 로 **전부 동일**
 #    즉 이 상수는 decay 를 None 으로 되돌렸을 때만 살아난다. 창을 키워 보수적
 #    으로 만들려는 시도는 decay 를 같이 키우지 않으면 효과가 없다.
-LAT_ERR_KAPPA_WINDOW_M = 2.0  # 직전 곡률 rolling-max 창 [m] (코너 탈출 지연)
+#
+# 2026-08-13: 2.0 -> 10.0. 위 ⚠️ 는 LAT_ERR_EXIT_LAG_M = 0 일 때의 이야기다.
+# 이제 커널이 '평탄 4 m -> 감쇠 2 m' 라 창이 최소 lag + 3*decay = 10 m 는
+# 돼야 커널이 잘리지 않는다. 창을 2.0 으로 두면 lag 4.0 을 넣어도 아무 효과가
+# 없다 (창이 lag 보다 짧아 평탄 구간 안에서 끝난다).
+LAT_ERR_KAPPA_WINDOW_M = 10.0  # 직전 곡률 rolling-max 창 [m] (>= lag + 3*decay)
 WIDTH_SPEED_MIN_MPS = 1.5    # 폭 때문에 이보다 더 낮추지는 않는다 (정지 방지)
 # 코너를 빠져나온 뒤 slope 가 코너값에서 직선값으로 돌아오는 감쇠 길이 [m].
 # 2026-08-08 run_0808_202157 분석: 기존 구현은 LAT_ERR_KAPPA_WINDOW_M(2.0 m)
@@ -605,7 +733,55 @@ WIDTH_SPEED_MIN_MPS = 1.5    # 폭 때문에 이보다 더 낮추지는 않는�
 # 켜져 있기만 하면 된다. 반대로 None 으로 되돌리면 0.19 s 를 그냥 잃는다.
 # (0.4 와 1.5 가 같은 이유: 그 차이가 나는 구간은 이미 곡률 상한이나 이웃의
 #  가감속 램프가 더 낮아서 폭 상한이 아무 것도 안 물기 때문이다.)
-LAT_ERR_EXIT_DECAY_M = 0.8
+#
+# 2026-08-13: 0.8 -> 2.0, 그리고 아래 LAT_ERR_EXIT_LAG_M 신설.
+# 위 08-08/08-09 결론("0.4~1.5 아무거나, 켜져 있기만 하면 된다")은 **틀렸다.**
+# 그 결론이 나온 my_track0808/0810 에서는 코너 탈출부의 벽 여유가 넉넉해서
+# 폭 상한이 아무 것도 안 물었기 때문에 값이 랩타임에 안 보였을 뿐이다.
+# my_track0813 은 s 26~30 이 '코너 탈출 직후 + 우벽 여유 0.40 m' 라 여기가
+# 그대로 구속이 되고, 감쇠 0.8 m 는 오차가 최대가 되는 바로 그 지점을
+# '직선'으로 오인한다 (근거는 LAT_ERR_EXIT_LAG_M 주석의 실측표).
+LAT_ERR_EXIT_DECAY_M = 2.0
+# 코너를 빠져나온 뒤 **감쇠를 시작하지도 않는** 거리 [m]. 이 거리 안에서는
+# 지나온 곡률을 감쇠 없이(가중 1.0) 그대로 물고, 그 뒤부터 EXIT_DECAY_M 으로
+# 지수 감쇠한다. 0 이면 08-08~08-13 의 순수 지수 감쇠와 같다.
+#
+# 왜 필요한가 — 2026-08-13 rosbag0813 실측. run_0813_171343(안정, 12랩)과
+# run_0813_172316(같은 라인, 코너 속도만 더 올림 → 9랩째 우벽 충돌) 두 백을
+# 배포 CSV 에 투영해, 각 s 에서 '가까운 벽 쪽으로 실제로 까먹은 여유'
+#     eff = max(0, (min(d_left,d_right) - 차반폭) - 부호반영 실제 차체-벽 여유)
+# 를 속도로 나눈 실효 기울기를 뽑았다 (이 값이 곧 폭 상한의 slope 다):
+#
+#   s      |k|   현행 kr  모델 slope  실측 eff(A/B)   비고
+#   20.8   0.64   0.64     0.109      0.000 / 0.000   헤어핀 안 — 모델 무한 보수적
+#   22.4   0.42   0.42     0.094      0.062 / 0.104   코너 안
+#   24.4   0.38   0.38     0.088      0.000 / 0.000
+#   26.4   0.20   0.20     0.056      0.073 / 0.055   탈출 시작 — 여기서 역전
+#   28.0   0.05   0.05     0.030      0.087 / 0.070   ← 최대. 모델의 2.9 배
+#   28.4   0.00   0.03     0.030      0.082 / 0.075   ← 충돌 지점 (s 27.8~28.3)
+#   30.4   0.01   0.01     0.030      0.036 / 0.067
+#   32.0   0.00   0.00     0.030      0.011 / 0.032   완전히 안정된 직선
+#
+# 즉 이 트랙에서 **오차는 코너 안이 아니라 코너 출구에서 3~4 m 지난 곳에서
+# 최대**가 된다. 마지막 |k|>=0.30 지점이 s 24.4 인데 실효 기울기의 봉우리는
+# s 28.0 — 3.6 m 뒤다. 감쇠 0.8 m 짜리 지수 커널은 그 지점에서 가중이
+# exp(-4.5) = 0.011 이라 헤어핀을 완전히 잊고 '직선'(0.030)으로 찍는다.
+# 그 결과 폭 상한이 0.40/0.030 = 13 m/s 로 아무 것도 안 물고, s 26~30 의
+# 계획 속도가 5.6 -> 7.0 (V_MAX) 까지 열린다.
+#
+# 실제로 일어난 일: 두 백 모두 이 구간 계획이 6.9~7.0 으로 같았지만,
+# 172316 은 헤어핀(s 18.7~23.3)을 +0.6~1.2 m/s 올린 탓에 이 구간 **진입
+# 속도**가 4.1~4.8 -> 5.4~5.9 로 올라갔다. 기울기가 0.077 s 로 같으므로
+# 밀려나는 양이 0.35 -> 0.42 m 가 되고, 쓸 수 있는 여유 0.40 m 를 넘는다.
+#   s 28.4 부호반영 차체-벽 여유:  171343 +0.020 m (12랩 최소)
+#                                 172316 -0.064 m (9랩 중 3랩이 음수) -> 충돌
+# 즉 **충돌 지점은 속도를 올린 지점이 아니라 그 5 m 뒤**이고, 올린 속도가
+# 거기까지 실려 간 것이다. 코너 속도만 보고 판단하면 이 연결이 안 보인다.
+#
+# lag 4.0 m 는 위 봉우리(3.6 m)에 0.4 m 를 얹은 값이다. 커널이 세 구간
+# (평탄 4 m -> 감쇠 2 m -> 창 밖)이므로 LAT_ERR_KAPPA_WINDOW_M 도 10 m 로
+# 같이 키워야 한다. 창이 짧으면 커널이 잘려 lag 가 무효가 된다.
+LAT_ERR_EXIT_LAG_M = 4.0
 # 폭 연동 속도상한을 차 전장 창으로 평활하는 창 길이 [m]. 0/None 이면 안 함.
 # 근거: 상한의 입력인 벽 여유는 0.1 m 격자에서 occupancy 로 잰 값이라 폭이
 # 한 칸만 좁아지는 계단(노이즈 포함)이 그대로 상한의 V자 노치가 된다. 그
@@ -697,7 +873,23 @@ A_DEC_CORNER = 2.2    # 코너 내 종감속 상한 [m/s²]
 # 횡가속이 계획 예산(MU_PROFILE*g) 안으로 들어온다. 언제 켤 만한가:
 #   - 실차에서 코너 탈출 언더스티어/벽 접근이 보일 때
 #   - 게이트 요구를 실측 그립(0.70g) 근처까지 낮추고 싶을 때
-SPEED_LOOKAHEAD_COMPENSATION = False
+#
+# ⚠️ 2026-08-13 저녁: False -> True. 위 "언제 켤 만한가" 의 첫 줄이 실제로
+# 일어났다 — run_0813_172316 이 헤어핀 탈출 뒤 s 27.8~28.3 에서 우벽에 접촉해
+# 주행이 끝났다. 그 구간에서 계획은 4.1~4.8 m/s 를 낼 셈이었는데 차는
+# 5.4~5.9 로 들어갔고, 초과분은 정확히 '1 m 앞의 속도를 미리 읽는' 몫이다.
+# 즉 이 보정이 끄고 있던 것은 랩타임 0.2 s 가 아니라 **충돌 여유** 였다.
+#
+# 켠 대가는 위 표대로 폐루프 +0.2 s 지만, 같은 날 LAT_ERR_EXIT_LAG_M 이
+# 되찾아 준 시간이 그보다 커서 결과적으로 랩타임은 오히려 빨라진다
+# (my_track0813 폐루프 7.93 -> 7.83 s). 그리고 요구 합성가속이 네 맵에서
+# 7.16~8.55 로 내려와 MU 를 1.05 -> 1.00 으로 되돌릴 수 있었다.
+#
+# ⚠️ 이 보정과 curvature-adaptive L1 (119d65c) 은 다른 것이다. 저쪽은 조향
+# lookahead L1 을 곡률로 줄이고, 이쪽은 **속도 기준점**이 v*T_la 앞이라는
+# 어긋남을 상한에서 갚는다. 둘 다 켜져 있어야 하고, 둘 다 control YAML 을
+# 단일 기준으로 읽는다 (map/curvature_factor, map/speed_lookahead).
+SPEED_LOOKAHEAD_COMPENSATION = True
 _SPEED_LOOKAHEAD_PROFILE = "cpp_real_car"
 SPEED_LOOKAHEAD_S = float(
     controller_profile(_SPEED_LOOKAHEAD_PROFILE)["speed_lookahead_s"]
@@ -1474,7 +1666,8 @@ def velocity_profile(s, kappa, v_max, mu, a_acc_max, a_dec_max,
     return v
 
 
-def recent_max_kappa(s, kappa, window_m=None, decay_m=_DEFAULT):
+def recent_max_kappa(s, kappa, window_m=None, decay_m=_DEFAULT,
+                     lag_m=_DEFAULT):
     """각 점에서 '직전 window_m 안에 지나온' 최대 |kappa| (폐루프 방향 기준).
 
     횡추적오차는 코너 안이 아니라 코너를 빠져나온 직후에 최대가 된다 — 조향을
@@ -1482,13 +1675,22 @@ def recent_max_kappa(s, kappa, window_m=None, decay_m=_DEFAULT):
     점의 곡률이 아니라 '방금 지나온' 곡률로 오차를 예측해야 한다. 배열은 닫힌
     루프이므로 wrap 한다.
 
-    decay_m 을 주면 지나온 거리에 따라 지수로 감쇠시킨 rolling-max 를 쓴다.
-    현재 점(거리 0)의 가중은 1 이므로 코너 **진입**과 코너 **안**의 보수성은
-    그대로고, 코너를 빠져나온 뒤에만 상한이 부드럽게 풀린다. None 이면 예전
-    hard rolling-max (창 끝까지 최대값을 그대로 물고 있어 탈출이 지연된다).
+    가중 커널은 세 구간이다 (거리 d = 뒤로 간 호 길이):
+
+        d <= lag_m           : 1.0            (감쇠 없음 = 하드 rolling-max)
+        lag_m < d <= window  : exp(-(d - lag_m) / decay_m)
+        d > window           : 0              (창 밖)
+
+    현재 점(d=0)의 가중은 항상 1 이므로 코너 **진입**과 코너 **안**의 보수성은
+    건드리지 않는다. lag_m 은 "코너를 빠져나온 뒤 몇 m 까지 코너와 똑같이
+    취급할 것인가"이고, decay_m 은 그 뒤 얼마나 빨리 직선으로 돌아올지다.
+    decay_m=None 이면 창 끝까지 하드 rolling-max (2026-08-08 이전 동작).
+    lag_m=0 이면 2026-08-08~08-13 의 순수 지수 감쇠와 같다.
     """
     window_m = LAT_ERR_KAPPA_WINDOW_M if window_m is None else window_m
     decay_m = LAT_ERR_EXIT_DECAY_M if decay_m is _DEFAULT else decay_m
+    lag_m = LAT_ERR_EXIT_LAG_M if lag_m is _DEFAULT else lag_m
+    lag_m = 0.0 if lag_m is None else max(float(lag_m), 0.0)
     s = np.asarray(s, dtype=float)
     k = np.abs(np.asarray(kappa, dtype=float))
     n = len(k)
@@ -1500,7 +1702,8 @@ def recent_max_kappa(s, kappa, window_m=None, decay_m=_DEFAULT):
     # 뒤로 back 칸까지의 rolling max (wrap 포함)
     shifts = np.arange(back + 1)
     if decay_m is not None and float(decay_m) > 0.0:
-        weight = np.exp(-shifts * ds / float(decay_m))
+        past = np.maximum(shifts * ds - lag_m, 0.0)
+        weight = np.exp(-past / float(decay_m))
     else:
         weight = np.ones(len(shifts))
     stacked = np.stack([np.roll(k, int(shift)) * w
@@ -1555,6 +1758,11 @@ def lat_err_slope(s, kappa):
 
     2026-08-06 실차 백 실측(21k 샘플, 회피 스플라이싱 제외)에서 이 기울기는
     속도가 아니라 직전 곡률에 지배된다. 상수 블록 주석의 표 참조.
+
+    '직전 곡률' kr 은 recent_max_kappa 의 lag+decay 커널이 만든다 —
+    2026-08-13 실측에서 오차 봉우리는 코너 안이 아니라 **출구에서 3~4 m 뒤**에
+    있었다 (LAT_ERR_EXIT_LAG_M 주석). 그래서 이 함수는 '지금 얼마나 꺾여
+    있는가'가 아니라 '방금 어디를 지나왔는가'를 본다.
     """
     kr = recent_max_kappa(s, kappa)
     t = np.clip((kr - LAT_ERR_KAPPA_LOW) /
@@ -2449,6 +2657,9 @@ class PurePursuitSim:
                               np.sin(self.traj["psi"][idx])])
             e_vec = pos - self.xy[idx]
             d_err = t_hat[0] * e_vec[1] - t_hat[1] * e_vec[0]
+            # 추종 백스톱이 재는 값 (control_node.cpp:1010). d_err 는 수직
+            # 성분만이라 항상 이보다 작다 — 안전망 판정에 쓰면 낙관적이 된다.
+            path_err = float(np.hypot(e_vec[0], e_vec[1]))
             lookahead_min = self.lookahead_clip[0]
             if self.profile["kind"] == "cpp_map_l1":
                 # calc_l1_point()의 lateral-error dependent lower bound.
@@ -2542,7 +2753,8 @@ class PurePursuitSim:
             log["theta"].append(theta)
             log["v"].append(v); log["v_ref"].append(v_cmd)
             log["s"].append(s_now + laps_done * self.track_len)
-            log["d_err"].append(d_err); log["steer"].append(steer)
+            log["d_err"].append(d_err); log["path_err"].append(path_err)
+            log["steer"].append(steer)
             log["a_long_cmd"].append(a_long_cmd)
             log["a_long_plant"].append(a_long_plant)
             log["a_lat_cmd"].append(a_lat_cmd)
@@ -2675,12 +2887,17 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
                 f" · VESC 제동 {brake_duty * 100:.1f}% 구간 "
                 f"(max {log['brake_amps'].max():.2f} A, "
                 f"크레딧 {BRAKE_DECEL_PER_AMP:.2f} m/s²/A)")
+        # 백스톱은 gate 가 아니라 지표다. FAIL 로 두면 지금 배포 중인 라인까지
+        # 막히는데(이미 임계 위에 있다), 그건 이 변경이 답하려는 질문 —
+        # "기울기를 어디까지 내릴 수 있나" — 을 막을 뿐이다.
+        backstop_note = backstop_report(log, profile)
         msgs.append(
             f"{prefix}: PASS · {requested_laps}랩 · profile speed scale "
             f"{effective_scale:.4f} (planner {profile['planner_speed_scale']:.4f}"
             f" × control {profile['controller_speed_scale']:.2f}, cap "
             f"{profile['max_speed_mps']:.2f} m/s) · footprint 충돌 0 · "
             f"|lat err|max {np.abs(log['d_err']).max():.3f} m · "
+            + (f"{backstop_note} · " if backstop_note else "") +
             f"합성 요구/실제 max {log['combined_demand'].max():.2f}/"
             f"{log['combined_accel'].max():.2f} <= {tire_limit:.2f} m/s²"
             f"{brake_note}")
@@ -2697,6 +2914,10 @@ PROFILE_OVERRIDES = {
     "lat_err_straight": "LAT_ERR_STRAIGHT_S",
     "lat_err_corner": "LAT_ERR_CORNER_S",
     "exit_decay": "LAT_ERR_EXIT_DECAY_M",
+    "exit_lag": "LAT_ERR_EXIT_LAG_M",
+    "kappa_window": "LAT_ERR_KAPPA_WINDOW_M",
+    "kappa_high": "LAT_ERR_KAPPA_HIGH",
+    "mu_profile": "MU_PROFILE",
 }
 
 
@@ -2930,6 +3151,10 @@ _PROFILE_OVERRIDES = {
     "lat_err_straight": "LAT_ERR_STRAIGHT_S",
     "lat_err_corner": "LAT_ERR_CORNER_S",
     "exit_decay": "LAT_ERR_EXIT_DECAY_M",
+    "exit_lag": "LAT_ERR_EXIT_LAG_M",
+    "kappa_window": "LAT_ERR_KAPPA_WINDOW_M",
+    "kappa_high": "LAT_ERR_KAPPA_HIGH",
+    "mu_profile": "MU_PROFILE",
 }
 
 
@@ -3028,6 +3253,26 @@ def main():
                     help=f"코너 탈출 후 기울기 복귀 감쇠 길이 [m] (기본 "
                          f"{LAT_ERR_EXIT_DECAY_M}). 작으면 탈출 직후 바로 풀악셀, "
                          "0 이면 예전 동작(창 끝까지 코너 취급).")
+    ap.add_argument("--exit-lag", type=float, default=None, metavar="M",
+                    help=f"코너를 빠져나온 뒤 감쇠를 **시작하지도 않는** 거리 [m] "
+                         f"(기본 {LAT_ERR_EXIT_LAG_M:.1f}). 실차 횡오차는 코너 "
+                         "출구에서 바로가 아니라 3~4 m 뒤에 최대가 된다 "
+                         "(2026-08-13 rosbag0813 실측, LAT_ERR_EXIT_LAG_M 주석). "
+                         "0 이면 08-08~08-13 의 순수 지수 감쇠 동작.")
+    ap.add_argument("--kappa-window", type=float, default=None, metavar="M",
+                    help=f"'직전 곡률' rolling-max 창 [m] (기본 "
+                         f"{LAT_ERR_KAPPA_WINDOW_M:.1f}). lag+decay 를 담을 만큼 "
+                         "길어야 한다 — 짧으면 창이 커널을 잘라 먹는다.")
+    ap.add_argument("--kappa-high", type=float, default=None, metavar="RADPM",
+                    help=f"코너 취급 곡률 경계 [1/m] (기본 "
+                         f"{LAT_ERR_KAPPA_HIGH:.2f}). corner_ax_limits() 와 "
+                         "공유되므로 A_*_CORNER 적용 범위도 같이 바뀐다.")
+    ap.add_argument("--mu-profile", type=float, default=None, metavar="MU",
+                    help=f"속도 프로파일 계획용 마찰계수 (기본 "
+                         f"{MU_PROFILE:.2f}). 곡률 상한 = sqrt(mu*g/|k|). "
+                         "⚠️ 바꾸면 params.yaml 의 "
+                         "global_trajectory/validation_mu 도 같이 올릴 것 — "
+                         "안 맞추면 런타임이 CSV 를 거부한다.")
     args = ap.parse_args()
     _apply_profile_overrides(args)
     m = args.map
@@ -3260,6 +3505,11 @@ def main():
             "velocity_profile_settings": profile_settings_manifest(),
             "longitudinal": traj.get("longitudinal_info"),
             "speed_lookahead": traj.get("speed_lookahead_info"),
+            # 이 라인이 컨트롤러의 추종 백스톱을 얼마나 건드리는가. gate 는
+            # 아니지만 LAT_ERR_CORNER_S 를 다시 고를 때 보는 값이라, 어떤
+            # CSV 가 어느 정도 여유로 만들어졌는지 여기 남긴다.
+            "backstop": backstop_metrics(
+                log, controller_profile(log["profile_name"])),
         })
 
     # 4) 플롯 ---------------------------------------------------------------

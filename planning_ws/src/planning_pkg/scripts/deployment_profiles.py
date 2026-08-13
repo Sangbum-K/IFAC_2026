@@ -325,6 +325,7 @@ _PROFILE_NUMERIC_FIELDS = (
 # vesc 는 brake_max/gain/entry/overspeed/release 중재를 정한다.
 _PROFILE_SIGNATURE_EXTRA_FIELDS = (
     "curvature_factor", "speed_lookahead_s", "steering_lut", "vesc",
+    "backstop",
 )
 
 
@@ -358,6 +359,23 @@ def _resolve_cpp_real_car(name, source):
             control, "map/t_clip_max", control_src),
         "speed_lookahead_s": _require_number(
             control, "map/speed_lookahead", control_src, positive=False),
+        # 추종 백스톱 (control_node.cpp:1008-1093). 폐루프 시뮬은 이 캡을
+        # 적용하지 않지만, 생성한 라인이 안전망을 얼마나 건드리는지는
+        # backstop_report() 로 보고한다 — LAT_ERR_CORNER_S 선정 기준이 바로
+        # 이 임계 초과 여부다.
+        "backstop": {
+            "enabled": bool(control.get("map/backstop_enabled", False)),
+            "path_error_m": _require_number(
+                control, "map/backstop_path_error_m", control_src),
+            "steer_sat_ratio": _require_number(
+                control, "map/backstop_steer_sat_ratio", control_src),
+            "sat_min_path_error_m": _require_number(
+                control, "map/backstop_sat_min_path_error_m", control_src,
+                positive=False),
+            "min_speed_mps": _require_number(
+                control, "map/backstop_min_speed_mps", control_src,
+                positive=False),
+        },
         "wheelbase_m": _require_number(
             control, "vehicle/wheelbase_m", control_src),
         "max_steer_rad": _require_number(
@@ -560,11 +578,92 @@ def profile_manifest(target=DEFAULT_GATE_TARGET):
 # --- 종방향 plant -------------------------------------------------------------
 # 시뮬 로그 열. 생성기와 튜너가 같은 목록을 쓴다.
 SIM_LOG_FIELDS = (
-    "t", "x", "y", "theta", "v", "v_ref", "s", "d_err", "steer",
+    # path_err 는 d_err(수직 성분)이 아니라 **최근접 waypoint 까지의 거리**다.
+    # 추종 백스톱이 재는 값이 그것이라(control_node.cpp:1010) 같은 양으로
+    # 기록해야 backstop_report() 가 실차 발화 조건과 같은 판정을 한다.
+    "t", "x", "y", "theta", "v", "v_ref", "s", "d_err", "path_err", "steer",
     "a_long_cmd", "a_long_plant", "a_lat_cmd", "a_long", "a_lat",
     "combined_demand", "combined_accel", "tire_saturated",
     "brake_amps", "braking",
 )
+
+
+def backstop_metrics(log, profile):
+    """폐루프 로그가 추종 백스톱을 얼마나 건드렸는지 재서 dict 로 돌려준다.
+
+    왜 필요한가: LAT_ERR_CORNER_S(코너 폭 상한 기울기)를 고르는 기준이 문자
+    그대로 "백스톱 임계 초과 여부"인데, 그 판정이 gate 가 아니라 build_map.py
+    주석의 손으로 만든 표에만 있었다. 그래서 gate 는 여러 기울기를 전부 PASS
+    로 통과시키면서 "그 구간 내내 안전망 위에 앉아 있다"는 사실은 어디에도
+    남기지 않았다.
+
+    ⚠️ 이것은 **지표이지 재시뮬레이션이 아니다.** 시뮬은 여전히 백스톱 캡을
+    적용하지 않으므로 여기 나오는 낙폭만큼 실제로 느려진 랩타임이 아니다.
+    C++ 와 같은 식(control_node.cpp:1016-1086)으로 '지금 속도에서 안전망이
+    걸었을 캡'을 계산해 그 차이를 보고할 뿐이다. 캡이 실제로 적용되는지는
+    그 순간의 speed_command 와 비교해야 하는데, 로그의 v_ref 는 slew 를 이미
+    거친 값이라 복원할 수 없다.
+
+    반환: 백스톱 없는 프로파일이거나 비활성이면 None. 그 외에는 미발화라도
+    dict 를 돌려준다 — 매니페스트에 "0 번 발화"가 남는 것과 항목 자체가 없는
+    것은 다르다 (후자는 이 지표가 없던 시절의 CSV 와 구별이 안 된다).
+    """
+    backstop = profile.get("backstop")
+    if not backstop or not backstop.get("enabled"):
+        return None
+    path_err = np.asarray(log["path_err"], dtype=float)
+    speed = np.asarray(log["v"], dtype=float)
+    max_steer = profile["max_steer_rad"]
+    saturation = np.abs(np.asarray(log["steer"], dtype=float)) / max(
+        max_steer, 1e-3)
+
+    err_threshold = backstop["path_error_m"]
+    min_speed = backstop["min_speed_mps"]
+    headroom = speed - min_speed
+
+    err_hit = path_err > err_threshold
+    over_err = np.clip(
+        (path_err - err_threshold) / max(err_threshold, 1e-3), 0.0, 1.0)
+    # 조향포화 분기는 경로오차 조건과 AND 로 묶여 있다 (2026-08-12).
+    sat_threshold = backstop["steer_sat_ratio"]
+    sat_min_err = backstop["sat_min_path_error_m"]
+    sat_err_ok = (sat_min_err <= 0.0) | (path_err > sat_min_err)
+    sat_hit = (saturation > sat_threshold) & sat_err_ok
+    over_sat = np.clip(
+        (saturation - sat_threshold) / max(1.0 - sat_threshold, 1e-3),
+        0.0, 1.0)
+
+    # 두 분기가 각자 캡을 내고 낮은 쪽이 이긴다. 마지막에 하한으로 clamp.
+    reduction = np.maximum(
+        np.where(err_hit, over_err * headroom, 0.0),
+        np.where(sat_hit, over_sat * headroom, 0.0))
+    reduction = np.maximum(
+        np.minimum(reduction, np.maximum(headroom, 0.0)), 0.0)
+    triggered = err_hit | sat_hit
+    return {
+        "path_error_threshold_m": float(err_threshold),
+        "steer_sat_threshold": float(sat_threshold),
+        "triggered_steps": int(triggered.sum()),
+        "path_error_steps": int(err_hit.sum()),
+        "steer_sat_steps": int(sat_hit.sum()),
+        "total_steps": int(len(path_err)),
+        "path_error_max_m": float(path_err.max()),
+        "speed_cut_max_mps": float(reduction.max()),
+    }
+
+
+def backstop_report(log, profile):
+    """backstop_metrics() 를 gate 출력 한 줄로 만든다. 없으면 ""."""
+    metrics = backstop_metrics(log, profile)
+    if not metrics or not metrics["triggered_steps"]:
+        return ""
+    return (
+        f"백스톱 {metrics['triggered_steps']} step"
+        f"(경로오차 {metrics['path_error_steps']} / "
+        f"조향포화 {metrics['steer_sat_steps']}, "
+        f"최대 낙폭 {metrics['speed_cut_max_mps']:.2f} m/s, "
+        f"경로오차 max {metrics['path_error_max_m']:.3f} m > "
+        f"{metrics['path_error_threshold_m']:.2f})")
 
 
 class VescLongitudinalPlant:

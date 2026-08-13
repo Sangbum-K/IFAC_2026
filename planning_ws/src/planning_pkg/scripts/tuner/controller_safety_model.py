@@ -42,7 +42,7 @@ from deployment_profiles import (          # noqa: E402,F401
 import deployment_profiles as _profiles     # noqa: E402
 
 G = 9.81
-MODEL_VERSION = 'tuner-controller-safety-2026-08-13-v5'
+MODEL_VERSION = 'tuner-controller-safety-2026-08-13-v6'
 # Restricted-AST digest of the generator functions that must remain numerically
 # paired with this lightweight copy.  Any generator algorithm edit locks tuner
 # saves until this model and its parity test are deliberately updated.
@@ -50,8 +50,12 @@ MODEL_VERSION = 'tuner-controller-safety-2026-08-13-v5'
 # mean absolute curvature at local waypoint offsets [10, 20) subtracts a
 # curvature_factor*kappa*v^2 term from the speed-based lookahead.  The generator
 # and this lightweight copy were updated together and parity-tested.
+# 2026-08-13 v6: both copies now log path_err (distance to the nearest
+# waypoint, which is what the tracking backstop measures) so the generator can
+# report how hard a raceline leans on that safety net.  Simulated dynamics are
+# unchanged -- the backstop cap is reported, never applied.
 GENERATOR_MODEL_AST_SHA256 = (
-    '23c28a7714bda7251413bb017b48c44c5a868d4ce6ee4cf22c0dfcad3d85fc5a')
+    '28dbe10d23059e8792a70c825aa3c6d0b41754fed17bda081ac82a52d4b00dee')
 VEHICLE_HALF_WIDTH_M = 0.15
 VEHICLE_HALF_LENGTH_M = 0.275
 
@@ -503,6 +507,9 @@ class PurePursuitSim:
                 np.sin(self.traj['psi'][index])])
             error = position - self.xy[index]
             d_error = tangent[0] * error[1] - tangent[1] * error[0]
+            # Distance to the nearest waypoint -- what the tracking backstop
+            # measures (control_node.cpp:1010), not the perpendicular d_error.
+            path_error = float(np.hypot(error[0], error[1]))
             lookahead_min = self.lookahead_clip[0]
             if self.profile['kind'] == 'cpp_map_l1':
                 lookahead_min = min(max(
@@ -586,6 +593,7 @@ class PurePursuitSim:
             values = (
                 elapsed, position[0], position[1], theta, speed,
                 speed_command, current_s + laps * self.track_len, d_error,
+                path_error,
                 steering, a_long_command, a_long_plant, a_lat_command,
                 a_long, a_lat, combined_demand, combined_accel,
                 float(saturated), brake_amps,

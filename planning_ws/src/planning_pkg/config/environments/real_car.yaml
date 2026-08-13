@@ -186,7 +186,8 @@ spliner_node:
     # ⚠️ 상한이 path_lat_acc_max 라 코드가 강제한다(spliner_node.cpp:337).
     #    더 올리려면 path_lat_acc_max 를 먼저 올려야 하고, 그건 레이스라인
     #    재생성이 필요하다 (아래 path_lat_acc_max 주석).
-    spliner/escape_arc_lat_acc: 7.85
+    # 2026-08-13: 7.85 -> 8.83 (MU_PROFILE 0.80 -> 0.90 동반 상향).
+    spliner/escape_arc_lat_acc: 8.83
     spliner/escape_arc_min_speed: 1.2      # 미만은 정상 회피가 이미 성립
     # 2026-08-12: 0.70 -> 0.80 (46도). run_0812 2:37 에서 기동 끝 헤딩이 정확히
     # 40.0 도로 상한에 걸려 escape_heading_over 로 기각됐다 (3건). 코드 검증
@@ -209,7 +210,8 @@ spliner_node:
     # 잔여가 쓰이지만, gb_wpnts 가 비었거나 span 이 무효일 때의 폴백과
     # trailing d램프/return_speed_cap 이 이 값을 직접 쓴다 — 거기서만 몰래
     # 5.0 이 적용되고 있었다. 실측 근거는 위 escape_arc_lat_acc 주석.
-    spliner/blend_lat_acc_max: 7.85     # = path_lat_acc_max (params.yaml 불변식)
+    # 2026-08-13: 7.85 -> 8.83 (MU_PROFILE 0.80 -> 0.90 동반 상향).
+    spliner/blend_lat_acc_max: 8.83     # = path_lat_acc_max (params.yaml 불변식)
     spliner/blend_dist_max_m: 8.0
     # 이 값은 마찰원 예산이라 **레이스라인을 생성한 MU_PROFILE 과 같아야** 한다
     # (manifest 의 validation.mu_profile x 9.81). 낮으면 BlendLatAcc 의 잔여 그립
@@ -234,9 +236,15 @@ spliner_node:
     # 궤적 재생성까지 한 묶음으로 가야 하고, 여기만 올리면 마찰원 잔여가
     # 레이스라인이 배정하지 않은 그립을 가정한다.
     # 그래서 이번엔 상한 안에서 쓸 수 있는 escape/blend 만 7.85 로 맞췄다.
-    # 다음 단계로 mu 0.85(8.34)를 원하면 재생성과 함께, 그리고 params.yaml 이
-    # 요구하는 검증(회피 중 /pitwall/lat_err 가 벽 여유 0.35 m 안인지)을 통과한 뒤.
-    spliner/path_lat_acc_max: 7.85      # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE 0.80 x g)
+    #
+    # 2026-08-13: **7.85 -> 8.83 으로 올렸다.** 위 문단이 요구한 "재생성과 함께"
+    # 를 이번에 같이 했다 — build_map MU_PROFILE 0.80 -> 0.90, params.yaml
+    # validation_mu 0.80 -> 0.90, my_track0813 궤적 재생성이 한 묶음이다.
+    # (물리 한계 MU 는 1.00 으로 별도라 추종 보정 몫 0.10 mu 는 남아 있다.)
+    # ⚠️ 위 문단이 함께 요구한 실차 검증 — 회피 중 /pitwall/lat_err 가 벽 여유
+    #    0.35 m 안인지 — 은 **아직 통과하지 않았다.** 회피가 실제로 걸리는 첫
+    #    주행에서 확인할 것. 그 전까지 이 값은 근거가 반쪽이다.
+    spliner/path_lat_acc_max: 8.83      # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE 0.90 x g)
     # 회피 궤적 정형용 상한. 옛 주석의 "raceline 프로파일 최대 요구 6.27과 정합"은
     # 틀렸다 — my_track0810 CSV 실측 ax 는 [-2.38, +4.50] 이라 최대 제동 요구가
     # 2.38(=A_DEC_PLANNED)이다. 6.27 은 mu 0.68 시절 값. 플랜트 제동 능력은
