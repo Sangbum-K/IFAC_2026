@@ -588,10 +588,12 @@ def extract(db_path):
     if count("/car_state/frenet/odom"):
         for t, b in fetch("/car_state/frenet/odom"):
             try:
-                s, _d, _yaw, _v = dec_odom(b)   # frenet odom: position.x=s, .y=d
+                # frenet odom: position.x=s, .y=d
+                header_t, s, _d, _yaw, _v = dec_odom(b)
             except Exception:
                 continue
-            s_t.append(t)
+            # pose["t"]가 헤더 시각을 쓰므로 랩 경계도 같은 시간축이어야 한다.
+            s_t.append(source_time(header_t, t))
             s_v.append(s)
         lap_src = "/car_state/frenet/odom"
     elif out["glb"] and pose["t"]:
