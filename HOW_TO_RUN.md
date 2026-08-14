@@ -303,6 +303,11 @@ RViz 창 위쪽 버튼을 씁니다.
 **각종 제어 버튼** 왼쪽 `Panels` → `PitwallPanel` (자율주행 ON/OFF, 상대 속도 등) 
 초록 반투명 선 = 추월 섹터(직선 구간에서만 공격적으로 추월).
 
+**동적 인지 확인:** 상대 차를 ego 전방 3–8 m에 스폰한 뒤 약 0.8초 기다린다.
+`DetectedObstacles (LiDAR)`의 **빨간 원기둥 + 노란 속도 화살표 + `D` 텍스트**가
+실제 `/scan_overlay → obstacle_detector_node` 결과다. `Publish Point`로 놓은
+초록 `VirtualStaticObstacles (GT)`는 정적 ground truth이므로 이 검증 대상이 아니다.
+
 ### 3-4. 상태 확인
 
 새 터미널(source 후)에서:

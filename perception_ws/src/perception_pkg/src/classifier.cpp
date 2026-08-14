@@ -39,10 +39,16 @@ bool pos_spread(const std::deque<Point2> & pos_hist, double & spread_out)
 }  // namespace
 
 bool classify_track(
-  Track & track,
+  Track & track, bool has_measurement,
   double v_thresh, int n_confirm, int n_release,
   double static_pos_std, double dynamic_pos_std, int dynamic_release)
 {
+  // KF coast는 기존 속도·위치이력만으로 만들어진 예측이다. 이를 한 프레임의
+  // 관측 증거로 세면 실제 3회 관측 확인이 아니라 miss 프레임만으로 확정/해제된다.
+  if (!has_measurement) {
+    return track.is_dynamic;
+  }
+
   const double speed = track.kf.speed();   // 칼만필터가 추정한 현재 속도 크기
   double spread = 0.0;
   const bool has_spread = pos_spread(track.pos_hist, spread);

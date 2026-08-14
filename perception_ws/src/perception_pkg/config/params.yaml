@@ -78,6 +78,23 @@ obstacle_detector_node:
     # 정확히 이 창이었다. 0.80 은 실물 콘이 가려지는 실측 최장 구간(코너 진입
     # ~0.6 s)보다 길고 유령 수명보다 짧다.
     track_timeout_sec: 0.80
+    # 코너에서 CV 예측이 primary gate를 잠깐 벗어났을 때만 쓰는 2차 매칭.
+    # 일반 association gate는 넓히지 않는다. 마지막 실측 후 0.25초 안이고
+    # 반경이 맞는 이미 확정된 동적 트랙만 후보가 된다.
+    dynamic_reacquire_gate_multiplier: 1.6
+    # 0.20초는 코너 진입에서 한두 스캔이 빠졌을 때 너무 짧아, 여전히 살아 있는
+    # 동적 트랙 대신 새 ID가 생길 수 있었다. 0.25초는 그 짧은 재획득 창만
+    # 늘리며 일반 정적 트랙의 association/retire 수명은 바꾸지 않는다.
+    dynamic_reacquire_timeout_sec: 0.25
+    # active coast가 끝난 뒤 코너/FOV 이탈로 재등장한 상대는, map 좌표 CV
+    # 직선 예측 대신 레이스라인 Frenet 진행량(s)·횡방향(d)으로만 보조 Re-ID한다.
+    # 일반/정적 트랙에는 적용하지 않으며 후보가 하나일 때만 같은 ID를 복원한다.
+    # 이 값은 retired cache의 추가 보관 시간이다. KF ghost 발행 시간은
+    # track_timeout_sec(0.80s)로 그대로 제한된다.
+    dynamic_frenet_reid_timeout_sec: 1.25
+    dynamic_frenet_reid_lateral_gate_m: 0.45
+    dynamic_frenet_reid_progress_slack_m: 0.80
+    dynamic_frenet_reid_backtrack_m: 0.30
     n_confirm_sec: 0.78
     n_release_sec: 1.23
     dynamic_release_sec: 6.04
@@ -148,3 +165,7 @@ obstacle_viz_node:
     viz/body_height_m: 0.3
     viz/text_size_m: 0.25
     viz/min_diameter_m: 0.05
+    # 주황 점/선 = 현재 KF posterior에서 이 시간 뒤의 CV 예상 위치.
+    # 청록 구 + "KF COAST"는 이번 프레임에 실측이 없는 외삽 상태다.
+    viz/prediction_horizon_sec: 0.30
+    viz/prediction_marker_diameter_m: 0.16

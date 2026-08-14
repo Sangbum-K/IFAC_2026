@@ -241,7 +241,10 @@ class VirtualObstacleNode(Node):
             m.type = Marker.CYLINDER
             m.scale.x = m.scale.y = self.size
             m.scale.z = 0.3
-            m.color.r, m.color.a = 1.0, 0.9
+            # Publish Point로 만드는 것은 정적 GT다. 빨강은 C++ detector가
+            # is_dynamic=true로 확정한 결과에만 남겨야 RViz에서 의미가 섞이지
+            # 않는다 (DetectedObstacles (LiDAR) 디스플레이).
+            m.color.r, m.color.g, m.color.b, m.color.a = 0.1, 0.9, 0.2, 0.9
             m.pose.position.x = obs.position.x
             m.pose.position.y = obs.position.y
             m.pose.position.z = 0.15

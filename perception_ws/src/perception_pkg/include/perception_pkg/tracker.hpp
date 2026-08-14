@@ -31,6 +31,8 @@
 namespace perception_pkg
 {
 
+class TrackBounds;
+
 /// 등속도(Constant Velocity) 모델 2D 칼만필터. 상태: [x, y, vx, vy]
 class KalmanFilterCV
 {
@@ -40,6 +42,9 @@ public:
   void predict(double dt);
   /// z: 관측된 [x, y] 위치
   void update(double zx, double zy);
+  /// 재획득 때는 코너 전의 직선 속도를 승계하지 않는다. 현재 측정 위치에서
+  /// 속도를 다시 추정하도록 상태를 초기화한다.
+  void reset_to_measurement(double zx, double zy);
 
   double x() const {return state_(0);}
   double y() const {return state_(1);}
@@ -60,11 +65,17 @@ struct Track
 
   void predict(double stamp);
   void update(const Cluster & cluster, double stamp);
+  /// 정상 association gate 밖에서 짧은 동적 재획득을 성공했을 때 사용한다.
+  /// 위치는 새 측정으로 고정하고, 이전 코너 진입 속도는 버린다.
+  void reacquire(const Cluster & cluster, double stamp);
   void mark_missed() {++misses;}
 
   int id;
   KalmanFilterCV kf;
   double last_stamp;
+  /// 마지막으로 실제 cluster가 매칭된 시각. last_stamp는 predict마다 갱신되므로
+  /// 재획득 시간 게이트에는 쓰면 안 된다.
+  double last_measurement_stamp;
   double radius;
   int hits{1};              ///< 총 관측된 횟수
   int misses{0};            ///< 연속 미관측 횟수
@@ -90,10 +101,19 @@ class Tracker
 public:
   Tracker(
     double gating_distance, int track_timeout, double reid_distance,
-    double reid_timeout, int pos_hist_len, double radius_ratio_max);
+    double reid_timeout, int pos_hist_len, double radius_ratio_max,
+    double dynamic_reacquire_gate_multiplier,
+    double dynamic_reacquire_timeout_sec,
+    double dynamic_frenet_reid_timeout_sec,
+    double dynamic_frenet_reid_lateral_gate_m,
+    double dynamic_frenet_reid_progress_slack_m,
+    double dynamic_frenet_reid_backtrack_m);
 
-  /// 한 프레임(스캔) 처리. 반환값은 현재 활성 트랙들.
-  std::vector<TrackPtr> step(const std::vector<Cluster> & clusters, double stamp);
+  /// 한 프레임(스캔) 처리. track_bounds가 있으면 retired 동적 트랙의 긴
+  /// 코너/FOV 이탈 재식별만 Frenet s/d 조건으로 보조한다.
+  std::vector<TrackPtr> step(
+    const std::vector<Cluster> & clusters, double stamp,
+    const TrackBounds * track_bounds = nullptr);
 
   int track_timeout() const {return track_timeout_;}
 
@@ -112,11 +132,19 @@ private:
   struct Retired
   {
     int id;
-    double x, y, vx, vy, t;
+    double x, y, vx, vy, radius, t;
+    /// 마지막 실제 cluster 관측. x/y는 retire 시점의 KF coast 위치이므로,
+    /// 코너/FOV 이탈 재식별의 Frenet 기준점으로 쓰면 안 된다.
+    double last_measurement_x, last_measurement_y, last_measurement_stamp;
+    int dynamic_streak, static_streak;
+    double confidence;
     bool ever_dynamic;
     bool is_dynamic;
   };
 
+  bool radius_matches(const Track & track, const Cluster & cluster) const;
+  bool radius_matches(const Retired & retired, const Cluster & cluster) const;
+  TrackPtr revive(const Retired & retired, const Cluster & cluster, double stamp) const;
   void retire(const Track & track, double stamp);
   void spawn(const Cluster & cluster, double stamp);
 
@@ -131,6 +159,19 @@ private:
   /// 크기 일관성 게이트: 트랙이 보던 반경과 후보 클러스터 반경의 비가
   /// 이 배수를 넘으면 같은 물체로 보지 않는다. 1 이하면 비활성.
   double radius_ratio_max_;
+  /// 표준 association이 한 번 실패한 동적 트랙에만 적용하는 별도 재획득 gate.
+  /// 일반 gate를 키우지 않아 정적 클러스터의 ID 탈취를 피한다.
+  double dynamic_reacquire_gate_multiplier_;
+  /// 마지막 실측 후 이 시간 안에서만 active dynamic 재획득을 허용한다 [s].
+  double dynamic_reacquire_timeout_sec_;
+  /// retired 동적 트랙을 Frenet 조건으로 보조 재식별할 cache 수명 [s].
+  double dynamic_frenet_reid_timeout_sec_;
+  /// Frenet 보조 재식별 때 허용하는 횡방향(d) 차이 [m].
+  double dynamic_frenet_reid_lateral_gate_m_;
+  /// 직선 CV 대신 트랙 진행량으로 재식별할 때 속도 적분에 더하는 여유 [m].
+  double dynamic_frenet_reid_progress_slack_m_;
+  /// Frenet 보조 재식별에서 허용하는 역방향 진행량 [m].
+  double dynamic_frenet_reid_backtrack_m_;
 };
 
 }  // namespace perception_pkg

@@ -48,6 +48,30 @@ ls planning_ws/src/planning_pkg/config/global_trajectory/*_iqp_*.csv \
 
 그 외 인자는 `ros2 launch` 로 그대로 넘어간다 (`suffix:=…` 등).
 
+### 동적 장애물 인지 확인 (RViz2)
+
+`--plain`으로 빠르게 띄운 뒤 RViz 상단의 **2D Goal Pose**로 레이스라인 위,
+ego 차량 전방 3–8 m 지점에 상대 차량을 스폰한다.
+
+```zsh
+./run_sim.sh my_track0810 --plain
+```
+
+`DetectedObstacles (LiDAR)` 디스플레이가 실제 C++ 인지 결과를 보여 준다.
+상대 차량의 LiDAR 반사가 `/scan_overlay → obstacle_detector_node`를 통과한 뒤
+약 0.8초 동안 추적되면, `is_dynamic=true`로 확정되어 **빨간 원기둥**, 노란 속도
+화살표, `#<id> D <speed>m/s` 텍스트가 나타난다. 이 마커가 동적 인지 확인 대상이다.
+
+`Publish Point`로 추가한 `VirtualStaticObstacles (GT)`의 초록 원기둥은 정적
+ground truth라서 동적 인지 결과와 구분된다. 입력 스캔도 `ScanOverlay`에서 함께
+볼 수 있다.
+
+터미널에서 판별값을 직접 확인하려면 다음을 실행한다.
+
+```zsh
+ros2 topic echo /perception/obstacles_detected
+```
+
 ---
 
 ## 4. 새 맵
