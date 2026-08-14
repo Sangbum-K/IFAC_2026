@@ -44,11 +44,16 @@ private:
   // 회피 궤적이 유효하면 로컬 윈도우의 겹치는 s 구간을 치환한다.
   // false는 입력 궤적이 비정상임을 뜻하며 이 주기의 local path를 발행하지 않는다.
   // replaced_out 에는 실제로 치환된 웨이포인트 수가 담긴다 (pitwall 텔레메트리용).
+  // ego_d 는 진단 로그 전용이다 (2026-08-14). 스플라이스가 선두를 못 덮는
+  // 것 자체는 정상일 수 있고(회피 경로가 앞에서 시작), 해로운 경우는
+  // "차는 라인을 벗어나 있는데 따라갈 경로는 라인 위" 하나뿐이라
+  // 그 판정에 차의 현재 d 가 필요하다. 동작에는 쓰지 않는다.
   bool SpliceAvoidanceWaypoints(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & local_wpnts,
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & avoidance_wpnts,
     double track_length,
-    int & replaced_out);
+    int & replaced_out,
+    double ego_d);
 
   // Parameters
   double loop_rate_hz_{40.0};

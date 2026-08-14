@@ -472,7 +472,8 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
   int spliced_count = 0;
   if (avoidance_is_fresh && !avoidance_copy.empty() &&
     !SpliceAvoidanceWaypoints(
-      local_waypoints.wpnts, avoidance_copy, track_length, spliced_count))
+      local_waypoints.wpnts, avoidance_copy, track_length, spliced_count,
+      frenet_odom_copy.pose.pose.position.y))
   {
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), *get_clock(), 1000,
@@ -548,7 +549,8 @@ bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
   std::vector<f1tenth_planning_msgs::msg::Wpnt> & local_wpnts,
   const std::vector<f1tenth_planning_msgs::msg::Wpnt> & avoidance_wpnts,
   double track_length,
-  int & replaced_out)
+  int & replaced_out,
+  double ego_d)
 {
   replaced_out = 0;
   if (local_wpnts.size() < 2U || avoidance_wpnts.size() < 2U ||
@@ -609,6 +611,7 @@ bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
   const double match_tolerance =
     std::min(0.5 * avoidance_progress[1U], 0.10) + kEpsilon;
   int replaced = 0;
+  int first_replaced = -1;
   for (std::size_t local_index = 0; local_index < local_wpnts.size(); ++local_index) {
     double query = query_at_local_start + local_progress[local_index];
     if (query < -match_tolerance ||
@@ -662,6 +665,9 @@ bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
       return false;
     }
     local_wpnts[local_index] = replacement;
+    if (first_replaced < 0) {
+      first_replaced = static_cast<int>(local_index);
+    }
     ++replaced;
   }
 
@@ -671,6 +677,36 @@ bool LocalTrajectoryNode::SpliceAvoidanceWaypoints(
       this->get_logger(), *get_clock(), 2000,
       "Spliced %d/%zu local waypoints using ordered avoidance progress %.2fm",
       replaced, local_wpnts.size(), total_avoidance_progress);
+  }
+  // ── 진단 (2026-08-14) ──────────────────────────────────────────────────
+  // 회피 경로는 유효한데 **차 바로 앞 구간이 raceline 그대로** 남는 경우가
+  // 있고, 그때 컨트롤러는 자기 위치에서 1 m 떨어진 경로를 받는다:
+  //   run_0813_221645 t=161.71 — ego d=+0.97, otwpnts 선두 d=+0.97(정상),
+  //   그런데 /local_waypoints 선두 11점이 전부 d=0.00. 추종오차 0.97 m 로
+  //   백스톱이 5.3~6.3 -> 1.50 m/s 로 잘랐다 (직선 18랩 중 5랩).
+  // 실패 사유를 남기는 로그가 없어 원인을 못 좁혔다. 정렬 수치를 그대로
+  // 찍어 다음 백에서 판정한다 — 동작은 바꾸지 않는다.
+  //   query_at_local_start < -match_tolerance 면 회피 경로가 로컬 시작보다
+  //   **앞에서** 시작한다는 뜻이고(스플라이너가 늦게 앵커),
+  //   > 0 이면 회피 경로가 이미 차 뒤에서 시작한다는 뜻이다.
+  //
+  // 선두를 못 덮는 것 자체는 정상일 수 있다 — free spline 은 원래 차보다
+  // 앞에서 시작한다. 해로운 경우는 **차는 라인을 벗어나 있는데 선두가
+  // raceline 위**일 때 하나뿐이므로 그 조건에서만 찍는다. 임계 0.25 m 는
+  // control 백스톱의 경로오차 램프 시작점(map/backstop_path_error_m)과 같은
+  // 값이다 — 그 아래면 어차피 백스톱이 안 문다.
+  const double head_gap = local_wpnts.empty()
+    ? 0.0 : std::abs(ego_d - local_wpnts.front().d_m);
+  if ((replaced == 0 || first_replaced > 0) && head_gap > 0.25) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *get_clock(), 1000,
+      "회피 스플라이스가 선두를 못 덮음: ego_d=%.2f head_d=%.2f gap=%.2fm | "
+      "replaced=%d first=%d/%zu | query@local_start=%.3f tol=%.3f "
+      "avoid_progress=%.2fm local_start_s=%.2f avoid_start_s=%.2f",
+      ego_d, local_wpnts.empty() ? 0.0 : local_wpnts.front().d_m, head_gap,
+      replaced, first_replaced, local_wpnts.size(),
+      query_at_local_start, match_tolerance, total_avoidance_progress,
+      local_start, avoidance_start);
   }
   return true;
 }

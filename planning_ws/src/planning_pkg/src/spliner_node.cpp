@@ -3403,10 +3403,23 @@ bool SplinerNode::BuildTrailing(
         if (std::abs(cur_d_) > 0.02 && d_goal == 0.0 &&
             !ramp_ok(0.0, d_ramp_len))
         {
-            // 안전한 raceline 복귀 기하도 없으면 빈 경로 대신 현재 d에서
-            // 정지한다. 빈 경로는 곧 전속 global path이므로 금지.
+            // 안전한 raceline 복귀 기하도 없으면 빈 경로 대신 현재 d를
+            // 유지한다. 빈 경로는 곧 전속 global path이므로 금지.
             hold_current_d = true;
-            v_target_prof_actual = 0.0;
+            // ⚠️ 목표 속도는 allow_stop 을 따른다 (2026-08-14).
+            // 이 줄은 d809831("정적 장애물의 정지를 폐지한다") **이전부터**
+            // 있었고 그 커밋이 손대지 않았다 — 마무리 누락이다. 위 3242줄이
+            // !allow_stop 일 때 trailing_retry_speed_ 바닥을 깔아 놓는데,
+            // 여기서 무조건 0 으로 덮어써 정적 장애물이 다시 정지한다.
+            //   run_0813_221645 실측: 네모코너(s 6.6) 콘 통과 14회 중 9회가
+            //   1.5 m/s 아래로 내려갔고(최저 0.33), 랩 14 에서는 콘 앞
+            //   0.03 m 에 0.38 m/s 로 섰다. 그 뒤 콘이 밀려나 사라졌다.
+            //   이 분기로 들어오는 경로는 횡목표 포기 472 사이클 중 426 이
+            //   s 5~8 — 차가 언더스티어로 경계 밖(d -0.45~-0.72)에 나가
+            //   "지금 자리에서 시작하는 램프"가 경계 검사를 못 넘는 경우다.
+            // 정지는 그 수렴을 스스로 끊는다는 d809831 의 논리가 여기에도
+            // 그대로 적용된다. 동적/비상정지(allow_stop=true)는 종전대로 0.
+            v_target_prof_actual = allow_stop ? 0.0 : trailing_retry_speed_;
         }
     }
     out_wpnts.wpnts.reserve(n);
