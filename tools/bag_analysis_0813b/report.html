@@ -1,0 +1,623 @@
+<title>네모코너 회피 실패 분석</title>
+<style>
+:root{
+  --bg:#F1F3F1; --surface:#FFFFFF; --surface2:#F8F9F7; --inset:#EDEFEC;
+  --ink:#141819; --ink2:#454C4B; --muted:#767D7B; --rule:#D9DEDA; --rule2:#E7EBE7;
+  --crit:#B0342A; --crit-bg:#FBEEEC; --ok:#1B6A5E; --ok-bg:#EBF4F1;
+  --warn:#9E7412; --warn-bg:#FAF2E2; --accent:#1B6A5E;
+  --shadow:0 1px 2px rgba(20,24,25,.05),0 8px 24px -16px rgba(20,24,25,.28);
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121514; --surface:#1A1E1D; --surface2:#212625; --inset:#171B1A;
+    --ink:#E9EBE7; --ink2:#AFB6B3; --muted:#7F8784; --rule:#2C3231; --rule2:#242A29;
+    --crit:#E4695C; --crit-bg:#2A1B19; --ok:#4FB6A2; --ok-bg:#16241F;
+    --warn:#D9A33E; --warn-bg:#251E11; --accent:#4FB6A2;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121514; --surface:#1A1E1D; --surface2:#212625; --inset:#171B1A;
+  --ink:#E9EBE7; --ink2:#AFB6B3; --muted:#7F8784; --rule:#2C3231; --rule2:#242A29;
+  --crit:#E4695C; --crit-bg:#2A1B19; --ok:#4FB6A2; --ok-bg:#16241F;
+  --warn:#D9A33E; --warn-bg:#251E11; --accent:#4FB6A2;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -16px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:16.5px; line-height:1.72;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px 96px}
+.col{max-width:74ch}
+h1,h2,h3{text-wrap:balance;margin:0}
+a{color:var(--accent)}
+
+/* ---------- masthead ---------- */
+.mast{border-bottom:1px solid var(--rule);padding:56px 0 26px;margin-bottom:44px}
+.runid{font-family:var(--mono);font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+.mast h1{font-size:clamp(30px,4.4vw,46px);line-height:1.12;font-weight:680;letter-spacing:-.022em;margin:14px 0 16px}
+.mast p{margin:0;color:var(--ink2);font-size:17px;max-width:66ch}
+.facts{display:flex;flex-wrap:wrap;gap:0;margin-top:30px;border-top:1px solid var(--rule2)}
+.fact{flex:1 1 150px;padding:14px 18px 12px 0;border-right:1px solid var(--rule2)}
+.fact:last-child{border-right:0}
+.fact dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
+.fact dd{margin:0;font-family:var(--mono);font-size:21px;font-weight:600;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.fact dd small{font-size:12px;font-weight:400;color:var(--muted);margin-left:3px}
+
+/* ---------- sections ---------- */
+section{margin-top:64px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+h2{font-size:clamp(23px,2.7vw,30px);font-weight:660;letter-spacing:-.018em;line-height:1.22}
+h2+p.lede{margin:14px 0 0;color:var(--ink2);font-size:17px}
+h3{font-size:18.5px;font-weight:640;letter-spacing:-.01em;margin:38px 0 10px;padding-top:14px;border-top:1px solid var(--rule2)}
+p{margin:14px 0}
+ul,ol{margin:14px 0;padding-left:22px}
+li{margin:7px 0}
+strong{font-weight:640}
+em{font-style:normal;background:var(--warn-bg);padding:0 3px;border-radius:2px}
+code{font-family:var(--mono);font-size:.875em;background:var(--inset);padding:1.5px 5px;border-radius:3px;white-space:nowrap}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600}
+
+/* ---------- verdict board ---------- */
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:26px}
+.cone{background:var(--surface);border:1px solid var(--rule);border-radius:5px;padding:15px 16px 16px;box-shadow:var(--shadow)}
+.cone header{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:9px}
+.cone h4{margin:0;font-size:15px;font-weight:650;letter-spacing:-.01em}
+.cone .s{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.chip{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2.5px 7px;border-radius:3px;font-weight:600}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.chip.warn{background:var(--warn-bg);color:var(--warn)}
+.chip.crit{background:var(--crit-bg);color:var(--crit)}
+.cone dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:12.5px}
+.cone dt{color:var(--muted)}
+.cone dd{margin:0;font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+.bar{height:5px;border-radius:3px;background:var(--inset);margin:11px 0 9px;overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+
+/* ---------- figures ---------- */
+figure{margin:30px 0;background:var(--surface);border:1px solid var(--rule);border-radius:5px;padding:12px;box-shadow:var(--shadow)}
+figure img{display:block;width:100%;height:auto;border-radius:3px}
+figcaption{margin-top:11px;font-size:13.5px;color:var(--ink2);line-height:1.6}
+figcaption b{color:var(--ink);font-weight:640}
+
+/* ---------- tables ---------- */
+.tw{overflow-x:auto;margin:26px 0;border:1px solid var(--rule);border-radius:5px;background:var(--surface);box-shadow:var(--shadow)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+caption{text-align:left;padding:13px 16px 11px;font-size:13px;color:var(--ink2);border-bottom:1px solid var(--rule2);background:var(--surface2)}
+th,td{padding:8px 14px;text-align:right;border-bottom:1px solid var(--rule2);white-space:nowrap}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--surface2)}
+th:first-child,td:first-child{text-align:left}
+td{font-family:var(--mono);font-variant-numeric:tabular-nums}
+td.t{font-family:var(--sans);white-space:normal;min-width:170px}
+tbody tr:last-child td{border-bottom:0}
+tr.hl td{background:var(--crit-bg)}
+tr.good td{background:var(--ok-bg)}
+
+/* ---------- stage chain ---------- */
+.chain{margin:28px 0;counter-reset:st}
+.stage{display:grid;grid-template-columns:44px 1fr;gap:18px;padding:20px 0;border-top:1px solid var(--rule2)}
+.stage:last-child{border-bottom:1px solid var(--rule2)}
+.stage::before{counter-increment:st;content:counter(st,decimal-leading-zero);
+  font-family:var(--mono);font-size:13px;font-weight:600;color:var(--crit);
+  border-right:2px solid var(--crit);padding-right:12px;text-align:right;line-height:1.5}
+.stage h4{margin:0 0 6px;font-size:16.5px;font-weight:650;letter-spacing:-.01em}
+.stage p{margin:6px 0 0;font-size:15px;color:var(--ink2)}
+.stage .why{margin-top:10px;font-size:14px;color:var(--ink2)}
+
+/* ---------- log block ---------- */
+pre{margin:16px 0;padding:14px 16px;background:var(--inset);border-left:2px solid var(--rule);
+  border-radius:0 4px 4px 0;overflow-x:auto;font-family:var(--mono);font-size:12.2px;line-height:1.65;color:var(--ink2)}
+pre b{color:var(--crit);font-weight:600}
+pre i{color:var(--ok);font-style:normal;font-weight:600}
+.srclabel{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:22px 0 -6px}
+
+/* ---------- callouts ---------- */
+.call{border:1px solid var(--rule);border-left:3px solid var(--accent);background:var(--surface);
+  padding:16px 20px;border-radius:0 5px 5px 0;margin:26px 0;box-shadow:var(--shadow)}
+.call.crit{border-left-color:var(--crit)}
+.call.warn{border-left-color:var(--warn)}
+.call h4{margin:0 0 6px;font-size:15.5px;font-weight:650}
+.call p{margin:6px 0 0;font-size:15px;color:var(--ink2)}
+.call p:first-of-type{margin-top:0}
+
+/* ---------- action list ---------- */
+.acts{list-style:none;padding:0;margin:26px 0;counter-reset:a}
+.acts li{counter-increment:a;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:start;
+  padding:17px 0;border-top:1px solid var(--rule2);margin:0}
+.acts li:last-child{border-bottom:1px solid var(--rule2)}
+.acts .rank{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--muted);padding-top:2px}
+.acts .rank::before{content:"P" counter(a)}
+.acts h4{margin:0 0 5px;font-size:16px;font-weight:640;letter-spacing:-.005em}
+.acts p{margin:0;font-size:14.5px;color:var(--ink2)}
+.acts .gain{font-family:var(--mono);font-size:12px;color:var(--ok);text-align:right;white-space:nowrap;padding-top:3px;font-weight:600}
+.acts .gain.n{color:var(--muted)}
+
+footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);font-size:13px;color:var(--muted)}
+footer code{background:none;padding:0}
+@media (max-width:640px){
+  .wrap{padding:0 18px 64px}
+  .stage{grid-template-columns:32px 1fr;gap:12px}
+  .acts li{grid-template-columns:auto 1fr;gap:12px}
+  .acts .gain{grid-column:2;text-align:left;padding-top:6px}
+}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="runid">run_0813_221645 · 2026-08-13 22:16 · my_track0813</div>
+  <h1>네모코너만 못 피한 이유</h1>
+  <p class="col">20랩 · 276초 · 무개입 자율주행. 직선과 헤어핀의 콘은 계획된 회피로 넘겼고, 오른쪽 네모코너의 콘 하나만 18회 통과 중 <strong>단 한 번도 회피 경로가 만들어지지 않았다</strong>. 원인은 속도가 아니라 <strong>인지 오차 · 기하 하한 · 여유 상수</strong> 세 개가 겹친 자리다.</p>
+  <dl class="facts">
+    <div class="fact"><dt>완주 랩</dt><dd>20<small>랩</small></dd></div>
+    <div class="fact"><dt>랩타임 (콘 有 / 無)</dt><dd>12.95 / 10.83<small>s</small></dd></div>
+    <div class="fact"><dt>계획 랩타임</dt><dd>7.9<small>s</small></dd></div>
+    <div class="fact"><dt>속도 p50 / max</dt><dd>2.68 / 6.13<small>m/s</small></dd></div>
+    <div class="fact"><dt>개입 · 정지</dt><dd>0<small>회</small></dd></div>
+  </dl>
+</header>
+
+<section id="board">
+  <p class="eyebrow">한눈에</p>
+  <h2>콘 5개, 각각 어떻게 지나갔나</h2>
+  <p class="lede col">각 콘마다 18회 통과(랩1–18). “회피경로”는 스플라이너가 실제로 <code>lane_switch</code>/<code>free_spline</code> 경로를 만들어 발행한 랩 수다. 나머지는 감속(trailing)만 했거나, 인지 자체가 없어서 레이스라인이 우연히 비켜간 경우다.</p>
+
+  <div class="board">
+    <div class="cone">
+      <header><h4>O2 네모코너</h4><span class="s">s 6.6</span></header>
+      <span class="chip crit">회피 0/18</span>
+      <div class="bar"><i style="width:11%;background:var(--ok)"></i><i style="width:11%;background:var(--warn)"></i><i style="width:78%;background:var(--crit)"></i></div>
+      <dl>
+        <dt>회피경로 생성</dt><dd>2랩 (모두 실패)</dd>
+        <dt>trailing만</dt><dd>12랩</dd>
+        <dt>통과 속도 p50</dt><dd>1.35 m/s</dd>
+        <dt>계획 대비</dt><dd>34 %</dd>
+      </dl>
+    </div>
+    <div class="cone">
+      <header><h4>O7 직선</h4><span class="s">s 28.9</span></header>
+      <span class="chip ok">회피 17/18</span>
+      <div class="bar"><i style="width:56%;background:var(--ok)"></i><i style="width:17%;background:var(--warn)"></i><i style="width:27%;background:var(--crit)"></i></div>
+      <dl>
+        <dt>회피경로 생성</dt><dd>17랩</dd>
+        <dt>최초 판단 거리</dt><dd>5.7 m</dd>
+        <dt>회피 apex d</dt><dd>+0.88 m</dd>
+        <dt>계획 대비</dt><dd>60 %</dd>
+      </dl>
+    </div>
+    <div class="cone">
+      <header><h4>O6 헤어핀</h4><span class="s">s 22.1</span></header>
+      <span class="chip ok">회피 12/18</span>
+      <div class="bar"><i style="width:39%;background:var(--ok)"></i><i style="width:33%;background:var(--warn)"></i><i style="width:28%;background:var(--crit)"></i></div>
+      <dl>
+        <dt>회피경로 생성</dt><dd>12랩</dd>
+        <dt>최초 판단 거리</dt><dd>2.1–2.7 m</dd>
+        <dt>회피 apex d</dt><dd>+0.14 m</dd>
+        <dt>계획 대비</dt><dd>65 %</dd>
+      </dl>
+    </div>
+    <div class="cone">
+      <header><h4>O3 상단</h4><span class="s">s 10.5</span></header>
+      <span class="chip warn">인지 6/18</span>
+      <div class="bar"><i style="width:33%;background:var(--ok)"></i><i style="width:67%;background:var(--warn)"></i></div>
+      <dl>
+        <dt>회피경로 생성</dt><dd>4랩</dd>
+        <dt>인지 자체가 없음</dt><dd>12랩</dd>
+        <dt>이격 p50</dt><dd>+0.07 m</dd>
+        <dt>계획 대비</dt><dd>82 %</dd>
+      </dl>
+    </div>
+    <div class="cone">
+      <header><h4>O4 대각</h4><span class="s">s 15.0</span></header>
+      <span class="chip warn">인지 7/18</span>
+      <div class="bar"><i style="width:39%;background:var(--ok)"></i><i style="width:6%;background:var(--warn)"></i><i style="width:55%;background:var(--crit)"></i></div>
+      <dl>
+        <dt>회피경로 생성</dt><dd>5랩</dd>
+        <dt>인지 자체가 없음</dt><dd>11랩</dd>
+        <dt>이격 p50</dt><dd>−0.05 m</dd>
+        <dt>계획 대비</dt><dd>76 %</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="call warn">
+    <h4>먼저 짚어둘 것 — 랩 15부터 O2 콘이 사라졌다</h4>
+    <p>랩 12·13·14에서 인지된 콘의 s가 <span class="num">6.49 → 7.00 → 7.26</span>으로 밀렸고, 랩 14에서 차가 <span class="num">0.38 m/s</span>까지 기어들어가 콘 바로 앞(<span class="num">dist 0.03 m</span>)에 섰다. 그 뒤 랩 15–19에서는 <strong>s 5–9 구간에 장애물 보고가 0건</strong>이고, 랩타임이 12.95초에서 10.83초로 떨어진다. 즉 <strong>차가 콘을 밀어냈다</strong>. 랩 15 이후의 “빠른 통과”는 회피 성공이 아니라 콘 부재다.</p>
+  </div>
+</section>
+
+<section id="track">
+  <p class="eyebrow">배치</p>
+  <h2>트랙과 콘</h2>
+  <figure>
+    <img src="__MAP__" alt="맵 위에 레이스라인, 트랙 경계, 전 랩 주행궤적, 콘 7개 위치를 표시한 도면">
+    <figcaption><b>맵 + 레이스라인(빨강) + 경계(초록 점선) + 전 랩 주행궤적(파랑) + 인지 클러스터(주황).</b> 반시계 방향. 하단이 메인 직선(s 27→2), 오른쪽 x≈+5 구간이 문제의 네모코너(s 3–9), 왼쪽 x≈−8.6이 헤어핀(s 20–24). O1(s 4.3)과 O5(s 21.3)는 콘이 아니라 <strong>벽 오탐</strong>이다 — 둘 다 트랙 경계에 딱 붙어 있고 우측 여유가 −0.03 m다.</figcaption>
+  </figure>
+
+  <div class="tw">
+    <table>
+      <caption>네모코너(s 6.6) 통로 실측 — LiDAR 누적점과 맵으로 계산</caption>
+      <thead><tr><th>항목</th><th>O2 네모코너</th><th>O6 헤어핀</th><th>O7 직선</th></tr></thead>
+      <tbody>
+        <tr><td class="t">트랙 폭</td><td>1.30 m</td><td>1.48 m</td><td>1.72 m</td></tr>
+        <tr><td class="t">트랙 곡률 |κ|</td><td>0.40–0.68</td><td>0.39</td><td>0.02</td></tr>
+        <tr><td class="t">콘 d (근거리 수렴값)</td><td>−0.32</td><td>−0.32</td><td>+0.15</td></tr>
+        <tr class="hl"><td class="t">좌측 통과 폭</td><td>0.76 m</td><td>0.94 m</td><td>0.87 m</td></tr>
+        <tr><td class="t">우측 통과 폭</td><td><b>0.32 m</b></td><td>0.24 m</td><td>0.54 m</td></tr>
+        <tr><td class="t">필요 apex (좌)</td><td>+0.28</td><td>+0.28</td><td>+0.75</td></tr>
+        <tr><td class="t">벽 클램프 상한</td><td>+0.39</td><td>+0.57</td><td>+1.05</td></tr>
+        <tr class="hl"><td class="t">여유 창</td><td><b>0.11 m</b></td><td>0.29 m</td><td>0.30 m</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col">차폭 0.30 m 기준 O2에서 통과 가능한 쪽은 <strong>좌측(코너 인쪽) 하나뿐</strong>이고, 목표 apex를 놓을 수 있는 창은 <span class="num">0.11 m</span>다. 헤어핀·직선의 절반도 안 된다. 기하적으로는 “가능하지만 여유가 없다” — 그래서 인지 오차 몇 cm가 그대로 판정을 뒤집는다.</p>
+</section>
+
+<section id="why">
+  <p class="eyebrow">질문 1</p>
+  <h2>왜 오른쪽 네모코너만 못 피했나</h2>
+  <p class="lede col">속도 문제가 아니다. 랩 1–14의 O2 통과 속도 중앙값은 <span class="num">1.35 m/s</span>로 이 런에서 가장 느렸다. 차는 충분히 느렸는데도 회피 경로가 <strong>한 번도 완성되지 않았다</strong>. 5528개 사이클 트레이스를 s 구간별로 분해하면 실패는 아래 5단계로 확정된다.</p>
+
+  <div class="chain">
+    <div class="stage">
+      <div>
+        <h4>콘을 늦게 잡는다 — 최초 인지 3.6~4.6 m</h4>
+        <p>O7 직선은 매 랩 <span class="num">5.2–5.8 m</span> 앞에서 콘을 잡는다. O2는 <span class="num">3.6–4.6 m</span>다. 90° 코너 안쪽이라 시선이 벽에 막히고, 잡히자마자 남은 거리가 이미 기하 하한에 근접해 있다.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div>
+        <h4>잡은 직후의 횡위치 추정이 0.27 m 틀리다</h4>
+        <p>접근 거리별로 인지가 보고한 콘의 d를 모으면 이렇게 이동한다.</p>
+        <div class="tw" style="margin:14px 0">
+          <table>
+            <thead><tr><th>남은 거리</th><th>d_center</th><th>d_right</th><th>d_left</th><th>판정에 쓰이는 값</th></tr></thead>
+            <tbody>
+              <tr><td>4.0–5.0 m</td><td>−0.14</td><td>−0.33</td><td class="hl"><b>+0.08</b></td><td class="t">좌회피 필요 apex <b>+0.48</b> &gt; 벽 상한 0.39 → 불가</td></tr>
+              <tr><td>2.5–3.0 m</td><td>−0.08</td><td>−0.25</td><td><b>+0.08</b></td><td class="t">여전히 불가</td></tr>
+              <tr><td>1.5–2.0 m</td><td>−0.20</td><td>−0.36</td><td>−0.05</td><td class="t">필요 apex +0.35 → 아슬하게 가능</td></tr>
+              <tr class="good"><td>0.5–1.0 m</td><td>−0.35</td><td>−0.51</td><td>−0.20</td><td class="t">필요 apex <b>+0.20</b> → 여유 있게 가능</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="why">멀리서 볼 때 콘의 왼쪽 끝이 <strong>레이스라인 너머(+0.08)</strong>까지 뻗은 것으로 보고된다. 스플라이너는 “좌측으로 비켜갈 자리가 없다”고 읽고, 정작 추정이 수렴한 뒤엔 거리가 남지 않는다. 헤어핀 O6는 3 m 밖에서부터 d_left가 −0.17~−0.33으로 안정적이라 같은 실패가 없다.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div>
+        <h4>필요 여유가 0.45 m — 그중 0.25 m가 고정 불확실성 패딩</h4>
+        <p>회피 목표 offset은 <code>ApexFor()</code>가 정한다.</p>
+        <pre>RequiredObstacleClearance = max(path_check_margin 0.15, 차반폭 0.15)
+                          + min(3σ, <b>max_uncertainty_m 0.25</b>)
+                          = 0.15 + <b>0.25</b> = 0.40 m
+need (apex) = 0.40 + apex_clearance_eps 0.05    = <b>0.45 m</b>
+벽 쪽 상한   = wall_left 0.59 − boundary_margin 0.20 = 0.39 m</pre>
+        <p class="why">브릿지가 모든 장애물에 <code>position_var_floor 0.01</code>/<code>velocity_var_floor 0.25</code>를 상수로 붙이므로 3σ = 0.54 → 항상 0.25로 잘린다. <code>params.yaml</code> 주석이 이미 “<em>collision_sigma는 무효인 노브고 모든 장애물이 관측 품질과 무관하게 같은 0.25를 받는다</em>”라고 적어 놓은 그 상태다. 1.30 m 통로에서 0.25 m는 통로의 19%다.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div>
+        <h4>추정이 맞아떨어질 무렵엔 기하 하한을 못 채운다</h4>
+        <p><code>BlendGeomFloor</code>는 트랙 곡률이 조향 능력을 먹는 만큼 필요 조주거리를 늘린다.</p>
+        <pre>L ≥ sqrt( 6·A / (0.92 · (κ_steer,max − |κ_track|)) )
+κ_steer,max = tan(0.36)/0.33 = 1.14 rad/m
+직선 s 28.9 : |κ|=0.02 → A=0.75 m 에 L = 1.99 m
+네모코너    : |κ|=<b>0.60</b> → A=0.63 m 에 L = <b>2.50 m</b>   (조향 여력의 53%를 코너가 먼저 먹는다)</pre>
+        <p class="why">실제 로그가 정확히 그렇게 찍힌다. 세 개의 회피 생성기가 <strong>모두 같은 이유로</strong> 떨어진다.</p>
+        <pre>s≈4  <b>LaneSwitch infeasible</b>: 0.63m 횡이동에 기하 하한 2.50m 필요, 가용 1.87m (v=2.5, kappa=0.60) — 어떤 속도로도 불가
+s≈4  <b>Free spline infeasible</b>: 0.67m 횡이동에 기하 하한 2.39m 필요, 가용 2.06m (kappa=0.52)
+s≈4  <b>EscapeArc 불가</b>: 0.62m 횡이동에 원호 하한 2.30m 필요, 가용 1.77m (v=2.5, kappa_use=0.58)
+s≈6  <b>LaneSwitch infeasible</b>: 0.97m 횡이동에 기하 하한 2.91m 필요, 가용 <b>0.10m</b> (v=1.7, kappa=0.52)</pre>
+        <p class="why">이 하한은 <strong>속도와 무관</strong>하다 — 조향각 한계에서 나오는 순수 기하다. 그래서 “더 느리게 가면 피할 수 있다”가 성립하지 않는다. 차가 1.3 m/s로 기어가도 하한은 그대로 2.5 m다.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div>
+        <h4>언더스티어로 이미 장애물 옆에 들어가 있다 → 목표 자체를 버린다</h4>
+        <pre>s≈6  <b>FreeSpline 거부: 이미 장애물 구간 내부</b> (cur_d=-0.52, left 필요)        ×17
+s≈6  <b>Trailing 횡목표 포기</b>: 0.30 -> 0 (구속 s=6.50 d=-0.52 한계 -0.47)  ×9
+s≈6  <b>Trailing fallback</b>: obs s=6.5 gap=0.0m <b>v_target=0.0</b> d -0.53 -> 0.00 (ramp 1.7m)</pre>
+        <p class="why">코너 진입에서 조향이 85–100% 포화하며 차가 바깥(d = −0.5)으로 밀린다. 그 상태로 콘의 d 스팬 안쪽에 들어가 버리면 남은 선택은 “현재 d 유지 + <strong>정지 목표 감속</strong>” 하나다. 트레일링 폴백 67회 중 <span class="num">64회(96%)</span>가 <code>v_target = 0.0</code>이다.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="tw">
+    <table>
+      <caption>s 구간별 판단 분포 — 장애물이 시야에 있는 사이클 기준 (n=3320)</caption>
+      <thead><tr><th>구간</th><th>n</th><th>committed_hold</th><th>lane_switch</th><th>free_spline</th><th>trailing</th><th>최다 기각 사유</th></tr></thead>
+      <tbody>
+        <tr class="hl"><td class="t">네모코너 진입 s3–5</td><td>297</td><td>10 %</td><td>1 %</td><td>0 %</td><td><b>90 %</b></td><td class="t">lane_wall_no_room 90%</td></tr>
+        <tr class="hl"><td class="t">네모코너 중앙 s5–8 (O2)</td><td>557</td><td>7 %</td><td>1 %</td><td>0 %</td><td><b>92 %</b></td><td class="t">lane_wall_no_room 91% / lane_geom_floor 65%</td></tr>
+        <tr><td class="t">네모 탈출 s8–11.5 (O3)</td><td>292</td><td>34 %</td><td>1 %</td><td>0 %</td><td>64 %</td><td class="t">lane_wall_no_room 64%</td></tr>
+        <tr><td class="t">헤어핀 s20–24 (O6)</td><td>547</td><td>40 %</td><td>5 %</td><td>0 %</td><td>55 %</td><td class="t">lane_wall_no_room 56%</td></tr>
+        <tr class="good"><td class="t">헤어핀 탈출 s24–27</td><td>555</td><td><b>90 %</b></td><td>5 %</td><td>0 %</td><td>5 %</td><td class="t">ok_lane_switch 5%</td></tr>
+        <tr class="good"><td class="t">직선 s27–32 (O7)</td><td>737</td><td><b>66 %</b></td><td>2 %</td><td>1 %</td><td>30 %</td><td class="t">trailing 30%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <figure>
+    <img src="__CONES__" alt="콘 4개 주변의 랩별 횡위치와 속도 궤적 비교 그래프">
+    <figcaption><b>위 = 횡위치 d, 아래 = 속도.</b> 주황 사각형이 콘 실체, 점선 사각형이 필요 여유(0.45 m), 초록 점선이 트랙 경계, 검은 점선이 계획 속도. 빨강은 O2 콘이 있던 랩 1–14, 파랑은 콘이 없어진 랩 15–18.
+    <br><br>O2 패널: 궤적이 콘 상자를 <strong>관통하거나 스쳐 지나가고</strong>, 어느 랩도 회피다운 횡이동을 만들지 않는다. 속도는 계획 4.0 m/s에 대해 0.4~1.5 m/s까지 떨어진다.
+    O6·O7 패널: 콘 상자를 명확히 좌측으로 우회하는 궤적 다발이 보인다 — 이것이 알고리즘이 실제로 만든 회피다.</figcaption>
+  </figure>
+</section>
+
+<section id="thinking">
+  <p class="eyebrow">질문 2</p>
+  <h2>회피는 알고리즘인가, 우연인가</h2>
+  <p class="lede col">둘 다 있다. 그리고 그 둘을 구분할 수 있다 — 스플라이너가 회피 경로를 실제로 발행했는지(<code>/planner/avoidance/otwpnts</code>)와 트레이스의 mode가 남기 때문이다.</p>
+
+  <h3>매 사이클 돌아가는 판단 순서</h3>
+  <p>20 Hz로 아래 사다리를 위에서부터 내려가고, 먼저 통과하는 것이 채택된다. 각 단계는 실패 시 이름 붙은 사유를 남긴다.</p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>#</th><th>단계</th><th>하는 일</th><th>이 런에서의 발동</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td class="t"><b>커밋 유지</b></td><td class="t">이미 채택한 회피를 계속 따를지 판정. 깨지면 재계획</td><td>61.3 % (3387)</td></tr>
+        <tr><td>1</td><td class="t"><b>LaneSwitch</b></td><td class="t">레이스라인을 d만큼 평행 이동한 “차선”. 좌/우 중 먼저 성립하는 쪽</td><td>1.9 % (106)</td></tr>
+        <tr><td>2</td><td class="t"><b>FreeSpline</b></td><td class="t">장애물 옆을 지나는 자유 스플라인 (레인이 다 막혔을 때)</td><td>0.7 % (37)</td></tr>
+        <tr><td>3</td><td class="t"><b>EscapeArc</b></td><td class="t">원호 한 번으로 빠지는 최후 기동</td><td><b>0 회</b></td></tr>
+        <tr class="hl"><td>4</td><td class="t"><b>Trailing</b></td><td class="t">회피 포기. 장애물 앞에 서는 감속 프로파일</td><td>36.1 % (1998)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col">1–3단계 안에는 다시 게이트가 줄줄이 있다 — 사이드 잠금 → <code>ApexFor</code> 벽 클램프 → 요구 간격 → 기하 하한 → 진입 속도 캡 → 경로-장애물 충돌 검사 → 경계 검사 → 속도 프로파일. 기각 카운터가 전부 <code>/pitwall/reject_*</code>로 나오므로 어느 게이트가 막았는지 사후 복원이 된다.</p>
+
+  <h3>진짜 회피 한 건의 사고 과정 — 랩 11, 직선 O7</h3>
+  <div class="srclabel">/rosout + /car_state/frenet/odom, t = 159.6 → 161.5 s</div>
+  <pre>t=159.60  s=23.7  v=2.05  d=+0.00   obs 5.70m 앞 d[+0.04,+0.34]   <i>lane_switch  ← ok_lane_switch</i>
+                    "이 콘은 정적이고 5.7 m 앞이다. 좌측 apex +0.75 는 벽 상한 1.05 안이고,
+                     0.75 m 횡이동에 필요한 1.99 m &lt; 가용 5.4 m. 좌측 레인 채택."
+t=159.9~161.2      <i>committed_hold</i>  ×46 사이클
+                    "채택한 경로를 유지한다. 재계획하지 않는다."   d: 0.00 → +0.89 로 이동, v: 2.4 → 4.1 m/s
+t=161.24  s=28.6  v=4.13  d=+0.89   obs 0.56m         <b>trailing</b>  ← lane_blend_truncated,
+                                                       lane_collision, lane_wall_no_room, speed_grip_infeasible
+                    "콘 바로 옆에서 커밋이 깨졌다."
+t=161.47  s=29.5  v=4.26  d=+1.05   <b>다음 콘</b> 3.04m 앞  <b>trailing</b> ← lane_geom_floor, escape_geom_floor
+                    "다음 장애물이 잡혔다. 회피 불가 → 감속."   cmd_v: 4.43 → 2.99 (가장 빠른 구간에서)</pre>
+  <p class="col">회피 결정 자체는 명백히 <strong>설계된 흐름</strong>이다: 5.7 m 앞에서 좌측 레인을 골라 <code>ok_lane_switch</code>로 확정하고, 46 사이클 동안 커밋을 유지하며 실제로 d를 0 → +0.89까지 옮긴다. 계획한 apex(+0.75)와 실측 apex(+0.88)가 일치한다. 우연이 아니다.</p>
+  <p class="col">문제는 <strong>끝처리</strong>다. 콘 0.56 m 앞에서 커밋이 <code>path_collision</code>으로 깨지고(런 전체 92회), 통과 직후 다음 콘이 잡히면서 즉시 trailing으로 떨어진다. 회피 apex는 콘보다 <span class="num">0.69 m</span> 뒤에 찍히고, 라인 복귀는 <span class="num">3.1 m</span> 뒤에서야 끝난다 — 그 전 구간이 전부 트랙에서 가장 빠른 자리다.</p>
+
+  <div class="call">
+    <h4>“설계된 회피”와 “우연히 비켜간 것”의 비율</h4>
+    <p><strong>설계:</strong> O7 17/18랩, O6 12/18랩. 두 곳 모두 최초 판단 거리·apex 목표·실측 궤적이 서로 일치한다.</p>
+    <p><strong>우연:</strong> O3는 18랩 중 <strong>12랩에서 콘을 인지조차 못 했고</strong>, O4는 11랩이 그렇다. 이 랩들은 레이스라인 자체가 콘에서 0.2 m쯤 떨어져 있어서 그냥 지나간 것이다 — 콘이 5 cm만 안쪽에 있었으면 그대로 받았다.</p>
+    <p><strong>실패:</strong> O2는 회피 경로가 만들어진 랩이 2랩(4·5)뿐이고, 둘 다 <span class="num">2.9 m</span> 지점에서 만들어졌다가 다음 사이클에 trailing으로 되돌아갔다.</p>
+  </div>
+</section>
+
+<section id="speed">
+  <p class="eyebrow">질문 3</p>
+  <h2>회피 중 속도를 깎는 것들</h2>
+  <p class="lede col">계획 랩타임 7.9초에 대해 실측은 10.83초(콘 없을 때)다. <strong>3초가 어디서 새는지</strong> 구간별로 분해했다. 회피 경로를 못 만드는 문제와, 만든 뒤에 속도를 잃는 문제는 서로 다른 원인이다.</p>
+
+  <figure>
+    <img src="__SPEED__" alt="s에 따른 랩별 속도와 횡위치, 계획 속도 대비">
+    <figcaption><b>전 구간 랩 오버레이.</b> 검은 점선이 계획 속도(velocity_scale 0.96 적용). 계획을 따라가는 구간은 s 12–20(대각·헤어핀 진입)뿐이고, 나머지는 계속 아래에 있다. s 26–31 메인 직선에서 계획 4.7→6.1 m/s에 대해 실측 2.0–3.4 m/s로, <strong>가장 빠를 수 있는 구간에서 계획의 40–60%</strong>만 낸다.</figcaption>
+  </figure>
+
+  <div class="tw">
+    <table>
+      <caption>랩당 시간 손실 상위 구간 (1 m 빈, 랩 15–18 = 콘 없는 조건)</caption>
+      <thead><tr><th>구간</th><th>계획</th><th>실측 (콘 有)</th><th>실측 (콘 無)</th><th>손실/랩</th><th>지배 원인</th></tr></thead>
+      <tbody>
+        <tr class="hl"><td class="t">s 6–8 네모코너</td><td>3.99</td><td><b>0.43</b></td><td>3.38</td><td><b>2.58 s</b></td><td class="t">trailing v_target=0</td></tr>
+        <tr><td class="t">s 26–28 헤어핀 탈출</td><td>4.72</td><td>2.03</td><td>3.05</td><td>0.42 s</td><td class="t">O7 회피 진입 + 백스톱</td></tr>
+        <tr><td class="t">s 22–24 헤어핀(O6)</td><td>3.66</td><td>2.26</td><td>2.13</td><td>0.39 s</td><td class="t">회피 apex 속도 캡</td></tr>
+        <tr><td class="t">s 28–31 직선(O7)</td><td>5.68</td><td>3.17</td><td>3.29</td><td>0.38 s</td><td class="t">복귀 중 백스톱 1.5 m/s</td></tr>
+        <tr><td class="t">s 10–14 상단(O3/O4)</td><td>3.76</td><td>3.57</td><td>2.42</td><td>0.62 s</td><td class="t">밀려난 콘 재조우</td></tr>
+        <tr><td class="t">s 4–5 코너 진입</td><td>3.87</td><td>2.73</td><td>2.63</td><td>0.12 s</td><td class="t">조향포화 백스톱</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>메커니즘 넷</h3>
+
+  <div class="call crit">
+    <h4>① 트레일링이 정지를 목표로 잡는다 — 67회 중 64회 <code>v_target = 0.0</code></h4>
+    <p>회피가 실패하면 스플라이너는 “장애물 앞에 정지”하는 감속 프로파일을 발행한다. 정적 콘이고 어차피 옆으로 지나갈 것이 확실한데도 목표 속도가 0이다. 발동 시점 gap 중앙값이 <span class="num">0.10 m</span>, ramp <span class="num">1.4 m</span> — 이미 늦어서 최대 제동에 가깝다. O2에서 랩당 <span class="num">2.58초</span>가 여기서 나온다.</p>
+  </div>
+
+  <div class="call crit">
+    <h4>② 제어 백스톱이 트랙에서 가장 빠른 지점에서 1.5 m/s로 자른다 — 71회</h4>
+    <p><strong>오차 분기 37회</strong> (경로오차 p50 0.33 m): 이 중 11회가 s 29–31, 즉 O7 회피 후 복귀 중이다. 차가 d = +0.8~+1.1에 있는데 로컬 경로가 레이스라인으로 돌아가면 추종 오차가 <span class="num">0.79–1.25 m</span>로 뛰고, 속도가 <span class="num">5.3–6.3 → 1.50 m/s</span>로 잘린다.</p>
+    <p><strong>포화 분기 34회</strong> (경로오차 p50 <span class="num">0.14 m</span> — 추종은 멀쩡하다): 네모코너 s 3.5–9에서만 13회, 경로오차 0.12–0.19 m에 조향포화 85–100%로 <span class="num">3.45 → 1.50 m/s</span>. <code>backstop_sat_min_path_error_m: 0.12</code>가 이 코너의 정상 추종 오차보다 낮아서 <strong>오발화</strong>하고 있다 — params.yaml이 0812 런에서 고치려던 바로 그 패턴이 임계값만 살짝 모자라 남아 있다.</p>
+  </div>
+
+  <div class="call warn">
+    <h4>③ 회피 경로 상실 홀드 — 47회</h4>
+    <p><code>회피 경로 상실 0.02s — 속도 상한 <b>1.21 m/s</b> 유지 (130점 캡)</code>. 장애물을 놓치는 순간의 속도 상한을 그대로 붙들어 놓는 보호 장치인데, 상한이 1.2~3.1 m/s로 잡히는 경우가 많다. 의도(장애물 상실이 가속으로 이어지지 않게)는 맞지만 <strong>상한이 “그 순간 값”이라 감속 최저점에서 걸리면 오래 못 나온다.</strong></p>
+  </div>
+
+  <div class="call warn">
+    <h4>④ 커밋이 콘 바로 옆에서 깨진다 — 129회 (path_collision 92)</h4>
+    <p>s 20–26(헤어핀 구간)에 55회, s 28–31에 11회 집중. 회피 apex 직전·직후에 커밋이 깨지면 그 사이클은 trailing으로 떨어지고, 다시 lane_switch를 만들 거리는 이미 없다. O7 랩 11의 t=161.24가 정확히 그 장면이다.</p>
+  </div>
+</section>
+
+<section id="bridge">
+  <p class="eyebrow">적용됨 · 2026-08-14</p>
+  <h2>브릿지 벡터화가 실제로 산 것</h2>
+  <p class="lede col">퍼셉션 브릿지의 <code>cartesian_to_frenet</code> 벡터화(①)와 맵 벽거리 필터를 투영 앞으로 이동(②). 이 백으로 <strong>사후 검증</strong>한 결과, 이 수정은 순수 여유 확보가 아니라 <strong>메커니즘 ③을 직접 때리고 O2 결정 창을 2배로 넓힌다</strong>. 다만 두 개의 부작용이 딸려 온다.</p>
+
+  <h3>브릿지는 이 런에서 이미 프레임을 흘리고 있었다</h3>
+  <div class="tw">
+    <table>
+      <caption>detector(C++) → bridge(Python) 실측 — 헤더 스탬프 매칭 8819 프레임</caption>
+      <thead><tr><th>입력 장애물 수</th><th>프레임</th><th>브릿지 지연 p50</th><th>p90</th><th>max</th></tr></thead>
+      <tbody>
+        <tr><td>0개</td><td>2475</td><td>2.3 ms</td><td>9.1</td><td>41.2</td></tr>
+        <tr><td>1개</td><td>3165</td><td>19.3 ms</td><td>44.0</td><td>106.4</td></tr>
+        <tr class="hl"><td>2개</td><td>1931</td><td><b>33.4 ms</b></td><td>74.7</td><td>230.3</td></tr>
+        <tr class="hl"><td>3개</td><td>686</td><td><b>36.7 ms</b></td><td>73.0</td><td>184.6</td></tr>
+        <tr><td>4개</td><td>224</td><td>42.6 ms</td><td>95.0</td><td>180.9</td></tr>
+        <tr><td>5개</td><td>155</td><td>43.8 ms</td><td>87.9</td><td>153.3</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col">장애물 1개당 <span class="num">+14~16 ms</span>다 — 다른 세션이 잰 <span class="num">6.8~12.3 ms</span>/호출과 맞는다. 결과는 <strong>detector 39.8 Hz → bridge 32.0 Hz</strong>, 즉 <strong>프레임의 19%가 사라졌다</strong>. 그리고 이 런의 rosout에 브릿지 로그가 <strong>단 한 줄도 없다</strong> — <code>frame rejected</code>도, 에러도 없다. 즉 거부가 아니라 <strong>실행기 백프레셔에 의한 조용한 드롭</strong>이다.</p>
+
+  <div class="call crit">
+    <h4>메커니즘 ③은 이 드롭이 원인이었다</h4>
+    <p><code>회피 경로 상실</code> 47회의 지속시간이 <strong>전부 20 ms(38회) 또는 30 ms(9회)</strong>다. 브릿지 발행 주기 p50이 27.9 ms — <strong>정확히 한 프레임</strong>이다. 그리고 47회 중 <span class="num">31회(66%)</span>가 직전 120 ms에 장애물 스트림 공백을 동반한다.</p>
+    <p>이 이벤트들의 대가는 직후 0.6초 구간에서 건당 <span class="num">0.238 s</span>, 합계 <span class="num">10.5 s</span> = <strong>랩당 0.586 s</strong>다. 걸린 속도 상한 p50은 2.06 m/s이고 17회는 1.5 미만, 2회는 <strong>0.00 m/s</strong>였다.</p>
+  </div>
+
+  <h3>② 가 아끼는 양 — 56%가 아니라 28%</h3>
+  <p class="col">맵 EDT로 detector 원시 장애물 17757건의 벽거리를 직접 계산했다. <code>wall_dist &lt; 0.30</code>으로 벽 필터가 지우는 것은 <span class="num">4894건(27.6%)</span>이다. 브릿지 최종 발행은 5244건이므로 나머지 7608건은 <strong>회랑 필터</strong>가 버린 것이고, 회랑 판정은 d가 필요해서 ②로는 못 아낀다. ②의 실효는 <strong>투영 호출 28% 절감</strong>이다.</p>
+
+  <h3>O2 결정 창이 3프레임에서 6프레임으로</h3>
+  <p class="col">이것이 이 수정의 가장 큰 값이다. O2에서 회피가 기하적으로 성립하려면 <strong>남은 거리 ≥ 3.10 m</strong>여야 한다(가용 = 남은거리 − 0.60, 기하 하한 2.50 m). 그런데 콘을 잡은 뒤 <code>정적 분류</code>가 확정될 때까지 시간이 걸린다 — 실측 <span class="num">0.190 s</span> p50, 그동안 <span class="num">0.62 m</span>를 주행한다.</p>
+  <div class="tw">
+    <table>
+      <caption>O2 회피 결정 창 — 인지 획득 4.0 m 기준</caption>
+      <thead><tr><th>단계</th><th>수정 전</th><th>①+② 후</th><th>차이</th></tr></thead>
+      <tbody>
+        <tr><td class="t">브릿지 지연 (장애물 2개)</td><td>33 ms</td><td>~3 ms</td><td>−30 ms</td></tr>
+        <tr><td class="t">지연으로 잃은 거리 (v=3.3)</td><td>0.11 m</td><td>0.01 m</td><td>+0.10 m</td></tr>
+        <tr><td class="t">정적 분류 소요 (5~6 프레임)</td><td>0.190 s</td><td>0.150 s</td><td>−0.040 s</td></tr>
+        <tr><td class="t">분류 중 주행 거리</td><td>0.62 m</td><td>0.49 m</td><td>+0.13 m</td></tr>
+        <tr class="hl"><td class="t">결정 가능 시작점</td><td>3.38 m</td><td><b>3.62 m</b></td><td>+0.24 m</td></tr>
+        <tr><td class="t">결정 가능 종료점 (기하 하한)</td><td>3.10 m</td><td>3.10 m</td><td>—</td></tr>
+        <tr class="good"><td class="t"><b>결정 창</b></td><td>0.28 m ≈ <b>3 프레임</b></td><td>0.52 m ≈ <b>6 프레임</b></td><td><b>×2</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col"><strong>창이 3프레임이었고 그 프레임의 19%가 드롭되고 있었다.</strong> 랩 1–14 중 <code>lane_switch</code>가 실제로 나온 것이 랩 4·5 <strong>단 2회</strong>인 이유가 이걸로 설명된다 — 창이 열려 있는 동안 살아남은 프레임이 있었느냐의 문제였다.</p>
+
+  <div class="call warn">
+    <h4>손해 ① — dt가 짧아져 정적→동적 오분류 위험이 24% 커진다</h4>
+    <p>브릿지는 <code>vs = 0.3·(ds/dt) + 0.7·prev</code>로 속도를 낸다. <code>now_sec</code>은 소스 헤더 스탬프라서 <strong>지연 지터의 영향은 없다</strong>(확인함). 하지만 프레임 주기가 <span class="num">31 → 25 ms</span>로 짧아지면 <strong>같은 크기의 중심점 튐이 24% 큰 속도로 읽힌다.</strong></p>
+    <p>이 런에서 이미 트랙 151개 중 <span class="num">34개(23%)</span>가 정적→동적으로 뒤집혔고, 뒤집힘 지점이 <strong>s 6.1–6.5(O2)와 s 28.4–30.6(O7)에 몰려 있다</strong> — 정확히 콘 바로 앞이다. 스플라이너의 <code>cls_vs_reset 0.1 m/s</code>를 넘기기가 더 쉬워진다.</p>
+    <p><b>대응:</b> <code>bridge/vel_lpf_alpha</code> 0.3 → <b>0.25</b>. 1−(1−0.3)<sup>25/31</sup> = 0.25 로, 프레임 레이트가 올라가도 <strong>필터 시정수가 보존</strong>된다. 한 줄이다.</p>
+  </div>
+
+  <div class="call crit">
+    <h4>손해 ② — 맵 밖 장애물이 이제 프레임 전체를 죽인다</h4>
+    <p>②는 <code>wall_dist is None → map_filter_required → return</code>(프레임 전체 거부)까지 함께 앞으로 옮겼다. 옛 순서에서는 <strong>회랑 검사가 먼저</strong>라, 맵 격자 밖 장애물은 <code>continue</code>로 조용히 빠지고 프레임은 살았다.</p>
+    <p>이 백에 실제로 있다 — <span class="num">11건</span>, 전부 <strong>t=192.48~192.70 한 뭉치</strong>이고 d가 −1.12~−1.32로 <strong>전부 회랑 밖</strong>이다. 새 코드에서는 이 구간이 <strong>0.22초 연속 장애물 블랙아웃</strong>이 된다 — 메커니즘 ③을 트리거하는 20~30 ms 공백의 <strong>7배</strong> 길이다.</p>
+    <p><b>대응:</b> <code>wall_distance</code>의 None을 두 경우로 <strong>분리</strong>한다. <code>self.wall_dist is None</code>(맵 미수신) → 종전대로 프레임 거부. <strong>격자 밖 좌표</strong> → <code>continue</code>. 맵 밖 점은 트랙 위에 있을 수 없으므로 개별 삭제가 옳다.</p>
+  </div>
+
+  <p class="col"><b>등가성:</b> 벽 필터가 지우는 장애물에 대해 새로 건너뛰는 부작용은 둘뿐이다 — (a) 투영 <code>RuntimeError</code>에 의한 프레임 거부(전 세그먼트 degenerate일 때만 발생하므로 설정 오류 외엔 도달 불가), (b) <code>large obstacle extent preserved</code> 경고 로그가 벽 유령에 대해 사라짐(진단 손실, detector의 <code>초대형 클러스터 거부</code> 로그 85회가 대체함). 통과하는 장애물의 출력은 <strong>완전 동일</strong>하다.</p>
+
+  <div class="call">
+    <h4>영향이 없는 것</h4>
+    <p><strong>메커니즘 ①(trailing v_target=0)</strong> — 플래너의 결정이다. CPU와 무관.<br>
+    <strong>메커니즘 ②(제어 백스톱)</strong> — 별도 C++ 노드. 무관.<br>
+    <strong>메커니즘 ④(커밋 조기파기 129회)</strong> — 데이터가 촘촘해지면 줄 여지는 있으나 <strong>이 백으로는 근거가 없다</strong>. 주장하지 않는다.<br>
+    <strong>P6 (PF DEGRADED 55%)</strong> — PF는 14.9 Hz에 compute 27.6 ms p50 / 31.6 p90(지터 작음), CPU-core 41%다. <strong>기아 상태의 증거가 없다</strong> — 스캔 36.5%만 처리하는 것은 설계된 데시메이션이다. 코어 하나를 돌려받는 것은 사실이지만 PF가 좋아진다는 보장은 없다. 재측정 지표는 <code>scan turnaround 80.7 ms</code>.</p>
+  </div>
+</section>
+
+<section id="actions">
+  <p class="eyebrow">다음</p>
+  <h2>수정 후 손대야 할 순서</h2>
+  <p class="lede col">브릿지 수정을 반영해 재정렬했다. <strong>가장 중요한 변화: ①+②만으로는 O2가 안 풀리고, P1만으로도 안 풀린다 — 둘이 같이 있어야 넘는다.</strong> 결정 창이 열려 있는 동안 <code>lane_wall_no_room</code>이 닫혀 있으면 창을 넓혀도 소용이 없고, 게이트를 열어도 창이 3프레임이면 드롭 한 번에 날아간다.</p>
+
+  <div class="tw">
+    <table>
+      <caption>O2 회피 성립 여부 — 결정 창(3.62~3.10 m)에서의 산술</caption>
+      <thead><tr><th>조건</th><th>현재</th><th>①+②만</th><th>P1만</th><th>①+②+P1</th></tr></thead>
+      <tbody>
+        <tr><td class="t">필요 여유 need_c</td><td>0.40</td><td>0.40</td><td>0.27</td><td>0.27</td></tr>
+        <tr><td class="t">apex 상한 (벽 클램프)</td><td>0.39</td><td>0.39</td><td>0.39</td><td>0.39</td></tr>
+        <tr><td class="t">통과 조건 (원거리 d_left=+0.08)</td><td>≥0.48 ✘</td><td>≥0.48 ✘</td><td>≥0.35 ✔</td><td>≥0.35 ✔</td></tr>
+        <tr><td class="t">결정 창</td><td>0.28 m</td><td>0.52 m</td><td>0.28 m</td><td>0.52 m</td></tr>
+        <tr><td class="t">창 안 생존 프레임 (드롭 19%)</td><td>2.4</td><td>6.0</td><td>2.4</td><td>6.0</td></tr>
+        <tr class="hl"><td class="t"><b>회피 성립</b></td><td><b>✘</b></td><td><b>✘</b></td><td><b>△ 취약</b></td><td><b>✔</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <ol class="acts">
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>브릿지 수정에 딸린 부작용 두 개를 먼저 막는다 — 두 줄</h4>
+        <p><code>bridge/vel_lpf_alpha</code> 0.3 → <b>0.25</b> (프레임 40 Hz 복귀 시 필터 시정수 보존, 정적→동적 뒤집힘 24% 증가 상쇄). 그리고 <code>wall_distance</code>의 None을 <b>맵 미수신</b>(프레임 거부 유지) / <b>격자 밖</b>(<code>continue</code>)으로 분리 — 이 백에 0.22초 연속 블랙아웃이 될 사례가 11건 실재한다. 이걸 안 하면 ②가 메커니즘 ③을 새로 만든다.</p>
+      </div>
+      <span class="gain">회귀 차단</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>불확실성 패딩 0.25 m를 실측 분산으로 되돌린다 — 손익분기 0.16</h4>
+        <p>브릿지의 <code>position_var_floor 0.01</code>/<code>velocity_var_floor 0.25</code> 상수 때문에 모든 장애물이 관측 품질과 무관하게 <code>max_uncertainty_m</code> 상한 0.25를 받는다. O2의 원거리 게이트가 열리는 조건은 <code>0.15 + U ≤ 0.31</code>, 즉 <b>U ≤ 0.16</b>이다. 여유를 두려면 0.12. <b>①+② 가 이미 적용된 지금, 이것이 O2를 실제로 푸는 단일 변경이다</b> — 게이트를 열고, 넓어진 6프레임 창이 그것을 받는다. 단, 실제 인지 분산이 정말 작은지 먼저 확인할 것.</p>
+      </div>
+      <span class="gain">O2 성립</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>정적 장애물 트레일링의 목표 속도를 0에서 떼어낸다</h4>
+        <p>정적으로 분류된 장애물에 대해 <code>v_target = 0</code> 대신 “회피가 다시 성립하는 속도”(retry 목표) 또는 하한 2.0–2.4 m/s를 쓴다. params.yaml이 <code>backstop_min_speed_mps</code> 주석에서 이미 “2.4 m/s 아래로는 조주거리가 더 줄지 않아 실익이 없다”고 계산해 둔 값이다. O2 구간 손실 2.58 s의 대부분이 여기 있다.</p>
+      </div>
+      <span class="gain">−1.5 s/랩 추정</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>백스톱 포화 분기 임계를 코너 실측에 맞춘다</h4>
+        <p><code>backstop_sat_min_path_error_m</code> 0.12 → 0.20. 네모코너의 정상 추종 오차가 0.12–0.19 m라 지금은 추종이 멀쩡한데도 13회 발화해 3.45 → 1.50 m/s로 잘랐다. 오차 분기(0.25 m)는 그대로 두므로 진짜 추종 실패 방어력은 유지된다.</p>
+      </div>
+      <span class="gain">오발화 34→~5회</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>회피 복귀를 “장애물 통과 후”가 아니라 “차가 라인에 붙은 뒤”에 끝낸다</h4>
+        <p>O7에서 apex가 콘보다 0.69 m 뒤에 찍히고 복귀가 3.1 m 뒤에 끝난다. 그 사이 로컬 경로가 레이스라인으로 먼저 돌아가면서 추종 오차 1 m가 만들어지고 백스톱이 문다. 커밋 해제 조건에 “|d| &lt; 0.2에 도달”을 넣거나, 복귀 블렌드를 로컬 경로에 계속 실어 두면 s 29–31의 백스톱 11회가 사라진다.</p>
+      </div>
+      <span class="gain">−0.4 s/랩</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>남은 회피 상실 홀드 — 34%는 브릿지가 아니다</h4>
+        <p>①+②로 66%가 사라지지만 나머지 16회는 스플라이너 쪽 단발 기각이다. 홀드 상한이 “그 순간 값”이라 감속 최저점에서 걸리면 오래 못 나온다(p50 2.06 m/s, 17회는 1.5 미만, 2회는 0.00). 상한에 <strong>바닥값</strong>을 두거나 한 프레임 공백은 <strong>직전 경로를 관성 유지</strong>하는 편이 맞다.</p>
+      </div>
+      <span class="gain">−0.20 s/랩</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>인지: 접근 중 d 추정이 0.27 m 흐르는 것을 막는다</h4>
+        <p>먼 거리에서 콘의 d_left가 +0.08로 보고되는 것이 O2 실패의 방아쇠다. P2가 게이트를 열면 <strong>치명도는 내려가지만</strong>(요구 0.48 → 0.35) 원인은 남는다. 첫 안정 관측의 d를 고정하고 이후 관측은 폭(d_right/d_left)만 넓히는 쪽이 안전하다 — 중심을 흔들면 판정이 뒤집히지만 폭을 넓히는 것은 보수적이다. 함께: <code>초대형 클러스터 거부 (max_radius=0.35m, 최대 0.36m)</code>가 85회 발동했는데 대부분 O2/O3 콘 바로 위다.</p>
+      </div>
+      <span class="gain n">근본 원인</span>
+    </li>
+    <li>
+      <span class="rank"></span>
+      <div>
+        <h4>측위: PF는 재측정만 — 기아 증거 없음</h4>
+        <p>DEGRADED 1834 / OK 1479 / LOST 14지만 compute 27.6 ms p50 · 31.6 p90(지터 작음), CPU-core 41%로 <strong>CPU에 굶고 있지 않다</strong>. 브릿지가 돌려준 코어 하나가 도움이 될 수는 있으나 근거가 없다. 다음 런에서 <code>scan turnaround</code>(현재 80.7 ms)와 스캔 처리율(36.5%)만 다시 볼 것.</p>
+      </div>
+      <span class="gain n">확인만</span>
+    </li>
+  </ol>
+
+  <div class="call">
+    <h4>수정 후 기대 랩타임</h4>
+    <p>콘 없는 조건 실측 10.83초 기준. ①+②가 회피 상실 홀드에서 <span class="num">−0.39 s</span>(랩당 0.586 s의 66%), P1 부작용 차단이 <span class="num">±0</span>, P2가 O2 구간에서 <span class="num">−1.5 s</span>(콘이 다시 놓였을 때), P3·P4가 <span class="num">−0.4 s</span>. <strong>콘 5개 배치에서 12.9초 → 대략 10.5초</strong>가 현실적인 목표다. 계획 7.9초와의 나머지 격차는 회피 자체가 아니라 코너 진입 속도·그립 예산 쪽 문제다.</p>
+  </div>
+
+  <div class="call">
+    <h4>이번 런에서 잘 된 것</h4>
+    <p>20랩 동안 <strong>수동 개입 0회, e-stop 0회, 트랙 이탈 0회</strong>. 회피 판단 파이프라인은 관측 조건이 갖춰진 곳(O7 17/18, O6 12/18)에서 설계대로 동작했고, 커밋 유지가 전체 사이클의 61%를 차지하며 경로가 안정적으로 유지됐다. 기각 사유 카운터 덕분에 <strong>실패 지점을 사이클 단위로 복원</strong>할 수 있었다 — 이 분석 자체가 그 계측 설계 덕이다.</p>
+  </div>
+</section>
+
+<footer>
+  <p>분석 산출물: <code>tools/bag_analysis_0813b/</code> — <code>extract.py</code>(백 → pkl), <code>decide.py</code>(트레이스 파싱), <code>visibility.py</code>(콘별 인지 구간), <code>verdict.py</code>(설계/우연 분류), <code>speed.py</code>(구간 손실), <code>figs.py</code>·<code>mapfig.py</code>(도면). 원본 백 <code>rosbag_0813/run_0813_221645</code> · 5528 사이클 트레이스 · LiDAR 159만 점 누적.</p>
+</footer>
+
+</div>

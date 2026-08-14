@@ -1,0 +1,8 @@
+data.pkl
+trace.pkl
+obst.pkl
+cones.pkl
+*.npy
+*.png
+report_pub.html
+*.txt
