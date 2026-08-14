@@ -69,7 +69,15 @@ perception_obstacle_bridge_node:
     #    켜져 있는지 먼저 확인할 것 — 둘 다 꺼지면 유령이 그대로 복귀한다.
     bridge/min_confidence: 0.2
     bridge/wall_margin_m: 0.10       # 트랙 경계 밖(벽 반사) 클러스터 제거 여유
-    bridge/vel_lpf_alpha: 0.3        # vs/vd 유한차분 LPF
+    # vs/vd 유한차분 LPF. dt 는 소스 헤더 스탬프 차분이라 지연 지터에는
+    # 영향받지 않지만, **프레임 주기가 바뀌면 시정수가 바뀐다.**
+    # 2026-08-14 브릿지 벡터화로 발행이 32.0 -> 39.8 Hz(주기 31 -> 25 ms)로
+    # 돌아왔다. 같은 크기의 중심점 튐이 24% 큰 속도로 읽히므로, 그대로 두면
+    # 정적->동적 오분류가 그만큼 쉬워진다 — run_0813_221645 에서 이미 트랙
+    # 151개 중 34개(23%)가 뒤집혔고, 뒤집힘이 s 6.1~6.5(네모코너 콘)와
+    # s 28.4~30.6(직선 콘) 즉 **콘 바로 앞**에 몰려 있다.
+    # 1-(1-0.3)^(25/31) = 0.2505 로 낮춰 시정수를 보존한다.
+    bridge/vel_lpf_alpha: 0.25
     bridge/track_forget_sec: 2.0
     bridge/tf_timeout_sec: 0.05
     bridge/tf_allow_latest_fallback: false

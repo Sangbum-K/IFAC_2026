@@ -29,7 +29,8 @@ perception_obstacle_bridge_node:
     bridge/target_frame: map
     bridge/min_confidence: 0.0       # detector가 확정한 저신뢰/coasting 트랙도 보존
     bridge/wall_margin_m: 0.10
-    bridge/vel_lpf_alpha: 0.3
+    # 2026-08-14: 브릿지 발행 32->39.8 Hz 복귀에 맞춘 시정수 보존 (real_car.yaml 주석)
+    bridge/vel_lpf_alpha: 0.25
     bridge/track_forget_sec: 2.0
     bridge/tf_timeout_sec: 0.05
     bridge/tf_allow_latest_fallback: false

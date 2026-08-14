@@ -786,47 +786,65 @@ class PerceptionObstacleBridgeNode(Node):
         self.track_length = track_length
 
     def cartesian_to_frenet(self, x, y, hint=None):
-        """연속 segment 투영. 기존 track id가 있으면 인접 branch만 탐색한다."""
+        """연속 segment 투영. 기존 track id가 있으면 인접 branch만 탐색한다.
+
+        후보 세그먼트를 **한 번에** 계산한다 (2026-08-14). 예전에는 후보를
+        파이썬 루프로 돌면서 원소 2개짜리 벡터에 np.dot / np.array 를 세그먼트당
+        8~9회 불렀는데, numpy 는 호출당 고정비(이 Jetson 에서 ~4.5 us)가 붙는
+        도구라 **계산보다 호출 포장비가 100배 컸다.**
+          Jetson 실측(웨이포인트 320, projection_window 80 = 후보 161):
+            같은 161회 루프를 순수 파이썬 산술로만  :    63.6 us
+            실제 이 함수                            :  6348.7 us   <- 99% 가 호출비
+            아래 벡터화                             :   104.0 us   (61배)
+        브릿지는 이 함수를 **장애물 1건마다** 부르고 인지는 15.4 Hz(주기 65 ms)
+        이므로, 트랙 5개면 32 ms 로 프레임 예산의 49% 를 여기서 썼다.
+        (참고로 같은 로직의 C++ 은 8.2 us 다. 즉 남은 96 us 는 언어 문제지만
+         프레임 예산의 0.15% 라, 포팅으로 얻을 것은 여기 없다.)
+
+        결과는 예전 구현과 동일해야 한다. 유지되는 규약 3가지:
+          · 후보 순서 그대로 + np.argmin 은 **첫** 최소를 돌려주므로, 동률에서
+            먼저 나온 세그먼트가 이기던 `dist2 < best[0]`(strict) 와 같다.
+          · degenerate(seg2 < 1e-10) 세그먼트는 '후보에서 제외'다. dist2 를
+            inf 로 채워 argmin 이 절대 고르지 못하게 하고, 전부 degenerate 면
+            예전처럼 RuntimeError 를 낸다.
+          · dist2 는 np.dot(2원소) 과 같은 성분곱-합 순서로 계산한다.
+        """
         n = len(self.wpnts)
         if hint is None:
-            candidates = np.arange(n, dtype=int)
+            idx = np.arange(n, dtype=int)
         else:
             w = max(self.projection_window, 4)
-            candidates = np.arange(hint - w, hint + w + 1, dtype=int) % n
+            idx = np.arange(hint - w, hint + w + 1, dtype=int) % n
+        jdx = (idx + 1) % n
 
-        best = None
-        for i_raw in candidates:
-            i = int(i_raw)
-            j = (i + 1) % n
-            p0 = self.wpnts[i, 1:3]
-            p1 = self.wpnts[j, 1:3]
-            seg = p1 - p0
-            seg2 = float(np.dot(seg, seg))
-            if seg2 < 1e-10:
-                continue
-            rel = np.array([x, y]) - p0
-            u = float(np.clip(np.dot(rel, seg) / seg2, 0.0, 1.0))
-            proj = p0 + u * seg
-            dist2 = float(np.dot(np.array([x, y]) - proj,
-                                 np.array([x, y]) - proj))
-            if best is None or dist2 < best[0]:
-                ds = ((self.wpnts[j, 0] - self.wpnts[i, 0])
-                      % self.track_length)
-                psi = math.atan2(seg[1], seg[0])
-                dx, dy = x - proj[0], y - proj[1]
-                d = -dx * math.sin(psi) + dy * math.cos(psi)
-                right = ((1.0 - u) * self.wpnts[i, 4]
-                         + u * self.wpnts[j, 4])
-                left = ((1.0 - u) * self.wpnts[i, 5]
-                        + u * self.wpnts[j, 5])
-                best = (dist2, (self.wpnts[i, 0] + u * ds)
-                        % self.track_length, d, i, right, left)
-        if best is None:
+        x0 = self.wpnts[idx, 1]
+        y0 = self.wpnts[idx, 2]
+        seg_x = self.wpnts[jdx, 1] - x0
+        seg_y = self.wpnts[jdx, 2] - y0
+        seg2 = seg_x * seg_x + seg_y * seg_y
+        usable = seg2 >= 1e-10
+        # degenerate 세그먼트는 아래에서 inf 로 배제된다. 0 나눗셈 경고만 피한다.
+        u = np.clip(((x - x0) * seg_x + (y - y0) * seg_y)
+                    / np.where(usable, seg2, 1.0), 0.0, 1.0)
+        off_x = x - (x0 + u * seg_x)
+        off_y = y - (y0 + u * seg_y)
+        dist2 = np.where(usable, off_x * off_x + off_y * off_y, np.inf)
+
+        k = int(np.argmin(dist2))
+        if not bool(usable[k]):
             raise RuntimeError('global waypoint segments are degenerate')
-        if hint is not None and math.sqrt(best[0]) > \
+        if hint is not None and math.sqrt(float(dist2[k])) > \
                 self.projection_reacquire_distance:
             return self.cartesian_to_frenet(x, y, hint=None)
-        _, s, d, i, right, left = best
+
+        i, j = int(idx[k]), int(jdx[k])
+        u_k = float(u[k])
+        psi = math.atan2(float(seg_y[k]), float(seg_x[k]))
+        d = -float(off_x[k]) * math.sin(psi) + float(off_y[k]) * math.cos(psi)
+        right = (1.0 - u_k) * self.wpnts[i, 4] + u_k * self.wpnts[j, 4]
+        left = (1.0 - u_k) * self.wpnts[i, 5] + u_k * self.wpnts[j, 5]
+        ds = (self.wpnts[j, 0] - self.wpnts[i, 0]) % self.track_length
+        s = (self.wpnts[i, 0] + u_k * ds) % self.track_length
         return s, d, i, right, left
 
     def cb_obs(self, msg: PerceptionObstacleArray):
@@ -1003,6 +1021,46 @@ class PerceptionObstacleBridgeNode(Node):
             if tf is not None:
                 x, y = cos_y * x - sin_y * y + tx, sin_y * x + cos_y * y + ty
 
+            # 맵 벽거리 필터: frenet d는 코너에서 실제 벽거리와 어긋나
+            # 벽 위 유령이 아래 회랑 검사를 통과한다 — 맵 EDT로 실거리 판정.
+            # 유령은 벽에서 0~0.1m, 진짜 장애물은 최소 자기 반폭만큼 떨어져
+            # 있어 분리가 물리적으로 명확하다. 맵 미수신 시 폴백(통과).
+            #
+            # ⚠️ 이 블록은 **투영 앞**에 있어야 한다 (2026-08-14 이동).
+            # 판정에 (x, y)만 쓰므로 frenet 이 필요 없는데, 예전에는 투영 뒤에
+            # 있어서 여기서 버려질 벽 유령까지 전부 투영하고 있었다. 투영은
+            # 브릿지에서 가장 비싼 연산이고(cartesian_to_frenet 주석 참조),
+            # 유령은 실물만큼 자주 뜬다 — min_confidence 교차표 기준 코스팅
+            # 유령만 510건/2087. 회랑 검사(d 필요)는 그대로 투영 뒤에 남는다.
+            # ⚠️ wall_distance() 의 None 은 **두 가지**가 합쳐진 값이다
+            # (2026-08-14 분리). 필터를 투영 앞으로 옮기기 전에는 회랑 검사가
+            # 먼저라 둘 다 조용히 continue 됐지만, 옮긴 뒤로는 "격자 밖" 하나가
+            # 프레임 전체를 죽인다:
+            #   run_0813_221645 실측 — 격자 밖 11건이 전부 t=192.48~192.70
+            #   한 뭉치이고 d -1.12~-1.32 로 **회랑 밖**이다. 프레임 거부면
+            #   0.22 s 연속 장애물 블랙아웃이 되고, 이는 local_trajectory 의
+            #   "회피 경로 상실" 홀드를 트리거하는 20~30 ms 공백의 7배다.
+            # 그래서 두 경우를 갈라 쓴다:
+            #   · 맵 미수신 (self.wall_dist is None) -> 종전대로 통과(폴백).
+            #     map_filter_required=True 면 이 콜백 앞부분이 이미 프레임을
+            #     거부하므로, 여기로 오는 것은 required=False 인 경우뿐이다.
+            #   · 격자 밖 좌표      -> 이 장애물만 삭제. 맵 밖 점은 트랙 위에
+            #     있을 수 없으므로 프레임을 죽일 이유가 없다.
+            if self.use_map_filter and self.wall_dist is not None:
+                wall_dist = self.wall_distance(x, y)
+                if wall_dist is None:
+                    continue        # 격자 밖 — 트랙 위일 수 없다
+                if wall_dist < self.wall_dist_min:
+                    # centroid 기준으로 판정한다. 예전 조건
+                    # (wall_dist + raw_half < wall_dist_min)은 raw_half가
+                    # wall_dist_min보다 크면 중심이 벽 픽셀 위(거리 0)여도
+                    # 절대 삭제되지 않아 필터가 사실상 무력했다 —
+                    # run_0803_213313에서 벽거리 0.000m 유령(radius 0.31~0.40)이
+                    # 그대로 통과해 spliner TRAILING 정지 라치를 유발했다.
+                    # 물리적 분리는 명확하다: 유령 중심은 벽 위(실측 p50 0.000m),
+                    # 진짜 차량(0.30m 폭)은 벽에 붙어도 중심이 >=0.15m 떨어진다.
+                    continue
+
             prev = self.tracks.get(src.id)
             hint = prev.get('wi') if prev is not None else None
             try:
@@ -1061,31 +1119,7 @@ class PerceptionObstacleBridgeNode(Node):
             if d - raw_half > corridor_hi or d + raw_half < corridor_lo:
                 continue
 
-            # 맵 벽거리 필터: frenet d는 코너에서 실제 벽거리와 어긋나
-            # 벽 위 유령이 위 검사를 통과한다 — 맵 EDT로 실거리 판정.
-            # 유령은 벽에서 0~0.1m, 진짜 장애물은 최소 자기 반폭만큼 떨어져
-            # 있어 분리가 물리적으로 명확하다. 맵 미수신 시 폴백(통과).
-            if self.use_map_filter:
-                wall_dist = self.wall_distance(x, y)
-                if wall_dist is None:
-                    if self.map_filter_required:
-                        # map 밖/조회 불가 장애물을 개별 삭제하고 healthy empty를
-                        # 발행하면 clear로 오인된다. frame 전체 lease를 만료시킨다.
-                        self.get_logger().error(
-                            f'obstacle id={src.id} lies outside/unavailable map; '
-                            'frame rejected',
-                            throttle_duration_sec=2.0)
-                        return
-                elif wall_dist < self.wall_dist_min:
-                    # centroid 기준으로 판정한다. 예전 조건
-                    # (wall_dist + raw_half < wall_dist_min)은 raw_half가
-                    # wall_dist_min보다 크면 중심이 벽 픽셀 위(거리 0)여도
-                    # 절대 삭제되지 않아 필터가 사실상 무력했다 —
-                    # run_0803_213313에서 벽거리 0.000m 유령(radius 0.31~0.40)이
-                    # 그대로 통과해 spliner TRAILING 정지 라치를 유발했다.
-                    # 물리적 분리는 명확하다: 유령 중심은 벽 위(실측 p50 0.000m),
-                    # 진짜 차량(0.30m 폭)은 벽에 붙어도 중심이 >=0.15m 떨어진다.
-                    continue
+            # (맵 벽거리 필터는 투영 앞으로 옮겼다 — 위 주석 참조.)
 
             # id별 시간차분으로 map 기준 vs/vd 추정.
             vs, vd = 0.0, 0.0
