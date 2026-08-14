@@ -130,7 +130,10 @@ public:
 
     tracker_ = std::make_unique<Tracker>(
       gating_distance_, track_timeout_, reid_distance_, reid_timeout_,
-      pos_hist_len_, radius_ratio_max_);
+      pos_hist_len_, radius_ratio_max_, dynamic_reacquire_gate_multiplier_,
+      dynamic_reacquire_timeout_sec_, dynamic_frenet_reid_timeout_sec_,
+      dynamic_frenet_reid_lateral_gate_m_, dynamic_frenet_reid_progress_slack_m_,
+      dynamic_frenet_reid_backtrack_m_);
 
     // ---- TF2 ----
     // spin_thread=true: TransformListener가 전용 executor 스레드로 /tf를 소비한다.
@@ -225,6 +228,18 @@ private:
     this->declare_parameter<double>("radius_ratio_max", 4.0);
     this->declare_parameter<int>("track_timeout", 10);
 
+    // 표준 association을 넓히지 않고, primary match에 실패한 이미 확정된
+    // 동적 트랙만 마지막 실측 위치로 짧게 재획득한다.
+    this->declare_parameter<double>("dynamic_reacquire_gate_multiplier", 1.6);
+    this->declare_parameter<double>("dynamic_reacquire_timeout_sec", 0.20);
+    // retire 뒤에야 보이는 코너/FOV 이탈은 map 좌표 CV 대신 레이스라인 Frenet
+    // s/d로 한 번 더 보수적으로 재식별한다. TrackBounds를 못 받으면 비활성이다.
+    this->declare_parameter<double>("dynamic_frenet_reid_timeout_sec", 1.25);
+    this->declare_parameter<double>("dynamic_frenet_reid_lateral_gate_m", 0.45);
+    this->declare_parameter<double>("dynamic_frenet_reid_progress_slack_m", 0.80);
+    this->declare_parameter<double>("dynamic_frenet_reid_backtrack_m", 0.30);
+
+
     this->declare_parameter<double>("v_thresh", 0.25);
     this->declare_parameter<int>("n_confirm", 5);
     this->declare_parameter<int>("n_release", 8);
@@ -318,6 +333,18 @@ private:
     gating_distance_ = this->get_parameter("gating_distance").as_double();
     radius_ratio_max_ = this->get_parameter("radius_ratio_max").as_double();
     track_timeout_ = static_cast<int>(this->get_parameter("track_timeout").as_int());
+    dynamic_reacquire_gate_multiplier_ =
+      this->get_parameter("dynamic_reacquire_gate_multiplier").as_double();
+    dynamic_reacquire_timeout_sec_ =
+      this->get_parameter("dynamic_reacquire_timeout_sec").as_double();
+    dynamic_frenet_reid_timeout_sec_ =
+      this->get_parameter("dynamic_frenet_reid_timeout_sec").as_double();
+    dynamic_frenet_reid_lateral_gate_m_ =
+      this->get_parameter("dynamic_frenet_reid_lateral_gate_m").as_double();
+    dynamic_frenet_reid_progress_slack_m_ =
+      this->get_parameter("dynamic_frenet_reid_progress_slack_m").as_double();
+    dynamic_frenet_reid_backtrack_m_ =
+      this->get_parameter("dynamic_frenet_reid_backtrack_m").as_double();
     reid_distance_ = this->get_parameter("reid_distance").as_double();
     reid_timeout_ = this->get_parameter("reid_timeout_sec").as_double();
     pos_hist_len_ = static_cast<int>(this->get_parameter("pos_hist_len").as_int());
@@ -378,6 +405,9 @@ private:
     const double continuous[] = {
       range_min_, range_max_, fov_min_, fov_max_, lambda_angle_, sigma_, v_thresh_,
       static_pos_std_, dynamic_pos_std_, gating_distance_, radius_ratio_max_,
+      dynamic_reacquire_gate_multiplier_, dynamic_reacquire_timeout_sec_,
+      dynamic_frenet_reid_timeout_sec_, dynamic_frenet_reid_lateral_gate_m_,
+      dynamic_frenet_reid_progress_slack_m_, dynamic_frenet_reid_backtrack_m_,
       reid_distance_, reid_timeout_,
     };
     const bool all_finite =
@@ -400,6 +430,18 @@ private:
       !(gating_distance_ >= 0.001 && gating_distance_ <= 100.0) ||
       !(radius_ratio_max_ >= 0.0 && radius_ratio_max_ <= 1000.0) ||
       !(track_timeout_ >= 1 && track_timeout_ <= 100000) ||
+      !(dynamic_reacquire_gate_multiplier_ >= 1.0 &&
+      dynamic_reacquire_gate_multiplier_ <= 10.0) ||
+      !(dynamic_reacquire_timeout_sec_ >= 0.0 &&
+      dynamic_reacquire_timeout_sec_ <= 5.0) ||
+      !(dynamic_frenet_reid_timeout_sec_ >= 0.0 &&
+      dynamic_frenet_reid_timeout_sec_ <= 10.0) ||
+      !(dynamic_frenet_reid_lateral_gate_m_ >= 0.0 &&
+      dynamic_frenet_reid_lateral_gate_m_ <= 5.0) ||
+      !(dynamic_frenet_reid_progress_slack_m_ >= 0.0 &&
+      dynamic_frenet_reid_progress_slack_m_ <= 20.0) ||
+      !(dynamic_frenet_reid_backtrack_m_ >= 0.0 &&
+      dynamic_frenet_reid_backtrack_m_ <= 5.0) ||
       !(v_thresh_ >= 0.0 && v_thresh_ <= 100.0) ||
       !(n_confirm_ >= 1 && n_confirm_ <= 100000) ||
       !(n_release_ >= 1 && n_release_ <= 100000) ||
@@ -874,7 +916,7 @@ private:
     }
 
     // ③④ 매칭 + 칼만필터 트래킹
-    const std::vector<TrackPtr> active_tracks = tracker_->step(clusters, stamp);
+    const std::vector<TrackPtr> active_tracks = tracker_->step(clusters, stamp, bounds.get());
 
     // ⑤ 정적/동적 판별
     f1tenth_perception_msgs::msg::ObstacleArray obstacle_array;
@@ -883,7 +925,7 @@ private:
 
     for (const auto & track : active_tracks) {
       classify_track(
-        *track, v_thresh_, n_confirm_, n_release_,
+        *track, track->misses == 0, v_thresh_, n_confirm_, n_release_,
         static_pos_std_, dynamic_pos_std_, dynamic_release_);
 
       // 관측이 부족한(확정 전) 트랙은 노이즈 클러스터일 수 있어 발행하지 않는다.
@@ -1051,6 +1093,12 @@ private:
   int dynamic_release_{1}, min_hits_{1};
   double gating_distance_{0.0}, radius_ratio_max_{0.0};
   int track_timeout_{1};
+  double dynamic_reacquire_gate_multiplier_{1.0};
+  double dynamic_reacquire_timeout_sec_{0.0};
+  double dynamic_frenet_reid_timeout_sec_{0.0};
+  double dynamic_frenet_reid_lateral_gate_m_{0.0};
+  double dynamic_frenet_reid_progress_slack_m_{0.0};
+  double dynamic_frenet_reid_backtrack_m_{0.0};
   double reid_distance_{0.0}, reid_timeout_{0.0};
   int pos_hist_len_{2};
   // 초 단위 창 (0 이하 = 비활성, 위 프레임 값 사용)

@@ -89,4 +89,16 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_tracker_reacquisition
+    test/test_tracker_reacquisition.cpp
+  )
+  target_link_libraries(test_tracker_reacquisition perception_core)
+  ament_add_gtest(test_classifier_visibility
+    test/test_classifier_visibility.cpp
+  )
+  target_link_libraries(test_classifier_visibility perception_core)
+endif()
+
 ament_package()

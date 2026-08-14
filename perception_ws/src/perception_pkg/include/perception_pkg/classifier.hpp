@@ -25,6 +25,8 @@ namespace perception_pkg
 {
 
 /// track.is_dynamic / dynamic_streak / static_streak / ever_dynamic / confidence 갱신.
+/// has_measurement 가 false이면 KF 코스팅(외삽) 프레임이다. 이 경우에는 실제
+/// 라이다 증거가 없으므로 어떤 streak/분류/신뢰도도 진전시키지 않는다.
 ///
 /// v_thresh        : 동적 판별 속도 임계값 [m/s]
 /// n_confirm       : 동적으로 '확정'되기까지 필요한 연속 프레임 수
@@ -34,7 +36,7 @@ namespace perception_pkg
 /// dynamic_release : 한 번 동적이었던(상대) 트랙이 정적으로 되돌아가기까지 필요한
 ///                   연속 저속·저분산 프레임 수 (일반보다 훨씬 길게 = 정체성 유지)
 bool classify_track(
-  Track & track,
+  Track & track, bool has_measurement,
   double v_thresh, int n_confirm, int n_release,
   double static_pos_std, double dynamic_pos_std, int dynamic_release);
 
