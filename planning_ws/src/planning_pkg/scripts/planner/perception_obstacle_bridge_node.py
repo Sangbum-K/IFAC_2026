@@ -1122,11 +1122,26 @@ class PerceptionObstacleBridgeNode(Node):
             # (맵 벽거리 필터는 투영 앞으로 옮겼다 — 위 주석 참조.)
 
             # id별 시간차분으로 map 기준 vs/vd 추정.
+            #
+            # 상한 1.35 s 는 인지의 재획득 창을 덮으려고 고른 값이다
+            # (2026-08-14). perception 의 dynamic_frenet_reid_timeout_sec 은
+            # 1.25 s 라, 코너/FOV 이탈로 1.25 s 까지 가려졌던 상대도 **같은
+            # id 로** 돌아온다. 그런데 Tracker::reacquire() 는 코너 진입 전의
+            # 접선 속도를 버리려고 KF 를 reset_to_measurement() 로 되돌린다
+            # — 즉 부활 직후 프레임의 src.velocity 는 **0** 이다.
+            # 상한이 1.0 s 이던 동안에는 1.0~1.25 s 공백이 정확히 아래 시드
+            # 경로로 떨어져서, 그 0 을 그대로 받아 상대차를 2~3 프레임
+            # (~0.13~0.2 s) 동안 정지물로 발행했다. 두 창이 서로 모르고
+            # 정해진 탓이라 재현성 있게 반복된다.
+            # 1.25 s 공백을 가로지른 위치 차분은 그 구간의 **평균** 속도지만,
+            # 리셋된 0 보다는 낫고 아래 max_abs_vs/vd 클립과 lpf_alpha 가
+            # 그대로 걸린다. 인지 창을 줄이는 대신 이쪽을 넓힌 것은, 오래
+            # 가려진 상대도 같은 id 로 추적하는 것이 그 커밋의 목적이라서다.
             vs, vd = 0.0, 0.0
             velocity_valid = False
             if prev is not None:
                 dt = now_sec - prev['t']
-                if 1e-3 < dt < 1.0:
+                if 1e-3 < dt < 1.35:
                     ds = (s - prev['s'] + self.track_length / 2.0) % self.track_length \
                         - self.track_length / 2.0
                     a = self.lpf_alpha
