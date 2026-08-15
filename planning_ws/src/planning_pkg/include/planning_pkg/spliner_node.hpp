@@ -166,11 +166,17 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
+  // check_obs: 완성된 트레일링 경로를 이 장애물들과 충돌검사한다. 트레일링의
+  // 횡 램프는 종전까지 **벽만**(WithinTrackBoundary) 검사했고 장애물은 보지
+  // 않았다 — "현재 d 유지"가 장애물 정중앙인 것을 아무도 몰랐다(7:23 접촉).
+  // nullptr 이면 종전 동작(검사 없음).
   bool BuildTrailing(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks,
-    bool allow_stop = true);
+    bool allow_stop = true,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> * check_obs =
+      nullptr);
 
   // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
   // 아닌(|kappa| <= ot_max_kappa) s 구간을 raceline에서 자동 산출.
@@ -368,6 +374,9 @@ private:
   // 대부분 지워져 있었다. 카운터는 전수를 세고 /pitwall/reject_<사유>로 낸다.
   // const 경로(ClusterObstacles 등)에서도 세야 하므로 const + mutable 카운터.
   void NoteReject(const char * reason) const;
+  // 직전 ApplySpeedProfile 실패의 원인 위치를 사람이 읽는 문자열로. 곡률
+  // 한계였으면 "곡률 idx=i/n(p%) k=... >한계 ...", 아니면 "도달불가(감속)".
+  std::string SpeedRejectDetail() const;
   // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
   void NoteRetryTarget(double d_target);
   void PublishRejectCounts();
@@ -434,10 +443,18 @@ private:
   // (escape 원호 전용 — escape_steer_kappa_reject_ratio_ 주석 참조).
   // 밴드를 넘긴 샘플만 살아나는 것이 아니라, 밴드 **안**의 샘플은 그대로
   // sqrt(a_lat/k) 횡가속 캡을 받아 속도가 강하게 눌린다는 점에 주의.
+  // out_geom_ceiling: 기하 전용 속도 상한(곡률·조향레이트·역방향 감속까지만
+  //   적용, cur_vs_ 무관)을 채워 돌려준다. 커밋 경로가 이것을 보관한다.
+  // in_geom_ceiling: 주면 위 기하 단계를 통째로 건너뛰고 이 값에서 시작한다.
+  //   커밋 재생 전용 — 이미 처리된 경로에 그냥 재실행하면 OffsetKappa 가
+  //   이중 적용되고(kappa_radpm 이 결과로 덮여 있다) base vx 도 이미 깎여
+  //   있어 속도가 절대 회복되지 않는다.
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible = true,
-    double steer_reject_ratio_override = -1.0) const;
+    double steer_reject_ratio_override = -1.0,
+    std::vector<double> * out_geom_ceiling = nullptr,
+    const std::vector<double> * in_geom_ceiling = nullptr) const;
 
   // local_trajectory의 modulo splice는 한 바퀴 이상 경로를 표현할 수 없다.
   bool PlanSpanAllowed(double span) const;
@@ -593,6 +610,13 @@ private:
   double trailing_ramp_decel_{2.0};
   // 기하 하한 초과가 **아닌** 사유로 회피가 실패했을 때의 목표 속도 [m/s].
   double trailing_retry_speed_{1.5};
+  // 횡 목표가 축소/포기된 트레일링(= 실제로 비켜 가지 못하는 상태)의 속도
+  // 바닥. trailing_retry_speed_ 는 "정적 장애물과 접촉할 때의 속도"라
+  // 올리면 BlendDist(v에 정비례)가 커져 횡 램프가 안 들어가고, 포기 빈도가
+  // 같이 오른다(실측 v<1.5 0.2% -> v1.5~2.5 10% -> v>3.0 31%). 그래서
+  // 계획이 온전할 때만 높은 값을 쓰고 깎였으면 이 값으로 내린다.
+  // 불변식: 0 <= degraded <= trailing_retry_speed_.
+  double trailing_retry_speed_degraded_{1.5};
   // ApexFor의 목표 간격을 검증기 요구치보다 이만큼 더 준다 [m].
   // 동률(목표 == 충돌박스 경계)이면 수 mm 오차로 매 사이클 자기 거부한다.
   double apex_clearance_eps_m_{0.05};
@@ -645,6 +669,12 @@ private:
   bool evade_attempt_active_{false};
   // 진행 중인 정적 회피 커밋 (경로 끝까지 유지 — 도중 소멸 시 벽 충돌)
   f1tenth_planning_msgs::msg::WpntArray committed_wpnts_;
+  // 커밋 경로의 기하 전용 속도 상한. 재생 때 현재 cur_vs_ 로 전방 가속
+  // envelope 만 다시 풀기 위해 보관한다 (비어 있으면 종전대로 동결값 사용).
+  std::vector<double> committed_geom_ceiling_;
+  // ApplySpeedProfile 이 마지막으로 성공했을 때의 기하 상한. 커밋 시점에
+  // 크기가 맞으면 committed_geom_ceiling_ 로 옮긴다.
+  mutable std::vector<double> last_geom_ceiling_;
   visualization_msgs::msg::MarkerArray committed_mrks_;
   double committed_start_s_{-1.0};
   double committed_until_s_{-1.0};
@@ -749,6 +779,14 @@ private:
   // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
   // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
   mutable std::string cycle_rejects_;
+  // ApplySpeedProfile 이 곡률 한계로 경로를 버렸을 때 **어느 점**이 걸렸는지.
+  // 거부 로그는 호출자(TryLaneSwitch/DoSpline/...)에 있는데 사유가 "기하곡률>
+  // 조향한계 또는 감속 불가"로 뭉뚱그려져 있어, 머리 곡률 수정이 실제로
+  // 먹었는지 백에서 확인할 방법이 없었다. const 경로라 mutable.
+  mutable int speed_reject_idx_{-1};
+  mutable int speed_reject_n_{0};
+  mutable double speed_reject_kappa_{0.0};
+  mutable double speed_reject_limit_{0.0};
   bool trace_cycles_{true};
   // 이번 사이클에 Tier1/Tier2가 "조향 기하 하한을 못 채움"(= 어떤 속도로도
   // 불가)으로 거부했는가. 매 Run() 시작에 false로 리셋한다.
