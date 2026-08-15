@@ -50,6 +50,7 @@
 #include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 #include "perception_pkg/classifier.hpp"
+#include "perception_pkg/cluster_filters.hpp"
 #include "perception_pkg/clustering.hpp"
 #include "perception_pkg/distance_transform.hpp"
 #include "perception_pkg/preprocessing.hpp"
@@ -942,7 +943,9 @@ private:
       clusters.erase(
         std::remove_if(
           clusters.begin(), clusters.end(),
-          [&](const Cluster & c) {return c.radius > max_cluster_radius_;}),
+          [&](const Cluster & c) {
+            return !passes_cluster_radius_gate(c.radius, max_cluster_radius_);
+          }),
         clusters.end());
       if (clusters.size() != before) {
         RCLCPP_WARN_THROTTLE(
@@ -1035,7 +1038,8 @@ private:
     std::vector<uint8_t> keep(points.size(), 0);   // 맵 밖 포인트는 버린다
     for (std::size_t i = 0; i < points.size(); ++i) {
       double d = 0.0;
-      if (map.distance_at(points[i][0], points[i][1], d) && d >= wall_dist_min_) {
+      const bool distance_available = map.distance_at(points[i][0], points[i][1], d);
+      if (passes_wall_distance_gate(distance_available, d, wall_dist_min_)) {
         keep[i] = 1;
       }
     }
