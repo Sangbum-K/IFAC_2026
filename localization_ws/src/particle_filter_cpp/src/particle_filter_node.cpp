@@ -442,7 +442,6 @@ private:
     core->initialize_global(permissible);
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      map_info_ = map.info;
       occupancy_map_ = std::move(occupancy_map);
       range_method_ = std::move(range_method);
       core_ = std::move(core);
@@ -1318,7 +1317,6 @@ private:
   std::vector<Pose2d> permissible_poses_;
   std::unique_ptr<ranges::OMap> occupancy_map_;
   std::unique_ptr<ranges::RangeMethod> range_method_;
-  std::optional<nav_msgs::msg::MapMetaData> map_info_;
   std::atomic<bool> map_initialized_{false};
   std::atomic<bool> map_request_sent_{false};
   std::atomic<bool> odom_initialized_{false};
