@@ -264,9 +264,9 @@ def launch_setup(context, *args, **kwargs):
     #                          (레이스라인 생성에 쓰는 MU_PROFILE 0.80은 계획용
     #                           derate라 다른 값 — 그건 CSV에 이미 반영돼 있다)
     #   a_max 9.51   -> 4.5   : deployment_profiles.A_ACC_MAX
-    #   s_max 0.4189 -> 0.3578: deployment_profiles.MAX_STEER
-    #                          (2026-08-11 gain -0.8564/offset 0.3935 에서 우측
-    #                           servo 포화 한계 20.51deg 자체, TUNING_STATUS.md §1)
+    #   s_min -0.4189 -> -0.3578: deployment_profiles.MAX_RIGHT_STEER
+    #   s_max  0.4189 ->  0.3800: deployment_profiles.MAX_LEFT_STEER
+    #                           (실차의 방향별 control clamp와 동일)
     #   v_max 20.0   -> 7.0   : deployment_profiles.RACELINE_V_MAX
     #                          (vesc.yaml speed_max 32000 / gain 4255.1 = 7.52 이
     #                           하드웨어 천장이라 7.0이 그 아래로 들어간다)
@@ -295,7 +295,7 @@ def launch_setup(context, *args, **kwargs):
     REAL_CAR_VEHICLE = {
         'vehicle.mu': 0.90,
         'vehicle.a_max': 4.5,
-        'vehicle.s_min': -0.3578, 'vehicle.s_max': 0.3578,
+        'vehicle.s_min': -0.3578, 'vehicle.s_max': 0.3800,
         'vehicle.v_max': 7.0, 'vehicle.v_min': -1.0,
         'vehicle.width': 0.30, 'vehicle.length': 0.55,
         # 실차 Hokuyo /scan 40 Hz (run_0804 실측 748msg/18.5s). gym 기본 250 Hz는

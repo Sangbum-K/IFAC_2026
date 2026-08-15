@@ -32,3 +32,7 @@ control:
     # (scale 1.0은 build_map 폐루프 게이트 FAIL — planning yaml 주석 참조)
     "vehicle/max_speed_mps": 7.0
     "vehicle/speed_scale": 1.0
+    # Stand test: +0.395 rad reached servo 0.0552 without driver clipping.
+    # First loaded deployment retains margin with +0.380 rad (servo 0.0681).
+    "vehicle/max_left_steering_angle_rad": 0.3800
+    "vehicle/max_right_steering_angle_rad": 0.3578

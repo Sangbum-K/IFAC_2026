@@ -55,17 +55,17 @@
     steering_angle_to_servo_offset: 0.3935
     #
     # Derived limits (delta = (servo - offset)/gain, servo clipped to
-    # [servo_min, servo_max] below). Planning/control copy the symmetric one:
+    # [servo_min, servo_max] below):
     #   right (0.70-0.3935)/-0.8564 = -0.357894 rad (20.51 deg)  <- binding side
     #   left  (0.05-0.3935)/-0.8564 = +0.401098 rad (22.98 deg)
     #   symmetric 0.357894 rad -> min turn radius 0.882 m, kappa_max 1.133 1/m
-    # Consumers use 0.3578 -- the binding limit itself, rounded down only enough
-    # to stay inside it (0.03%). Set deliberately on 2026-08-11: the previous
-    # 0.36 was a 2.1% round-down from the older 0.3677 limit, and under the
-    # -0.8564 refit that same 0.36 would OVERRUN the limit by 0.6%.
+    # Symmetric planning consumers use 0.3578 -- the binding limit itself,
+    # rounded down only enough to stay inside it (0.03%). Control uses explicit
+    # directional limits: right 0.3578, left 0.3800 for the first loaded test
+    # after a stand command reached 0.395 (servo 0.0552) without driver clip.
     #   planning spliner/vehicle_max_steering_rad, tracker/max_steer_rad,
     #   opponent/max_steer_rad, global_trajectory/validation_max_steer_rad,
-    #   deployment_profiles.MAX_STEER, control vehicle/max_steering_angle_rad.
+    #   deployment_profiles.MAX_STEER, control vehicle/max_{left,right}_steering_angle_rad.
     # ⚠️ There is now NO margin absorbing the unresolved neutral jump
     #    (TUNING_STATUS.md section 11: up to 0.036 servo = 0.042 rad between
     #    runs). When the neutral drifts right, commands near full lock clip at

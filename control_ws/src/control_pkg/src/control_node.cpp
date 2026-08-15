@@ -353,6 +353,8 @@ public:
       "map/backstop_min_speed_mps", 1.5);
     backstop_sat_min_err_m_ = this->declare_parameter<double>(
       "map/backstop_sat_min_path_error_m", 0.12);
+    backstop_steering_reference_angle_ = this->declare_parameter<double>(
+      "map/backstop_steering_reference_rad", 0.3578);
     max_curvature_reference_ = this->declare_parameter<double>(
       "map/max_curvature_reference", 0.8);
     velocity_steer_gain_max_ = this->declare_parameter<double>(
@@ -363,8 +365,10 @@ public:
     // Vehicle limits and the only non-ETH speed multiplier.
     wheelbase_ = this->declare_parameter<double>("vehicle/wheelbase_m", 0.33);
     max_speed_ = this->declare_parameter<double>("vehicle/max_speed_mps", 4.0);
-    max_steering_angle_ = this->declare_parameter<double>(
-      "vehicle/max_steering_angle_rad", 0.4189);
+    max_left_steering_angle_ = this->declare_parameter<double>(
+      "vehicle/max_left_steering_angle_rad", 0.4189);
+    max_right_steering_angle_ = this->declare_parameter<double>(
+      "vehicle/max_right_steering_angle_rad", 0.4189);
     // Conservative initial value. Replace with a measured steering-system rate
     // before increasing real-car speed.
     max_steering_rate_ = this->declare_parameter<double>(
@@ -376,6 +380,11 @@ public:
     speed_scale_ = this->declare_parameter<double>("vehicle/speed_scale", 1.0);
 
     validate_parameters();
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Steering limits: left=%.4frad right=%.4frad, backstop reference=%.4frad",
+      max_left_steering_angle_, max_right_steering_angle_,
+      backstop_steering_reference_angle_);
     load_steering_lookup();
 
     const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
@@ -452,7 +461,7 @@ public:
 private:
   void validate_parameters()
   {
-    const std::array<double, 38> finite_values = {
+    const std::array<double, 41> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       localization_ready_timeout_,
@@ -463,8 +472,10 @@ private:
       start_scale_speed_, end_scale_speed_, downscale_factor_,
       speed_lookahead_for_steer_, max_lateral_error_,
       backstop_err_m_, backstop_sat_ratio_, backstop_min_speed_,
+      backstop_sat_min_err_m_, backstop_steering_reference_angle_,
       max_curvature_reference_, velocity_steer_gain_max_,
-      nearest_search_horizon_, wheelbase_, max_speed_, max_steering_angle_,
+      nearest_search_horizon_, wheelbase_, max_speed_,
+      max_left_steering_angle_, max_right_steering_angle_,
       max_steering_rate_, max_acceleration_, max_deceleration_, speed_scale_};
     if (!std::all_of(
         finite_values.begin(), finite_values.end(),
@@ -501,12 +512,17 @@ private:
       // 경로오차 분기에 흡수돼 무의미해지므로 그 위는 막는다.
       backstop_sat_min_err_m_ < 0.0 ||
       backstop_sat_min_err_m_ >= backstop_err_m_ ||
+      backstop_steering_reference_angle_ <= 0.0 ||
+      backstop_steering_reference_angle_ > 0.8 ||
+      backstop_steering_reference_angle_ >
+      std::min(max_left_steering_angle_, max_right_steering_angle_) ||
       max_curvature_reference_ <= 0.0 || max_curvature_reference_ > 5.0 ||
       velocity_steer_gain_max_ < 1.0 || velocity_steer_gain_max_ > 3.0 ||
       nearest_search_horizon_ < 0.5 || nearest_search_horizon_ > 20.0 ||
       wheelbase_ < 0.1 || wheelbase_ > 1.0 ||
       max_speed_ < 0.0 || max_speed_ > 20.0 ||
-      max_steering_angle_ <= 0.0 || max_steering_angle_ > 0.8 ||
+      max_left_steering_angle_ <= 0.0 || max_left_steering_angle_ > 0.8 ||
+      max_right_steering_angle_ <= 0.0 || max_right_steering_angle_ > 0.8 ||
       max_steering_rate_ <= 0.0 || max_steering_rate_ > 10.0 ||
       max_acceleration_ <= 0.0 || max_acceleration_ > 20.0 ||
       max_deceleration_ <= 0.0 || max_deceleration_ > 20.0 ||
@@ -1011,7 +1027,7 @@ private:
           position.x - waypoints[near_i].x_m,
           position.y - waypoints[near_i].y_m);
         const double sat = std::abs(steering_angle) /
-          std::max(max_steering_angle_, 1e-3);
+          std::max(backstop_steering_reference_angle_, 1e-3);
         double backstop_cap = max_speed_;
         if (std::isfinite(path_err) && path_err > backstop_err_m_) {
           // 오차가 임계를 넘은 만큼 선형으로 감속. 오차가 임계의 2배면
@@ -1065,10 +1081,9 @@ private:
           // 해도 relay처럼 on/off가 뒤집혀 헤어핀에서 1.4s를 1.50에 붙어 있다
           // 풀리자마자 1.5 -> 6.5로 튀었다. 램프에는 되돌아갈 계단이 없다.
           //
-          // sat은 calc_steering_angle 말미의 ±max_steering_angle 클램프 때문에
-          // 1.0을 넘지 못한다. 그래서 램프 끝은 1.0 고정이고 별도 파라미터가
-          // 필요 없다. backstop_sat_ratio_의 의미만 '트리거점'에서 '램프
-          // 시작점'으로 바뀐다 (값은 그대로).
+          // 좌우 물리 한계와 별개인 보수적 reference 로 포화율을 계산한다.
+          // 좌측 추가 조향을 쓰면 sat이 1.0을 넘을 수 있지만 over_sat을 1.0으로
+          // 제한하므로 감속 램프는 기존 최대 강도 이상으로 커지지 않는다.
           //
           // 주의: 램프가 좁을수록(임계가 1.0에 가까울수록) 게인이 커진다.
           // LUT가 speed_now를 받아 조향각을 내므로 감속 -> 요구조향 감소 ->
@@ -1112,7 +1127,7 @@ private:
       -max_deceleration_, max_acceleration_);
     last_speed_command_ = speed_command;
     steering_angle = std::clamp(
-      steering_angle, -max_steering_angle_, max_steering_angle_);
+      steering_angle, -max_right_steering_angle_, max_left_steering_angle_);
 
     ackermann_msgs::msg::AckermannDriveStamped command;
     command.header.stamp = now;
@@ -1259,7 +1274,7 @@ private:
       curr_steering_angle_ - max_steering_delta,
       curr_steering_angle_ + max_steering_delta);
     steering_angle = std::clamp(
-      steering_angle, -max_steering_angle_, max_steering_angle_);
+      steering_angle, -max_right_steering_angle_, max_left_steering_angle_);
     curr_steering_angle_ = steering_angle;
     return steering_angle;
   }
@@ -1432,12 +1447,14 @@ private:
   double backstop_min_speed_{1.5};
   // 조향포화 분기가 열리기 위한 최소 경로오차 [m]. 0 이면 옛 동작(포화 단독).
   double backstop_sat_min_err_m_{0.12};
+  double backstop_steering_reference_angle_{0.3578};
   double max_curvature_reference_{0.8};
   double velocity_steer_gain_max_{1.0};
   double nearest_search_horizon_{3.0};
   double wheelbase_{0.33};
   double max_speed_{4.0};
-  double max_steering_angle_{0.4189};
+  double max_left_steering_angle_{0.4189};
+  double max_right_steering_angle_{0.4189};
   double max_steering_rate_{2.0};
   double max_acceleration_{5.5};
   double max_deceleration_{7.0};

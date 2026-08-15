@@ -43,18 +43,22 @@ STEERING_LUT_DIR = "control_ws/src/control_pkg/config/steering_lookup"
 # 런타임 YAML(control vehicle/*)이 이 값과 어긋나면 resolve 단계에서 죽는다 —
 # '검증한 차'와 '달리는 차'가 다르면 PASS가 아무 것도 보장하지 않기 때문이다.
 WHEELBASE = 0.33        # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동일)
-# [rad] 서보 기구 한계의 보수적 내림값. hardware vesc.yaml 에서 직접 유도한다:
+# [rad] 서보 기구의 방향별 배포 한계. hardware vesc.yaml 에서 직접 유도한다:
 #   delta = (servo - offset) / gain,  gain -0.8320 / offset 0.3941 (2026-08-10)
 #   우 (0.70-0.3935)/-0.8564 = -0.357894 rad (20.51°)  <- 대칭 한계를 결정
 #   좌 (0.05-0.3935)/-0.8564 = +0.401098 rad (22.98°)
 # 2026-08-11: gain 재적합(-0.8320 -> -0.8564)으로 대칭 한계가 0.3677 -> 0.357894
 # 로 2.7% 줄었다. 옛 값 0.36 은 새 한계를 0.6% **넘기므로** 그대로 둘 수 없었다.
-# 0.3578 = 그 한계 자체를 넘지 않을 만큼만(0.03%) 내린 값 — 의도적으로 여유를
-# 두지 않는다("딱 한계까지", 2026-08-11 결정).
+# 우측 0.3578 = 그 한계 자체를 넘지 않을 만큼만(0.03%) 내린 값.
+# 좌측은 stand test에서 0.395 rad(servo 0.0552)까지 driver clip 없이 도달했지만,
+# 첫 하중 배포는 servo_min 0.05에 여유를 둔 0.380 rad(servo 0.0681)로 시작한다.
 # ⚠️ 그래서 TUNING_STATUS §11 의 중립 튐(런 사이 최대 0.036 servo = 0.042 rad)을
 #    흡수할 마진이 이제 없다. 중립이 우측으로 밀린 런에서는 최대 조향 근처 명령이
 #    servo_max 에서 잘려 "가장 크게 꺾어야 할 때 안 꺾이는" 형태로 나타난다.
-MAX_STEER = 0.3578
+MAX_LEFT_STEER = 0.3800
+MAX_RIGHT_STEER = 0.3578
+# 경로 생성과 기존 폐루프 안전 모델은 아직 대칭이므로 구속 방향을 사용한다.
+MAX_STEER = min(MAX_LEFT_STEER, MAX_RIGHT_STEER)
 MAX_STEER_RATE = 2.0    # [rad/s] control 기본 steering-rate limit
 
 # 종방향 plant 한계 — run_0805_2*·run_0806_1* 6개 백 실측 (2026-08-06 재계산,
@@ -313,6 +317,7 @@ _PROFILE_NUMERIC_FIELDS = (
     "planner_speed_scale", "controller_speed_scale", "max_speed_mps",
     "lookahead_gain", "lookahead_offset", "lookahead_min_m",
     "lookahead_max_m", "wheelbase_m", "max_steer_rad",
+    "max_left_steer_rad", "max_right_steer_rad",
     "max_steer_rate_radps", "max_accel_mps2", "max_decel_mps2",
     "plant_accel_max_mps2", "plant_decel_max_mps2",
     "control_rate_hz", "num_local_waypoints",
@@ -338,6 +343,10 @@ def _resolve_cpp_real_car(name, source):
     control, control_src = runtime_params(
         CONTROL_PKG_ROOT, "control", source["control_env"])
     lut_file = _require_string(control, "map/steering_lut_file", control_src)
+    max_left_steer = _require_number(
+        control, "vehicle/max_left_steering_angle_rad", control_src)
+    max_right_steer = _require_number(
+        control, "vehicle/max_right_steering_angle_rad", control_src)
     profile = {
         "planner_speed_scale": _require_number(
             planning, "global_trajectory/velocity_scale", planning_src),
@@ -378,8 +387,11 @@ def _resolve_cpp_real_car(name, source):
         },
         "wheelbase_m": _require_number(
             control, "vehicle/wheelbase_m", control_src),
-        "max_steer_rad": _require_number(
-            control, "vehicle/max_steering_angle_rad", control_src),
+        # Planning/폐루프 게이트는 아직 대칭 모델이므로 실제 좌우 중 작은
+        # 방향을 사용한다. Control 런타임 clamp는 두 방향 값을 직접 사용한다.
+        "max_steer_rad": min(max_left_steer, max_right_steer),
+        "max_left_steer_rad": max_left_steer,
+        "max_right_steer_rad": max_right_steer,
         "max_steer_rate_radps": _require_number(
             control, "vehicle/max_steering_rate_radps", control_src),
         # 컨트롤러의 속도 '명령' slew 한계 (control_node.cpp 의
@@ -401,7 +413,9 @@ def _resolve_cpp_real_car(name, source):
     # 이게 바로 이 모듈이 존재하는 이유인 드리프트라 경고가 아니라 실패로 둔다.
     for field, measured, key in (
             ("wheelbase_m", WHEELBASE, "vehicle/wheelbase_m"),
-            ("max_steer_rad", MAX_STEER, "vehicle/max_steering_angle_rad"),
+            ("max_steer_rad", MAX_STEER,
+             "min(vehicle/max_left_steering_angle_rad, "
+             "vehicle/max_right_steering_angle_rad)"),
             ("max_steer_rate_radps", MAX_STEER_RATE,
              "vehicle/max_steering_rate_radps")):
         if abs(profile[field] - measured) > 1e-9:
@@ -410,6 +424,15 @@ def _resolve_cpp_real_car(name, source):
                 f"deployment_profiles 실측 상수 {measured} 와 다름. 둘 중 어느 "
                 "쪽이 맞는지 정하고 한 변경으로 맞출 것 (최소회전반경 판정이 "
                 "실측 상수를 쓰므로 어긋난 채로는 검증 자체가 무의미하다)")
+    for actual, measured, key in (
+            (max_left_steer, MAX_LEFT_STEER,
+             "vehicle/max_left_steering_angle_rad"),
+            (max_right_steer, MAX_RIGHT_STEER,
+             "vehicle/max_right_steering_angle_rad")):
+        if abs(actual - measured) > 1e-9:
+            raise ValueError(
+                f"{name}: {control_src} 의 {key}={actual} 가 "
+                f"deployment_profiles 실측 상수 {measured} 와 다름")
     return profile
 
 
@@ -422,6 +445,8 @@ def _resolve_python_sim_tracker(name, source):
         PKG_ROOT, "waypoint_tracker_node", source["planning_env"])
     local_traj, local_src = runtime_params(
         PKG_ROOT, "local_trajectory_node", source["planning_env"])
+    max_steer = _require_number(
+        tracker, "tracker/max_steer_rad", tracker_src)
     return {
         "planner_speed_scale": _require_number(
             planning, "global_trajectory/velocity_scale", planning_src),
@@ -440,8 +465,9 @@ def _resolve_python_sim_tracker(name, source):
             tracker, "tracker/max_lookahead_m", tracker_src),
         "wheelbase_m": _require_number(
             tracker, "tracker/wheelbase_m", tracker_src),
-        "max_steer_rad": _require_number(
-            tracker, "tracker/max_steer_rad", tracker_src),
+        "max_steer_rad": max_steer,
+        "max_left_steer_rad": max_steer,
+        "max_right_steer_rad": max_steer,
         "max_steer_rate_radps": _require_number(
             tracker, "tracker/max_steering_rate_radps", tracker_src),
         "max_accel_mps2": _require_number(
@@ -493,7 +519,8 @@ def controller_profile(name):
         raise ValueError(f"{name}: speed scale은 (0, 1]이어야 함")
     positive = (
         "max_speed_mps", "lookahead_min_m", "lookahead_max_m",
-        "wheelbase_m", "max_steer_rad", "max_steer_rate_radps",
+        "wheelbase_m", "max_steer_rad", "max_left_steer_rad",
+        "max_right_steer_rad", "max_steer_rate_radps",
         "max_accel_mps2", "max_decel_mps2", "plant_accel_max_mps2",
         "plant_decel_max_mps2", "control_rate_hz",
     )
@@ -503,6 +530,10 @@ def controller_profile(name):
         raise ValueError(f"{name}: lookahead min/max가 뒤집힘")
     if profile["max_steer_rad"] >= 0.5 * np.pi:
         raise ValueError(f"{name}: max steer가 자전거 모델 범위를 벗어남")
+    if abs(profile["max_steer_rad"] - min(
+            profile["max_left_steer_rad"],
+            profile["max_right_steer_rad"])) > 1e-12:
+        raise ValueError(f"{name}: 대칭 planning 조향 한계가 좌우 구속값과 불일치")
     n_local = profile["num_local_waypoints"]
     if int(n_local) != n_local or n_local < 2:
         raise ValueError(f"{name}: num_local_waypoints는 2 이상의 정수여야 함")
@@ -566,6 +597,8 @@ def profile_manifest(target=DEFAULT_GATE_TARGET):
         "vehicle": {
             "wheelbase_m": WHEELBASE,
             "max_steer_rad": MAX_STEER,
+            "max_left_steer_rad": MAX_LEFT_STEER,
+            "max_right_steer_rad": MAX_RIGHT_STEER,
             "max_steer_rate_radps": MAX_STEER_RATE,
             "plant_accel_mps2": A_ACC_MAX,
             "plant_coast_decel_mps2": A_DEC_MAX,

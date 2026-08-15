@@ -53,7 +53,9 @@ def limits(gain=GAIN, offset=OFFSET):
     print(f"  포화 없는 조향각 범위 : {lo:+.4f} ~ {hi:+.4f} rad "
           f"({rad2deg(lo):+.1f}° ~ {rad2deg(hi):+.1f}°)")
     print(f"  좌우 대칭 최대 조향각 : ±{sym:.4f} rad (±{rad2deg(sym):.1f}°)")
-    print(f"  -> control_pkg 의 vehicle/max_steering_angle_rad 를 {sym:.3f} 이하로 두세요.")
+    print(f"  -> control 우측 한계는 {abs(lo):.4f} rad 이하, "
+          f"좌측 한계는 {hi:.4f} rad 이하로 두세요.")
+    print(f"     대칭 planning 한계는 {sym:.4f} rad 이하입니다.")
     asym = abs(abs(lo) - abs(hi))
     if asym > 0.02:
         centered = (SERVO_MIN + SERVO_MAX) / 2

@@ -123,10 +123,13 @@ servo = -0.8320 * delta(rad) + 0.3941
 우측이 좁아서 대칭 한계를 결정함. 최소 선회반경 약 0.857 m, kappa_max 1.167 1/m.
 (07-22 값 기준으로는 ±0.3619 rad / ±20.7° / 0.87 m였다.)
 
-**플래닝·컨트롤은 이 값을 0.36으로 내림해서 쓴다** — 0.3677 대비 2.1% 안쪽.
-네 곳이 반드시 같아야 하고 어긋나면 `deployment_profiles.resolve()`가 죽는다:
+**플래닝은 구속 방향을 0.3578로 쓰고, 컨트롤은 방향별 한계를 쓴다.**
+플래닝 네 곳은 반드시 0.3578로 같아야 하고 어긋나면
+`deployment_profiles.resolve()`가 죽는다:
 `spliner/vehicle_max_steering_rad`, `tracker/max_steer_rad`,
-`deployment_profiles.MAX_STEER`, control `vehicle/max_steering_angle_rad`.
+`deployment_profiles.MAX_STEER`, control 좌우 한계 중 작은 값.
+Control 배포 한계는 좌 `vehicle/max_left_steering_angle_rad=0.3800`,
+우 `vehicle/max_right_steering_angle_rad=0.3578`이다.
 
 > ⚠️ 여유가 0.5% → 2.1%로 늘었다고 0.3677로 올리지 말 것. 이건 중립이
 > 0.3941일 때의 값이고, §11처럼 실제 중립이 0.43 근처로 밀리면 우측 한계가
@@ -275,7 +278,7 @@ offset :  0.4007 /  0.4030 /  0.4044   (평균 0.4027) → 07-22 채택  0.4030
 
 > **완료된 항목**
 > - gain·offset 확정 및 독립 재측정 검증 (§4)
-> - `control_pkg/config/params.yaml`의 `max_steering_angle_rad` 0.4189 → **0.36** 반영
+> - control 조향 한계를 좌 **0.3800** / 우 **0.3578**로 분리
 
 ### ① 좌측 스톨 지점 측정 (미완, 선택)
 

@@ -296,8 +296,8 @@ def test_sim_gym_vehicle_matches_measured_plant():
     vehicle = _sim_race_real_car_vehicle()
     assert vehicle["vehicle.a_max"] == pytest.approx(profiles.A_ACC_MAX)
     assert vehicle["vehicle.v_max"] == pytest.approx(profiles.RACELINE_V_MAX)
-    assert vehicle["vehicle.s_max"] == pytest.approx(profiles.MAX_STEER)
-    assert vehicle["vehicle.s_min"] == pytest.approx(-profiles.MAX_STEER)
+    assert vehicle["vehicle.s_max"] == pytest.approx(profiles.MAX_LEFT_STEER)
+    assert vehicle["vehicle.s_min"] == pytest.approx(-profiles.MAX_RIGHT_STEER)
     # gym 차체는 recovery가 코리도 판정에 쓰는 치수와 같아야 한다.
     recovery = _ros_params(_yaml(PARAMS), "recovery_supervisor_node")
     assert vehicle["vehicle.width"] == pytest.approx(
@@ -315,8 +315,10 @@ def test_sim_gym_vehicle_matches_measured_plant():
         profiles.A_ACC_MAX)
     assert control_sim["vehicle/max_decel_mps2"] == pytest.approx(
         profiles.A_DEC_PLANNED)
-    assert control_sim["vehicle/max_steering_angle_rad"] == pytest.approx(
-        profiles.MAX_STEER)
+    assert control_sim["vehicle/max_left_steering_angle_rad"] == pytest.approx(
+        profiles.MAX_LEFT_STEER)
+    assert control_sim["vehicle/max_right_steering_angle_rad"] == pytest.approx(
+        profiles.MAX_RIGHT_STEER)
     assert control_sim["vehicle/max_steering_rate_radps"] == pytest.approx(
         profiles.MAX_STEER_RATE)
 
@@ -347,7 +349,6 @@ SIM_REAL_CAR_WIRING_EXEMPT = {
         # 값 자체는 test_sim_gym_vehicle_matches_measured_plant 가 검사한다.
         "control.vehicle/max_accel_mps2",
         "control.vehicle/max_decel_mps2",
-        "control.vehicle/max_steering_angle_rad",
         "control.vehicle/max_steering_rate_radps",
     },
     "integration": {
