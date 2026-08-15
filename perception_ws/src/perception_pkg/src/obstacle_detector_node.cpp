@@ -34,9 +34,7 @@
 #include "rclcpp/rclcpp.hpp"
 
 #include "builtin_interfaces/msg/time.hpp"
-#include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
-#include "geometry_msgs/msg/vector3.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 

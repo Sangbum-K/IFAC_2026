@@ -24,7 +24,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -59,7 +58,6 @@ add_executable(obstacle_detector_node src/obstacle_detector_node.cpp)
 target_link_libraries(obstacle_detector_node perception_core)
 ament_target_dependencies(obstacle_detector_node
   rclcpp
-  std_msgs
   sensor_msgs
   nav_msgs
   geometry_msgs
@@ -73,7 +71,6 @@ ament_target_dependencies(obstacle_detector_node
 add_executable(obstacle_viz_node src/obstacle_viz_node.cpp)
 ament_target_dependencies(obstacle_viz_node
   rclcpp
-  std_msgs
   geometry_msgs
   visualization_msgs
   f1tenth_perception_msgs
