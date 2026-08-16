@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -224,5 +225,89 @@ TEST(MclCore, DeterministicSeedProducesStableInitialization)
     EXPECT_DOUBLE_EQ(first.particles()[index].x, second.particles()[index].x);
     EXPECT_DOUBLE_EQ(first.particles()[index].y, second.particles()[index].y);
     EXPECT_DOUBLE_EQ(first.particles()[index].yaw, second.particles()[index].yaw);
+  }
+}
+
+TEST(MclCore, RestoreMotionOnlyRestoresSnapshotAndAppliesActionOnce)
+{
+  pf::MclParameters parameters;
+  parameters.particle_count = 3;
+  parameters.random_seed = 809;
+  pf::MclCore core(parameters);
+
+  pf::Proposal sensor_proposal;
+  sensor_proposal.particles = {
+    {100.0, 101.0, 0.75},
+    {200.0, 201.0, 1.00},
+    {300.0, 301.0, 1.25}};
+  sensor_proposal.prior_weights = {0.2, 0.3, 0.5};
+  core.accept(sensor_proposal, {8.0, 1.0, 1.0});
+  ASSERT_DOUBLE_EQ(core.particles()[0].x, 100.0);
+  ASSERT_DOUBLE_EQ(core.weights()[0], 0.8);
+
+  const std::vector<pf::Particle> prior_particles{
+    {1.0, 2.0, 0.0},
+    {-1.0, 4.0, 0.0},
+    {3.0, -2.0, 0.0}};
+  const std::vector<double> prior_weights{2.0, 3.0, 5.0};
+  core.restore_motion_only(prior_particles, prior_weights, {2.0, -1.0, 0.25});
+
+  const std::vector<pf::Particle> expected_particles{
+    {3.0, 1.0, 0.25},
+    {1.0, 3.0, 0.25},
+    {5.0, -3.0, 0.25}};
+  const std::vector<double> expected_weights{0.2, 0.3, 0.5};
+  ASSERT_EQ(core.particles().size(), expected_particles.size());
+  ASSERT_EQ(core.weights().size(), expected_weights.size());
+  for (std::size_t index = 0; index < expected_particles.size(); ++index) {
+    EXPECT_DOUBLE_EQ(core.particles()[index].x, expected_particles[index].x);
+    EXPECT_DOUBLE_EQ(core.particles()[index].y, expected_particles[index].y);
+    EXPECT_NEAR(core.particles()[index].yaw, expected_particles[index].yaw, 1.0e-12);
+    EXPECT_DOUBLE_EQ(core.weights()[index], expected_weights[index]);
+  }
+}
+
+TEST(MclCore, RestoreMotionOnlyRejectsInvalidSnapshotWithoutMutation)
+{
+  pf::MclParameters parameters;
+  parameters.particle_count = 3;
+  parameters.random_seed = 809;
+  pf::MclCore core(parameters);
+  const auto particles_before = core.particles();
+  const auto weights_before = core.weights();
+
+  EXPECT_THROW(
+    core.restore_motion_only({}, {}, {2.0, -1.0, 0.25}),
+    std::invalid_argument);
+  EXPECT_THROW(
+    core.restore_motion_only(
+      {{1.0, 2.0, 0.0}, {-1.0, 4.0, 0.0}, {3.0, -2.0, 0.0}},
+      {0.5, 0.5}, {2.0, -1.0, 0.25}),
+    std::invalid_argument);
+
+  ASSERT_EQ(core.particles().size(), particles_before.size());
+  ASSERT_EQ(core.weights().size(), weights_before.size());
+  for (std::size_t index = 0; index < particles_before.size(); ++index) {
+    EXPECT_DOUBLE_EQ(core.particles()[index].x, particles_before[index].x);
+    EXPECT_DOUBLE_EQ(core.particles()[index].y, particles_before[index].y);
+    EXPECT_DOUBLE_EQ(core.particles()[index].yaw, particles_before[index].yaw);
+    EXPECT_DOUBLE_EQ(core.weights()[index], weights_before[index]);
+  }
+}
+
+TEST(MclCore, RestoreMotionOnlyUsesUniformWeightsWhenSnapshotWeightsCannotNormalize)
+{
+  pf::MclParameters parameters;
+  parameters.particle_count = 3;
+  parameters.random_seed = 809;
+  pf::MclCore core(parameters);
+
+  core.restore_motion_only(
+    {{1.0, 2.0, 0.0}, {-1.0, 4.0, 0.0}, {3.0, -2.0, 0.0}},
+    {0.0, 0.0, 0.0}, {});
+
+  ASSERT_EQ(core.weights().size(), 3U);
+  for (const double weight : core.weights()) {
+    EXPECT_DOUBLE_EQ(weight, 1.0 / 3.0);
   }
 }
