@@ -93,6 +93,39 @@ class PerceptionObstacleBridgeNode(Node):
         # 많이 막았다 (rosbag_0811 분석). 존재 불확실성은 min_confidence 와
         # is_visible 이 담당하고, 여기서는 위치 불확실성만 유한하게 둔다.
         self.declare_parameter('bridge/confidence_var_inflation_max_m', 0.10)
+        # ── 확정 정적 트랙의 중심 누적 추정 (2026-08-16) ──────────────────
+        # 위 position_var_floor/velocity_var_floor 는 **트랙 성숙도와 무관한
+        # 상수**다. 정지 콘을 랩당 90~188 번 봐도 보고하는 위치 불확실성이
+        # 계속 단일 프레임 지터(std 0.10 m) 수준이라, 하류 spliner 의
+        #   u = min(collision_sigma 3.0 * sqrt(pos_var + t^2*vel_var),
+        #           max_uncertainty_m 0.12)
+        # 가 **항상 캡 0.12 에 붙는다**. (t = static_time_uncertainty_cap 0.3)
+        #
+        # run_0815_191056 실측: 그 0.12 가 매 랩 우측 회피를 막았다.
+        #   장애물 우측 끝 -0.42 + 차반폭 0.15 + u <= 벽 클램프 0.65
+        #   -> u <= 0.08 이어야 통과하는데 0.12 라 3~6 cm 부족
+        #   -> lane_wall_no_room 260 회, 로그 14 건 중 13 건이 right,
+        #      전부 ego_s≈24 (32.58/44.72/57.01/69.58/81.87/104.22 s)
+        #
+        # 고정 원통(static_cylinder_radius_m)이 폭을 이미 잡아 두었으므로 남은
+        # 불확실성은 **중심 위치**뿐이다. 실측으로도 그렇다 — d_left/d_right 의
+        # 프레임 간 변화가 좌우 동일(p90 8.3 cm)하고 폭 변화는 med 0.0 cm 다.
+        #
+        # 그래서 확정 정적 + 충분히 본 트랙은 중심을 **누적 평균**하고, 그
+        # 평균의 분산(sigma^2/n)을 보고한다. 문턱을 무르게 하는 게 아니라
+        # 추정을 정확하게 하는 것이라 안전여유를 깎지 않는다 — 오히려 매
+        # 프레임 흔들리던 중심이 고정되어 커밋 파기(path_collision 43 회)도
+        # 같이 줄어든다.
+        #
+        # ⚠️ 조건을 느슨하게 하지 말 것. is_static 확정 + 관측수 임계를 둘 다
+        #    요구하는 이유는, 실제로는 천천히 움직이는 물체를 정적으로 오분류한
+        #    경우 누적 평균이 뒤처져 **과거 위치**를 발행하게 되기 때문이다.
+        self.declare_parameter('bridge/static_mean_min_obs', 30)
+        # 하한은 "평균의 분산"이 물리적으로 가질 수 있는 값보다 낮게 가지
+        # 않도록 잡는다. 목표는 u ~= 0.06 (<= 0.08 요구치, 여유 포함):
+        #   3.0 * sqrt(3e-4 + 0.09*1e-3) = 3.0 * 0.0197 = 0.059
+        self.declare_parameter('bridge/static_mean_position_var_floor', 3.0e-4)
+        self.declare_parameter('bridge/static_mean_velocity_var_floor', 1.0e-3)
         # ── 정적 장애물 고정 원통 모델 ────────────────────────────────────
         # detector 의 radius 는 "중심에서 가장 먼 점까지"라 **매 프레임 다시**
         # 측정된다. LiDAR 는 앞쪽 호만 보므로 거리·각도·빔 개수에 따라 값이
@@ -246,6 +279,11 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/position_var_floor').value)
         self.conf_inflation_max = float(
             p('bridge/confidence_var_inflation_max_m').value)
+        self.static_mean_min_obs = int(p('bridge/static_mean_min_obs').value)
+        self.static_mean_pos_var_floor = float(
+            p('bridge/static_mean_position_var_floor').value)
+        self.static_mean_vel_var_floor = float(
+            p('bridge/static_mean_velocity_var_floor').value)
         self.cyl_radius = float(p('bridge/static_cylinder_radius_m').value)
         _band = [float(v) for v in p('bridge/static_cylinder_band_m').value]
         self.cyl_lo, self.cyl_hi = (_band + [0.0, 0.0])[:2]
@@ -1172,20 +1210,45 @@ class PerceptionObstacleBridgeNode(Node):
                 velocity_valid = False
                 vs = float(np.clip(vs, -self.max_abs_vs, self.max_abs_vs))
                 vd = float(np.clip(vd, -self.max_abs_vd, self.max_abs_vd))
+            # ── 확정 정적 트랙의 중심 누적 (Welford) ──────────────────────
+            # 정적일 때만 쌓는다. 동적으로 분류되면 통계를 버려서, 오분류가
+            # 나중에 풀렸을 때 과거 위치가 평균에 남지 않게 한다.
+            raw_static = not src.is_dynamic
+            n_prev = int(prev.get('n', 0)) if prev is not None else 0
+            if raw_static and prev is not None and n_prev > 0:
+                n_obs = n_prev + 1
+                ms_prev = float(prev.get('mean_s', s))
+                md_prev = float(prev.get('mean_d', d))
+                # s 는 wrap 이 있으므로 이전 평균 기준 최단 편차로 누적한다.
+                ds_w = (s - ms_prev + self.track_length / 2.0) \
+                    % self.track_length - self.track_length / 2.0
+                mean_s = (ms_prev + ds_w / n_obs) % self.track_length
+                dd = d - md_prev
+                mean_d = md_prev + dd / n_obs
+                m2_d = float(prev.get('m2_d', 0.0)) + dd * (d - mean_d)
+            else:
+                n_obs, mean_s, mean_d, m2_d = 1, s, d, 0.0
             self.tracks[src.id] = {
                 't': now_sec, 'arrival_t': arrival_sec, 's': s, 'd': d,
-                'vs': vs, 'vd': vd, 'wi': wi}
+                'vs': vs, 'vd': vd, 'wi': wi,
+                'n': n_obs, 'mean_s': mean_s, 'mean_d': mean_d, 'm2_d': m2_d}
             seen_ids.add(src.id)
+
+            # 확정 정적 + 충분히 본 트랙은 **누적 평균 중심**을 발행한다
+            # (선언부 주석 참조). 매 프레임 흔들리는 순간 중심 대신 평균을
+            # 쓰므로 하류 충돌검사 판정이 프레임마다 뒤집히지 않는다.
+            use_mean = raw_static and n_obs >= self.static_mean_min_obs
+            s_pub, d_pub = (mean_s, mean_d) if use_mean else (s, d)
 
             obs = Obstacle()
             obs.id = int(src.id)
             obs.position.x, obs.position.y = float(x), float(y)
-            obs.s_center = s
-            obs.d_center = d
-            obs.s_start = (s - half) % self.track_length
-            obs.s_end = (s + half) % self.track_length
-            obs.d_left = d + half
-            obs.d_right = d - half
+            obs.s_center = s_pub
+            obs.d_center = d_pub
+            obs.s_start = (s_pub - half) % self.track_length
+            obs.s_end = (s_pub + half) % self.track_length
+            obs.d_left = d_pub + half
+            obs.d_right = d_pub - half
             obs.vs = vs
             obs.vd = vd
             confidence = max(float(src.confidence), 1e-3)
@@ -1205,6 +1268,16 @@ class PerceptionObstacleBridgeNode(Node):
             # (rosbag_0806 4런). init_vel_std 0.5는 그 p90 위쪽이다.
             init_vel_var = max(self.velocity_var_floor, self.init_vel_std ** 2)
             vel_var = self.velocity_var_floor if velocity_valid else init_vel_var
+            if use_mean:
+                # 평균을 발행하므로 보고하는 분산도 **평균의 분산**이어야
+                # 한다: s^2/n. 위 상수 하한(0.01 / 0.25)은 단일 프레임 지터
+                # 기준이라 n 이 아무리 커져도 안 줄어들고, 그 탓에 하류 u 가
+                # 늘 캡 0.12 에 붙어 우측 회피가 매 랩 막혔다.
+                # 표본분산이 0 에 수렴해도 정합/자세 오차가 남으므로 하한을 둔다.
+                var_of_mean = (m2_d / (n_obs - 1)) / n_obs if n_obs > 1 else 0.0
+                pos_var = max(self.static_mean_pos_var_floor, var_of_mean)
+                # 정지가 확정된 물체의 속도 불확실성은 0.5 m/s 가 아니다.
+                vel_var = min(vel_var, self.static_mean_vel_var_floor)
             obs.s_var = pos_var
             obs.d_var = pos_var
             obs.vs_var = vel_var
