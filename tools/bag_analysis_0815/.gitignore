@@ -1,0 +1,6 @@
+data.pkl
+*.npy
+*.npz
+*.png
+report_pub.html
+*.txt
