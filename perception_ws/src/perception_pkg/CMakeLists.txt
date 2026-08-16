@@ -99,6 +99,10 @@ if(BUILD_TESTING)
     test/test_classifier_visibility.cpp
   )
   target_link_libraries(test_classifier_visibility perception_core)
+  ament_add_gtest(test_wall_distance_map
+    test/test_wall_distance_map.cpp
+  )
+  target_link_libraries(test_wall_distance_map perception_core)
 endif()
 
 ament_package()
