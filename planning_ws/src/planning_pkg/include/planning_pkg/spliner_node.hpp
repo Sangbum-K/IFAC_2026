@@ -53,6 +53,30 @@ private:
     const std::string & side,
     const f1tenth_planning_msgs::msg::Obstacle & obs) const;
 
+  // ── 기동 전체의 벽 여유 ────────────────────────────────────────────────
+  // apex 를 잡는 MinWallInSpan 창은 hold 구간(장애물 앞뒤 0.5m)뿐이다.
+  // 그런데 차는 그 뒤로 복귀 블렌드만큼 더 오프셋을 물고 간다 — 장애물
+  // **직후에 좁아지는** 코너에서는 hold 구간이 넓어도 복귀 구간이 벽이다.
+  //   run_0815_191056 s≈27.6 (헤어핀2 출구): hold 구간 우벽 0.84m 라
+  //   MoreSpace 가 right 를 골랐는데, 1.2m 뒤 우벽이 0.47m 로 줄어 복귀가
+  //   조향 기하로 불가능했다. 9랩 중 5랩이 이 선택을 했고 매 랩 벽예비가
+  //   0.02~0.13m 까지 떨어지다 마지막 랩에 2.9초 벽 접촉으로 끝났다.
+  //   같은 장애물을 left 로 가면 벽예비 +0.10m 에 복귀도 성립한다.
+  // 그래서 사이드 선택에는 진입 블렌드 + hold + 복귀 블렌드 **전 구간**의
+  // 최악 벽예유를 쓴다. apex 클램프 자체는 그대로 hold 구간 기준이다
+  // (복귀 구간까지 최소 벽폭으로 clamp 하면 apex 가 사라져 회피가 죽는다 —
+  //  좁은 것은 그 지점이지 스팬 전체가 아니다. TryLaneSwitch 의 지점별
+  //  클램프와 같은 근거).
+  //
+  // reachable: 복귀 블렌드가 벽 수축을 조향 한계 안에서 따라갈 수 있는가.
+  //   각 지점의 |d| 상한까지 내려오는 데 필요한 피크 곡률 6*Δd/L² 을
+  //   SteerKappaMax() 와 비교한다. false 면 그 사이드는 "계획은 그려지지만
+  //   차가 그릴 수 없는" 경로다.
+  // 반환: 최악 벽예유 [m] (차체 반폭 포함. 음수면 차체가 벽 안).
+  double ManeuverWorstMargin(
+    double apex, const f1tenth_planning_msgs::msg::Obstacle & obs,
+    bool * reachable = nullptr) const;
+
   // ── 연쇄 회피 그룹 ──────────────────────────────────────────────────────
   // closest 하나만 보고 사이드/오프셋을 정하면, 그 회피가 끝나기 전에 다음
   // 장애물이 closest 가 되면서 **같은 상황에 대해 답이 뒤집힌다**.
@@ -408,6 +432,24 @@ private:
   // 제동/속도 프로파일 등 실측 속도가 필요한 곳에는 쓰지 말 것.
   double PlanSpeed() const;
 
+  // 블렌드를 **지나는 동안** 차가 실제로 낼 속도 [m/s].
+  //
+  // BlendDist(L = v*sqrt(6A/a_lat)) 는 속도 하나를 받는데, 지금까지 그 자리에
+  // PlanSpeed()(= 계획 시점의 현재 속도)가 들어갔다. 가속 중인 직선에서는
+  // 블렌드가 끝날 때의 속도가 훨씬 커서, 그 길이로 실제 낸 피크 횡가속이
+  // 예산을 크게 넘는다 (a_lat 은 v²에 비례하는데 L 은 옛 v 로 잡혀 있다).
+  //   run_0815_191056 t=109.5~110.4 (s=32.3->35.6, A=0.67):
+  //     계획 시점 v=3.5 -> L=3.3m. 블렌드 끝 실측 v=5.9 m/s.
+  //     실제 피크 a_lat = 6*A*v²/L² = 12.8 m/s² = 예산 8.83 의 1.46배.
+  //     -> 조향 -14~-18도, 계획 대비 횡오차 +0.22m 로 벌어진 채 복귀에
+  //        들어가 오차가 +0.57m 까지 커지며 좌벽 접촉 (s≈1.5).
+  // 그래서 레이스라인 목표속도(구간 최대)와 구동계 가속으로 도달 가능한
+  // 속도 중 작은 쪽을 쓰되, PlanSpeed() 아래로는 내려가지 않는다 — 결과적으로
+  // 블렌드는 길어지기만 한다(= 완만해지기만 한다).
+  // span 은 블렌드 길이 추정치. 길이<->속도가 서로를 참조하므로 호출부에서
+  // 한 번 반복해 수렴시킨다.
+  double BlendPlanSpeed(double s_from, double span) const;
+
   // [s_from, s_to] 구간(랩 wrap 허용)에서 가장 좁은 좌/우 벽 여유.
   // apex를 한 점의 벽으로 정하면 그 구간 다른 지점에서 경계에 걸려 클램프되고,
   // 클램프가 장애물 간격을 침범하면 회피가 통째로 포기된다 (run_0806_155621).
@@ -458,6 +500,19 @@ private:
 
   // local_trajectory의 modulo splice는 한 바퀴 이상 경로를 표현할 수 없다.
   bool PlanSpanAllowed(double span) const;
+  // 계획 경로와 벽 사이에 남겨 두는 추적오차 예비 [m].
+  //
+  // 이 값은 오래 고정 0.10 이었다. run_0815_191056 실측(4571 프레임)에서
+  // **계획 대비 벽 방향** 횡오차 p90 은
+  //   v<2  0.05 / 2~3  0.09 / 3~4  0.08 / 4~5  0.21 / 5~9  0.22 [m]
+  // 로, 4 m/s 를 넘으면 예비가 실제 오차의 절반이었다. 같은 로그에서
+  // 발행 경로의 벽예비는 s=31~37 (5~6.7 m/s 구간)에서 정확히 0.100 에
+  // 붙어 있었다 — 지점별 클램프가 경로를 이 값까지 밀어붙이므로, 이
+  // 파라미터가 곧 고속 구간의 실제 여유였다.
+  // 그래서 v0 위로 선형 증가시킨다. v0 이하에서는 예전과 완전히 같다
+  // (좁은 저속 코너의 회피 성립률을 건드리지 않기 위한 것 — 저속에서는
+  //  실측 오차도 작다).
+  double TrackingReserve(double speed) const;
   double RequiredBoundaryMargin(double requested_margin) const;
   bool WithinTrackBoundary(int gb_idx, double d, double requested_margin) const;
 
@@ -519,6 +574,11 @@ private:
   double vehicle_half_length_m_{0.275};
   double vehicle_half_width_m_{0.15};
   double boundary_tracking_margin_m_{0.05};
+  // 추적오차 예비의 속도 의존분 (TrackingReserve). ref 이하에서는 기여 0 —
+  // gain=0 으로 두면 예전(고정값) 동작과 완전히 같다.
+  double boundary_tracking_speed_ref_{3.5};   // [m/s] 이 속도까지는 고정값
+  double boundary_tracking_speed_gain_{0.0};  // [s] 초과 속도당 추가 예비
+  double boundary_tracking_margin_max_{0.05}; // [m] 예비 상한
   double collision_sigma_{2.0};
   // 정적 장애물의 시간 성장 불확실성 상한 [s]. 브릿지가 모든 장애물에
   // vs_var/vd_var를 상수(0.25)로 붙이는데, CheckPathCollision/FilterObstacles가
@@ -598,8 +658,8 @@ private:
   // squeeze 감속(apex가 벽 마진으로 축소된 회피를 배율로 감속) 제거됨.
   // 좁은 corridor에서의 속도 제한은 오프셋 곡률 기반 물리 캡
   // (OffsetKappa + path_lat_acc_max + offset_grip_cap)이 담당한다.
-  // 주의: 벽 여유(RequiredBoundaryMargin)는 아직 속도와 무관한 고정값이므로
-  // 추적오차의 속도 의존분은 현재 어디에서도 보상하지 않는다.
+  // 벽 여유(RequiredBoundaryMargin)의 추적오차 항은 2026-08-16 부터 속도
+  // 의존이다 — TrackingReserve() 주석에 실측 근거가 있다.
   double trailing_engage_dist_m_{8.0};    // trailing 감속을 시작하는 정지점 앞 거리 [m]
   // 속도 명령 -> 실제 감속 사이의 구동계 지연 [s]. 정지 프로파일이
   // v²/(2a)만 보면 이 지연 동안 굴러간 거리만큼 정지점을 넘는다

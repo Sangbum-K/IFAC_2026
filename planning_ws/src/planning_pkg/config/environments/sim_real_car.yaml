@@ -142,6 +142,11 @@ spliner_node:
     #  1.0(항등)이라 코드에서 함께 삭제됐다.)
     spliner/path_check_margin: 0.15
     spliner/boundary_tracking_margin_m: 0.10
+    # 벽 예비의 속도 의존분 — 근거는 real_car.yaml 의 같은 키 주석
+    # (run_0815_191056 실측 횡오차 p90). 실차와 반드시 같아야 한다.
+    spliner/boundary_tracking_speed_ref: 3.5
+    spliner/boundary_tracking_speed_gain: 0.08
+    spliner/boundary_tracking_margin_max: 0.22
     spliner/cmd_speed_scale: 1.0
 
 opponent_predictor_node:

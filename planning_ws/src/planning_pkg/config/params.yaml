@@ -494,6 +494,12 @@ spliner_node:
     spliner/vehicle_half_length_m: 0.275
     spliner/vehicle_half_width_m: 0.15
     spliner/boundary_tracking_margin_m: 0.05
+    # 벽 예비의 속도 의존분 (TrackingReserve).
+    #   예비 = min(boundary_tracking_margin_m + gain*max(v - ref, 0), max)
+    # gain 0 = 예전(속도 무관) 동작. 실차 값은 real_car.yaml.
+    spliner/boundary_tracking_speed_ref: 3.5
+    spliner/boundary_tracking_speed_gain: 0.0
+    spliner/boundary_tracking_margin_max: 0.05
     # 위치/속도 분산의 footprint 충돌검사 배수.
     # ⚠️ 현재 max_uncertainty_m(0.12)에 항상 먹혀 **무효인 노브**다
     #    (0.67 이상이면 전부 같은 결과 — σ 0.18 x sigma >= 0.12).
