@@ -35,9 +35,17 @@ std::int32_t EncodePredictionTubeId(std::int32_t raw_id) {
         static_cast<std::int32_t>(magnitude % kPredictionTubeIdRange);
 }
 
+// 예약 대역은 (base - range, base] = (-2e9, -1e9] 로 **양쪽이 닫혀 있다**.
+// 한쪽만 보면 BuildTrailing 의 비상정지 합성 장애물(id = INT32_MIN = -2.147e9)
+// 까지 예측 튜브로 잡힌다 — 지금은 그 객체에 이 함수를 부르는 경로가 없어
+// 드러나지 않지만, 튜브로 분류되면 불확실성 시간 성장과 등속 전파가 통째로
+// 꺼지므로 조용히 fail-open 이 된다.
 bool IsPredictionTube(
     const f1tenth_planning_msgs::msg::Obstacle &obstacle) {
-    return obstacle.id <= kPredictionTubeIdBase;
+    const std::int64_t id = obstacle.id;
+    return id <= kPredictionTubeIdBase &&
+           id > static_cast<std::int64_t>(kPredictionTubeIdBase) -
+                    kPredictionTubeIdRange;
 }
 }  // namespace
 
@@ -133,8 +141,9 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/geom_floor_margin", 0.8);
     this->declare_parameter("spliner/geom_floor_kappa_ratio", 0.15);
     this->declare_parameter("spliner/steer_kappa_reject_ratio", 1.0);
-    this->declare_parameter("spliner/escape_steer_kappa_reject_ratio", 2.0);
-    this->declare_parameter("spliner/escape_relax_for_observation", false);
+    // d(s) 스플라인 샘플 간격. 예전엔 선언 없는 하드코딩 상수였고, 0이면
+    // DoSpline 의 샘플 루프가 무한이 된다 — 선언하는 이상 범위 검증이 필수다.
+    this->declare_parameter("spliner/spline_resolution", 0.1);
     // 추월 완료 판정 s 간격: 상대 앞머리가 ego 뒤로 이만큼 벌어져야
     // 라인 복귀 시작 (그 전 복귀는 반 차신도 안 앞선 상대 앞 끼어들기)
     this->declare_parameter("spliner/lc_pass_clear_m", 4.0);
@@ -249,10 +258,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/geom_floor_kappa_ratio").as_double();
     steer_kappa_reject_ratio_ =
         this->get_parameter("spliner/steer_kappa_reject_ratio").as_double();
-    escape_steer_kappa_reject_ratio_ =
-        this->get_parameter("spliner/escape_steer_kappa_reject_ratio").as_double();
-    escape_relax_for_observation_ =
-        this->get_parameter("spliner/escape_relax_for_observation").as_bool();
+    spline_resolution_ =
+        this->get_parameter("spliner/spline_resolution").as_double();
     lc_pass_clear_m_ = this->get_parameter("spliner/lc_pass_clear_m").as_double();
     ot_sector_min_len_m_ = this->get_parameter("spliner/ot_sector_min_len_m").as_double();
     ot_speed_scale_ = this->get_parameter("spliner/ot_speed_scale").as_double();
@@ -283,12 +290,18 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         steer_kappa_scale_, geom_floor_margin_, geom_floor_kappa_ratio_,
         steer_kappa_reject_ratio_,
         lc_pass_clear_m_, ot_sector_min_len_m_, ot_speed_scale_,
-        // 아래 5개는 범위 비교(x < lo || x > hi)로만 검사되던 것들이다. NaN은
+        // 아래는 범위 비교(x < lo || x > hi)로만 검사되던 것들이다. NaN은
         // 두 비교 모두 false라 그 검사를 그냥 통과하므로 isfinite 목록에 반드시
         // 있어야 위 주석의 계약("잘못된 설정은 기동 거부")이 실제로 성립한다.
         trailing_lag_sec_, trailing_ramp_decel_, trailing_retry_speed_,
         apex_clearance_eps_m_, creep_escape_speed_,
-        escape_arc_lat_acc_, escape_arc_min_speed_, escape_arc_max_heading_};
+        escape_arc_lat_acc_, escape_arc_min_speed_, escape_arc_max_heading_,
+        // 아래 3개가 정확히 그 누락 사례였다. trailing_retry_speed_degraded_ 는
+        // BuildTrailing 에서 목표속도로 **직접 대입**되므로 NaN 이 들어오면
+        // 그대로 vx 로 흘러간다 (BuildTrailing 은 ApplySpeedProfile 의
+        // 반환값을 쓰지 않아 그쪽 isfinite 검사가 발행을 막지 못한다).
+        trailing_retry_speed_degraded_, early_switch_kappa_max_,
+        spline_resolution_};
     if (!std::all_of(
             safety_values.begin(), safety_values.end(),
             [](double value) { return std::isfinite(value); }) ||
@@ -354,11 +367,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         geom_floor_kappa_ratio_ <= 0.0 || geom_floor_kappa_ratio_ > 1.0 ||
         // 1.0 미만이면 조향 한계 안쪽의 정상 경로를 버리게 된다.
         steer_kappa_reject_ratio_ < 1.0 || steer_kappa_reject_ratio_ > 1.5 ||
-        // escape 전용 배율은 통상 배율 이상이어야 의미가 있다. 상한 3.0 은
-        // 접합부 곡률 실측 최대(1.77 = 1.56배)에 여유를 둔 값 — 이걸 넘기면
-        // 조향각 한계의 3배를 요구하는 경로까지 발행하게 된다.
-        escape_steer_kappa_reject_ratio_ < steer_kappa_reject_ratio_ ||
-        escape_steer_kappa_reject_ratio_ > 3.0 ||
+        // 0이면 DoSpline의 샘플 루프가 끝나지 않는다.
+        spline_resolution_ < 0.01 || spline_resolution_ > 1.0 ||
         lc_pass_clear_m_ <= 0.0 || lc_pass_clear_m_ > lookahead_m_ ||
         ot_sector_min_len_m_ <= 0.0 || ot_sector_min_len_m_ > lookahead_m_ ||
         // 1.0 초과 = 섹터 내 부스트. 예전 상한 1.0은 헤더/params 주석이
@@ -512,12 +522,29 @@ void SplinerNode::CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::Wpnt
         for (const auto &w : gb_wpnts_) {
             gb_vmax_ = std::max(gb_vmax_, w.vx_mps);
         }
-        bool first = !has_gb_wpnts_;
+        // ot_sectors_ / sp_d_ / sp_vx_ 는 전부 **이 배열의 인덱스 기준**으로
+        // 만들어진 파생물이다. 예전에는 첫 수신에만 만들고 이후 재발행에는
+        // gb_wpnts_ 만 갈아끼웠는데, 새 배열이 더 길면 sp_d_[gi] 가
+        // out-of-bounds 이고(gi 는 새 gb_size 로 wrap 된다) 섹터는 옛 s 좌표를
+        // 가리킨 채 남는다. 레이아웃이 바뀌면 전부 다시 만든다.
+        const bool layout_changed =
+            !has_gb_wpnts_ || gb_wpnts_.size() != gb_layout_size_ ||
+            std::abs(track_len_ - gb_layout_len_) > 1e-6;
+        gb_layout_size_ = gb_wpnts_.size();
+        gb_layout_len_ = track_len_;
         has_gb_wpnts_ = true;
-        if (first) {
+        if (layout_changed) {
             ComputeOtSectors();
             PublishSectorMarkers();
-            if (!sp_raw_.empty() && !has_sp_ && !sp_mapping_attempted_) {
+            // SP 매핑은 옛 인덱스 기준이라 그대로 쓸 수 없다. 무효화하고
+            // 원본(sp_raw_)이 있으면 새 레이아웃으로 다시 시도한다.
+            has_sp_ = false;
+            sp_mapping_attempted_ = false;
+            sp_d_.clear();
+            sp_vx_.clear();
+            lc_active_ = false;
+            sp_exit_fail_count_ = 0;
+            if (!sp_raw_.empty()) {
                 BuildSpMapping();
             }
         }
@@ -1026,7 +1053,7 @@ void SplinerNode::Run() {
                         committed_wpnts_.wpnts.size())
                 {
                     auto refreshed = committed_wpnts_.wpnts;
-                    if (ApplySpeedProfile(refreshed, false, -1.0, nullptr,
+                    if (ApplySpeedProfile(refreshed, false, nullptr,
                                           &committed_geom_ceiling_)) {
                         evasion_wpnts.wpnts = std::move(refreshed);
                     } else {
@@ -1287,12 +1314,36 @@ void SplinerNode::Run() {
                         std::max(cmd_speed_scale_, 0.05) * dyn_pass_speed_ratio_);
                 }
             }
+            // ── 완료와 실패를 구분한다 ────────────────────────────────────
+            // BuildSpExit 의 false 반환 지점은 6개인데 그중 하나만 "복귀까지
+            // 끝났다"이고 나머지 다섯은 "이번 사이클 경로를 못 만들었다"이다.
+            // 예전에는 전부 같이 처리해서, 속도 프로파일이 한 번 거부되기만
+            // 해도 추월이 종료된 것으로 보고 lc_active_ 를 내렸다. 그러면 그
+            // 사이클에 빈 경로가 나가고(아래 !evasion_valid 처리) 상대 옆에서
+            // 전속 raceline 으로 튄다 — 커밋 기구가 막으려는 바로 그 전환이다.
+            // 실패는 재시도하되, 계속 실패하면 SP 상태에 갇히지 않게 푼다.
+            bool sp_exit_completed = false;
             evasion_valid = BuildSpExit(opp_beside, v_floor, all_ahead_now,
-                                        evasion_wpnts, mrks);
-            if (!evasion_valid) {
+                                        evasion_wpnts, mrks,
+                                        &sp_exit_completed);
+            if (evasion_valid) {
+                sp_exit_fail_count_ = 0;
+                lc_active_ = true;
+            } else if (sp_exit_completed) {
                 pitwall::Event("추월 완료 — 아웃코스 복귀");
+                sp_exit_fail_count_ = 0;
+                lc_active_ = false;
+            } else {
+                NoteReject("sp_exit_failed");
+                if (++sp_exit_fail_count_ >= kSpExitMaxFail) {
+                    RCLCPP_WARN(this->get_logger(),
+                        "SpExit %d 사이클 연속 실패 — SP 유지를 포기한다",
+                        sp_exit_fail_count_);
+                    pitwall::Event("추월 마무리 실패 — SP 유지 포기");
+                    sp_exit_fail_count_ = 0;
+                    lc_active_ = false;
+                }
             }
-            lc_active_ = evasion_valid;
         }
     }
     if (used_trailing && !trailing_active_) {
@@ -1441,14 +1492,9 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
     // 판단한다 — 통과 가능성이 있으면 일단 회피를 시도한다. 실제로 불가능하면
     // Tier2(스플라인) / Tier3(트레일링)가 그대로 받아낸다.
     // sigma_d는 여기서 빼둔다(장애물마다 다름) — 사전 필터는 낙관적이어야 한다.
-    const double passable_width =
+    const double min_space =
         RequiredObstacleClearance(obs) +
         RequiredBoundaryMargin(spline_bound_mindist_);
-    // (예전엔 여기서 spliner/evasion_side_space_min(0.40)과 max를 취했다.
-    //  cc22ca9 도입 시점엔 passable_width 와 같은 값이었지만, ff8c934 가 첫 항을
-    //  RequiredObstacleClearance(= 같은 항 + UncertaintyMargin >= 0)로 바꾼 뒤로
-    //  passable_width 가 항상 0.40 이상이라 그 max 는 항등이었다.)
-    const double min_space = passable_width;
 
     double apex_left = ApexFor("left", obs);
     double apex_right = ApexFor("right", obs);
@@ -1549,9 +1595,15 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::EvasionGroup(
     // 그 안에 다른 장애물이 있으면 "복귀하다 들이받는다".
     double reach = std::min(rel(closest.s_end) + lane_blend_out_m_, lookahead_m_);
     std::vector<char> taken(all_ahead.size(), 0);
-    bool changed = true;
-    while (changed && group.size() < kEvasionGroupMax) {
-        changed = false;
+    // 매 반복 **가장 가까운** 후보 하나만 넣는다.
+    // 예전에는 한 패스에서 조건을 만족하는 것을 전부 push 하고 크기 검사는
+    // while 조건에만 있어서, 사정권에 5개가 있으면 kEvasionGroupMax(4)를 넘겨
+    // 한 번에 6개가 됐다 — 상한이 강제되지 않았다. 게다가 all_ahead 는 s 로
+    // 정렬돼 있지 않아 잘라내면 임의의 부분집합이 남는다. 가까운 것부터 넣으면
+    // 상한이 실제로 걸리고, reach 가 자라는 순서도 물리적으로 맞다.
+    while (group.size() < kEvasionGroupMax) {
+        size_t best = all_ahead.size();
+        double best_a = std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < all_ahead.size(); ++i) {
             if (taken[i]) {
                 continue;
@@ -1568,14 +1620,21 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::EvasionGroup(
             }
             const double a = rel(o.s_start);
             if (a > reach || a > lookahead_m_) {
-                continue;          // 아직 사정권 밖 (나중 반복에서 다시 본다)
+                continue;          // 아직 사정권 밖 (reach 가 자라면 다시 본다)
             }
-            taken[i] = 1;
-            group.push_back(o);
-            reach = std::min(std::max(reach, rel(o.s_end) + lane_blend_out_m_),
-                             lookahead_m_);
-            changed = true;
+            if (a < best_a) {
+                best_a = a;
+                best = i;
+            }
         }
+        if (best >= all_ahead.size()) {
+            break;                 // 더 넣을 것이 없다
+        }
+        taken[best] = 1;
+        group.push_back(all_ahead[best]);
+        reach = std::min(
+            std::max(reach, rel(all_ahead[best].s_end) + lane_blend_out_m_),
+            lookahead_m_);
     }
     return group;
 }
@@ -1588,8 +1647,11 @@ double SplinerNode::GroupApex(
     // 최소 — ApexFor 가 이미 각 장애물의 벽 클램프를 반영하므로, 이 max/min 은
     // "벽 안에서 모두를 비켜 가는 가장 가까운 오프셋"이 된다.
     bool ok = !group.empty();
-    double d = (side == "left") ? -std::numeric_limits<double>::max()
-                                : std::numeric_limits<double>::max();
+    // sentinel 은 반드시 infinity 여야 아래 !isfinite 가드가 동작한다.
+    // DBL_MAX 는 isfinite 가 true 라, 모든 apex 가 비정상이면 1.8e308 이
+    // d_hold 후보로 그대로 반환됐다.
+    double d = (side == "left") ? -std::numeric_limits<double>::infinity()
+                                : std::numeric_limits<double>::infinity();
     for (const auto &o : group) {
         const double a = ApexFor(side, o);
         if (!std::isfinite(a)) {
@@ -1657,7 +1719,11 @@ double SplinerNode::ApexFor(
     const double dist_target = std::max(evasion_dist_, need);
     if (side == "left") {
         double wall = wall_left;
-        double corridor = std::abs(wall_left - obs.d_left);
+        // 부호를 살린다 (MoreSpace 의 left_gap/right_gap 과 같은 규약).
+        // abs 를 씌우면 장애물이 벽을 넘어 걸친 경우(라이다 벽 반사) 음수
+        // corridor 가 큰 양수로 뒤집혀 surplus 가 부풀었다. 최종 clamp 가
+        // 흡수해 출력은 같았지만, 식이 반대 방향을 계산하고 있었다.
+        double corridor = wall_left - obs.d_left;
         double surplus =
             std::max(corridor - dist_min - boundary_margin, 0.0);
         // corridor 여유를 장애물/벽에 반씩 배분한 지점 (넓으면 목표값이 더 작음)
@@ -1667,7 +1733,7 @@ double SplinerNode::ApexFor(
                           std::max(wall - boundary_margin, 0.0));
     }
     double wall = wall_right;
-    double corridor = std::abs(wall_right + obs.d_right);
+    double corridor = wall_right + obs.d_right;   // 부호 유지 (위와 같은 이유)
     double surplus =
         std::max(corridor - dist_min - boundary_margin, 0.0);
     double balanced = obs.d_right - dist_min - surplus / 2.0;
@@ -1956,6 +2022,17 @@ bool SplinerNode::BuildLaneSwitch(
     if (alongside) {
         dist_front = 0.0;
         dist_back = Mod(closest_obs.s_end - cur_s_, track_len_);
+        // alongside 판정은 s_start 기준(behind < span + 1.0)이라 **뒤끝을 이미
+        // 지난** 0.5~1.0m 창까지 참이 된다. 그 창에서 dist_back 은 wrap 되어
+        // 거의 한 바퀴가 되고, hold_end = dist_back + 0.5 로 계획 스팬이
+        // 트랙 길이를 넘어 매번 lane_span_over_lap 으로 죽었다 — 사유가
+        // 엉뚱할 뿐 아니라 프로파일을 다 만든 뒤에 버리는 낭비였다.
+        // 지난 장애물은 Tier1 이 할 일이 없다. 여기서 바로 접는다.
+        // (기하 불성립 플래그는 세우지 않는다 — 정지 사유가 아니다.)
+        if (dist_back > span + vehicle_half_length_m_) {
+            NoteReject("lane_obs_passed");
+            return false;
+        }
     } else {
         dist_front = Mod(closest_obs.s_start - cur_s_, track_len_);
         dist_back = dist_front + span;
@@ -2463,6 +2540,14 @@ bool SplinerNode::BuildLaneSwitch(
     const bool lane_wall_clamped = fit < 1.0 - 1e-6;
     if (lane_wall_clamped) {
         const double margin = RequiredBoundaryMargin(spline_bound_mindist_);
+        // i=0 도 클램프한다. "그 점은 차가 실제로 있는 자리(cur_d_)이니
+        // 그대로 두어야 한다"는 수정을 검토했다가 되돌렸다 — 차가 경계 밖에
+        // 있을 때 lane_d[0](밖) 과 lane_d[1](클램프됨) 사이에 0.1m 종방향에
+        // 위반량만큼의 횡 점프가 생기고, 아래 psi_rad 재계산이
+        // atan2(Δy, Δx) 로 그 점프를 그대로 헤딩에 싣는다. 게다가
+        // ApplySpeedProfile 의 기하곡률 추정은 머리 3점을 안쪽 값으로 덮으므로
+        // 그 꺾임을 보지도 못한다. 경로 전체를 회랑 안에 두는 편이 하류의
+        // 모든 검사(경계·충돌·곡률)가 전제하는 형태다.
         auto clamp_to_walls = [&]() {
             for (int i = 0; i < n; ++i) {
                 const double s = Mod(cur_s_ + i * wpnt_dist_, track_len_);
@@ -2798,7 +2883,13 @@ bool SplinerNode::DoSpline(
             free_spline_geom_infeasible_ = true;
             return false;
         }
-        if (cap < plan_v) {
+        // 비교 대상은 "지금 속도"가 아니라 "진입 구간을 지나는 동안 낼 속도"다.
+        // plan_v 하나와만 비교하면 **가속 구간에서 캡이 아예 안 걸린다** —
+        // BuildLaneSwitch 는 이 결함을 BlendPlanSpeed 로 고쳤는데 여기만
+        // 옛 비교가 남아 있어 같은 상황에서 두 티어가 다른 답을 냈다.
+        const double carried_in =
+            BlendPlanSpeed(blend_s0, entry_avail_pre + wpnt_dist_);
+        if (cap < std::max(plan_v, carried_in)) {
             entry_speed_cap = std::max(cap, plan_speed_floor_);
             plan_v = std::min(plan_v, entry_speed_cap);
         }
@@ -2806,7 +2897,20 @@ bool SplinerNode::DoSpline(
         // 이 apex가 "가려던 목표"다 (TryLaneSwitch와 같은 이유).
         NoteRetryTarget(d_apex);
     }
-    double knot_base = std::abs(pre_apex_dists_.front());
+    // ── 두 스케일의 분모가 다른 것은 의도된 것이다 ─────────────────────────
+    // need_scale 은 첫 절점까지의 **진입 활주로 전체**(|pre.front()| = 4m),
+    // geom_scale 은 전환이 실제로 몰리는 **마지막 절점 간격**(|pre.back()| =
+    // 1.5m) 으로 나눈다. 자연 3차 스플라인은 C² 라 d'' 가 마지막 구간에만
+    // 갇히지 않고 앞 구간으로 번지므로 실효 전환길이는 1.5σ~4σ 사이다.
+    //   - geom_scale = 조향 기하 **하한**(= 못 넘으면 어떤 속도로도 불가)이라
+    //     짧은 쪽(1.5σ)으로 보수적으로 잡는 것이 맞다.
+    //   - need_scale = 그립 예산에 따른 **완만함 선호**이고, 못 지켜도 위험이
+    //     아니라 ApplySpeedProfile 이 실제 샘플 곡률로 속도를 눌러 처리한다.
+    // 두 분모를 1.5σ 로 통일해 보면 need_scale 이 2.67배가 되어 speed_scale 이
+    // 상한(3.0)에 붙고, 절점 스팬이 8σ = 24m 까지 자란다. 이 트랙(29~33m)에서는
+    // 계획이 랩의 70~80% 를 덮으면서 경계 거부(spline_out_of_bounds)가 늘어
+    // **폴백 티어의 성공률이 떨어진다** — 안전 이득 없이 손해다. 그대로 둔다.
+    const double knot_base = std::abs(pre_apex_dists_.front());
     double need_scale = (knot_base > 0.1)
         ? BlendDist(d_apex, plan_v, a_lat, kappa_sp, blend_s0) / knot_base : 1.0;
     // 조향 기하 하한: 위 need_scale은 "그립 예산"만 본다 — 저속에서는 횡가속
@@ -2957,7 +3061,7 @@ bool SplinerNode::DoSpline(
         // 허용치를 넘쳐도 바로 포기하지 않고 그 지점만 벽 허용치로 눌러본다 —
         // 눌렀을 때 장애물 구간에서 evasion_dist_min을 침범할 때만 포기.
         // (벽 폭은 s 따라 변하므로 한 점 넘쳤다고 전체를 버리면 회피포기 남발)
-        if (std::abs(evasion_d[i]) > spline_resolution_) {
+        if (std::abs(evasion_d[i]) > kOffRacelineEpsM) {
             // (예전엔 장애물 corridor 구간(in_obs_span)에서만 완화된
             //  ot_bound_mindist 를 썼으나, 그 값이 spline_bound_mindist 와 같고
             //  RequiredBoundaryMargin 하한에 먹혀 구분이 성립한 적이 없다.)
@@ -3174,6 +3278,9 @@ bool SplinerNode::BuildEscapeArc(
     const double kappa_grip = escape_arc_lat_acc_ / (v_now * v_now);
     const double kappa_use = std::min(kappa_steer, kappa_grip);
     if (!(kappa_use > 1e-3)) {
+        // 이 함수의 다른 조기 반환은 전부 카운터를 남긴다 — 여기만 조용히
+        // 빠져서 "escape 가 왜 안 떴나"의 추적이 매번 이 지점에서 끊겼다.
+        NoteReject("escape_no_curvature_budget");
         return false;
     }
     // ── 원호 + 기울기 완화 (2026-08-13) ──────────────────────────────────
@@ -3229,7 +3336,12 @@ bool SplinerNode::BuildEscapeArc(
         return false;
     }
     // 이 원호를 실제로 낼 수 있는 속도 상한 (그립).
-    const double v_cap = std::sqrt(escape_arc_lat_acc_ / kappa_arc);
+    // 곡률은 기동분 **과 트랙분의 합**이다 — 기동분만 보면 arc_len 이
+    // arc_floor 이상인 한 kappa_arc <= kappa_use <= kappa_grip 이 되어
+    // v_cap >= v_now 가 항상 성립하고, 캡이 구조적으로 물릴 수 없었다.
+    const double kappa_total = kappa_arc + std::abs(kappa_track);
+    const double v_cap = std::sqrt(
+        escape_arc_lat_acc_ / std::max(kappa_total, 1e-3));
 
     // (4) 경로: [0, arc_len] 포물선 원호 -> 장애물 통과까지 hold -> 복귀 블렌드.
     //     복귀는 평행 복귀이므로 통상 smoothstep 하한을 쓴다 (장애물을 지난
@@ -3319,67 +3431,13 @@ bool SplinerNode::BuildEscapeArc(
         out_wpnts.wpnts.push_back(wpnt);
     }
 
-    // ── require_current_feasible=false — 의도적 예외 (2026-08-12) ──────────
-    // 예전 주석: "통상 회피와 똑같은 검증기를 통과해야 한다 — 이 기동만 예외로
-    // 두면 '마지막 수단'이 아니라 '검증 안 된 경로'가 된다."
-    // 원칙은 옳다. 그런데 그 결과 **escape 가 마지막 수단으로 기능하지 못한다.**
-    //
-    // require_current_feasible 분기는 simulated_v 를 실측 cur_vs_ 에서 출발시키고
-    // 첫 planning_delay_sec_(0.15s) 구간은 감속을 먹이지 않는다. 그런데 모든
-    // 후보 경로(LaneSwitch/FreeSpline/escape)는 **같은 (s,d) 에서 시작**하므로
-    // 그 구간의 k*v² 판정은 기동 내용과 무관하게 전부 같은 답을 낸다.
-    //   my_track0811 헤어핀 s=20.11 실측: kappa 0.733, 자차 d=+0.09(안쪽) ->
-    //   유효 곡률 0.785, v 3.46 -> a_lat 9.39 > path_lat_acc_max 7.85 로 기각.
-    //   계획 속도(3.14)면 7.74 로 통과한다 — 오버스피드 10% 와 추종오차 9cm 가
-    //   판정을 뒤집는다. 회피 기동과 무관한 조건이다.
-    //   2026-08-12 시뮬 100초: spline_speed_profile 85 / escape_speed_profile 88
-    //   로 정상 경로와 escape 가 같은 게이트에서 함께 죽고 결과는 100% trailing.
-    // trailing 이 유일하게 살아남는 이유도 이 플래그다(BuildTrailing 은 원래부터
-    // false 로 호출한다). 이 게이트를 면제받은 유일한 경로가 "포기"라서 시스템이
-    // 항상 포기로 수렴한다.
-    //
-    // ⚠️ false 가 끄는 것은 **두 가지뿐**이다:
-    //   (1) speed_grip_infeasible — 현재 속도에서 최대 제동으로도 그 곡률을
-    //       마찰원 안에서 못 도는 지점이 있는지 검사
-    //   (2) speed[i] = max(speed[i], reachable[i]) — "못 지킬 낮은 숫자 대신
-    //       실제 낼 속도를 적는다"는 보정
-    //   조향 곡률 기각(speed_steer_curv), 마찰원 역방향 감속, jerk shaping 은
-    //   그대로 돈다. 아래 CheckPathCollision 과 위쪽 escape_boundary 도 그대로다
-    //   — "검증 안 된 경로"가 되는 것은 아니다.
-    //
-    // ⚠️ 예상 거동: 현재 상태가 이미 마찰원 밖인데 회피 경로를 발행하므로
-    //   **언더스티어로 밀려나갈 수 있다.** 이건 부작용이 아니라 이 변경으로
-    //   보려는 것이다 — 정지로 덮지 말고 실제 한계 거동을 관측한다.
-    //   단, (2)를 끈 것과 같이 봐야 한다: 계획 속도가 실제보다 낮게 적히면
-    //   컨트롤러 speed_for_lookup 이 조향을 (계획/실제)² 로 줄여서 그립이 아니라
-    //   **속도 기록 때문에** 덜 꺾일 수 있다 (0807 코스아웃 4건과 같은 메커니즘,
-    //   ApplySpeedProfile 의 reachable 주석 참조). 언더스티어를 봤을 때 둘 중
-    //   어느 쪽인지 가르려면 /local_waypoints 의 vx 와 실측 속도를 함께 볼 것.
-    //
-    // 되돌리려면 이 한 줄의 false 만 지우면 된다.
-    //
-    // ── 곡률 기각 배율도 escape 전용으로 완화 (2026-08-12) ────────────────
-    // 위 false 만으로는 escape 가 여전히 0회 발행이었다(면제 전후 88 -> 91).
-    // 실제 구속은 speed_grip_infeasible 이 아니라 **speed_steer_curv** 였고,
-    // 그건 require_current_feasible 과 무관하게 항상 돈다.
-    // 원인은 경로 형상이다: 포물선 원호(기울기 2A/L) -> hold(기울기 0) 전환이
-    // 잔여 헤딩을 한 점에서 꺾어 접합부 곡률이 1.14~1.77 로 튄다. 통상 문턱
-    // 1.303 을 넘으므로 정작 escape 가 필요한 빡빡한 기하에서 항상 죽는다.
-    // (헤딩 게이트는 그 잔여 헤딩을 45.8도 상한으로 **허용**해 놓고, hold 가
-    //  바로 그것을 없애느라 곡률 기각에 걸린다 — 두 게이트가 서로 모순이다.)
-    // escape_steer_kappa_reject_ratio_ 로 그 밴드를 넓혀 꺾인 경로를 그대로
-    // 발행한다. 목적은 주행 품질이 아니라 **언더스티어 관측**이다.
-    // ⚠️ 밴드를 넓혀도 밴드 안 샘플은 sqrt(path_lat_acc_max/k) 횡가속 캡을
-    //    그대로 받는다 — 접합부에서 계획 속도가 크게 눌린다(k=1.45 이면
-    //    2.33 m/s). 위 (2) 면제로 reachable 보정도 꺼져 있으므로 그 낮은 값이
-    //    그대로 발행된다. 관측되는 "덜 꺾임"이 그립 때문인지 이 속도 기록
-    //    때문인지 반드시 /local_waypoints vx 와 실측 속도를 대조할 것.
-    // 두 완화는 escape_relax_for_observation_ 로만 켜진다. 기본 false 이면
-    // 아래 호출은 커밋된 동작(`ApplySpeedProfile(wpnts)`)과 완전히 같다.
-    const bool relax = escape_relax_for_observation_;
-    if (!ApplySpeedProfile(out_wpnts.wpnts,
-                           /*require_current_feasible=*/!relax,
-                           relax ? escape_steer_kappa_reject_ratio_ : -1.0)) {
+    // 통상 회피와 **같은 검증기**를 통과해야 한다. 예전에는 여기만
+    // require_current_feasible 면제 + 곡률 기각 밴드 확대를 걸 수 있는
+    // 관측용 스위치(escape_relax_for_observation_)가 있었는데, 그 완화가
+    // 겨냥한 접합부 꺾임(원호 끝 기울기 2A/L -> hold 기울기 0)은 위의 기울기
+    // 완화 구간이 들어가며 없어졌다. 스위치는 배포 yaml 어디에도 없어 켜진
+    // 적이 없고, 곡률 배율 쪽은 읽힌 적조차 없다 — 둘 다 제거했다.
+    if (!ApplySpeedProfile(out_wpnts.wpnts)) {
         NoteReject("escape_speed_profile");
         out_wpnts.wpnts.clear();
         return false;
@@ -3705,7 +3763,17 @@ bool SplinerNode::BuildTrailing(
             // 최대 제동 램프. 예전에는 여기서 전 점 0을 썼는데, 장애물이
             // trailing_gap 안쪽이면 span이 modulo로 감겨 0이 되고(그러면
             // rem도 0) 정상 경로에서도 같은 계단이 나왔다.
-            w.vx_mps = std::min(w.vx_mps, reachable_v(dist) / command_scale);
+            //
+            // v_target_prof_actual 을 바닥으로 깐다. 이 분기는 위쪽
+            // "복귀 기하조차 없음" 경로가 `allow_stop ? 0 : degraded` 로
+            // 목표속도를 정해 놓고 들어오는데, 여기서 그 값을 읽지 않아
+            // **그 대입이 아무 효과도 없었다** — 정적 장애물에서도 최대제동
+            // 곡선이 그대로 나가 다시 정지했다. 비상정지(emergency_stop)는
+            // v_target_prof_actual 이 0 이라 종전과 완전히 같다.
+            w.vx_mps = std::min(
+                w.vx_mps,
+                std::max(reachable_v(dist), v_target_prof_actual) /
+                    command_scale);
         } else if (rem <= engage) {
             // 순수 v²/(2a) 모델은 명령→감속 사이의 구동계 지연을 무시한다.
             // 실측(rosbag_0806, 명령 0 하강엣지 3건): v0 0.95~1.37 m/s에서
@@ -3752,7 +3820,15 @@ bool SplinerNode::BuildTrailing(
     // 낮은 값만 채택되므로 제동 프로파일을 약화시키지 않는다)
     // 이미 위험 구간이면 최대 제동 경로를 반드시 발행해야 하므로 현재 상태
     // feasibility 실패를 이유로 trailing 자체를 버리지는 않는다.
-    ApplySpeedProfile(out_wpnts.wpnts, false);
+    // 다만 실패하면 **곡률/그립 속도 캡이 하나도 안 걸린 채** 발행된다는 뜻이라
+    // 조용히 넘기면 안 된다 (경로는 손대인 곳 없이 온전하다 —
+    // ApplySpeedProfile 이 검사를 전수로 먼저 돌고 통과 뒤에만 쓴다).
+    if (!ApplySpeedProfile(out_wpnts.wpnts, false)) {
+        NoteReject("trailing_speed_profile_skipped");
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 2000,
+            "Trailing 속도 프로파일 미적용 (%s) — 수동 제동 프로파일만 발행",
+            SpeedRejectDetail().c_str());
+    }
 
     // ── 램프가 장애물을 향하면 속도 바닥을 걷고 제동한다 (2026-08-15) ──────
     // 트레일링의 횡 램프는 여기까지 **벽만** 검사했다(ramp_ok →
@@ -3792,6 +3868,23 @@ bool SplinerNode::BuildTrailing(
                     out_wpnts.wpnts[i].vx_mps,
                     std::max(v_stop, reachable_v(dist)) / command_scale);
             }
+            // 속도를 덮어썼으면 ax 도 다시 계산한다. ApplySpeedProfile 은
+            // 마지막에 v² 공간미분으로 ax 를 맞추는데, 이 덮어쓰기는 그
+            // 뒤에 일어나므로 그대로 두면 컨트롤러가 옛 가속도를 읽는다.
+            for (size_t i = 0; i + 1 < out_wpnts.wpnts.size(); ++i) {
+                const double ds_i = std::max(std::hypot(
+                    out_wpnts.wpnts[i + 1].x_m - out_wpnts.wpnts[i].x_m,
+                    out_wpnts.wpnts[i + 1].y_m - out_wpnts.wpnts[i].y_m), 1e-3);
+                out_wpnts.wpnts[i].ax_mps2 =
+                    (out_wpnts.wpnts[i + 1].vx_mps *
+                         out_wpnts.wpnts[i + 1].vx_mps -
+                     out_wpnts.wpnts[i].vx_mps * out_wpnts.wpnts[i].vx_mps) /
+                    (2.0 * ds_i);
+            }
+            if (out_wpnts.wpnts.size() >= 2) {
+                out_wpnts.wpnts.back().ax_mps2 =
+                    out_wpnts.wpnts[out_wpnts.wpnts.size() - 2].ax_mps2;
+            }
             RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
                 "Trailing 램프가 장애물과 충돌 (blocking s=%.2f, 정지까지 "
                 "%.2fm) — 속도 바닥 해제하고 제동",
@@ -3822,7 +3915,11 @@ bool SplinerNode::BuildSpLaneChange(
     visualization_msgs::msg::MarkerArray &out_mrks) {
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
-    if (gb_size < 2 || sp_d_.empty()) {
+    // sp_d_/sp_vx_ 는 매핑 시점의 gb 인덱스로 첨자되므로 크기가 어긋나면
+    // out-of-bounds 다. CallbackGlobalWaypoints 가 레이아웃 변경 시 무효화
+    // 하지만, 여기서도 방어한다 (두 배열의 유일한 사용처다).
+    if (gb_size < 2 || sp_d_.size() != static_cast<size_t>(gb_size) ||
+        sp_vx_.size() != static_cast<size_t>(gb_size)) {
         return false;
     }
 
@@ -3840,6 +3937,13 @@ bool SplinerNode::BuildSpLaneChange(
         }
         dist_front = 0.0;
         dist_back = Mod(closest_obs.s_end - cur_s_, track_len_);
+        // alongside 는 s_start 기준(+2.0m)이라 상대 뒤끝을 이미 지난 구간까지
+        // 참이다. 그때 dist_back 은 wrap 되어 거의 한 바퀴가 되고 hold_end 가
+        // 트랙을 넘어 PlanSpanAllowed 에서 죽는다 — 그건 "추월이 끝난" 상태이니
+        // 여기가 아니라 BuildSpExit 이 받아야 한다.
+        if (dist_back > span + vehicle_half_length_m_) {
+            return false;
+        }
     } else {
         dist_front = Mod(closest_obs.s_start - cur_s_, track_len_);
         dist_back = dist_front + span;
@@ -3982,14 +4086,26 @@ bool SplinerNode::BuildSpExit(
     bool opp_beside, double v_floor,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
     f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
-    visualization_msgs::msg::MarkerArray &out_mrks) {
+    visualization_msgs::msg::MarkerArray &out_mrks,
+    bool *out_completed) {
+    // 기본은 "완료 아님". 아래 단 한 곳(복귀까지 끝난 지점)에서만 true 로
+    // 올린다 — 나머지 false 반환은 전부 "이번 사이클 실패"다.
+    if (out_completed != nullptr) {
+        *out_completed = false;
+    }
     // 추월 마무리 경로: 상대가 회피 대상에서 사라져도 (1) 아직 옆에
     // 나란하면(opp_beside) 간격이 벌어질 때까지, (2) 코너 안이면 코너
     // 출구까지 SP 인코스를 유지한 뒤 raceline(아웃코스)으로 복귀한다.
     // 매 사이클 ego 위치에서 재생성되며, 상대 클리어 + 직선 도달 +
     // raceline 복귀 완료 시 false를 반환해 종료된다.
     int gb_size = static_cast<int>(gb_wpnts_.size());
-    if (gb_size < 2 || sp_d_.empty()) {
+    // 크기 가드는 BuildSpLaneChange 와 같은 이유 (gb 인덱스 첨자).
+    if (gb_size < 2 || sp_d_.size() != static_cast<size_t>(gb_size) ||
+        sp_vx_.size() != static_cast<size_t>(gb_size)) {
+        // SP 라인이 없으면 유지할 것도 없다 = 종료로 본다.
+        if (out_completed != nullptr) {
+            *out_completed = true;
+        }
         return false;
     }
     const int cur_gi =
@@ -4008,7 +4124,11 @@ bool SplinerNode::BuildSpExit(
         // lookahead 전체를 유지 구간으로 잡는다 (간격이 벌어지면 자연 해제)
         hold = std::max(hold, lookahead_m_);
     } else if (hold <= 0.0 && std::abs(cur_d_) < 0.2) {
-        return false;   // 상대 클리어 + 코너 끝 + raceline 복귀 완료
+        // 상대 클리어 + 코너 끝 + raceline 복귀 완료 — **유일한 정상 종료**
+        if (out_completed != nullptr) {
+            *out_completed = true;
+        }
+        return false;
     }
     double hold_end = blend_in + hold;
     double total = hold_end + blend_out;
@@ -4227,7 +4347,12 @@ bool SplinerNode::MergeBlocksTrack(
     const double d_left = std::max(a.d_left, b.d_left);
     const double d_right = std::min(a.d_right, b.d_right);
     if (!std::isfinite(d_left) || !std::isfinite(d_right)) {
-        return false;   // 판단 불가 — 기존 동작(병합) 유지 = 보수적
+        // 판단 불가 -> "병합하면 막힌다"로 본다 = **병합하지 않는다**.
+        // 이 파일의 정책은 "사전 필터는 낙관적, 가부는 CheckPathCollision"이고,
+        // 병합은 통로를 없애는 비관적 조작이라 그쪽이 보수적인 답이다.
+        // (Run() 이 non-finite d 를 만나면 배열을 통째로 비우므로 현재는
+        //  도달하지 않는다 — 입력 계약이 바뀌었을 때의 안전판이다.)
+        return true;
     }
     double wall_left, wall_right;
     MinWallInSpan(Mod(s_start - 0.5, track_len_),
@@ -4439,6 +4564,14 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
                     // 구성원 중 하나라도 움직이면 클러스터는 동적 (OR였을 때
                     // 예측 구간과 합쳐진 상대가 정적으로 분류돼 커밋/부스트 오동작)
                     a.is_static = a.is_static && b.is_static;
+                    // 하나라도 지금 보이면 클러스터는 보이는 것이다.
+                    // 이 줄이 없어서 결과 박스는 **인덱스 i 쪽 값**을 그냥
+                    // 물려받았다 — i 가 코스팅 유령이고 j 가 실물이면 합친
+                    // 박스가 is_visible=false 가 되어 StableObstacles 의
+                    // commit_break_requires_visible_ 게이트에서 탈락하고,
+                    // 실물이 커밋을 깰 자격을 잃었다. 다른 필드는 전부
+                    // max/min/AND 로 명시 병합하는데 이것만 순서 의존이었다.
+                    a.is_visible = a.is_visible || b.is_visible;
                     // 현재 관측과 catch-zone이 합쳐지면 이미 swept tube이므로
                     // 예약 ID를 유지해 병합 후 전체 박스를 재전파하지 않는다.
                     a.id = projected_tube ? merged_id : std::min(a.id, b.id);
@@ -4606,9 +4739,10 @@ double SplinerNode::TrackingReserve(double speed) const {
     const double v = std::isfinite(speed) ? std::abs(speed) : 0.0;
     const double extra = std::max(boundary_tracking_speed_gain_, 0.0) *
                          std::max(v - boundary_tracking_speed_ref_, 0.0);
+    // 상한은 생성자가 이미 max(margin_max, margin_m) 로 올려 맞춰 두므로
+    // 여기서 다시 max 를 취할 필요가 없다 (불변식: margin_max >= margin_m).
     return std::min(boundary_tracking_margin_m_ + extra,
-                    std::max(boundary_tracking_margin_max_,
-                             boundary_tracking_margin_m_));
+                    boundary_tracking_margin_max_);
 }
 
 double SplinerNode::RequiredBoundaryMargin(double requested_margin) const {
@@ -4712,6 +4846,23 @@ double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track,
     // 이미 검증돼 있다). 따라서 이분법이 성립한다.
     if (s_from >= 0.0 && std::isfinite(s_from) && !gb_wpnts_.empty() &&
         track_len_ > 0.0) {
+        // ── 호출부가 넘긴 kappa_track 을 버리지 않는다 ──────────────────────
+        // BlendGeomFeasible 은 [s_from, s_from+L] (= 진입 블렌드)만 훑고
+        // 레이스라인 **원본** 곡률만 본다. 그런데 호출부(BuildLaneSwitch 의
+        // kappa_in / DoSpline 의 kappa_sp)가 넘기는 값은 진입 구간 원본과
+        // **hold 구간의 오프셋 유효 곡률 OffsetKappa(k, d_hold)** 의 max 다.
+        // 그대로 두면 "그 오프셋을 그 구간에서 유지할 수 있는가"라는 별개
+        // 가부 조건이 s 문맥 경로에서 통째로 사라진다 (hold 구간은 스캔 범위
+        // 밖이라 좌표상으로도 안 보인다).
+        // 오프셋 유지는 블렌드 길이로 해결되는 문제가 아니므로 여기서 먼저
+        // 자른다. 문턱은 ApplySpeedProfile 의 곡률 기각 문턱과 **같은 값**이라,
+        // 이 게이트가 다운스트림 검증기보다 엄격해지지는 않는다 — 즉 지금
+        // 통과하던 경로를 새로 죽이지 않고, 죽을 경로를 더 일찍 죽인다.
+        if (std::isfinite(kappa_track) &&
+            std::abs(kappa_track) >
+                kappa_steer_max * std::max(steer_kappa_reject_ratio_, 1.0)) {
+            return blend_dist_max_m_;
+        }
         if (!BlendGeomFeasible(amplitude, blend_dist_max_m_, s_from,
                                one_sided)) {
             // 아무 길이로도 안 되면 스칼라 경로와 같은 sentinel 을 돌려
@@ -4896,6 +5047,13 @@ double SplinerNode::BlendSpeedCap(
     // 정확하다 (하한 계산의 이분법 오차 0.02m 도 타지 않는다).
     if (s_from >= 0.0 && std::isfinite(s_from) && !gb_wpnts_.empty() &&
         track_len_ > 0.0) {
+        // BlendGeomFloor 의 s 문맥 경로와 같은 이유로 kappa_track 을 먼저 본다
+        // (hold 구간 오프셋 유지 가부는 available 로 해결되지 않는다).
+        if (std::isfinite(kappa_track) &&
+            std::abs(kappa_track) >
+                SteerKappaMax() * std::max(steer_kappa_reject_ratio_, 1.0)) {
+            return 0.0;
+        }
         if (!BlendGeomFeasible(amplitude, available, s_from, false)) {
             return 0.0;
         }
@@ -5046,15 +5204,13 @@ double SplinerNode::OffsetKappa(double kappa, double d) {
 bool SplinerNode::ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible,
-    double steer_reject_ratio_override,
     std::vector<double> *out_geom_ceiling,
     const std::vector<double> *in_geom_ceiling) const {
     speed_reject_idx_ = -1;      // 호출마다 초기화 (직전 호출 값이 새지 않게)
     if (wpnts.size() < 2) {
         return !wpnts.empty();
     }
-    const double steer_reject_ratio = (steer_reject_ratio_override > 0.0)
-        ? steer_reject_ratio_override : steer_kappa_reject_ratio_;
+    const double steer_reject_ratio = steer_kappa_reject_ratio_;
 
     const size_t n = wpnts.size();
     const double command_scale = std::max(cmd_speed_scale_, 0.05);
@@ -5189,6 +5345,12 @@ bool SplinerNode::ApplySpeedProfile(
     const double steering_curvature_reject =
         steering_curvature_limit * steer_reject_ratio;
     if (path_lat_acc_max_ > 1e-3) {
+        // ── 검사를 전수로 먼저 돌고, 통과한 뒤에만 wpnts 를 건드린다 ────────
+        // 예전에는 한 루프에서 검사와 `wpnts[i].kappa_radpm = curvature[i]` 를
+        // 같이 해서, 인덱스 j 에서 기각되면 0..j-1 만 오프셋 곡률로 덮이고
+        // 나머지는 원본이 남는 **반쯤 갱신된 입력**이 됐다. 대부분의 호출부는
+        // 실패 시 경로를 버리지만 BuildTrailing 은 반환값을 쓰지 않으므로
+        // 그 뒤섞인 곡률이 그대로 발행됐다.
         for (size_t i = 0; i < n; ++i) {
             const double k = std::abs(curvature[i]);
             if (!std::isfinite(k) || k > steering_curvature_reject + 1e-3) {
@@ -5202,6 +5364,9 @@ bool SplinerNode::ApplySpeedProfile(
                 NoteReject("speed_steer_curv");
                 return false;
             }
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const double k = std::abs(curvature[i]);
             if (k > 1e-4) {
                 speed[i] = std::min(
                     speed[i], std::sqrt(path_lat_acc_max_ / k));
@@ -5436,9 +5601,15 @@ bool SplinerNode::ApplySpeedProfile(
 std::pair<double, double> SplinerNode::FrenetToCartesian(double s, double d) const {
     int gb_size = static_cast<int>(gb_wpnts_.size());
     double idx_f = s / wpnt_dist_;
-    int i0 = static_cast<int>(idx_f) % gb_size;
+    // track_len_ = (마지막 s - 첫 s) + 폐합 길이 이므로, 폐합 구간이
+    // wpnt_dist_ 보다 길면 s -> track_len_ 근처에서 idx_f 가 gb_size 를 넘는다.
+    // 예전처럼 `% gb_size` 로 접으면 i0 가 0 이 되어 **랩 끝 지점이 랩 시작
+    // 좌표로** 매핑됐다 (오차 ≈ 한 바퀴). 마지막 구간으로 클램프하면 오차가
+    // 폐합 초과분으로 묶인다. 정상 범위에서는 종전과 완전히 같다.
+    int i0 = static_cast<int>(std::floor(idx_f));
+    i0 = std::clamp(i0, 0, gb_size - 1);
     int i1 = (i0 + 1) % gb_size;
-    double t = idx_f - std::floor(idx_f);
+    double t = std::clamp(idx_f - static_cast<double>(i0), 0.0, 1.0);
 
     const auto &w0 = gb_wpnts_[i0];
     const auto &w1 = gb_wpnts_[i1];

@@ -1,0 +1,6 @@
+data.pkl
+*.txt
+*.log
+bridge_off/
+bridge_on/
+bridge_on2/

@@ -230,12 +230,19 @@ private:
   // 추월 마무리: 상대가 아직 옆이면(opp_beside) 간격이 벌어질 때까지,
   // 코너 안이면 코너 출구까지 SP 인코스를 유지한 뒤 raceline(아웃코스)으로
   // 복귀. v_floor(wpnt 단위)는 나란히 달리는 동안의 추월 페이스 하한.
-  // 복귀 완료 시 false 반환
+  //
+  // false 반환에는 **두 가지 서로 다른 뜻**이 있다:
+  //   out_completed == true  : 복귀까지 끝났다 (정상 종료).
+  //   out_completed == false : 이번 사이클 경로를 만들지 못했다 (기하/충돌/
+  //                            속도 거부). 호출부는 재시도해야 하며, 여기서
+  //                            lc_active_ 를 내리면 추월 도중 빈 경로가
+  //                            발행되어 전속 raceline 으로 튄다.
   bool BuildSpExit(
     bool opp_beside, double v_floor,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks);
+    visualization_msgs::msg::MarkerArray & out_mrks,
+    bool * out_completed = nullptr);
   // s_from부터 raceline 복귀 블렌드 창(blend_len)이 코너(|kappa| >
   // ot_max_kappa)와 겹치지 않게 되는 최소 추가 SP 유지 거리 (최대 25m).
   // "인코스 진입 - 아웃코스 탈출"의 복귀 지연을 담당한다
@@ -481,20 +488,22 @@ private:
   // require_current_feasible=false는 충돌 회피보다 최대 제동 명령 발행이
   // 우선인 trailing에만 사용한다. 반환 false면 현재 상태에서 물리적으로
   // 도달할 수 없는 회피 경로다.
-  // steer_reject_ratio_override > 0 이면 곡률 기각 배율을 그 값으로 바꾼다
-  // (escape 원호 전용 — escape_steer_kappa_reject_ratio_ 주석 참조).
-  // 밴드를 넘긴 샘플만 살아나는 것이 아니라, 밴드 **안**의 샘플은 그대로
-  // sqrt(a_lat/k) 횡가속 캡을 받아 속도가 강하게 눌린다는 점에 주의.
+  // 곡률 기각 배율(steer_kappa_reject_ratio_)의 밴드를 넘긴 샘플만 살아나는
+  // 것이 아니라, 밴드 **안**의 샘플은 그대로 sqrt(a_lat/k) 횡가속 캡을 받아
+  // 속도가 강하게 눌린다는 점에 주의.
   // out_geom_ceiling: 기하 전용 속도 상한(곡률·조향레이트·역방향 감속까지만
   //   적용, cur_vs_ 무관)을 채워 돌려준다. 커밋 경로가 이것을 보관한다.
   // in_geom_ceiling: 주면 위 기하 단계를 통째로 건너뛰고 이 값에서 시작한다.
   //   커밋 재생 전용 — 이미 처리된 경로에 그냥 재실행하면 OffsetKappa 가
   //   이중 적용되고(kappa_radpm 이 결과로 덮여 있다) base vx 도 이미 깎여
   //   있어 속도가 절대 회복되지 않는다.
+  // ⚠️ 실패(false)로 빠져도 wpnts 는 **일부만** 갱신된 상태가 아니다:
+  //    곡률 기각 검사를 먼저 전수로 돌고, 통과한 뒤에야 kappa_radpm/vx_mps 를
+  //    쓴다. 반환값을 무시하는 호출부(BuildTrailing)가 있으므로 이 순서가
+  //    지켜져야 한다.
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible = true,
-    double steer_reject_ratio_override = -1.0,
     std::vector<double> * out_geom_ceiling = nullptr,
     const std::vector<double> * in_geom_ceiling = nullptr) const;
 
@@ -544,6 +553,11 @@ private:
   // DoSpline 절점 스케일 상한. 조향 기하 하한이 이 배율을 넘게 요구하면
   // "만들어 놓고 나중에 거부"가 아니라 여기서 기하 불성립으로 반환한다.
   static constexpr double kMaxKnotScale{3.0};
+  // "레이스라인에서 유의미하게 벗어났는가" 판정 문턱 [m] (DoSpline 경계검사).
+  // spline_resolution_(종방향 샘플 간격)과 우연히 같은 0.1 이었으나 차원이
+  // 다르다 — 한쪽을 바꾸면 다른 쪽이 조용히 따라가는 것을 끊는다.
+  static constexpr double kOffRacelineEpsM{0.1};
+  // d(s) 스플라인 샘플 간격 [m]
   double spline_resolution_{0.1};
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
@@ -777,23 +791,18 @@ private:
   // 1.0이면 조향 한계를 1e-3 이라도 넘는 샘플 하나에 경로 전체가 죽는다.
   // 1.0보다 크면 그 밴드 안의 샘플은 살리되 횡가속 캡으로 속도만 눌린다.
   double steer_kappa_reject_ratio_{1.0};
-  // escape 원호 전용 곡률 기각 배율 (2026-08-12).
-  // escape 경로는 포물선 원호가 끝나는 지점에서 hold(기울기 0)로 급전환하며
-  // 잔여 헤딩 2A/L 을 한 점에서 꺾는다. 그 접합부 곡률이 1.14~1.77 로 나와
-  // 통상 배율(1.15 -> 문턱 1.303)에 걸려 **escape 가 한 번도 발행되지 못했다**
-  // (2026-08-12 시뮬: escape_speed_profile 91, escape_active 0).
-  // 이 배율을 크게 주면 꺾인 경로가 그대로 발행된다 — 차가 그 꺾임을 못 따라가
-  // **밖으로 밀리는(언더스티어) 거동을 실제로 관측**하기 위한 것이다.
-  // 근본 해결은 접합부에 기울기 완화 구간을 넣어 꺾임 자체를 없애는 것이고,
-  // 그러면 접합 곡률이 0.785 로 떨어져 이 배율이 다시 필요 없어진다.
-  double escape_steer_kappa_reject_ratio_{2.0};
-  // 위 두 완화(require_current_feasible 면제 + 곡률 밴드 확대)를 켜는 스위치.
-  // **기본 false = 커밋된 동작 그대로.** true 로 켜면 escape 원호가 자기
-  // 접합부 꺾임을 안은 채로 발행되고, 차가 그걸 못 따라가 밖으로 밀리는
-  // 거동을 관측할 수 있다. 관측 전용이며 실차에 켠 채로 올리면 안 된다.
-  // 근본 해결(접합부 기울기 완화)이 들어가면 이 스위치는 삭제 대상이다.
-  bool escape_relax_for_observation_{false};
+  // (escape_steer_kappa_reject_ratio_ / escape_relax_for_observation_ 제거)
+  // 두 노브는 "원호 끝 -> hold 급전환이 잔여 헤딩을 한 점에서 꺾어 접합부
+  // 곡률이 1.14~1.77 로 튄다"를 우회하려고 넣은 관측용 완화였다. 그 꺾임은
+  // BuildEscapeArc 의 기울기 완화 구간(원호 0.4D + ease 0.6D, 두 구간 피크가
+  // 모두 5A/D²)이 들어가면서 없어졌고, 배포 yaml 4개 어디에도 스위치가 없어
+  // 완화가 켜진 적이 한 번도 없다 — 즉 reject_ratio 쪽은 읽힌 적조차 없다.
   bool lc_active_{false};
+  // BuildSpExit 이 연속으로 경로 생성에 실패한 횟수. 일시적 거부는 재시도로
+  // 버티되(빈 경로 발행 = 전속 raceline 복귀를 막는다), 계속 실패하면
+  // lc_active_ 를 내려 SP 상태에 영구히 갇히지 않게 한다.
+  int sp_exit_fail_count_{0};
+  static constexpr int kSpExitMaxFail{10};   // 20Hz 기준 0.5초
 
   // State
   f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
@@ -801,6 +810,11 @@ private:
   f1tenth_planning_msgs::msg::ObstacleArray predicted_obstacles_;
   rclcpp::Time predicted_stamp_{0, 0, RCL_ROS_TIME};
   std::vector<f1tenth_planning_msgs::msg::Wpnt> gb_wpnts_;
+  // 파생 캐시(ot_sectors_, sp_d_, sp_vx_)가 어느 레이아웃으로 만들어졌는지.
+  // sp_d_/sp_vx_ 는 **gb 인덱스로 직접 첨자**되므로 gb_wpnts_ 가 다른 크기로
+  // 재발행되면 out-of-bounds 다. 레이아웃이 바뀌면 파생물을 전부 무효화한다.
+  size_t gb_layout_size_{0};
+  double gb_layout_len_{0.0};
   double gb_vmax_{0.0};
   // 트랙 한 바퀴 길이 = 마지막 wpnt s + 점 간격. 마지막 s가 아니라 반드시
   // '+ 간격'이어야 한다 — local_trajectory_node / perception 브릿지가 쓰는
