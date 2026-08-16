@@ -570,7 +570,6 @@ private:
       message->twist.twist.angular.z};
     const std::size_t reset_count = odom_buffer_.time_reset_count();
     if (!odom_buffer_.append(sample)) {
-      ++odom_reject_count_;
       return;
     }
     if (odom_buffer_.time_reset_count() != reset_count) {
@@ -1367,7 +1366,6 @@ private:
   std::atomic<std::size_t> scan_out_of_order_count_{0};
   std::atomic<std::size_t> scan_shape_drop_count_{0};
   std::atomic<std::size_t> worker_error_count_{0};
-  std::atomic<std::size_t> odom_reject_count_{0};
   std::atomic<std::size_t> imu_reject_count_{0};
   std::atomic<std::size_t> imu_sync_miss_count_{0};
   std::atomic<std::size_t> scan_match_invalid_count_{0};
