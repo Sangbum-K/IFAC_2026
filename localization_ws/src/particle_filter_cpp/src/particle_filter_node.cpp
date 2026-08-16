@@ -920,7 +920,6 @@ private:
           reject = false;
         }
         if (reject) {
-          ++jump_reject_count_;
           ++consecutive_jump_rejects_;
           core_->restore_motion_only(prior_particles, prior_weights, action);
         } else {
@@ -1374,7 +1373,6 @@ private:
   std::atomic<std::size_t> quality_lost_update_count_{0};
   std::atomic<std::size_t> quality_lost_transition_count_{0};
   std::atomic<std::size_t> stationary_hold_count_{0};
-  std::atomic<std::size_t> jump_reject_count_{0};
   std::atomic<std::size_t> slip_event_count_{0};
   std::atomic<std::size_t> slip_recovery_count_{0};
   std::atomic<std::size_t> slip_bypass_count_{0};
