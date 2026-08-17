@@ -530,3 +530,46 @@ def test_bridge_reads_only_fields_that_exist_on_perception_obstacle():
     assert not missing, (
         f"{source.name}: 입력 Obstacle 에 없는 필드를 읽는다: {missing} "
         f"(정의된 필드: {sorted(fields)})")
+
+
+def test_low_speed_floors_stay_aligned():
+    """저속 바닥 세 개가 같은 값이라는 주장을 코드가 지키는지 확인한다.
+
+    2026-08-17 커밋(afb72d4)이 `avoidance_loss_hold_floor_mps` 를 신설하며
+    "spliner/trailing_retry_speed_degraded, control 의 backstop_min_speed_mps
+    와 같은 값으로 맞췄다"고 선언했다. 세 값은 서로 다른 파일에 있고 아무도
+    묶어 두지 않아서, 하나만 튜닝하면 그 선언이 조용히 거짓이 된다.
+    같은 값이어야 하는 이유는 셋이 같은 물리량이기 때문이다 — "차를 세우지
+    않고 유지할 수 있는 최저 전진속도". 어긋나면 한 층이 다른 층보다 먼저
+    0 에 가까워지고, 전 점 vx=0 이 MAP 조향을 죽이는 경로가 다시 열린다.
+    """
+    planning = _yaml(PARAMS)
+    hold_floor = _ros_params(
+        planning, "local_trajectory_node"
+    )["local_trajectory/avoidance_loss_hold_floor_mps"]
+    retry_degraded = _ros_params(
+        planning, "spliner_node"
+    )["spliner/trailing_retry_speed_degraded"]
+
+    control_params = (
+        WORKSPACE / "control_ws" / "src" / "control_pkg" /
+        "config" / "params.yaml"
+    )
+    assert control_params.is_file(), control_params
+    control = _ros_params(_yaml(control_params), "control")
+    backstop_floor = control["map/backstop_min_speed_mps"]
+
+    assert hold_floor == retry_degraded == backstop_floor, (
+        "저속 바닥이 어긋났다: "
+        f"avoidance_loss_hold_floor={hold_floor} "
+        f"trailing_retry_speed_degraded={retry_degraded} "
+        f"backstop_min_speed={backstop_floor}")
+
+    # 조향 룩업 구제는 이 바닥보다 **좁아야** 한다. 구제의 전제는 "계획이
+    # 무너진 경우만"이고, 바닥까지 올라가면 정상 제동 구간의 조향 게인을
+    # 바꾸기 시작한다 (afb72d4: 계획<실측 인 사이클이 31%). 노드 검증은
+    # 상한 2.0 만 보므로 그 사이를 이 단언이 막는다.
+    steer_min = control["map/steer_plan_speed_min_mps"]
+    assert 0.0 <= steer_min < backstop_floor, (
+        f"steer_plan_speed_min_mps={steer_min} 가 저속 바닥 "
+        f"{backstop_floor} 보다 좁지 않다")

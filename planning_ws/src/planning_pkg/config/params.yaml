@@ -96,6 +96,14 @@ local_trajectory_node:
     local_trajectory/minimum_horizon_sec: 1.5
     local_trajectory/minimum_braking_decel_mps2: 2.5
     local_trajectory/minimum_stop_buffer_m: 1.5
+    # ── 회피상실 홀드 [s] ─────────────────────────────────────────────────
+    # 회피 경로가 빈 배열로 바뀐 뒤 직전 속도 상한을 유지할 시간.
+    # 0 = 홀드 없음(옛 fail-open). 근거는 cpp 의 declare_parameter 주석 —
+    # 관측된 인지 공백 중앙값(275ms)의 약 2배.
+    # ⚠️ 만료되면 캡이 **통째로** 사라져 레이스라인 전속으로 돌아간다.
+    #    즉 아래 바닥의 노출(≤ 이 시간 동안 1.5 m/s)보다 만료 뒤가 더 크다 —
+    #    바닥을 논할 때 이 값을 같이 봐야 한다.
+    local_trajectory/avoidance_loss_hold_sec: 0.5
     # ── 회피상실 홀드의 바닥 [m/s] ────────────────────────────────────────
     # 홀드(avoidance_loss_hold_sec)는 "장애물을 잃은 것이 **가속** 신호가
     # 되지 않게" 하는 장치다. 그런데 기억해 둔 선두 속도가 0 에 가까우면

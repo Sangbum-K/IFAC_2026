@@ -560,8 +560,9 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
         // 바닥을 적용한 값으로 캡한다. 기억해 둔 선두 속도 자체는 건드리지
         // 않는다 — 로그가 "무엇을 기억했는지"와 "무엇을 걸었는지"를 둘 다
         // 남겨야 사후 rosbag 분석에서 인과를 되짚을 수 있다.
-        const double cap = std::max(
-          last_avoidance_head_speed_, std::max(avoidance_loss_hold_floor_, 0.0));
+        // (검증에서 avoidance_loss_hold_floor_ >= 0 이므로 max 0 은 불필요하다.)
+        const double cap =
+          std::max(last_avoidance_head_speed_, avoidance_loss_hold_floor_);
         int capped = 0;
         for (auto & w : local_waypoints.wpnts) {
           if (std::isfinite(w.vx_mps) && w.vx_mps > cap) {
@@ -578,6 +579,13 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
             avoidance_loss_hold_floor_);
         }
         pitwall::Log("avoidance_loss_hold", 1.0);
+        // 불리언만으로는 사후 분석이 안 된다 — 위 WARN 은 1Hz throttle 이라
+        // 0.5s 짜리 홀드 한 건이 한 줄만 남고, 그 한 줄의 숫자는 그 사이클
+        // 것뿐이다. 캡/기억을 수치 채널로 내보내 매 사이클 백에 남긴다
+        // (기존 스크립트가 /pitwall/avoidance_loss_hold 를 이미 읽는다:
+        //  tools/bag_analysis_0813/quant.py, bag_analysis_0817/rej.py).
+        pitwall::Log("avoidance_loss_hold_cap", cap);
+        pitwall::Log("avoidance_loss_hold_memory", last_avoidance_head_speed_);
       } else {
         has_avoidance_head_speed_ = false;
         pitwall::Log("avoidance_loss_hold", 0.0);
