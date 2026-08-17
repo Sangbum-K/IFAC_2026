@@ -96,6 +96,27 @@ LocalTrajectoryNode::LocalTrajectoryNode(
   //   길게 두면 유령 때문에 잃은 경우에도 오래 눌려 랩타임을 먹는다. 관측된
   //   공백 중앙값(275ms)의 약 2배인 0.5s 가 기본값이다.
   this->declare_parameter("local_trajectory/avoidance_loss_hold_sec", 0.5);
+  // ── 홀드 상한의 바닥 (2026-08-17) ────────────────────────────────────────
+  // 위 홀드의 목적은 "장애물 상실이 **가속** 신호가 되지 않게"인데, 기억해 둔
+  // 선두 속도가 0 에 가까우면 홀드가 감속을 넘어 **정지 계획**을 130점 전부에
+  // 퍼뜨린다. 그건 이 홀드의 권한 밖이다.
+  //   run_0817_123650 실측 (좌벽 충돌): 1프레임 유령(id=8, nobs=0)에
+  //   스플라이너가 trailing v_target=0.1 을 냈고 그 경로의 선두 5점 최솟값이
+  //   0.042 였다. 다음 프레임 유령이 사라지자
+  //     "회피 경로 상실 0.02s — 속도 상한 0.00 m/s 유지 (130점 캡)"
+  //   가 12.58~13.05s (0.47초) 걸렸고, 그동안 실측 차속은 4.39 m/s 였다.
+  //   전 점 vx=0 은 MAP 컨트롤러 조향을 죽인다(spliner_node.cpp 의 트레일링
+  //   램프 가드에 같은 근거가 적혀 있다) → 조향 0.000 rad 개루프 직진 → 벽.
+  //   같은 런의 발진(t=3.08)에서도 상한 0.00 이 130점에 걸렸다.
+  // 이 바닥은 홀드가 **감속 장치로 변질되는 것만** 막는다. 홀드 상한은
+  // 여전히 레이스라인 계획보다 훨씬 낮으므로 0812 의 fail-open 폭주
+  // (5.00 -> 6.50 m/s)는 그대로 차단된다.
+  //   run_0817 홀드 발동 16건 중 바닥에 걸리는 건 2건뿐 (0.00 두 번).
+  //   나머지 14건은 1.80~4.63 m/s 라 이 값과 무관하다.
+  //   0 으로 두면 이 바닥이 꺼지고 종전 동작으로 돌아간다.
+  // 기본값은 spliner/trailing_retry_speed_degraded, control 의
+  // backstop_min_speed_mps 와 같은 1.5 로 맞춘다.
+  this->declare_parameter("local_trajectory/avoidance_loss_hold_floor_mps", 1.5);
 
   loop_rate_hz_ = this->get_parameter("local_trajectory/loop_rate_hz").as_double();
   num_local_waypoints_ =
@@ -122,6 +143,8 @@ LocalTrajectoryNode::LocalTrajectoryNode(
     this->get_parameter("local_trajectory/minimum_stop_buffer_m").as_double();
   avoidance_loss_hold_sec_ =
     this->get_parameter("local_trajectory/avoidance_loss_hold_sec").as_double();
+  avoidance_loss_hold_floor_ = this->get_parameter(
+    "local_trajectory/avoidance_loss_hold_floor_mps").as_double();
 
   const std::array<double, 9> safety_values = {
     loop_rate_hz_, avoidance_timeout_sec_, frenet_odom_timeout_sec_,
@@ -132,6 +155,10 @@ LocalTrajectoryNode::LocalTrajectoryNode(
       safety_values.begin(), safety_values.end(),
       [](double value) {return std::isfinite(value);}) ||
     !std::isfinite(minimum_stop_buffer_m_) ||
+    !std::isfinite(avoidance_loss_hold_floor_) ||
+    // 0 = 비활성. 위로 열면 홀드가 "가속 억제"가 아니라 최저속도 보장이 돼
+    // 인지 드롭아웃 중 레이스라인 속도까지 올려 줄 수 있다.
+    avoidance_loss_hold_floor_ < 0.0 || avoidance_loss_hold_floor_ > 3.0 ||
     loop_rate_hz_ < 1.0 || loop_rate_hz_ > 100.0 ||
     num_local_waypoints_ < 2 || num_local_waypoints_ > 10000 ||
     avoidance_timeout_sec_ < 0.01 || avoidance_timeout_sec_ > 1.0 ||
@@ -530,19 +557,25 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
       if (std::isfinite(since) && since >= 0.0 &&
         since <= avoidance_loss_hold_sec_)
       {
+        // 바닥을 적용한 값으로 캡한다. 기억해 둔 선두 속도 자체는 건드리지
+        // 않는다 — 로그가 "무엇을 기억했는지"와 "무엇을 걸었는지"를 둘 다
+        // 남겨야 사후 rosbag 분석에서 인과를 되짚을 수 있다.
+        const double cap = std::max(
+          last_avoidance_head_speed_, std::max(avoidance_loss_hold_floor_, 0.0));
         int capped = 0;
         for (auto & w : local_waypoints.wpnts) {
-          if (std::isfinite(w.vx_mps) && w.vx_mps > last_avoidance_head_speed_) {
-            w.vx_mps = last_avoidance_head_speed_;
+          if (std::isfinite(w.vx_mps) && w.vx_mps > cap) {
+            w.vx_mps = cap;
             ++capped;
           }
         }
         if (capped > 0) {
           RCLCPP_WARN_THROTTLE(
             this->get_logger(), *get_clock(), 1000,
-            "회피 경로 상실 %.2fs — 속도 상한 %.2f m/s 유지 (%d점 캡). "
-            "장애물 상실이 가속으로 이어지지 않게 한다",
-            since, last_avoidance_head_speed_, capped);
+            "회피 경로 상실 %.2fs — 속도 상한 %.2f m/s 유지 (%d점 캡, "
+            "기억 %.2f / 바닥 %.2f). 장애물 상실이 가속으로 이어지지 않게 한다",
+            since, cap, capped, last_avoidance_head_speed_,
+            avoidance_loss_hold_floor_);
         }
         pitwall::Log("avoidance_loss_hold", 1.0);
       } else {

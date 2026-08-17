@@ -365,6 +365,12 @@ public:
     // false 로 두면 종전(실측 전용) 동작 — A/B 용으로만 끌 것.
     l1_speed_uses_path_plan_ = this->declare_parameter<bool>(
       "map/l1_speed_uses_path_plan", true);
+    // 조향 룩업에 쓰는 **계획** 속도의 하한 [m/s]. 계획이 이 값 아래로
+    // 무너졌는데 차가 그보다 빠르면 실측 속도로 대체한다 (근거는 사용처
+    // 주석 — calc_steering_angle). 0 으로 두면 이 구제가 꺼지고 옛 동작
+    // ("계획 0 -> 조향 0" 개루프 직진)으로 돌아간다.
+    steer_plan_speed_min_ = this->declare_parameter<double>(
+      "map/steer_plan_speed_min_mps", 0.5);
 
     // Vehicle limits and the only non-ETH speed multiplier.
     wheelbase_ = this->declare_parameter<double>("vehicle/wheelbase_m", 0.33);
@@ -465,7 +471,7 @@ public:
 private:
   void validate_parameters()
   {
-    const std::array<double, 41> finite_values = {
+    const std::array<double, 42> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       localization_ready_timeout_,
@@ -478,7 +484,8 @@ private:
       backstop_err_m_, backstop_sat_ratio_, backstop_min_speed_,
       backstop_sat_min_err_m_, backstop_steering_reference_angle_,
       max_curvature_reference_, velocity_steer_gain_max_,
-      nearest_search_horizon_, wheelbase_, max_speed_,
+      nearest_search_horizon_, steer_plan_speed_min_,
+      wheelbase_, max_speed_,
       max_left_steering_angle_, max_right_steering_angle_,
       max_steering_rate_, max_acceleration_, max_deceleration_, speed_scale_};
     if (!std::all_of(
@@ -523,6 +530,9 @@ private:
       max_curvature_reference_ <= 0.0 || max_curvature_reference_ > 5.0 ||
       velocity_steer_gain_max_ < 1.0 || velocity_steer_gain_max_ > 3.0 ||
       nearest_search_horizon_ < 0.5 || nearest_search_horizon_ > 20.0 ||
+      // 0 = 비활성. 위로 열어 두면 "계획이 무너진 경우만 구제"라는 전제가
+      // 깨지고 제동 구간 전체의 조향 게인이 바뀐다 — 그건 별도 검증 사안이다.
+      steer_plan_speed_min_ < 0.0 || steer_plan_speed_min_ > 2.0 ||
       wheelbase_ < 0.1 || wheelbase_ > 1.0 ||
       max_speed_ < 0.0 || max_speed_ > 20.0 ||
       max_left_steering_angle_ <= 0.0 || max_left_steering_angle_ > 0.8 ||
@@ -1278,8 +1288,58 @@ private:
     const std::size_t steering_lookahead_index =
       nearest_waypoint(steering_lookahead_position, waypoints);
     const double steering_lookahead_speed = waypoints[steering_lookahead_index].vx_mps;
-    const double speed_for_lookup =
+    double speed_for_lookup =
       speed_adjust_lat_err(steering_lookahead_speed, lat_error_norm);
+
+    // ── 계획 속도 0 이 조향을 통째로 죽인다 (2026-08-17) ──────────────────────
+    // 아래 두 줄은 **계획** 속도만 본다:
+    //     lateral_acceleration = 2*speed_for_lookup^2 / L1 * sin(eta)
+    //     steering_angle       = lookup_steer_angle(lateral_acceleration, ...)
+    // 계획이 0 이면 분자가 0 -> a_lat = 0 -> LUT 의 a_lat=0 행 -> **조향 0.0**.
+    // 실측 속도는 어디에도 안 들어가므로, 차가 몇 m/s 로 굴러가든 앞바퀴가
+    // 똑바로 선다. 이건 "정지 계획"이 아니라 **개루프 직진 명령**이다.
+    //   run_0817_123650 실측 (좌벽 충돌): 인지가 1프레임 유령을 냈고
+    //   (id=8 s=17.45 nobs=0) 스플라이너가 trailing v_target=0.1 을 발행,
+    //   다음 프레임 유령이 사라지자 회피상실 홀드가 130점 전부를 0.06 m/s 로
+    //   캡했다. 그 결과 12.58~13.05s (0.47초 / 20 사이클) 동안
+    //     계획 선두속도 0.000 · 실측 4.39 m/s · **조향 명령 0.000 rad**
+    //   룩어헤드 포인트는 정상이었다 — eta 가 -0.34 -> -1.03 rad 까지 벌어지는
+    //   내내 컨트롤러가 그걸 무시했다. d 가 -0.11 -> +1.11 로 밀려
+    //   좌벽(d_left=1.12)을 0.9초간 긁었고 s=13->24 통과가 5.80s (정상 2.5s).
+    //
+    // 같은 불일치를 **L1 거리** 쪽은 calc_l1_point 에서 이미 고쳤다
+    // (l1_speed_uses_path_plan, 2026-08-17). 분자만 안 고쳐지고 남아 있었다.
+    //
+    // 전면 max(계획, 실측) 은 쓰지 않는다 — run_0817 기준 계획<실측 인
+    // 사이클이 31% 라 제동 구간 전체의 조향 게인이 바뀐다(별도 검증 필요).
+    // 여기서는 **계획이 무너진 경우만** 구제한다:
+    //     계획 < steer_plan_speed_min_ 이면 실측으로 대체
+    //   문턱 0.5 기준 영향 24/5385 = 0.45% (그 중 20 사이클이 위 충돌 창).
+    //   0.3 이면 20 사이클(충돌 창만), 1.0 이면 160 사이클(2.97%)로 늘어난다.
+    // 차가 실제로 서 있으면 speed_now 도 0 이라 종전과 완전히 동일하다 —
+    // 이 분기는 "플래너는 정지라는데 차는 달린다"는 **모순 상태**에서만 연다.
+    // 회복 조향은 여전히 레이트 리밋(max_steering_rate 2.0 rad/s)과
+    // [-max_right_steering_angle, +max_left_steering_angle] 클램프 안에서
+    // 들어가므로 스텝 입력이 되지 않는다.
+    // ⚠️ 다만 형제 수정(l1_speed_uses_path_plan)의 "새로운 포화를 만들 수
+    // 없다"는 보장은 **여기엔 승계되지 않는다**. 그쪽은 L1 을 늘리기만 하지만
+    // 이쪽은 분자를 키운다. run_0817 창의 실측값으로: L1 ~= 1.8m 에서
+    // eta -0.34(창 시작)면 a_lat 7.1 m/s^2 로 그립 포락선(p99 8.76) 안이지만,
+    // eta -1.03(창 끝)이면 18.3 m/s^2 = 포락선의 2배라 LUT 가 최대 조향으로
+    // 클램프된다. 폐루프에서는 창 시작에 물려 eta 가 거기까지 안 벌어지는
+    // 것이 전제다 — 그 전제가 깨지는 백을 만나면 문턱을 내리는 게 아니라
+    // 이 구제의 설계를 다시 봐야 한다.
+    if (steer_plan_speed_min_ > 0.0 &&
+      speed_for_lookup < steer_plan_speed_min_ &&
+      std::isfinite(speed_now) && speed_now > speed_for_lookup)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "계획 속도 %.2f m/s 가 조향 하한 %.2f 미만인데 실측은 %.2f m/s — "
+        "조향 룩업에 실측을 쓴다 (계획 0 = 조향 0 개루프 직진 방지)",
+        speed_for_lookup, steer_plan_speed_min_, speed_now);
+      speed_for_lookup = speed_now;
+    }
 
     const Point2D l1_vector{l1_point.x - position.x, l1_point.y - position.y};
     const double l1_vector_norm = std::hypot(l1_vector.x, l1_vector.y);
@@ -1497,6 +1557,8 @@ private:
   double nearest_search_horizon_{3.0};
   // L1 거리를 실측/계획 속도 중 긴 쪽으로 잡는다 (calc_l1_point 주석 참조).
   bool l1_speed_uses_path_plan_{true};
+  // 조향 룩업 계획속도 하한 [m/s]. 0 = 비활성 (calc_steering_angle 주석 참조).
+  double steer_plan_speed_min_{0.5};
   double wheelbase_{0.33};
   double max_speed_{4.0};
   double max_left_steering_angle_{0.4189};

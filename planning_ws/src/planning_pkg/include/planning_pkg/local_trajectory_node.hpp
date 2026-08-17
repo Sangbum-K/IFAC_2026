@@ -74,6 +74,8 @@ private:
   // 회피 경로가 빈 배열로 바뀐 뒤 직전 속도 상한을 유지할 시간 [s].
   // 0 이면 홀드 없음(옛 fail-open). 근거는 cpp 의 declare_parameter 주석.
   double avoidance_loss_hold_sec_{0.5};
+  // 홀드 상한의 바닥 [m/s]. 0 = 비활성 (선언부 주석 참조).
+  double avoidance_loss_hold_floor_{1.5};
 
   // State
   std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_;
