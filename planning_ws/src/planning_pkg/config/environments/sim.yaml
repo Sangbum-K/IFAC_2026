@@ -55,7 +55,10 @@ perception_obstacle_bridge_node:
     bridge/use_map_filter: true
     bridge/wall_dist_min_m: 0.30
     # 정적 장애물 고정 원통 — 근거는 real_car.yaml 같은 블록.
-    bridge/static_cylinder_radius_m: 0.15
+    # 0.15 -> 0.17 (2026-08-18, 세 프로파일 동시). 0.02 는 콘 실치수가 아니라
+    # 의도적으로 얹은 안전 마진이다. 실차와 같은 값을 유지해야 심 A/B 가
+    # 실차 거동을 예측한다.
+    bridge/static_cylinder_radius_m: 0.17
     bridge/static_cylinder_band_m: [0.05, 0.25]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
