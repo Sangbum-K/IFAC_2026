@@ -167,5 +167,45 @@ TEST(TrackerReacquisition, FrenetReidRejectsAmbiguousDynamicReentry)
   EXPECT_EQ(tracks[1]->id, 2);
 }
 
+TEST(TrackTimestamp, MatchedUpdateThenCoastUsesFrameTimestamps)
+{
+  auto tracker = make_tracker();
+  auto tracks = tracker.step({make_cluster(0.0, 0.0)}, 1.0);
+  ASSERT_EQ(tracks.size(), 1u);
+
+  tracks = tracker.step({make_cluster(0.10, 0.0)}, 1.1);
+  ASSERT_EQ(tracks.size(), 1u);
+  EXPECT_DOUBLE_EQ(tracks.front()->last_stamp, 1.1);
+  EXPECT_DOUBLE_EQ(tracks.front()->last_measurement_stamp, 1.1);
+
+  const double x = tracks.front()->kf.x();
+  const double vx = tracks.front()->kf.vx();
+  ASSERT_GT(vx, 0.0);
+
+  tracks = tracker.step({}, 1.3);
+  ASSERT_EQ(tracks.size(), 1u);
+  EXPECT_EQ(tracks.front()->misses, 1);
+  EXPECT_DOUBLE_EQ(tracks.front()->last_stamp, 1.3);
+  EXPECT_DOUBLE_EQ(tracks.front()->last_measurement_stamp, 1.1);
+  EXPECT_NEAR(tracks.front()->kf.x(), x + vx * (1.3 - 1.1), 1e-12);
+}
+
+TEST(TrackTimestamp, DirectUpdateDefinesNextPredictionEpoch)
+{
+  Track track(0, make_cluster(0.0, 0.0), 0.0, 10);
+  track.predict(1.0);
+  track.update(make_cluster(1.0, 0.0), 1.0);
+  ASSERT_GT(track.kf.vx(), 0.0);
+
+  track.update(make_cluster(1.2, 0.0), 2.0);
+  EXPECT_DOUBLE_EQ(track.last_stamp, 2.0);
+  EXPECT_DOUBLE_EQ(track.last_measurement_stamp, 2.0);
+
+  const double x = track.kf.x();
+  const double vx = track.kf.vx();
+  track.predict(3.0);
+  EXPECT_NEAR(track.kf.x(), x + vx, 1e-12);
+}
+
 }  // namespace
 }  // namespace perception_pkg
