@@ -61,9 +61,10 @@ perception_obstacle_bridge_node:
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
     # ── 랩 기억 — real_car.yaml 과 동일 (근거 주석은 전부 그쪽) ──────────
-    # 세 프로파일이 같은 값을 갖는다. 켤 때는 셋을 같이 켠다 —
+    # 세 프로파일이 같은 값을 갖는다. 켜고 끌 때는 셋을 같이 한다 —
     # test_sim_profiles_mirror_real_car 가 그것을 강제한다.
-    bridge/memory_enabled: false
+    # 2026-08-17: off -> on (run_0817_124904 정면충돌. 근거는 real_car.yaml).
+    bridge/memory_enabled: true
     bridge/memory_confirm_laps: 2
     bridge/memory_forget_misses: 2
     bridge/memory_match_s_m: 0.60
@@ -74,6 +75,16 @@ perception_obstacle_bridge_node:
     bridge/memory_dynamic_suppress_m: 1.5
     bridge/memory_relevant_margin_m: 0.25
     bridge/memory_pos_std_m: 0.12
+    # 2026-08-17: 스캔 카빙 + 중심 매칭 게이트 (근거는 real_car.yaml).
+    # ⚠️ sim 에 /scan 이 없으면 카빙은 판정 보류로 조용히 쉰다 (fail-open).
+    bridge/memory_scan_carve_enabled: true
+    bridge/memory_scan_topic: /scan
+    bridge/memory_scan_clear_frames: 15
+    bridge/memory_scan_range_min_m: 0.3
+    bridge/memory_scan_range_max_m: 7.0
+    bridge/memory_scan_slack_m: 0.25
+    bridge/memory_scan_min_pass_beams: 3
+    bridge/memory_match_latch_cost: 0.5
     bridge/ego_frenet_topic: /car_state/frenet/odom
     bridge/ego_frenet_timeout_sec: 0.5
 
@@ -83,8 +94,11 @@ spliner_node:
     spliner/obstacle_topic: /perception/obstacles_frenet
     spliner/escape_arc_enabled: true
     spliner/escape_arc_lat_acc: 8.83   # 08-12: 5.5 -> 7.85, 08-13: -> 8.83 (real_car.yaml 근거)
-    spliner/escape_arc_min_speed: 1.2
+    spliner/escape_arc_min_speed: 1.2  # 2026-08-17 부터 거부 게이트 아님 (real_car.yaml)
     spliner/escape_arc_max_heading_rad: 0.80   # 2026-08-12: 0.70 -> 0.80
+    # 2026-08-17: 정지 워치독 (근거는 real_car.yaml)
+    spliner/standstill_watchdog_sec: 2.0
+    spliner/standstill_speed_eps: 0.20
     spliner/commit_break_requires_visible: true
     spliner/lookahead_m: 12.0
     spliner/loop_rate_hz: 30.0

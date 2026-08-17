@@ -84,6 +84,12 @@ obstacle_detector_node:
     map_topic: /map
     # real_car.yaml과 동일 (근거·실측표는 그쪽 주석 참고).
     wall_dist_min_m: 0.25
+    # 2026-08-17: 레이 일관성 필터 미러링 (real_car.yaml 근거, **비활성**).
+    # 08-15 커밋(6efca8e)이 real_car.yaml 에만 넣고 여기를 빠뜨렸다.
+    use_ray_filter: false
+    ray_filter_margin_m: 1.5
+    ray_filter_probe_deg: 1.5
+    ray_filter_unstable_m: 0.5
     # 2차 방어선: 맵 필터가 PF 오차로 흔들려 벽 리턴이 새더라도 이 크기를
     # 넘으면 장애물이 아니다. 트래킹 전에 버린다.
     max_cluster_radius_m: 0.35

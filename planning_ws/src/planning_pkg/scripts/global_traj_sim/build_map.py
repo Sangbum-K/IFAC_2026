@@ -1200,6 +1200,219 @@ def _order_loop(sk):
     return pts[order]
 
 
+# ============================================================ 맵 무결성 진단
+# 2026-08-17: my_track0817 이 load_track 에서 "닫힌 고리를 못 찾음" 한 줄만
+# 남기고 죽었다. 실제 원인은 픽셀 8 개였다:
+#   · 트랙 오른쪽 코너의 바깥벽이 이미지 테두리(col 380)에서 6 px 끊김.
+#     map_saver 가 관측 범위로 크롭하는데 그 코너만 그레이징 각이라 반사가
+#     없었고, 벽이 있어야 할 자리가 그대로 테두리 밖으로 잘려 나갔다.
+#   · 왼쪽 바깥벽 1 곳(row 137~138)과 인필드 벽 1 곳(row 161~162)이 1 px
+#     대각 계단이라 8-이웃으로 새고 있었다.
+# 그 8 픽셀을 사람이 손으로 찾는 데 든 시간이 이 블록의 존재 이유다. 이제
+# 실패하면 '어디가' 안 닫혔는지 픽셀·월드 좌표로 찍고, --seal-map 으로 그
+# 자리만 벽으로 메운다.
+#
+# ⚠️ 메모리에서 조용히 메우고 진행하지 않는 이유: 런타임(map_server/PF/
+#    perception)은 디스크의 .pgm 을 읽는다. build_map 만 몰래 메우면 CSV 는
+#    닫힌 트랙을, 런타임은 뚫린 트랙을 보게 되어 기하가 어긋난다. 이 워크
+#    스페이스는 맵/CSV 불일치로 이미 여러 번 당했다(맵 덮어쓰기 고아 CSV,
+#    my_track0803 유령 장애물). 그래서 고치는 대상은 항상 **파일** 이다.
+
+# --seal-map 이 메워 주는 테두리 결손의 최대 길이 [px]. 이보다 길면 '벽이
+# 조금 잘렸다'가 아니라 '트랙이 맵 밖으로 이어진다'는 뜻이라 메우면 안 된다
+# — 없는 벽을 지어내 엉뚱한 레이스라인이 나온다. 20 px = 1.0 m.
+SEAL_MAX_BORDER_RUN_PX = 20
+
+
+def _border_runs(mask):
+    """mask 가 이미지 테두리에 닿는 곳 → [(변, 길이, [(row, col), ...]), ...].
+
+    끊긴 구간마다 하나씩 돌려준다. free 영역이 테두리에 닿는다는 것은 곧
+    '그 방향으로 벽이 없다'는 뜻이고, 트랙 성분이 그러면 트랙이 안 닫힌 것이다.
+    """
+    H, W = mask.shape
+    edges = (("위", mask[0, :], lambda i: (0, i)),
+             ("아래", mask[-1, :], lambda i: (H - 1, i)),
+             ("왼쪽", mask[:, 0], lambda i: (i, 0)),
+             ("오른쪽", mask[:, -1], lambda i: (i, W - 1)))
+    runs = []
+    for name, line, to_rc in edges:
+        idx = np.nonzero(line)[0]
+        if idx.size == 0:
+            continue
+        for seg in np.split(idx, np.nonzero(np.diff(idx) > 1)[0] + 1):
+            runs.append((name, int(seg.size), [to_rc(int(i)) for i in seg]))
+    return runs
+
+
+def _diagonal_leaks(labels, lab):
+    """lab 성분이 대각(8-이웃)으로만 다른 free 성분과 붙은 자리 [(row, col), ...].
+
+    4-이웃으로 붙었다면 애초에 같은 성분이 됐을 테니, 8-이웃에서 잡히는 다른
+    성분의 픽셀은 전부 '대각으로만 새는' 자리다. ndimage.label 기본값이
+    4-이웃이라 이 누수는 라벨링에 아예 안 보인다 — 따로 찾아야 한다.
+
+    돌려주는 좌표는 **상대 성분 쪽** 픽셀이다. 그 자리를 벽으로 칠하면
+    코리도 폭은 한 px 도 줄지 않는다 (트랙 쪽을 칠하면 5 cm 를 잃는다).
+    """
+    comp = labels == lab
+    grown = ndimage.binary_dilation(comp, structure=np.ones((3, 3), bool))
+    other = grown & (labels > 0) & ~comp
+    return [(int(r), int(c)) for r, c in zip(*np.nonzero(other))]
+
+
+def _ring_candidates(labels, sizes):
+    """'트랙처럼 생긴'(가운데 구멍이 있는) free 성분을 큰 것부터."""
+    out = []
+    for lab in (1 + np.argsort(sizes)[::-1]):
+        comp = labels == lab
+        hole = int(ndimage.binary_fill_holes(comp).sum() - comp.sum())
+        if hole > comp.sum() * 0.02:
+            out.append((int(lab), comp, hole))
+    return out
+
+
+def _fmt_px(rc, resolution, origin, H):
+    """(row, col) → "px(r,c) = world(x, y)" 한 줄짜리 표기."""
+    x, y = _px_to_world(np.array([rc], dtype=float), resolution, origin, H)[0]
+    return f"px({rc[0]},{rc[1]}) = world({x:+.2f}, {y:+.2f})"
+
+
+def _seal_pixels(labels, sizes):
+    """맵을 닫으려면 벽으로 칠해야 하는 픽셀 목록 → (pixels, notes, blockers).
+
+    대상은 '트랙 후보' 성분 하나뿐이다. 그 성분이
+      · 테두리에 닿으면    → 닿은 테두리 셀 (짧은 구간만; 길면 blockers 로)
+      · 대각으로 새면      → 상대 성분 쪽 셀 (코리도 폭 손실 0)
+    를 칠한다. 후보가 아예 없으면 (없음, [], [사유]) 를 준다.
+    """
+    cands = _ring_candidates(labels, sizes)
+    if not cands:
+        return [], [], ["구멍이 있는(트랙처럼 생긴) free 성분이 하나도 없다 — "
+                        "트랙이 바깥이나 인필드와 통째로 이어져 있을 수 있다."]
+    lab, comp, _hole = cands[0]
+    pixels, notes, blockers = [], [], []
+    for edge, length, rc_list in _border_runs(comp):
+        if length > SEAL_MAX_BORDER_RUN_PX:
+            blockers.append(
+                f"{edge} 테두리 결손이 {length} px ({length * 0.05:.2f} m) 로 너무 길다 "
+                f"— 벽이 조금 잘린 게 아니라 트랙이 맵 밖으로 이어진다. "
+                f"맵을 다시 딸 것 (여기서 메우면 없는 벽을 지어낸다).")
+            continue
+        pixels.extend(rc_list)
+        notes.append(f"{edge} 테두리 벽 결손 {length} px")
+    diag = _diagonal_leaks(labels, lab)
+    if diag:
+        pixels.extend(diag)
+        notes.append(f"1 px 대각 계단(8-이웃 누수) {len(diag)} 곳")
+    return pixels, notes, blockers
+
+
+def _unclosed_map_report(labels, sizes, resolution, origin, H, map_name):
+    """ring 검출 실패 → '어디가 안 닫혔는지'까지 담은 에러 메시지."""
+    lines = ["닫힌 고리(트랙) 모양의 free 영역을 못 찾음 — 맵이 안 닫혔다."]
+    cands = _ring_candidates(labels, sizes)
+    if not cands:
+        order = 1 + np.argsort(sizes)[::-1]
+        lines.append("  구멍이 있는 free 성분이 하나도 없다. 큰 성분 3 개:")
+        for lab in order[:3]:
+            comp = labels == lab
+            lines.append(f"    #{lab}: {int(comp.sum())} px")
+        lines.append("  → 실내 corridor 맵이거나, 트랙이 바깥/인필드와 "
+                     "통째로 이어져 있다(벽이 크게 뚫림).")
+        return "\n".join(lines)
+
+    lab, comp, hole = cands[0]
+    runs = sorted(_border_runs(comp), key=lambda r: r[1], reverse=True)
+    total = sum(length for _, length, _ in runs)
+    lines.append(f"  가장 트랙에 가까운 free 성분 #{lab}: {int(comp.sum())} px, "
+                 f"가운데 구멍 {hole} px. 테두리 접촉 {total} px "
+                 f"= {total * resolution:.2f} m ({len(runs)} 구간):")
+    for edge, length, rc_list in runs[:5]:
+        head = ", ".join(_fmt_px(rc, resolution, origin, H)
+                         for rc in rc_list[:2])
+        more = f" ... (총 {length} px)" if length > 2 else ""
+        lines.append(f"    {edge} 테두리 {length} px = {length * resolution:.2f} m : "
+                     f"{head}{more}")
+    if len(runs) > 5:
+        lines.append(f"    ... {len(runs) - 5} 구간 더")
+    diag = _diagonal_leaks(labels, lab)
+    for rc in diag[:4]:
+        lines.append(f"    대각(8-이웃) 누수: {_fmt_px(rc, resolution, origin, H)}")
+    if len(diag) > 4:
+        lines.append(f"    ... 대각 누수 {len(diag) - 4} 곳 더")
+    lines.append("")
+    # 결손이 짧으면 '벽 몇 px 이 잘렸다'(수리 가능)이고, 길면 '트랙이 맵 밖으로
+    # 이어진다'(수리하면 없는 벽을 지어냄)다. 둘을 섞어 안내하면 안 된다.
+    longest = runs[0][1] if runs else 0
+    if longest <= SEAL_MAX_BORDER_RUN_PX:
+        lines.append("  → 이 자리들의 벽이 끊겼다. 맵 파일을 고친 뒤 다시 실행할 것:")
+        lines.append(f"        build_map.py {map_name} --seal-map     "
+                     f"(원본은 .pgm.bak 로 백업)")
+        lines.append("     메우고 나면 런타임 맵과 CSV 가 같은 기하를 본다. "
+                     "build_map 안에서만 메우면 안 되는 이유다.")
+    else:
+        lines.append(f"  → 가장 긴 결손이 {longest} px "
+                     f"({longest * resolution:.2f} m) 다. 벽이 몇 px 잘린 게 아니라 "
+                     f"**트랙이 맵 밖으로 이어진다** — 매핑이 한 바퀴를 못 돌았거나 "
+                     f"루프클로징이 실패한 맵이다.")
+        lines.append("     여기서 메우면 없는 벽을 지어내는 것이라 --seal-map 도 "
+                     "거부한다. 맵을 다시 딸 것.")
+    return "\n".join(lines)
+
+
+def seal_map(map_name):
+    """맵 파일의 '안 닫힌' 픽셀만 벽으로 칠한다 (--seal-map). 백업은 .bak.
+
+    load_track 과 **같은** free 마스크 규약으로 판정하므로, 여기서 통과하면
+    load_track 도 통과한다. 파일을 직접 고치는 것이 요점이다 — map_server /
+    PF / perception 이 읽는 것도 이 파일이라 셋이 같은 기하를 보게 된다.
+    """
+    yaml_path = _find_map_yaml(map_name)
+    with open(yaml_path) as f:
+        meta = yaml.safe_load(f)
+    img_path = yaml_path.parent / meta["image"]
+    image = Image.open(img_path)
+    if image.mode != "L":
+        raise RuntimeError(
+            f"--seal-map 은 8-bit 그레이스케일 맵만 고칠 수 있다 "
+            f"(이 파일 mode={image.mode}). 손으로 고칠 것.")
+    arr = np.array(image, dtype=np.uint8)
+    img = arr.astype(float)
+    if meta.get("negate", 0):
+        img = 255.0 - img
+    occ = (255.0 - img) / 255.0
+    free_mask = occ < float(meta.get("free_thresh", 0.196))
+    resolution = (float(RESOLUTION_OVERRIDE) if RESOLUTION_OVERRIDE is not None
+                  else float(meta["resolution"]))
+    origin = np.array(meta["origin"][:3], dtype=float)
+    H = arr.shape[0]
+
+    labels, n = ndimage.label(free_mask)
+    sizes = ndimage.sum(free_mask, labels, range(1, n + 1))
+    pixels, notes, blockers = _seal_pixels(labels, sizes)
+    for blocker in blockers:
+        print(f"      [정지] {blocker}")
+    if blockers:
+        raise RuntimeError("자동으로 메울 수 없는 결손이 있다 (위 참조).")
+    if not pixels:
+        print(f"      '{map_name}' 은 이미 닫혀 있다 — 고칠 것 없음.")
+        return
+
+    wall_value = 255 if meta.get("negate", 0) else 0
+    backup = img_path.with_suffix(img_path.suffix + ".bak")
+    if not backup.exists():
+        backup.write_bytes(img_path.read_bytes())
+        print(f"      백업: {backup.name}")
+    print(f"      메울 곳: {' · '.join(notes)}  (총 {len(pixels)} px)")
+    for rc in pixels:
+        print(f"        {_fmt_px(rc, resolution, origin, H)}  "
+              f"{arr[rc[0], rc[1]]} -> {wall_value}")
+        arr[rc[0], rc[1]] = wall_value
+    Image.fromarray(arr, mode="L").save(img_path)
+    print(f"      '{img_path.name}' 수정 완료 — 다시 실행하면 트랙이 잡힌다.")
+
+
 def _find_map_yaml(map_name):
     """<맵>.yaml 을 MAPS_SEARCH_DIRS 순서로 찾아 경로를 돌려준다.
 
@@ -1248,6 +1461,7 @@ def load_track(map_name):
     labels, n = ndimage.label(free_mask)
     sizes = ndimage.sum(free_mask, labels, range(1, n + 1))
     ring = None
+    ring_lab = None
     for lab in (1 + np.argsort(sizes)[::-1]):
         comp = labels == lab
         touches_border = (comp[0, :].any() or comp[-1, :].any()
@@ -1257,10 +1471,27 @@ def load_track(map_name):
         filled = ndimage.binary_fill_holes(comp)
         if filled.sum() - comp.sum() > comp.sum() * 0.02:
             ring = comp
+            ring_lab = int(lab)
             break
     if ring is None:
-        raise RuntimeError("닫힌 고리(트랙) 모양의 free 영역을 못 찾음. "
-                           "실내 corridor 맵이거나 트랙이 안 닫힘.")
+        # 예전엔 여기서 "닫힌 고리를 못 찾음" 한 줄만 남기고 죽었다. 원인이
+        # 픽셀 몇 개일 때 그 한 줄로는 아무 것도 못 한다 — 어디가 새는지까지
+        # 찍는다 (위 '맵 무결성 진단' 블록 참조).
+        raise RuntimeError(_unclosed_map_report(
+            labels, sizes, resolution, origin, H, map_name))
+    # 위 라벨링은 4-이웃이라 대각 누수를 못 본다. 링을 찾았어도 벽이 1 px
+    # 대각 계단인 곳은 8-이웃으로 뚫려 있다. 레이스라인 생성은 4-이웃 기준이
+    # 맞으므로(코리도 폭은 법선 레이캐스트로 재고, 대각 계단 벽은 실제로 못
+    # 지나간다) 여기서 죽이지는 않는다. 다만 이 맵을 8-이웃으로 flood-fill
+    # 하는 다른 도구(코스트맵 인플레이션 등)에서는 그대로 새므로 알려는 둔다.
+    diag = _diagonal_leaks(labels, ring_lab)
+    if diag:
+        where = " · ".join(_fmt_px(rc, resolution, origin, H) for rc in diag[:3])
+        more = f" (총 {len(diag)} 곳)" if len(diag) > 3 else ""
+        print(f"      [warn] 트랙 벽이 1 px 대각 계단이라 8-이웃으로 새는 곳: "
+              f"{where}{more}")
+        print(f"             레이스라인엔 무해하지만 맵 결함이다 — "
+              f"'build_map.py {map_name} --seal-map' 으로 그 자리만 메울 수 있다.")
     # 원본 occupancy component는 corridor/footprint의 불변 안전 기준이다.
     # 아래 정리는 medial-axis 추출용 사본에만 적용한다. 실제 작은 기둥/장애물을
     # 지운 마스크로 최종 검증하는 오류를 막는다.
@@ -3199,6 +3430,12 @@ def main():
     ap.add_argument("map", nargs="?", default="my_map",
                     help="<이름>.yaml 의 확장자 뺀 이름 "
                          "(~/IFAC_ws/maps 에서 찾음)")
+    ap.add_argument("--seal-map", action="store_true",
+                    help="레이스라인을 만들지 않고, 맵 파일의 '안 닫힌' 픽셀만 "
+                         "벽으로 칠하고 끝낸다 (원본은 .pgm.bak 로 백업). "
+                         "SLAM 맵이 테두리에서 잘렸거나 벽이 1 px 대각 계단일 때 "
+                         "쓴다. 메모리가 아니라 **파일**을 고치므로 map_server/PF/"
+                         "perception 과 CSV 가 같은 기하를 보게 된다.")
     ap.add_argument("--dir", choices=("cw", "ccw", "auto"), default="ccw",
                     help="주행 방향 (기본 ccw). 이 스택의 트랙은 반시계로 돈다 — "
                          "시계로 돌 맵만 cw 를 준다. auto 는 예전 휴리스틱으로, "
@@ -3274,6 +3511,12 @@ def main():
                          "global_trajectory/validation_mu 도 같이 올릴 것 — "
                          "안 맞추면 런타임이 CSV 를 거부한다.")
     args = ap.parse_args()
+    if args.seal_map:
+        # 맵 수리만 하고 끝낸다. 프로파일 로드/시뮬은 할 필요도 없고, 수리 전
+        # 기하로 CSV 를 만들어 버리는 사고도 막는다 — 고친 뒤 다시 실행할 것.
+        print(f"[seal] '{args.map}' 맵 무결성 검사 + 수리 ...")
+        seal_map(args.map)
+        return
     _apply_profile_overrides(args)
     m = args.map
     profiles, advisory_profiles = selected_controller_profiles(args.profiles)

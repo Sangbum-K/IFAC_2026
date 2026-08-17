@@ -130,6 +130,15 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
+  // 이 트랙을 몇 프레임 봤는가 (cls_tracks_ 의 관측 이력 길이).
+  // 세 게이트(정지 권한 / 커밋 승격 / 커밋 파기)가 모두 이 값을 문턱과
+  // 비교하므로 조회를 한 곳에 둔다 — 예전에는 같은 lookup 이 세 번 복사돼
+  // 있었다. cls_tracks_ 는 클러스터 **전** 원시 id 로 채워지는데
+  // ClusterObstacles 가 병합 시 min(a.id, b.id) 를 남기므로 이 조회는
+  // 유효하다. 예측 튜브는 예약 ID 대역이라 여기 없다 — 호출부가
+  // IsPredictionTube 로 먼저 걸러야 한다 (StableObstacles 참조).
+  int ObsSeen(int32_t id) const;
+
   // 커밋된 정적 회피 경로를 **무효화할 자격이 있는** 장애물만 남긴다.
   // 관측 이력(cls_tracks_)이 commit_break_min_obs_ 이상인 트랙만 통과시킨다.
   // 갓 뜬 1~2프레임짜리 유령이 이미 성립한 회피를 파기하고 정지 궤적으로
@@ -646,12 +655,26 @@ private:
   // 큰 값을 쓰는 이유: 이건 정상 주행의 전환이 아니라 마지막 회피 수단이고,
   // 여기서 아끼면 그 다음은 정지다. path_lat_acc_max_(7.0) 이하로 둘 것.
   double escape_arc_lat_acc_{5.5};
-  // 이 속도 미만에서는 원호를 시도하지 않는다. 저속에서는 이미 정상 회피가
-  // 성립하고(그립 곡률이 v² 로 커진다), 굳이 헤딩을 남길 이유가 없다.
+  // 원호 곡률 예산 계산의 속도 하한 [m/s] (kappa_grip = a_lat / v²).
+  // ⚠️ 2026-08-17 부터 이 값은 **거부 게이트가 아니다** — run_0817_145548
+  //    에서 v=0.48 로 기던 차의 유일한 성립 회피(원호)가 이 게이트로 죽어
+  //    13.8초 정지가 됐다. "저속이면 정상 회피가 성립한다"는 전제는 조향
+  //    곡률 한계(속도 무관)를 놓친 것이었다. BuildEscapeArc 주석 참조.
   double escape_arc_min_speed_{1.2};
   // 기동 끝에 남는 헤딩 상한 [rad]. 이보다 크면 복귀가 벽으로 간다.
   double escape_arc_max_heading_{0.70};
   bool escape_arc_active_{false};       // 상승엣지 이벤트 + 컨트롤러 게이팅용
+  // ── 정지 워치독 (2026-08-17, run_0817_150059/_145548) ───────────────────
+  // 정지가 이만큼 이어지면 escape 의 is_visible 요구를 해제한다. 근거:
+  // 150059 에서 기억 주입(is_visible=false) 유령 앞 정지가 14초 이어졌다 —
+  // 정지 T초를 버틴 정적 장애물이 유령이면 브릿지 스캔 카빙이 이미 지웠어야
+  // 하므로, 남아 있는 것은 실물로 취급해도 안전하다. is_static 요구와
+  // 기하/충돌 검증은 그대로다 — 풀리는 것은 가시성 하나다.
+  double standstill_watchdog_sec_{2.0};
+  double standstill_speed_eps_{0.20};     // 이 미만이면 "정지"로 센다 [m/s]
+  rclcpp::Time standstill_since_;
+  bool standstill_since_valid_{false};
+  bool standstill_override_{false};
   // "회피 포기(트랙경계)" 상승엣지 이벤트용. 이 사유는 매 사이클 재발생하므로
   // (30Hz x 8초 = 207회 실측) 엣지에서만 발행하지 않으면 pitwall 로그가 묻힌다.
   bool boundary_abort_active_{false};   // 직전 사이클에 경계 abort가 있었나

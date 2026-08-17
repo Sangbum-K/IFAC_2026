@@ -118,6 +118,9 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/escape_arc_lat_acc", 5.5);
     this->declare_parameter("spliner/escape_arc_min_speed", 1.2);
     this->declare_parameter("spliner/escape_arc_max_heading_rad", 0.70);
+    // 정지 워치독 — 근거는 spliner_node.hpp 선언부 주석.
+    this->declare_parameter("spliner/standstill_watchdog_sec", 2.0);
+    this->declare_parameter("spliner/standstill_speed_eps", 0.20);
     this->declare_parameter("spliner/dyn_pass_speed_ratio", 1.4);
     this->declare_parameter("spliner/cluster_gap_d_m", 0.8);
     // 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식)
@@ -237,6 +240,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/escape_arc_min_speed").as_double();
     escape_arc_max_heading_ =
         this->get_parameter("spliner/escape_arc_max_heading_rad").as_double();
+    standstill_watchdog_sec_ =
+        this->get_parameter("spliner/standstill_watchdog_sec").as_double();
+    standstill_speed_eps_ =
+        this->get_parameter("spliner/standstill_speed_eps").as_double();
     dyn_pass_speed_ratio_ = this->get_parameter("spliner/dyn_pass_speed_ratio").as_double();
     cluster_gap_d_m_ = this->get_parameter("spliner/cluster_gap_d_m").as_double();
     cls_min_nb_meas_ = static_cast<int>(this->get_parameter("spliner/cls_min_nb_meas").as_int());
@@ -396,7 +403,11 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         escape_arc_lat_acc_ <= 0.0 || escape_arc_lat_acc_ > path_lat_acc_max_ ||
         escape_arc_min_speed_ < 0.0 || escape_arc_min_speed_ > 5.0 ||
         // 상한 1.0 rad(57도). 그 이상 남기면 복귀가 트랙 폭을 넘는다.
-        escape_arc_max_heading_ <= 0.0 || escape_arc_max_heading_ > 1.0) {
+        escape_arc_max_heading_ <= 0.0 || escape_arc_max_heading_ > 1.0 ||
+        // 워치독이 0.5s 미만이면 정지 판정 전에 노이즈로 발동하고,
+        // eps 가 크면 저속 주행이 전부 "정지"가 된다.
+        standstill_watchdog_sec_ < 0.5 || standstill_watchdog_sec_ > 30.0 ||
+        standstill_speed_eps_ < 0.02 || standstill_speed_eps_ > 1.0) {
         throw std::runtime_error(
             "Invalid/non-finite spliner safety parameter; planner heartbeat disabled");
     }
@@ -868,6 +879,29 @@ void SplinerNode::Run() {
     free_spline_geom_infeasible_ = false;
     cycle_rejects_.clear();
 
+    // ── 정지 워치독 (hpp 선언부 주석) ────────────────────────────────────
+    // v=0 에서 나갈 수단을 하나는 남긴다: 정지가 이만큼 이어지면
+    // BuildEscapeArc 의 is_visible 요구를 해제한다. 기하·충돌·경계 검증은
+    // 전부 그대로라, 성립하는 원호가 없으면 지금과 똑같이 서 있는다.
+    if (std::abs(cur_vs_) > standstill_speed_eps_) {
+        standstill_since_valid_ = false;
+        if (standstill_override_) {
+            standstill_override_ = false;   // 움직이기 시작 — 정상 게이트 복원
+        }
+    } else if (!standstill_since_valid_) {
+        standstill_since_ = this->now();
+        standstill_since_valid_ = true;
+    } else if (!standstill_override_ &&
+               (this->now() - standstill_since_).seconds() >=
+                   standstill_watchdog_sec_) {
+        standstill_override_ = true;
+        RCLCPP_WARN(this->get_logger(),
+            "정지 워치독: %.1fs 정지 — escape 가시성 게이트 해제 "
+            "(s=%.2f, 기하/충돌 검증은 유지)",
+            standstill_watchdog_sec_, cur_s_);
+        pitwall::Event("정지 워치독 — escape 가시성 게이트 해제");
+    }
+
     f1tenth_planning_msgs::msg::ObstacleArray obs_copy;
     bool perception_stale = false;
     {
@@ -1294,6 +1328,35 @@ void SplinerNode::Run() {
                 // 남는 방어선은 컨트롤러 백스톱과 recovery_supervisor 뿐이다.
                 const bool geom_blocked = lane_switch_geom_infeasible_ ||
                                           free_spline_geom_infeasible_;
+                // ── 관측수 게이트를 여기 걸지 않은 이유 (2026-08-17) ──────────
+                // "is_static 이 근거를 갖기 전에 allow_stop 이 열린다"는 지적이
+                // 있었다. 구조적으로는 맞다 — ClassifyObstacles 는 관측이
+                // cls_min_nb_meas(5) 를 넘기 전에는 재분류를 건너뛰고 perception
+                // 플래그를 그대로 통과시키고(`s_hist.size() <= cls_min_nb_meas_`
+                // 에서 continue), 브릿지의 대응 가드(unsettled_class -> 정적
+                // 취급)는 **confidence** 로 키가 걸려 있는데 유령은 confidence
+                // 로 갈리지 않는다(브릿지 주석: 코스팅 유령 510건/2087 이
+                // conf>=0.2). 그래서 `ObsSeen(closest.id) > cls_min_nb_meas_` 를
+                // 붙여 보고 tools/bag_analysis_0817/stop_gate.py 로 쟀다.
+                //
+                // run_0817_123650 결과: **막히는 사이클이 0 건이었다.**
+                //   · 트레일링 대상이 동적으로 내려온 사이클 51 (고유 트랙 1개)
+                //   · 그 트랙(id=244)의 총 관측 106 프레임 — 게이트 문턱과 무관
+                //   · 138초 전체에서 is_static=false 프레임을 가진 트랙이 1개뿐
+                // 즉 이 백에서 allow_stop=true 는 사실상 일어나지 않는다.
+                // 그리고 커밋 afb72d4 가 이 경로의 시작으로 지목한 유령
+                // id=8(t=11.33, s=17.45)은 **is_static=True** 였다 — allow_stop
+                // 은 이미 false 였고, v_target 도 정적 경로의 바닥
+                // (trailing_retry_speed 2.5 -> 횡목표 축소 시 degraded 1.5)에
+                // 걸려 0.04 가 나올 수 없다. 홀드가 기억한 0.042 의 출처는
+                // 트레일링이 아니라 다른 경로다 (커밋된 회피 경로의 머리가
+                // 1순위 후보 — 홀드 주석의 run_0815 사례와 같은 모양).
+                //
+                // 0 건을 막는 게이트를 넣고 그 대가로 진짜 동적 상대의 정지
+                // 권한을 6프레임(152ms) 늦추는 것은 남는 거래가 아니다. 위
+                // 1310 주석이 "반드시 남긴다"고 못박은 방향이기도 하다.
+                // 다시 검토할 조건: **실제로 움직이는 상대차가 있는 백**에서
+                // stop_gate.py 가 0 이 아닌 수를 내면 그때 붙인다.
                 const bool allow_stop = !closest.is_static;
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
@@ -1342,18 +1405,10 @@ void SplinerNode::Run() {
             // vx=0 으로 굳어 local_trajectory 의 회피상실 홀드가 전 구간
             // 0 m/s 캡을 걸고(run_0815 실측 0.81초 정지), pos < span 이 계속
             // 참이라 path_end 로도 만료되지 않는다.
-            // cls_tracks_ 는 클러스터 전 원시 id 로 채워지는데 ClusterObstacles
-            // 가 병합 시 min(a.id, b.id) 를 남기므로 이 조회는 유효하다
-            // (위 stable_for_release 와 같은 방식).
-            const auto obs_seen = [this](int32_t id) {
-                auto it = cls_tracks_.find(id);
-                return (it == cls_tracks_.end())
-                    ? 0 : static_cast<int>(it->second.s_hist.size());
-            };
             const bool commit_candidate =
                 evasion_valid && !used_trailing &&
                 closest.is_static && !evasion_wpnts.wpnts.empty();
-            const bool commit_obs_ok = obs_seen(closest.id) >= commit_min_obs_;
+            const bool commit_obs_ok = ObsSeen(closest.id) >= commit_min_obs_;
             const bool commit_speed_ok = std::abs(cur_vs_) >= commit_min_speed_;
             if (commit_candidate && !commit_obs_ok) {
                 NoteReject("commit_deferred_unstable_obs");
@@ -3290,18 +3345,24 @@ bool SplinerNode::BuildEscapeArc(
         return false;
     }
     // (1) 정적 + 지금 실제로 보이는 것만. 외삽 유령에 급조향하면 벽으로 간다.
-    if (!closest_obs.is_static || !closest_obs.is_visible) {
+    //     예외: 정지 워치독(hpp 주석)이 선 뒤에는 가시성만 면제한다 —
+    //     T초 정지를 버틴 정적 장애물이 유령이면 브릿지 스캔 카빙이 이미
+    //     지웠고, coasting 트랙이면 track_forget(2.0s) 안에 만료됐다.
+    //     is_static 요구는 어떤 경우에도 풀지 않는다.
+    if (!closest_obs.is_static ||
+        (!closest_obs.is_visible && !standstill_override_)) {
         NoteReject("escape_not_visible_static");
         return false;
     }
-    // 이미 느리면 정상 회피가 성립한다 (그립 곡률이 1/v² 로 커진다).
-    // 굳이 헤딩을 남기는 기동을 할 이유가 없다.
-    // 카운터는 진단용이다 — 예전에는 조용히 false 라 "escape 가 왜 안 떴나"를
-    // 로그만으로는 알 수 없었다 (원호 0회 발동의 원인 추적이 매번 막혔다).
-    if (cur_vs_ < escape_arc_min_speed_) {
-        NoteReject("escape_below_min_speed");
-        return false;
-    }
+    // ── 저속 거부 게이트 삭제 (2026-08-17) ──────────────────────────────
+    // 예전에는 cur_vs_ < escape_arc_min_speed_ 를 여기서 거부했다
+    // ("느리면 정상 회피가 성립한다"). 그 전제가 틀렸다: Tier1/2 의 기하
+    // 하한은 조향 곡률 한계(속도 무관)로도 결정되므로 저속에서도 막힌다.
+    // run_0817_145548 t=23.9: v=0.48, 장애물까지 1.87 m — lane/spline 전부
+    // 기하 거부, 원호 하한 1.66 m 로 **유일하게 성립**하는 순간에 이 게이트가
+    // 원호를 죽였고 13.8 초 정지(수동 개입)가 됐다. 같은 정지가 t=176 에
+    // 재발했다. escape_arc_min_speed_ 는 아래 kappa_grip 의 속도 하한으로만
+    // 남는다 — v=0 에서도 곡률 예산이 유한하게 잡힌다.
     // 장애물 앞머리까지 남은 거리. 이미 옆에 들어왔으면 원호로도 못 피한다.
     const double dist_front =
         Mod(closest_obs.s_start - cur_s_, track_len_) - vehicle_half_length_m_;
@@ -3676,6 +3737,40 @@ bool SplinerNode::BuildTrailing(
         const double t = std::min((dist - hold_until) / std::max(back, 1e-3), 1.0);
         return goal * (1.0 - t);
     };
+    // 경계 판정 — **트레일링 전용**으로 "회랑 안인가" 대신 "지금보다 나빠지지
+    // 않는가"를 본다. 자차의 현재 횡위치는 플래너가 이번 사이클에 바꿀 수 없는
+    // **입력**인데, 종전 판정은 그것을 합격 조건에 넣었다. cur_d_ 가 회랑 밖으로
+    // 1mm 라도 나가 있으면 d_profile(0) = cur_d_ 이므로 **첫 점**에서 떨어지고,
+    // 그러면 목표를 아무리 줄여도(심지어 raceline 복귀조차) 같은 점에서 같은
+    // 이유로 떨어져 폴백 사다리가 끝까지 무너진다 = 회피 의도 소멸.
+    //   run_0817_124904 t=59.35~59.92 실측: 이 구간 d_right 가 웨이포인트마다
+    //   0.45/0.47/0.49/0.52 로 튄다(맵 5cm 격자). 마진 0.20 이라 허용 하한이
+    //   -0.245 ~ -0.320 사이에서 흔들리는데 차는 d=-0.20~-0.27 로 그 위를 탔다.
+    //   t=59.38 은 2mm, t=59.45 는 29mm 초과. 그 1초의 트레일링 19 사이클이
+    //   **전부** d_goal_zeroed -> hold_current_d 로 떨어져 0.6초 동안 횡이동이
+    //   정확히 0 이었고(발행 d 가 49점 전부 cur_d_ 상수), 4.3 m/s 로 정면충돌.
+    // 불변식은 유지된다 — 경로는 자차가 이미 나가 있는 쪽으로 **더** 나가지
+    // 않는다. 회랑 자체가 소멸한 지점(d_min > d_max)은 종전대로 거부한다.
+    // ⚠️ 트레일링(마지막 티어)에만 적용한다. Tier1/2 는 아직 대안이 있으므로
+    //    엄격한 WithinTrackBoundary 를 그대로 쓴다.
+    auto boundary_ok_from_here = [&](int gi, double d) {
+        if (WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
+            return true;
+        }
+        const double margin = RequiredBoundaryMargin(spline_bound_mindist_);
+        const double d_min = -std::abs(gb_wpnts_[gi].d_right) + margin;
+        const double d_max = std::abs(gb_wpnts_[gi].d_left) - margin;
+        if (!(d_min <= d_max) || !std::isfinite(d)) {
+            return false;
+        }
+        if (d < d_min) {
+            return cur_d_ < d_min && d >= cur_d_;
+        }
+        if (d > d_max) {
+            return cur_d_ > d_max && d <= cur_d_;
+        }
+        return false;
+    };
     // 램프 전 구간이 트랙 경계 안인가. 실패하면 구속 지점을 돌려준다
     // (bind_s / bind_d / bind_limit) — 어느 점이 물었는지가 로그에 없어서
     // run_0813_165312 분석에서 이 게이트의 인과를 재구성으로만 세울 수 있었다.
@@ -3687,7 +3782,7 @@ bool SplinerNode::BuildTrailing(
             const double s = Mod(cur_s_ + dist, track_len_);
             const int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
             const double d = d_profile(dist, goal, len, back);
-            if (!WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
+            if (!boundary_ok_from_here(gi, d)) {
                 if (bind_s != nullptr) {
                     *bind_s = s;
                     *bind_d = d;
@@ -3720,42 +3815,61 @@ bool SplinerNode::BuildTrailing(
         // S/F 접촉 5건이 여기서 나왔다. 재구성상 구속 지점은 7m 하류
         // s≈4.4 의 한 점이고 여유가 5mm 였다.
         //
-        // 전부-아니면-전무를 없앤다: 0 과 d_goal 사이에서 성립하는 **최대**
-        // 오프셋을 이분 탐색으로 찾는다. 부호는 유지하고(반대쪽으로 넘어가지
-        // 않는다) 검사 자체는 종전대로 전 구간을 그대로 본다 — 경로 생성
+        // 전부-아니면-전무를 없앤다: 성립하는 **최대** 오프셋을 이분 탐색으로
+        // 찾는다. 검사 자체는 종전대로 전 구간을 그대로 본다 — 경로 생성
         // 루프(아래)가 같은 경계 검사로 한 점이라도 어긋나면 경로를 통째로
         // 버리므로, 검사 범위를 줄이면 "오프셋 축소"가 "경로 없음"이 된다.
+        //
+        // ── 축소의 종점은 raceline 이 아니라 cur_d_ 다 (2026-08-17) ────────
+        // 종전 구간은 [0, full_goal] 이었다. 즉 "회피가 안 되면 회피량을 줄인다"
+        // 의 극한이 **d=0 (raceline)** 이다. 그런데 이 함수가 불리는 상황은
+        // 정의상 raceline 위에 장애물이 있는 상황이라, 그 종점은 안전한 곳이
+        // 아니라 **제일 위험한 곳**이다.
+        //   run_0817_124904 t=59.35: 장애물 #185 d[-0.35,+0.32], 자차 d=-0.25,
+        //   회피 목표 +0.577. 축소가 0 으로 수렴하면 장애물 정중앙을 겨눈다.
+        //   (그 런에서는 Fix A 이전이라 첫 점에서 떨어져 이 결함이 발현될
+        //    기회조차 없었고 곧장 hold_current_d 로 갔다 — 잠재 결함이었다.)
+        // 구간을 [cur_d_, full_goal] 로 바꾼다. 그러면
+        //   · lo=0  -> cand = cur_d_  = "지금 위치 유지" (최악이 여기까지)
+        //   · lo=1  -> cand = full_goal = 회피 목표 전량
+        // 이고, 성립하는 만큼은 **항상 회피 방향으로** 간다. 되돌아오는 방향은
+        // 후보에 아예 없다. 차 반폭이 0.15m 라 0.15~0.2m 만 옮겨도 정면 접촉이
+        // 스침으로 바뀐다 — 위 사고에서 가용했던 값은 0.32m 였다.
         const double full_goal = d_goal;
         double lo = 0.0;          // 항상 성립한다고 가정하지 않는다 (아래 재확인)
         double hi = 1.0;          // 성립하지 않음이 위에서 확인된 배율
+        auto goal_at = [&](double f) { return cur_d_ + (full_goal - cur_d_) * f; };
         for (int it = 0; it < 12; ++it) {
             const double mid = 0.5 * (lo + hi);
-            const double cand = full_goal * mid;
+            const double cand = goal_at(mid);
             if (ramp_ok(cand, ramp_len_for(cand))) {
                 lo = mid;
             } else {
                 hi = mid;
             }
         }
-        d_goal = full_goal * lo;
-        // 수 cm 미만의 잔량은 유지할 값어치가 없다 (d_profile 도 0.02 이하를
-        // "오프셋 없음"으로 취급한다).
-        if (std::abs(d_goal) <= 0.02) {
-            d_goal = 0.0;
+        d_goal = goal_at(lo);
+        // 수 cm 미만의 **진행량**은 유지할 값어치가 없다. 기준은 0 이 아니라
+        // cur_d_ 다 — 종전처럼 |d_goal|<=0.02 로 재면 cur_d_ 근처에서 회피
+        // 목표가 raceline 으로 스냅돼 위 구간 변경이 무효가 된다.
+        const bool made_progress = std::abs(d_goal - cur_d_) > 0.02;
+        if (!made_progress) {
+            d_goal = cur_d_;
         }
         d_ramp_len = ramp_len_for(d_goal);
         d_back_len = back_len_for(d_goal);
-        if (std::abs(d_goal) > 0.02) {
+        if (made_progress) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
                 "Trailing 횡목표 축소: %.2f -> %.2f (구속 s=%.2f d=%.2f 한계 %.2f)",
                 full_goal, d_goal, bind_s, bind_d, bind_limit);
         } else {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
-                "Trailing 횡목표 포기: %.2f -> 0 (구속 s=%.2f d=%.2f 한계 %.2f)",
-                full_goal, bind_s, bind_d, bind_limit);
+                "Trailing 횡목표 포기: %.2f -> 현재 %.2f 유지 "
+                "(구속 s=%.2f d=%.2f 한계 %.2f)",
+                full_goal, cur_d_, bind_s, bind_d, bind_limit);
         }
-        NoteReject(std::abs(d_goal) > 0.02 ? "trailing_d_goal_shrunk"
-                                           : "trailing_d_goal_zeroed");
+        NoteReject(made_progress ? "trailing_d_goal_shrunk"
+                                 : "trailing_d_goal_zeroed");
         // ── 횡 계획이 깎였으면 속도 바닥도 낮춘다 (2026-08-15) ─────────────
         // trailing_retry_speed_ 는 "정적 장애물을 못 피했을 때 그 속도로
         // 접촉한다"는 뜻이다 (allow_stop = !is_static 이라 정적에는 완전
@@ -3772,10 +3886,14 @@ bool SplinerNode::BuildTrailing(
         v_target_prof_actual = std::min(v_target_prof_actual,
                                         std::max(trailing_retry_speed_degraded_,
                                                  v_target_actual));
-        if (std::abs(cur_d_) > 0.02 && d_goal == 0.0 &&
-            !ramp_ok(0.0, d_ramp_len))
-        {
-            // 안전한 raceline 복귀 기하도 없으면 빈 경로 대신 현재 d를
+        // 2026-08-17: 조건이 `d_goal == 0.0 && !ramp_ok(0.0, ...)` 이었다.
+        // 이분 탐색의 종점이 cur_d_ 로 바뀌었으므로 (위 주석) 그 리터럴 비교는
+        // 더 이상 성립하지 않는다 — 진행량 0 이고 그 자리 유지 기하마저 안 될
+        // 때로 옮긴다. 아래 3843줄 "차가 경계 밖에 나가 램프가 검사를 못 넘는"
+        // 사례는 이제 boundary_ok_from_here 가 앞단에서 흡수하므로, 여기로
+        // 들어오는 것은 회랑 자체가 소멸한(d_min > d_max) 진짜 막다른 경우다.
+        if (!made_progress && !ramp_ok(d_goal, d_ramp_len)) {
+            // 안전한 유지 기하조차 없으면 빈 경로 대신 현재 d를
             // 유지한다. 빈 경로는 곧 전속 global path이므로 금지.
             hold_current_d = true;
             // ⚠️ 목표 속도는 allow_stop 을 따른다 (2026-08-14).
@@ -3824,8 +3942,10 @@ bool SplinerNode::BuildTrailing(
         }
         w.d_m = d;
         if (std::abs(d) > 0.02) {
-            if (!hold_current_d &&
-                !WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
+            // ramp_ok 와 **같은** 판정이어야 한다. 달라지면 ramp_ok 가 통과시킨
+            // 프로파일을 여기서 통째로 버려 "오프셋 축소"가 "경로 없음"이 된다
+            // (= 전속 global path). boundary_ok_from_here 주석 참조.
+            if (!hold_current_d && !boundary_ok_from_here(gi, d)) {
                 out_wpnts.wpnts.clear();
                 return false;
             }
@@ -3931,6 +4051,23 @@ bool SplinerNode::BuildTrailing(
         !out_wpnts.wpnts.empty())
     {
         double blocking_s = 0.0;
+        // ── 사정거리 절단은 백 검증에서 탈락했다 (2026-08-17) ─────────────────
+        // "트레일링 경로는 단일 장애물(obs)용인데 충돌검사는 lookahead 전체를
+        // 보니 슬라럼에서 늘 걸린다 — 첫 차단 장애물까지로 끊고 나머지는 다음
+        // 사이클에 맡기자"는 안을 구현해 tools/bag_analysis_0817/reach_defer.py
+        // 로 재 봤고, **틀렸다.** 미룬 차단점이 처음 사정거리 안에 들어오는
+        // 순간의 제동 여유(= 남은거리 - (v*lag + v^2/2a))가 run_0817_123650 의
+        // 거의 모든 사례에서 음수였다: 1.4~7.1m 부족. 0811 coasting fail-open
+        // 이 "다음 사이클이 다시 잡아 준다"는 **같은 논거**로 틀렸던 그대로다.
+        //
+        // 다만 그 측정이 같이 드러낸 게 있다. 이 분기가 실제로 발동하는
+        // 거리(차단점 0.2~5.6m)에서는 trailing_decel 1.0 으로 세우는 데 필요한
+        // 거리가 이미 남은거리를 넘는다 — 즉 **여기서 v_stop 은 정지 곡선이
+        // 아니고, reachable_v 바닥에 눌린 "가속 금지" 캡으로만 동작한다.**
+        // 그래서 랩타임 손실의 정체는 이 검사 범위가 아니라 그 캡이다
+        // (reachable_v(0) == v0 이라 명령 선두가 현재 속도를 넘지 못하는
+        // 쌍안정 — 통과시간 vs 진입속도 r=-0.84). 범위를 건드리는 게 아니라
+        // 그 캡을 고쳐야 하고, 그건 감속 포락선의 설계 사안이라 별건이다.
         if (!CheckPathCollision(out_wpnts.wpnts, *check_obs, &blocking_s)) {
             NoteReject("trailing_ramp_collision");
             double stop_dist =
@@ -4694,6 +4831,12 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ObstaclesInLookah
     return out;
 }
 
+int SplinerNode::ObsSeen(int32_t id) const {
+    auto it = cls_tracks_.find(id);
+    return (it == cls_tracks_.end())
+        ? 0 : static_cast<int>(it->second.s_hist.size());
+}
+
 std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::StableObstacles(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles) const {
     std::vector<f1tenth_planning_msgs::msg::Obstacle> out;
@@ -4710,10 +4853,7 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::StableObstacles(
         if (commit_break_requires_visible_ && !o.is_visible) {
             continue;
         }
-        auto it = cls_tracks_.find(o.id);
-        const int seen = (it == cls_tracks_.end())
-            ? 0 : static_cast<int>(it->second.s_hist.size());
-        if (seen >= commit_break_min_obs_) {
+        if (ObsSeen(o.id) >= commit_break_min_obs_) {
             out.push_back(o);
         }
     }
@@ -4746,6 +4886,18 @@ bool SplinerNode::CheckPathCollision(
         const double v1 = std::max(path[i].vx_mps * speed_scale, 0.25);
         arrival[i] = arrival[i - 1] + 2.0 * ds / (v0 + v1);
     }
+
+    // ── blocking_s 는 **최근접** 차단점이어야 한다 (2026-08-17) ─────────────
+    // 예전에는 첫 충돌에서 곧바로 return 했다. 그런데 바깥 루프는 obstacles
+    // 벡터 순서로 도는데 그 순서는 ClusterObstacles 출력이지 s 정렬이 아니다
+    // — 즉 blocking_s 가 더 **먼** 장애물로 잡힐 수 있었다. 호출부
+    // (BuildTrailing 의 트레일링 램프 충돌검사)는 이 값으로
+    //   stop_dist = Mod(blocking_s - cur_s_) - trailing_gap_m_
+    // 를 만들어 제동 곡선을 씌우므로, 먼 값이 잡히면 **제동이 모자란다**.
+    // 최근접을 고르는 쪽이 항상 더 이른 제동이라 방향이 안전하다.
+    // blocking_s 를 안 받는 호출부(순수 가/부 판정)는 종전처럼 즉시 반환한다.
+    bool collided = false;
+    double nearest_ahead = std::numeric_limits<double>::infinity();
 
     // 경로 각 점과 그 도착시각의 동적 장애물 확장 박스를 비교한다.
     for (const auto &obs : obstacles) {
@@ -4799,14 +4951,23 @@ bool SplinerNode::CheckPathCollision(
             const double d_left =
                 obs.d_left + motion_d + lateral_margin;
             if (path[i].d_m >= d_right && path[i].d_m <= d_left) {
-                if (blocking_s) {
-                    *blocking_s = Mod(obs.s_start + motion_s, track_len_);
+                collided = true;
+                if (blocking_s == nullptr) {
+                    return false;  // 충돌 — 지점이 필요 없으면 즉시
                 }
-                return false;  // 충돌
+                // 이 장애물에 대해 처음 맞은 점이 도착시각이 가장 이르므로
+                // motion_s 도 이 점 기준이 맞다. 다음 장애물로 넘어간다.
+                const double s_blocking = Mod(obs.s_start + motion_s, track_len_);
+                const double ahead = Mod(s_blocking - cur_s_, track_len_);
+                if (ahead < nearest_ahead) {
+                    nearest_ahead = ahead;
+                    *blocking_s = s_blocking;
+                }
+                break;
             }
         }
     }
-    return true;  // 충돌 없음
+    return !collided;
 }
 
 bool SplinerNode::PlanSpanAllowed(double span) const {

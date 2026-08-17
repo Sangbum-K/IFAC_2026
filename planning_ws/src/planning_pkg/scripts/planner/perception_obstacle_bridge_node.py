@@ -38,6 +38,7 @@ import tf2_ros
 from nav_msgs.msg import OccupancyGrid
 
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 
 from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 from f1tenth_perception_msgs.msg import ObstacleArray as PerceptionObstacleArray
@@ -285,6 +286,51 @@ class PerceptionObstacleBridgeNode(Node):
         # 기억이 보고하는 위치 불확실성 하한 [m]. 랩 간 d std 실측 최대
         # 0.062 의 두 배 — 기억을 실측보다 더 확신하지 않게 한다.
         self.declare_parameter('bridge/memory_pos_std_m', 0.12)
+        # ── 스캔 빈자리 카빙 (2026-08-17, run_0817_150059 / _145548) ─────
+        # **정지 탈출 장치다.** 랩 경계 carving(위 ④)은 차가 서면 영원히 안
+        # 온다 — 150059 에서 유령 앵커 2개가 트랙을 닫아 정지했는데, 정지라서
+        # 랩 경계가 안 오고, 랩 경계가 안 와서 miss 를 못 쌓는 자기잠금이
+        # 14초 이어졌다(수동 개입). 그래서 프레임 단위 부정 증거를 둔다:
+        # 앵커 자리를 /scan 빔이 관통(측정거리 > 앵커거리 + slack)하는
+        # 프레임이 연속 clear_frames 개면 그 앵커의 주입을 즉시 멈추고,
+        # 랩 경계에서 miss 로 정산한다. 검출기 매칭(중심 매칭)만이 되살린다.
+        #   · 벽에 붙은 콘: 빔이 콘/벽에 맞아 되돌아옴 -> hit -> 카빙 안 됨
+        #     (slack 안의 벽 반사는 hit 로 세므로 fail-safe 방향은 "유지")
+        #   · 가림(다른 콘 뒤): 빔이 앞에서 끊김 -> 판정 보류, 스트릭 유지
+        # ⚠️ 판정은 **전방(ahead 0.5 ~ L/2) 앵커에만** 돈다. 옆을 지나치는
+        #    순간에는 앵커 위치오차(0.1~0.2 m)가 빔 창을 실물 밖으로 밀어내
+        #    실물을 "관통"으로 오판한다 — 150059 재생에서 벽 콘(s=16.64)을
+        #    4 m/s 통과(r 0.58, 방위 47→137도 스윕) 중에 지웠고, 그러면
+        #    다음 랩의 6.9 m 조기 커밋(이 기능 최대 수혜)이 사라진다.
+        #    전방을 막 벗어난 유령(예: 145548 충돌 유령 900016, 관통 증거가
+        #    전부 ahead<0.5)은 카빙이 아니라 중심 매칭 게이트가 끊는다 —
+        #    중심 매칭 0건 -> close_requires_match(3 m)가 주입 차단
+        #    (tools/bag_analysis_0817/carve_replay.py 재생 검증).
+        self.declare_parameter('bridge/memory_scan_carve_enabled', True)
+        self.declare_parameter('bridge/memory_scan_topic', '/scan')
+        # 40 Hz 스캔 기준 15프레임 = 0.375 s. 관통 증거가 이만큼 연속되어야
+        # 끈다 — 단일 프레임 노이즈/부분 가림으로 실물 기억을 지우지 않는다.
+        self.declare_parameter('bridge/memory_scan_clear_frames', 15)
+        # 판정 거리 창 [m]. 상한: 원거리는 빔 간격이 콘보다 넓어지고 반사율도
+        # 떨어져 "관통"의 증거 가치가 없다. 하한: 150059 정지에서 유령이
+        # 레이저에서 0.72 m 에 있었다 — 여기까지는 내려가야 정지 탈출이 된다.
+        # 하한을 1.0 으로 올리는 실험은 유령 카빙(관통이 근거리에서만 열림)을
+        # 전멸시켰다 (carve_replay.py).
+        self.declare_parameter('bridge/memory_scan_range_min_m', 0.3)
+        self.declare_parameter('bridge/memory_scan_range_max_m', 7.0)
+        # 앵커 거리 ± slack 안의 반사는 hit(실물)로 센다 [m]. 콘 반경 0.15 +
+        # PF 위치 오차를 덮는 값. 이보다 멀리 뚫려야 관통이다.
+        self.declare_parameter('bridge/memory_scan_slack_m', 0.25)
+        # 한 프레임을 "관통"으로 인정하는 최소 빔 수. 콘 폭은 5 m 에서
+        # 각도 ±1.7도 ≈ 빔 13개라 3개는 보수적 하한이다.
+        self.declare_parameter('bridge/memory_scan_min_pass_beams', 3)
+        # ── 중심 매칭 게이트 (2026-08-17, run_0817_150059) ────────────────
+        # matched_this_pass 라치가 **밴드 가장자리** 한 프레임으로 서는 것을
+        # 막는다. 150059: 실물 검출이 이웃 앵커 밴드 끝(cost 1.03)에 한 프레임
+        # 걸리며 유령의 3 m 근거리 게이트를 껐다 — 그 유령이 정지의 원인.
+        # 실물 매칭은 중심에 붙는다(벽 콘 1프레임 실측 cost 0.18). 타원
+        # cost = (ds/match_s)² + (dd/match_d)² 가 이 값 이하일 때만 라치.
+        self.declare_parameter('bridge/memory_match_latch_cost', 0.5)
         # ego Frenet 위치 토픽 (랩 카운트 + 주입 거리 판정).
         self.declare_parameter('bridge/ego_frenet_topic',
                                '/car_state/frenet/odom')
@@ -362,6 +408,19 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/memory_close_requires_match_m').value)
         self.memory_forget_misses = int(p('bridge/memory_forget_misses').value)
         self.memory_pos_std = float(p('bridge/memory_pos_std_m').value)
+        self.memory_scan_carve = bool(
+            p('bridge/memory_scan_carve_enabled').value)
+        self.memory_scan_clear_frames = int(
+            p('bridge/memory_scan_clear_frames').value)
+        self.memory_scan_range_min = float(
+            p('bridge/memory_scan_range_min_m').value)
+        self.memory_scan_range_max = float(
+            p('bridge/memory_scan_range_max_m').value)
+        self.memory_scan_slack = float(p('bridge/memory_scan_slack_m').value)
+        self.memory_scan_min_pass = int(
+            p('bridge/memory_scan_min_pass_beams').value)
+        self.memory_match_latch_cost = float(
+            p('bridge/memory_match_latch_cost').value)
         self.ego_frenet_timeout = float(
             p('bridge/ego_frenet_timeout_sec').value)
 
@@ -411,6 +470,17 @@ class PerceptionObstacleBridgeNode(Node):
                 <= self.memory_inject_ahead
                 or not 1 <= self.memory_forget_misses <= 20
                 or not 0.01 <= self.memory_pos_std <= 1.0
+                # 스캔 카빙: 프레임 수/거리/slack 이 뒤집히면 관통 판정이
+                # 즉발(=단일 노이즈로 기억 삭제) 또는 불능이 된다.
+                or not 3 <= self.memory_scan_clear_frames <= 200
+                or not 0.2 <= self.memory_scan_range_min <= 2.0
+                or not self.memory_scan_range_min < self.memory_scan_range_max
+                or not 1.0 <= self.memory_scan_range_max <= 30.0
+                or not 0.05 <= self.memory_scan_slack <= 1.0
+                or not 1 <= self.memory_scan_min_pass <= 50
+                # 라치 게이트가 1.0 을 넘으면 밴드 가장자리(cost 1.0)까지
+                # 라치를 허용해 게이트가 없는 것과 같다.
+                or not 0.05 <= self.memory_match_latch_cost <= 1.0
                 # 재연결 게이트: 콘 지름(2 * static_cylinder_radius_m)을 넘기면
                 # 나란히 선 콘 두 개를 하나로 합치게 된다.
                 or not 0.0 <= self.reassoc_match_s <= 2.0 * self.cyl_radius
@@ -474,6 +544,13 @@ class PerceptionObstacleBridgeNode(Node):
                 raise RuntimeError('memory_enabled requires ego_frenet_topic')
             self.create_subscription(
                 Odometry, ego_topic, self.cb_ego_frenet, sensor_qos)
+            if self.memory_scan_carve:
+                scan_topic = str(p('bridge/memory_scan_topic').value).strip()
+                if not scan_topic:
+                    raise RuntimeError(
+                        'memory_scan_carve_enabled requires scan topic')
+                self.create_subscription(
+                    LaserScan, scan_topic, self.cb_scan, sensor_qos)
         input_topic = str(p('bridge/input_topic').value).strip()
         output_topic = str(p('bridge/output_topic').value).strip()
         map_topic = str(p('bridge/map_topic').value).strip()
@@ -531,6 +608,17 @@ class PerceptionObstacleBridgeNode(Node):
            아니라 이쪽이 삭제 기준이다.
         """
         for a in self.memory:
+            if a.get('absent'):
+                # 스캔이 빈자리를 증명한 앵커는 실측 에지 프레임(best_dist)
+                # 보다 관통 증거를 우선한다 — run_0817_150059 의 유령은 매 랩
+                # 밴드 가장자리 1프레임으로 misses 를 리셋하며 살아남았다.
+                # (중심 매칭이 있었다면 memory_observe 가 absent 를 이미
+                #  풀었으므로 여기 안 들어온다.)
+                a['misses'] += 1
+                a['pass_open'] = False
+                a['matched_this_pass'] = False
+                a['best_dist'] = float('inf')
+                continue
             if math.isfinite(a['best_dist']):
                 # 확정 전에는 최근접 관측을 그대로 받고, 확정 뒤에는 절반씩
                 # 섞는다 (랩 간 재현성 실측 d std 0.007~0.062 m 수준이라
@@ -573,7 +661,14 @@ class PerceptionObstacleBridgeNode(Node):
                     keep['laps'] |= drop['laps']
                     keep['poisoned'] = keep['poisoned'] or drop['poisoned']
                     keep['misses'] = min(keep['misses'], drop['misses'])
-                    keep['half'] = max(keep['half'], drop['half'])
+                    keep['half'] = min(max(keep['half'], drop['half']),
+                                       self.cyl_radius)
+                    # 카빙 상태는 둘 다 비어 있을 때만 유지 — 한쪽이라도
+                    # 점유 증거가 있으면 살아 있는 쪽을 믿는다 (fail-safe).
+                    keep['absent'] = bool(keep.get('absent')) and \
+                        bool(drop.get('absent'))
+                    if not keep['absent']:
+                        keep['absent_streak'] = 0
                     if not keep['confirmed'] and \
                             len(keep['laps']) >= self.memory_confirm_laps:
                         keep['confirmed'] = True
@@ -589,7 +684,8 @@ class PerceptionObstacleBridgeNode(Node):
             if a['poisoned'] or a['misses'] >= self.memory_forget_misses:
                 self.get_logger().info(
                     f"랩 기억 삭제: s={a['s']:.2f} d={a['d']:+.2f} "
-                    f"(misses={a['misses']}, poisoned={a['poisoned']})")
+                    f"(misses={a['misses']}, poisoned={a['poisoned']}, "
+                    f"carved={bool(a.get('absent'))})")
                 continue
             keep.append(a)
         self.memory = keep
@@ -600,12 +696,17 @@ class PerceptionObstacleBridgeNode(Node):
                 - self.track_length / 2.0)
 
     def _find_anchor(self, s, d):
-        """밴드 안에서 **가장 가까운** 앵커. 첫 매칭이 아니다.
+        """밴드 안에서 **가장 가까운** 앵커와 그 cost. 첫 매칭이 아니다.
 
         첫 매칭으로 두면 같은 콘이 랩마다 새 앵커로 갈라진다 — 원거리
         s 추정이 근접 수렴값보다 +0.36 m 앞서 있기 때문이다(실측). 재생
         검증에서 S/F 콘 하나가 앵커 8개로 쪼개졌고, 그 조각들이 서로
         free-space carving 으로 지워지며 확정이 매 랩 리셋됐다.
+
+        cost 는 밴드 정규화 타원 거리다. 라치/부활 판정(memory_observe)이
+        "중심 매칭"과 "가장자리 매칭"을 갈라야 해서 함께 돌려준다 —
+        run_0817_150059 에서 가장자리 한 프레임(cost 1.03)이 유령 앵커의
+        근거리 게이트를 껐다.
         """
         best, best_cost = None, float('inf')
         for a in self.memory:
@@ -617,7 +718,97 @@ class PerceptionObstacleBridgeNode(Node):
                    (dd / max(self.memory_match_d, 1e-6)) ** 2
             if cost < best_cost:
                 best, best_cost = a, cost
-        return best
+        return best, best_cost
+
+    def cb_scan(self, msg: LaserScan):
+        """스캔 빈자리 카빙 (선언부 주석). 앵커 자리의 빔 관통을 판정한다.
+
+        프레임당 앵커 ≤ 12개 x 창 빔 ≤ 40개 순회라 40 Hz 에서도 무시할
+        비용이다. 판정은 세 갈래다:
+          hit    |r - r_a| <= slack     -> 실물(또는 slack 안 벽): 스트릭 리셋
+          pass   r > r_a + slack        -> 관통: 빈자리 증거
+          block  r < r_a - slack        -> 가림: 증거 없음 (스트릭 유지)
+        hit 이 하나라도 있으면 그 프레임은 점유다. hit 0 + pass 충분이면
+        빈자리, 그 외(가림/시야 밖/원거리)는 판정 보류다.
+        """
+        if not self.memory or self.wpnts is None or self.track_length <= 0.0 \
+                or self.ego_s is None:
+            return
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.target_frame, msg.header.frame_id,
+                Time.from_msg(msg.header.stamp),
+                timeout=Duration(seconds=self.tf_timeout))
+        except tf2_ros.TransformException:
+            return          # TF 가 없으면 판정하지 않는다 (증거 아님)
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        laser_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                               1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        n_beams = len(msg.ranges)
+        if n_beams < 8 or not msg.angle_increment > 0.0:
+            return
+        r_valid_min = max(float(msg.range_min), 0.02)
+        r_open = float(msg.range_max) * 0.99
+        for a in self.memory:
+            if a['poisoned']:
+                continue
+            # **전방 앵커만** 판정한다. 재생 검증에서 나온 유일한 오탐 모드가
+            # "옆을 지나치는 순간"(r 0.3~0.7 m) 카빙이었다 — 근접에서는 앵커
+            # 위치오차(0.1~0.2 m)가 빔 창을 실물 밖으로 밀어낸다 (150059
+            # 실물 벽콘 t=9.6 / 145548 s=3.5 콘 t=122.7). 주입은 어차피
+            # 전방(inject_ahead)만 막으므로 옆/뒤 판정은 가치도 없다.
+            ahead = (a['s'] - self.ego_s) % self.track_length
+            if ahead < 0.5 or ahead > self.track_length / 2.0:
+                continue
+            try:
+                ax, ay = self.frenet_to_cartesian(a['s'], a['d'])
+            except RuntimeError:
+                continue
+            dx, dy = ax - t.x, ay - t.y
+            r_a = math.hypot(dx, dy)
+            if not self.memory_scan_range_min <= r_a \
+                    <= self.memory_scan_range_max:
+                continue
+            bearing = math.atan2(dy, dx) - laser_yaw
+            bearing = math.atan2(math.sin(bearing), math.cos(bearing))
+            # 앵커 원통이 차지하는 각도 창. 폭이 아주 작아도 최소 0.10 m 로
+            # 보고 판정한다 (한두 빔짜리 창은 노이즈에 휘둘린다).
+            half_ang = math.atan2(max(a['half'], 0.10), r_a)
+            i0 = int(math.ceil((bearing - half_ang - msg.angle_min)
+                               / msg.angle_increment))
+            i1 = int(math.floor((bearing + half_ang - msg.angle_min)
+                                / msg.angle_increment))
+            if i0 < 0 or i1 >= n_beams or i1 < i0:
+                continue    # 창이 FOV 를 벗어남 — 판정 보류
+            hits = 0
+            passes = 0
+            for i in range(i0, i1 + 1):
+                r = msg.ranges[i]
+                if not math.isfinite(r):
+                    # Hokuyo 무반사는 inf/NaN — 그 방향은 끝까지 뚫린 것
+                    passes += 1
+                    continue
+                if r < r_valid_min:
+                    continue    # 0/근접 노이즈 — 무효 빔
+                if r >= r_open or r > r_a + self.memory_scan_slack:
+                    passes += 1
+                elif r >= r_a - self.memory_scan_slack:
+                    hits += 1
+                # else: 앞에서 끊김(가림) — 증거 없음
+            if hits > 0:
+                a['absent_streak'] = 0
+                continue
+            if passes < self.memory_scan_min_pass:
+                continue        # 가림/무효 위주 — 판정 보류, 스트릭 유지
+            a['absent_streak'] = int(a['absent_streak']) + 1
+            if not a['absent'] and \
+                    a['absent_streak'] >= self.memory_scan_clear_frames:
+                a['absent'] = True
+                self.get_logger().info(
+                    f"랩 기억 카빙: s={a['s']:.2f} d={a['d']:+.2f} — "
+                    f"스캔 관통 {a['absent_streak']}프레임 "
+                    f"(r={r_a:.2f}m), 주입 중단")
 
     def resolve_track_id(self, src_id, s, d, is_dynamic):
         """이 검출을 어느 트랙 id 로 취급할지 정한다 (선언부 주석 참조).
@@ -711,10 +902,22 @@ class PerceptionObstacleBridgeNode(Node):
         """
         if not self.memory_enabled or self.track_length <= 0.0:
             return
+        # 앵커 폭 상한 = 원통 반경. 실측 발행에는 static_cylinder 고정이
+        # 있는데 기억만 관측 클러스터 폭을 그대로 흡수하는 비대칭이었다 —
+        # run_0817_145548 에서 half 0.26~0.32 앵커(콘 규격의 2배)가 확정돼
+        # 주입 밴드 0.64 m 가 회랑을 실제보다 좁게 만들었다. 벽 접선/이웃
+        # 콘이 물린 큰 클러스터도 기억은 콘 하나로 취급한다. 큰 물체로
+        # 연습하는 날은 static_cylinder_radius_m 을 같이 올릴 것 (선언부).
+        half = min(half, self.cyl_radius)
         # 근거리 동적 전환은 콘이 스치며 밀린 것이거나 근거리 중심점 걸음이다
         # (선언부 주석의 7건 실측). 그 거리에서 나온 동적 표는 무시한다.
         far_dynamic = is_dynamic and fwd >= self.memory_poison_min_dist
-        a = self._find_anchor(s, d)
+        a, match_cost = self._find_anchor(s, d)
+        # 중심 매칭(cost <= latch 게이트)만이 라치를 세우고 카빙된 앵커를
+        # 되살린다. 가장자리 매칭은 위치/랩 적립에는 쓰되 정책은 못 바꾼다
+        # — run_0817_150059 의 유령 불사(가장자리 1프레임이 매 랩 misses 를
+        # 리셋)와 근거리 게이트 무력화가 전부 가장자리 프레임이었다.
+        central = a is not None and match_cost <= self.memory_match_latch_cost
         if a is None:
             if far_dynamic or not measured:
                 return          # 동적/외삽으로는 새 앵커를 만들지 않는다
@@ -737,9 +940,11 @@ class PerceptionObstacleBridgeNode(Node):
                 'best_s': s, 'best_d': d, 'best_half': half,
                 'mem_id': self.memory_next_id,
                 'matched_this_pass': False, 'pass_open': False,
+                'absent': False, 'absent_streak': 0,
             }
             self.memory_next_id += 1
             self.memory.append(a)
+            central = True      # 방금 이 관측으로 만든 앵커다
         if far_dynamic:
             # 대책 ①: 먼 거리에서 상대차로 보인 자리는 영구히 기억하지 않는다.
             a['poisoned'] = True
@@ -749,10 +954,20 @@ class PerceptionObstacleBridgeNode(Node):
             # (그 프레임의 중심점이 실제로 흔들린 상태이므로).
             # 다만 "지나가면서 실제로 봤다"는 사실은 남겨 free-space carving 이
             # 멀쩡한 기억을 지우지 않게 한다.
-            if measured:
+            if measured and central:
                 a['matched_this_pass'] = True
             return
-        a['matched_this_pass'] = True
+        if central:
+            a['matched_this_pass'] = True
+            if a['absent']:
+                # 스캔 카빙으로 꺼진 앵커를 실측 중심 매칭이 되살린다
+                # (콘을 도로 갖다 놓은 경우). 관통 판정과 검출이 다투면
+                # 검출이 이긴다 — 실물을 놓치는 쪽이 더 비싸다.
+                a['absent'] = False
+                a['absent_streak'] = 0
+                self.get_logger().info(
+                    f"랩 기억 부활: s={a['s']:.2f} d={a['d']:+.2f} "
+                    f"(실측 재매칭, cost={match_cost:.2f})")
         # 위치 갱신은 **전방** 관측만 쓴다. 지나친 뒤의 프레임은 근거리
         # 중심점 걸음이 가장 심한 구간이라(정적->동적 전환 7건이 전부 거기)
         # 정확도를 올리려는 목적과 정반대로 움직인다.
@@ -791,6 +1006,11 @@ class PerceptionObstacleBridgeNode(Node):
             # carving 이 안 걸리고 레지스트리가 영원히 자란다.
             a['pass_open'] = True
             if not a['confirmed']:
+                continue
+            # 스캔 카빙 (선언부 주석): 자리가 비어 있음을 빔 관통으로 증명한
+            # 앵커는 랩 경계를 기다리지 않고 즉시 주입을 멈춘다. pass_open
+            # 뒤에 두어 랩 정산(miss)은 그대로 돌아가게 한다.
+            if a.get('absent'):
                 continue
             # 근거리 게이트 (선언부 주석): 이번 통과에서 실측이 한 번도 안
             # 붙은 기억은 여기서 손을 뗀다. 유령을 코앞까지 끌고 가지 않고,
