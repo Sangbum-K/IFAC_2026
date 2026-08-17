@@ -89,7 +89,9 @@ perception_obstacle_bridge_node:
     # 않는다. 그래서 세 프로파일(real_car / sim_real_car / sim)이 같은 값을
     # 갖고, 켜고 끌 때는 셋을 같이 한다.
     # 2026-08-17: off -> on (run_0817_124904 정면충돌. 근거는 real_car.yaml).
-    bridge/memory_enabled: true
+    # 2026-08-17 (2): on -> off 로 되돌림 — 실차 미검증 거동 변경을 지금
+    # 감수하지 않는다. 다시 켤 조건도 real_car.yaml 에 있다.
+    bridge/memory_enabled: false
     bridge/memory_confirm_laps: 2
     bridge/memory_forget_misses: 2
     bridge/memory_match_s_m: 0.60
