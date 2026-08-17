@@ -112,6 +112,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/commit_min_obs", 7);
     this->declare_parameter("spliner/commit_min_speed_mps", 0.3);
     this->declare_parameter("spliner/commit_release_empty_sec", 1.0);
+    this->declare_parameter("spliner/commit_tail_release_lead_m", 3.0);
+    this->declare_parameter("spliner/commit_break_confirm_cycles", 2);
     this->declare_parameter("spliner/creep_escape_speed", 0.6);
     // 원호 이탈 (BuildEscapeArc) — 근거는 spliner_node.hpp 선언부 주석.
     this->declare_parameter("spliner/escape_arc_enabled", true);
@@ -230,6 +232,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/commit_min_speed_mps").as_double();
     commit_release_empty_sec_ =
         this->get_parameter("spliner/commit_release_empty_sec").as_double();
+    commit_tail_release_lead_m_ = this->get_parameter(
+        "spliner/commit_tail_release_lead_m").as_double();
+    commit_break_confirm_cycles_ = static_cast<int>(this->get_parameter(
+        "spliner/commit_break_confirm_cycles").as_int());
     creep_escape_speed_ =
         this->get_parameter("spliner/creep_escape_speed").as_double();
     escape_arc_enabled_ =
@@ -366,6 +372,13 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         commit_min_obs_ < commit_break_min_obs_ || commit_min_obs_ > 20 ||
         commit_min_speed_ < 0.0 || commit_min_speed_ > 3.0 ||
         commit_release_empty_sec_ < 0.0 || commit_release_empty_sec_ > 10.0 ||
+        // 0 = 꼬리 절단 비활성. 상한은 lookahead — 그보다 큰 여유를 요구하면
+        // 절단점이 항상 기동 구간 안으로 들어와 조건이 성립할 수 없다.
+        commit_tail_release_lead_m_ < 0.0 ||
+        commit_tail_release_lead_m_ > lookahead_m_ ||
+        // 1 = 종전 동작(즉시 파기). 상한은 인지 드롭아웃(0812 실측 최대
+        // 745 ms)보다 훨씬 짧게 — 확정 지연은 프레임 단위여야 한다.
+        commit_break_confirm_cycles_ < 1 || commit_break_confirm_cycles_ > 5 ||
         creep_escape_speed_ < 0.0 || creep_escape_speed_ > 3.0 ||
         dyn_pass_speed_ratio_ < 1.0 || dyn_pass_speed_ratio_ > 2.0 ||
         cls_min_nb_meas_ < 2 || cls_min_nb_meas_ > 100 ||
@@ -1107,8 +1120,149 @@ void SplinerNode::Run() {
             const bool nothing_ahead =
                 commit_release_empty_sec_ > 0.0 && all_ahead_now.empty() &&
                 std::isfinite(empty_for) && empty_for >= commit_release_empty_sec_;
+            // ── 꼬리 충돌은 커밋 파기 사유가 아니다 (2026-08-18) ──────────────
+            // 재검증이 커밋 경로 **전체**를 봤다. 그런데 커밋이 지키는 것은
+            // 기동(진입 블렌드 + 대상 장애물 통과)이고, 그 뒤에 붙는
+            // raceline 복귀 꼬리는 보호 대상이 아니다 — 거기에 있는 장애물은
+            // 어차피 다음 기동으로 따로 계획한다. 그런데 그 꼬리는 정의상
+            // d≈0 (raceline) 이므로 **하류 콘에 반드시 걸린다**.
+            //   run_0817_194156 실측: committed_break 180 회 중 path_collision
+            //   115. 오프라인으로 111 건을 재현해 어느 장애물이 깼는지 보면
+            //     · 40% 가 4 m 이상 앞, 25% 가 6 m 이상 앞 (중앙 3.5 m)
+            //     · 5 m 이상 앞인 경우 충돌점의 경로상 위치 0.83(꼬리),
+            //       그중 49% 가 |d| < 0.10 = 복귀 구간
+            //     · 깬 장애물의 47% 는 관측 나이 0.4 초 미만 —
+            //       commit_break_min_obs(7) 를 그 순간 막 넘긴 트랙이다
+            //   파기 시점은 pos/span 중앙 0.14, 즉 기동의 14% 지점이다.
+            // 그리고 그 대가가 트레일링이다: 트레일링 에피소드 71 개 중
+            // 62 개(87%)가 직전 0.4 초 안의 committed_break 뒤에 시작했고,
+            // 재계획 시점의 장애물 거리는 중앙 0.56 m 였다(성공한 lane_switch
+            // 는 중앙 4.19 m). 그 거리에서는 lane_geom_floor 가 옳게 거부한다
+            // — 회랑에 자리는 있었다(정적 트레일링 1339 중 1337 에서 한쪽
+            // 레인이 성립, 여유 중앙 0.59 m, 필요 횡이동 중앙 0.22 m).
+            //   즉 "자리가 없어서" 가 아니라 "0.5 m 앞에서 처음 계획해서" 다.
+            //
+            // 그래서 충돌점이 기동 구간 **밖**이고 재계획 여유가 남아 있으면
+            // 파기하지 않고 경로를 그 앞에서 **자른다**. 커밋은 잘린 끝에서
+            // path_end 로 정상 만료되므로, 다음 장애물은 0.5 m 가 아니라
+            // plan_lead 만큼 앞에서 처음 계획된다. 자른 뒤에는 충돌하던 꼬리가
+            // 경로에 없으므로 다음 사이클의 재검증이 그대로 통과한다(수렴).
+            // 충돌점이 기동 안이거나 여유가 없으면 종전대로 파기한다 — 그건
+            // "지금 하는 기동 자체가 더는 안전하지 않다" 이므로 사유가 다르다.
+            double blocking_s = -1.0;
+            const f1tenth_planning_msgs::msg::Obstacle *blocking_obs = nullptr;
+            double contact_slack = std::numeric_limits<double>::infinity();
+            const bool path_clear = CheckPathCollision(
+                committed_wpnts_.wpnts, stable_ahead, &blocking_s,
+                &blocking_obs, &contact_slack);
+            // ── 파기 확정: 깊이와 지속을 본다 (2026-08-18) ────────────────────
+            // 종전에는 **한 사이클에 한 번** 박스에 걸리기만 하면 즉시 파기였다.
+            // 어느 트랙을 세느냐에는 관측 7회 게이트(commit_break_min_obs)가
+            // 있는데, "얼마나 깊이" "몇 번" 걸렸는지에는 문턱이 하나도 없었다.
+            // run_0817_194156 실측 (path_collision 파기 115 건):
+            //   · 파기 시점부터 거슬러 세면 **70 건(61%)이 딱 한 프레임**짜리
+            //     충돌이다. 다음 프레임이면 사라진다. 6 사이클 이상 지속된
+            //     진짜배기는 32 건(28%)뿐이다.
+            //   · 기동 구간 내 파기 50 건 중 46 건(92%)이 **커밋의 대상 장애물
+            //     자신**이고, 47 건 중 46 건(98%)에서 커밋 생성 이후 그 박스가
+            //     넓어졌다(가장자리 이동 중앙 10~12 cm).
+            //   · 그 결과 파기 시점 관측 폭 중앙 54 cm — 실제 콘은 30 cm 다.
+            //     정적 장애물 관측 폭은 중앙 30 cm 로 정확하지만 0~5 m 에서
+            //     17~20% 의 프레임이 45 cm 를 넘고, 인접 프레임 폭이 10 cm 넘게
+            //     튀는 경우가 9% 다. 박스가 5 프레임에 1 번꼴로 부푼다.
+            //   · 침투 깊이 중앙 5.3 cm 이고, **44 건(88%)은 차체가 닿지도
+            //     않는다** (박스 27 cm 중 12 cm 는 분산 여유라 차체는 그만큼
+            //     늦게 닿는다).
+            // 그래서 둘을 나눈다:
+            //   · 차체 접촉선을 넘었으면(contact_slack <= 0) **즉시** 파기한다.
+            //     여기에는 지연을 두지 않는다 — 물리적으로 닿는 상황이다.
+            //   · 그 아래(= 분산 여유만 갉아먹은 상태)면 연속 N 사이클일 때만
+            //     파기한다. N=2 면 확정이 33 ms(5 m/s 에서 0.17 m) 늦어지는
+            //     대신 115 건 중 74 건(64%)이 살아남는다. N=3 으로 늘려도 4 건
+            //     밖에 더 못 얻으므로 2 가 그 계단이다.
+            // ⚠️ 이 완화는 **이미 성립한 커밋의 유지 판정**에만 적용된다.
+            //    회피 경로를 새로 만드는 쪽(BuildLaneSwitch/DoSpline 의
+            //    CheckPathCollision)은 종전 그대로 한 번에 거부한다.
+            // 잔여 위험: 유예 56 건 중 다음 사이클에도 충돌이 남은 30 건에서
+            // 2 건이 그 33 ms 동안 접촉 여유 -1.1 cm 까지 내려간다. 즉시파기
+            // 문턱을 양수로 올려도 안 잡힌다 (0/1/2/3/5 cm -> 2/2/2/1/1 건).
+            // 근거는 params.yaml 주석 참조 — 요약하면 그 -1.1 cm 는 5 프레임에
+            // 1 번꼴로 25 cm 부푸는 **관측** 박스 기준이고, 한 사이클 일찍
+            // 파기해도 폴백이 그 안에 차의 횡위치를 못 바꾼다.
+            const bool contact = !path_clear && !(contact_slack > 0.0);
+            if (path_clear) {
+                commit_collision_run_ = 0;
+            } else {
+                ++commit_collision_run_;
+            }
+            const bool collision_confirmed =
+                !path_clear &&
+                (contact || commit_collision_run_ >= commit_break_confirm_cycles_);
+            if (!path_clear && !collision_confirmed) {
+                NoteReject("commit_collision_deferred");
+            }
+            bool tail_blocked = false;
+            double tail_release_s = -1.0;
+            if (!path_clear && commit_tail_release_lead_m_ > 0.0 &&
+                committed_obs_end_s_ >= 0.0 && blocking_s >= 0.0 &&
+                blocking_obs != nullptr)
+            {
+                // 대상 장애물을 이미 지났으면 커밋의 보호 목적은 끝났다 —
+                // 남은 충돌은 전부 "다음 것"이므로 정상적으로 파기한다.
+                const double past_obs_end =
+                    Mod(cur_s_ - committed_obs_end_s_, track_len_);
+                const bool obs_end_passed =
+                    past_obs_end > 0.0 && past_obs_end < track_len_ * 0.5;
+                const double blocking_ahead =
+                    Mod(blocking_s - cur_s_, track_len_);
+                // 기동 구간의 끝. hold 창과 같은 규약(장애물 뒤 0.5 m).
+                const double maneuver_end =
+                    Mod(committed_obs_end_s_ - cur_s_, track_len_) + 0.5;
+                // 다음 사이클 티어가 실제로 기동을 만들 수 있는 거리.
+                // ── 진폭은 **차단 장애물에서 직접** 뽑는다 (2026-08-18) ────────
+                // 처음엔 evasion_dist_(0.35) 를 상수 진폭으로 썼는데,
+                // BlendDist 는 v 에 정비례하므로 고속에서 모자란다.
+                //   tools/bag_analysis_0817/commit_tail.py (lead 3.0 고정,
+                //   진폭 evasion_dist): 유예 38 건 중 **8 건이 만료 시점에
+                //   회피도 제동도 불가**했다 — 전부 v 4.85~5.87 구간이고
+                //   실제 필요 진입거리가 3.02~3.74 m 인데 lead 는 3.00~3.14
+                //   였다. 상수 진폭으로는 이 절단을 실차에 올릴 수 없다.
+                // 재계획이 실제로 옮겨야 할 양은 그 장애물의 가까운 쪽
+                // 가장자리 + 요구 간격이고, 기준점은 raceline(d=0) 이다 —
+                // 꼬리에서 이미 복귀 중이므로 그때 자차 d 는 0 근처다.
+                const double blk_clear =
+                    RequiredObstacleClearance(*blocking_obs);
+                const double shift = std::max(
+                    std::min(std::abs(blocking_obs->d_left + blk_clear),
+                             std::abs(blocking_obs->d_right - blk_clear)),
+                    evasion_dist_);
+                // 속도는 "지금"이 아니라 "만료 지점까지 가는 동안 낼 속도"다.
+                // 지금 속도로 재면 그 사이의 가속만큼 리드가 모자란다 —
+                // commit_tail.py 에서 남은 fail-open 2 건이 정확히 그 차이
+                // (파기 5.66 -> 만료 5.80 m/s, 부족 0.09 m)였다.
+                // BuildLaneSwitch 의 carried_in 이 같은 이유로 쓰는 값이다.
+                const double lead_v =
+                    BlendPlanSpeed(Mod(cur_s_, track_len_), blocking_ahead);
+                const double plan_lead = std::max(
+                    commit_tail_release_lead_m_,
+                    BlendDist(shift, lead_v) + vehicle_half_length_m_);
+                if (!obs_end_passed && blocking_ahead < track_len_ * 0.5 &&
+                    blocking_ahead - plan_lead > maneuver_end)
+                {
+                    tail_blocked = true;
+                    tail_release_s = Mod(
+                        cur_s_ + (blocking_ahead - plan_lead), track_len_);
+                }
+            }
             if (pos < span && !new_obs_beyond_commit && !nothing_ahead &&
-                CheckPathCollision(committed_wpnts_.wpnts, stable_ahead, nullptr)) {
+                (!collision_confirmed || tail_blocked)) {
+                // 절단은 **확정된** 충돌에만 한다. 한 프레임짜리 유령으로
+                // 커밋을 짧게 만들면 만료가 근거 없이 앞당겨진다.
+                if (tail_blocked && collision_confirmed) {
+                    TruncateCommitAt(tail_release_s, blocking_s);
+                    span = Mod(committed_until_s_ - committed_start_s_,
+                               track_len_);
+                }
                 evasion_wpnts.wpnts = committed_wpnts_.wpnts;
                 // ── 기하는 얼리되 속도는 갱신한다 (2026-08-15) ─────────────
                 // 커밋은 "매 사이클 재계획하면 복귀 중인 차가 raceline 전속
@@ -1157,6 +1311,16 @@ void SplinerNode::Run() {
                 if (nothing_ahead) {
                     NoteReject("commit_released_nothing_ahead");
                 }
+                // 꼬리 절단으로 만료된 경우(= 잘린 끝까지 주행)를 따로 센다.
+                // 이 경로로 만료되는 것이 설계 의도이고, 그 뒤 티어가 다시
+                // 도는 시점의 장애물 거리가 이 수정의 성패다.
+                if (!new_obs_beyond_commit && !nothing_ahead &&
+                    pos >= span && committed_tail_truncated_)
+                {
+                    NoteReject("commit_released_tail_lead");
+                }
+                committed_tail_truncated_ = false;
+                commit_collision_run_ = 0;
                 committed_until_s_ = -1.0;
                 committed_obs_end_s_ = -1.0;
             }
@@ -1428,6 +1592,8 @@ void SplinerNode::Run() {
                 }
                 committed_start_s_ = evasion_wpnts.wpnts.front().s_m;
                 committed_until_s_ = evasion_wpnts.wpnts.back().s_m;
+                committed_tail_truncated_ = false;
+                commit_collision_run_ = 0;
                 // 조기 해제 판정용: 이 커밋이 대상으로 삼은 장애물의 뒷 끝.
                 committed_obs_end_s_ = Mod(closest.s_end, track_len_);
             }
@@ -4692,6 +4858,55 @@ void SplinerNode::NoteRetryTarget(double d_target) {
     has_retry_d_ = true;
 }
 
+void SplinerNode::TruncateCommitAt(double release_s, double blocking_s) {
+    auto &wp = committed_wpnts_.wpnts;
+    if (wp.size() < 2 || !std::isfinite(release_s) || !(track_len_ > 0.0)) {
+        return;
+    }
+    // 경로 시작(committed_start_s_)부터 release_s 까지 남긴다. s 는 단조
+    // 증가하지만 랩을 넘을 수 있으므로 시작점 기준 누적 거리로 센다.
+    const double keep = Mod(release_s - committed_start_s_, track_len_);
+    if (!(keep > 0.0) || keep >= track_len_ * 0.5) {
+        return;      // 자를 것이 없거나 wrap 해석이 애매하다 — 손대지 않는다
+    }
+    size_t keep_n = wp.size();
+    for (size_t i = 0; i < wp.size(); ++i) {
+        if (Mod(wp[i].s_m - committed_start_s_, track_len_) > keep) {
+            keep_n = i;
+            break;
+        }
+    }
+    // 최소 길이. 컨트롤러 L1(≈0.47v-0.2, 5 m/s 에서 2.15 m)이 잘린 끝을
+    // 넘어 raceline 을 읽는 구간을 남기지 않으려면 기동을 덮을 만큼은
+    // 있어야 한다. 못 채우면 자르지 않고 그대로 둔다 — 호출부의
+    // blocking_ahead - plan_lead > maneuver_end 가 이미 이것을 보장하므로
+    // 여기 도달하면 수치 이상이라는 뜻이고, 그때는 종전 파기 경로가 옳다.
+    constexpr size_t kMinKeep = 5;
+    if (keep_n < kMinKeep || keep_n >= wp.size()) {
+        return;
+    }
+    const size_t was_n = wp.size();
+    wp.resize(keep_n);
+    if (committed_geom_ceiling_.size() > keep_n) {
+        committed_geom_ceiling_.resize(keep_n);
+    } else if (committed_geom_ceiling_.size() != keep_n) {
+        // 크기가 어긋나면 속도 재계산이 동결값으로 안전하게 떨어진다.
+        committed_geom_ceiling_.clear();
+    }
+    if (committed_mrks_.markers.size() > keep_n) {
+        committed_mrks_.markers.resize(keep_n);
+    }
+    committed_until_s_ = wp.back().s_m;
+    if (!committed_tail_truncated_) {
+        committed_tail_truncated_ = true;
+        NoteReject("commit_tail_truncated");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+            "커밋 꼬리 절단: 차단 s=%.2f, 만료 s=%.2f (%zu -> %zu wpnts) — "
+            "기동은 유지하고 그 앞에서 재계획한다",
+            blocking_s, committed_until_s_, was_n, keep_n);
+    }
+}
+
 void SplinerNode::PublishRejectCounts() {
     // 1Hz. 거부 로그가 전부 THROTTLE(2000ms)인데 루프는 20~30Hz라 최대
     // 1/40~1/60만 남는다 — 0808 run_185049 분석에서 "left 레인이 왜
@@ -4894,7 +5109,15 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::StableObstacles(
 bool SplinerNode::CheckPathCollision(
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> &path,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles,
-    double *blocking_s) const {
+    double *blocking_s,
+    const f1tenth_planning_msgs::msg::Obstacle **blocking_obs,
+    double *contact_slack) const {
+    if (blocking_obs != nullptr) {
+        *blocking_obs = nullptr;
+    }
+    if (contact_slack != nullptr) {
+        *contact_slack = std::numeric_limits<double>::infinity();
+    }
     if (path.empty() || !(track_len_ > 0.0)) {
         return false;
     }
@@ -4993,6 +5216,18 @@ bool SplinerNode::CheckPathCollision(
                 if (ahead < nearest_ahead) {
                     nearest_ahead = ahead;
                     *blocking_s = s_blocking;
+                    if (blocking_obs != nullptr) {
+                        *blocking_obs = &obs;
+                    }
+                    if (contact_slack != nullptr) {
+                        // 확장 박스가 아니라 **관측된 장애물 자체**를 기준으로
+                        // 잰다. inside > 0 이면 경로가 장애물 안이고, 차체는
+                        // 그보다 반폭만큼 먼저 닿는다.
+                        const double inside = std::min(
+                            path[i].d_m - (obs.d_right + motion_d),
+                            (obs.d_left + motion_d) - path[i].d_m);
+                        *contact_slack = -inside - vehicle_half_width_m_;
+                    }
                 }
                 break;
             }

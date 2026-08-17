@@ -151,10 +151,20 @@ private:
   // 모든 회피 후보 검증에 사용). 차량 반길이/반폭, 장애물 분산, 경로
   // 도착시각에서의 등속 이동을 포함하며 목표 장애물도 절대 제외하지 않는다.
   // 반환 true=충돌 없음, false=충돌(blocking_s에 막은 장애물의 s_start).
+  // blocking_obs 를 주면 그 최근접 차단 장애물을 가리키게 한다 (obstacles
+  // 안의 원소를 가리키므로 그 벡터보다 오래 쓰면 안 된다). 커밋 꼬리 절단이
+  // 다음 기동의 횡 진폭을 이 장애물에서 직접 뽑는 데 쓴다 — 상수 진폭으로
+  // 재계획 여유를 잡으면 고속에서 모자란다(BlendDist 가 v 에 정비례).
+  // contact_slack 을 주면 그 최근접 차단점에서 **차체 가장자리와 장애물
+  // 가장자리 사이의 실제 거리**를 담는다 (양수 = 아직 안 닿는다). 충돌 박스는
+  // 차 반폭 + 관측 분산이라, "박스에 들어갔다"와 "차가 닿는다" 사이에 분산만큼
+  // 여유가 있다. 커밋 파기 확정이 그 둘을 구별하는 데 쓴다.
   bool CheckPathCollision(
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & path,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles,
-    double * blocking_s) const;
+    double * blocking_s,
+    const f1tenth_planning_msgs::msg::Obstacle ** blocking_obs = nullptr,
+    double * contact_slack = nullptr) const;
   // lookahead 내 전체 장애물 (raceline 근접 여부 무관 — 경로 검증용)
   std::vector<f1tenth_planning_msgs::msg::Obstacle> ObstaclesInLookahead(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
@@ -420,6 +430,12 @@ private:
   // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
   void NoteRetryTarget(double d_target);
   void PublishRejectCounts();
+  /// 커밋 경로를 release_s 에서 잘라 낸다 (꼬리가 blocking_s 의 장애물과
+  /// 충돌할 때). 웨이포인트·기하 상한·마커를 함께 줄이고 committed_until_s_
+  /// 를 새 끝으로 옮겨, 커밋이 그 자리에서 path_end 로 정상 만료되게 한다.
+  /// 남는 점이 너무 적으면(기동조차 못 덮으면) 아무것도 하지 않는다 —
+  /// 그 경우 호출부의 조건이 이미 성립하지 않으므로 도달하지 않는다.
+  void TruncateCommitAt(double release_s, double blocking_s);
 
   // ── 사이클 트레이스 (trace_cycles_) ──────────────────────────────────
   // 거부 로그가 전부 THROTTLE(2000ms)이고 카운터는 누적값만 주므로,
@@ -763,6 +779,13 @@ private:
   double commit_release_empty_sec_{1.0};
   // 전방 목록이 마지막으로 비어 있지 않았던 시각 (위 판정용).
   rclcpp::Time last_obs_ahead_time_{0, 0, RCL_ROS_TIME};
+  /// 꼬리 충돌로 커밋을 잘라 낼 때, 차단점 앞에 남겨 둘 재계획 여유 [m].
+  /// 커밋은 여기서 path_end 로 만료되고 그 자리에서 티어가 다시 돈다 —
+  /// 이 값이 "다음 장애물을 몇 미터 앞에서 처음 계획하는가"를 정한다.
+  /// 실효값은 max(이 값, BlendDist(차단 장애물 진폭, BlendPlanSpeed) +
+  /// 차 반길이) 라 속도·진폭이 커지면 자동으로 늘어난다.
+  /// 0 이면 꼬리 절단 비활성(종전 동작).
+  double commit_tail_release_lead_m_{4.0};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
@@ -796,6 +819,16 @@ private:
   /// 구별하는 데 쓴다 — 기동 중에 커밋을 풀면 raceline 전속 경로로
   /// 순간 전환돼 반대편 벽을 친다(커밋 도입 근거와 같은 실측).
   double committed_obs_end_s_{-1.0};
+  /// 커밋 파기 확정에 필요한 연속 충돌 사이클 수. 1 이면 종전 동작
+  /// (한 번 걸리면 즉시 파기). 차체 접촉(contact_slack <= 0)은 이 값과
+  /// 무관하게 항상 즉시 파기하므로, 이 지연이 적용되는 것은 "분산 여유만
+  /// 갉아먹은" 얕은 충돌뿐이다.
+  int commit_break_confirm_cycles_{2};
+  /// 현재 커밋에서 충돌이 연속으로 관측된 사이클 수 (위 판정용).
+  int commit_collision_run_{0};
+  /// 이 커밋이 꼬리 충돌로 한 번이라도 잘렸는가. 만료 사유를 구분하는 데만
+  /// 쓴다 (path_end vs 꼬리 절단에 의한 계획적 만료).
+  bool committed_tail_truncated_{false};
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
   double active_speed_scale_{1.0};
 
