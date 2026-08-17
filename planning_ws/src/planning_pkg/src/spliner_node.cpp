@@ -4076,17 +4076,48 @@ bool SplinerNode::BuildTrailing(
                 stop_dist = 0.0;   // 이미 안쪽까지 파고든 상태
             }
             stop_dist = std::max(stop_dist, 0.0);
+            // ── 이 곡선도 v_target 을 목표로 삼는다 (2026-08-17) ──────────────
+            // 이 분기는 d809831("정적 장애물의 정지를 폐지한다") 이전부터
+            // 있었고 그 커밋이 손대지 않았다 — 3913줄과 **같은 마무리 누락**
+            // 이다. 위 3994줄의 v_allow 는 정지 조건을
+            //   rem >= v*T + (v^2 - v_target^2)/(2a)
+            // 로 풀어 v_target 으로 수렴하는데, 여기 v_stop 만 v_target 항이
+            // 빠져 있어 **allow_stop 과 무관하게 항상 완전 정지 곡선**을
+            // 덮어씌웠다. 정적 장애물은 allow_stop=false 라 3657줄이
+            // trailing_retry_speed(2.5) 바닥을 깔아 두는데 그게 여기서 지워진다.
+            //
+            // run_0817_194156 실측 (트레일링 1,408 사이클 중 이 분기 1,148 =82%):
+            //   · 명령 선두 / 현재속도 비율 중앙 1.00, p10 0.56
+            //   · 선두가 현재보다 낮은(=가속 금지) 사이클 45%
+            //   · 정상 주행(committed_hold)은 가속 허용 70% / +0.24 m/s 인데
+            //     트레일링은 4~11% 로 떨어진다
+            //   · 트레일링 1회당 3.69 -> 3.15 m/s (-0.54), 지속 중앙 664 ms
+            // stop_dist 1.0 m 예: 옛 곡선 -0.3+sqrt(0.09+2.0)=1.15 m/s,
+            // 새 곡선 -0.3+sqrt(0.09+6.25+2.0)=2.59 m/s. 즉 차가 2.5 아래로
+            // 떨어져 있으면 이제 **트레일링 중에도 재가속**한다.
+            //
+            // 거동이 바뀌지 않는 경우(의도됨): allow_stop=true 인 동적 상대와
+            // 비상정지는 v_target_prof_actual 이 상대 속도 또는 0 이므로
+            // v_target=0 인 경우 옛 식과 비트 단위로 같다.
+            // ⚠️ 트레이드는 1326줄이 이미 명시한 것과 동일하다 — 정적 장애물에
+            // 대한 "완전 정지" 경로가 이 분기에서도 사라진다. 남는 방어선은
+            // 컨트롤러 백스톱과 recovery_supervisor 다.
             const double aT_stop = trailing_decel_ * trailing_lag_sec_;
             for (size_t i = 0; i < out_wpnts.wpnts.size(); ++i) {
                 const double dist = static_cast<double>(i) * wpnt_dist_;
                 const double rem_stop = std::max(stop_dist - dist, 0.0);
                 const double v_stop = std::max(
                     -aT_stop + std::sqrt(
-                        aT_stop * aT_stop + 2.0 * trailing_decel_ * rem_stop),
+                        aT_stop * aT_stop +
+                        v_target_prof_actual * v_target_prof_actual +
+                        2.0 * trailing_decel_ * rem_stop),
                     0.0);
+                // v_target 을 바닥으로 함께 깐다 — 3999줄 주석과 같은 이유로
+                // 지연항 -aT 가 rem_stop=0 에서 v_target 아래로 내려간다.
                 out_wpnts.wpnts[i].vx_mps = std::min(
                     out_wpnts.wpnts[i].vx_mps,
-                    std::max(v_stop, reachable_v(dist)) / command_scale);
+                    std::max({v_stop, reachable_v(dist),
+                              v_target_prof_actual}) / command_scale);
             }
             // 속도를 덮어썼으면 ax 도 다시 계산한다. ApplySpeedProfile 은
             // 마지막에 v² 공간미분으로 ax 를 맞추는데, 이 덮어쓰기는 그
