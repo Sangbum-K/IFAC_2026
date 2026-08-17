@@ -55,6 +55,7 @@
 #include "perception_pkg/preprocessing.hpp"
 #include "perception_pkg/track_filter.hpp"
 #include "perception_pkg/tracker.hpp"
+#include "perception_pkg/wall_distance_map.hpp"
 
 namespace perception_pkg
 {
@@ -89,35 +90,6 @@ double stamp_to_sec(const builtin_interfaces::msg::Time & t)
 
 }  // namespace
 
-/// /map에서 만든 셀별 최근접 벽거리 테이블. 한 번 만들면 불변이라
-/// shared_ptr로 통째로 교체해 on_scan과 cb_map 사이의 경합을 없앤다.
-struct WallDistanceMap
-{
-  std::vector<float> dist;   ///< row-major, [m]
-  int width{0};
-  int height{0};
-  double origin_x{0.0};
-  double origin_y{0.0};
-  double origin_yaw{0.0};
-  double resolution{0.0};
-
-  /// 셀 인덱스를 벗어나면 false. 맵 밖 포인트는 "열린 공간"으로 취급하지 않는다.
-  bool distance_at(double x, double y, double & out) const
-  {
-    const double dx = x - origin_x;
-    const double dy = y - origin_y;
-    const double c = std::cos(origin_yaw);
-    const double s = std::sin(origin_yaw);
-    const long col = static_cast<long>(std::floor((c * dx + s * dy) / resolution));
-    const long row = static_cast<long>(std::floor((-s * dx + c * dy) / resolution));
-    if (row < 0 || row >= height || col < 0 || col >= width) {
-      return false;
-    }
-    out = static_cast<double>(dist[static_cast<std::size_t>(row) * static_cast<std::size_t>(width) +
-        static_cast<std::size_t>(col)]);
-    return true;
-  }
-};
 
 class ObstacleDetectorNode : public rclcpp::Node
 {
@@ -295,6 +267,19 @@ private:
     this->declare_parameter<double>("wall_dist_min_m", 0.15);
     this->declare_parameter<double>("map_wait_timeout_sec", 10.0);
 
+    // ---- 레이 일관성 필터 (맵 필터와 같은 WallDistanceMap 을 쓴다) ----
+    // 벽거리 필터의 **반대편**을 막는다: 저쪽은 벽에 너무 가까운 점을,
+    // 이쪽은 벽보다 뒤에서 온 점을 버린다. 근거는 ray_consistency_mask 주석.
+    // use_map_filter 가 켜져 있어야 동작한다 (맵이 없으면 기대거리가 없다).
+    this->declare_parameter<bool>("use_ray_filter", false);
+    // 기대 벽거리 대비 이만큼 넘어야 기각. 접선 입사 민감도 때문에 작게 잡으면
+    // 원거리 실물을 버린다 — 실측 근거는 ray_consistency_mask 주석 (1)번.
+    this->declare_parameter<double>("ray_filter_margin_m", 1.5);
+    // 안정성 판정용 빔 방향 섭동각 [deg]. 자세 오차 대표값.
+    this->declare_parameter<double>("ray_filter_probe_deg", 1.5);
+    // 섭동으로 기대거리가 이만큼 이상 흔들리면 그 빔은 판단하지 않는다.
+    this->declare_parameter<double>("ray_filter_unstable_m", 0.5);
+
     // ---- 트랙 경계(Frenet) 필터 ----
     this->declare_parameter<bool>("use_track_filter", false);
     this->declare_parameter<std::string>("global_waypoints_topic", "/global_waypoints");
@@ -367,6 +352,10 @@ private:
     wall_dist_min_ = this->get_parameter("wall_dist_min_m").as_double();
     max_cluster_radius_ = this->get_parameter("max_cluster_radius_m").as_double();
     map_wait_timeout_ = this->get_parameter("map_wait_timeout_sec").as_double();
+    use_ray_filter_ = this->get_parameter("use_ray_filter").as_bool();
+    ray_filter_margin_ = this->get_parameter("ray_filter_margin_m").as_double();
+    ray_filter_probe_deg_ = this->get_parameter("ray_filter_probe_deg").as_double();
+    ray_filter_unstable_ = this->get_parameter("ray_filter_unstable_m").as_double();
     use_track_filter_ = this->get_parameter("use_track_filter").as_bool();
     track_bound_inflation_ = this->get_parameter("track_bound_inflation_m").as_double();
     max_view_ahead_ = this->get_parameter("max_view_ahead_m").as_double();
@@ -390,6 +379,26 @@ private:
     {
       throw std::invalid_argument(
               "invalid wall_dist_min_m/max_cluster_radius_m/map_wait_timeout_sec");
+    }
+    // 여유 하한 0.3m: 그 아래로 내리면 접선 입사 빔의 기대거리 흔들림(실측
+    // 4~5m 에서 p90 0.70m)이 여유를 넘어 원거리 실물을 버리기 시작한다.
+    // 섭동각 상한 10도: 그보다 크면 이웃한 다른 구조물을 재게 되어
+    // 안정성 판정 자체가 무의미해진다.
+    if (!std::isfinite(ray_filter_margin_) ||
+      !(ray_filter_margin_ >= 0.3 && ray_filter_margin_ <= 20.0) ||
+      !std::isfinite(ray_filter_probe_deg_) ||
+      !(ray_filter_probe_deg_ >= 0.0 && ray_filter_probe_deg_ <= 10.0) ||
+      !std::isfinite(ray_filter_unstable_) ||
+      !(ray_filter_unstable_ >= 0.0 && ray_filter_unstable_ <= 20.0))
+    {
+      throw std::invalid_argument(
+              "invalid ray_filter_margin_m/ray_filter_probe_deg/ray_filter_unstable_m");
+    }
+    // 레이 필터는 맵에서 기대 벽거리를 얻는다 — 맵 구독은 use_map_filter 가
+    // 건다. 조용히 아무것도 안 하는 대신 기동 때 세운다 (그 조합은 설정 실수다).
+    if (use_ray_filter_ && !use_map_filter_) {
+      throw std::invalid_argument(
+              "use_ray_filter=true requires use_map_filter=true (기대 벽거리 출처가 맵이다)");
     }
     if (!std::isfinite(rate) || !std::isfinite(tf_timeout_sec) ||
       !std::isfinite(max_source_age_) || !std::isfinite(source_future_tolerance_) ||
@@ -829,6 +838,34 @@ private:
       }
     }
 
+    // ②.62 레이 일관성 필터 — 맵 벽보다 '뒤'에서 온 빔 제거.
+    // ②.6 과 같은 맵을 쓰지만 반대편을 막는다. 반드시 ②.6 **뒤**여야 한다:
+    // 벽에 붙은 점이 먼저 빠져야 남은 점만 레이캐스트하면 되고, 순서를 바꾸면
+    // 벽 표면 점들이 전부 "기대거리 근처"라 헛돌기만 한다.
+    // 자차 위치를 모르면(target_frame == 스캔 프레임) 레이의 원점이 없다.
+    if (use_ray_filter_ && wall_map) {
+      if (!have_sensor_xy) {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(), *this->get_clock(), 5000,
+          "use_ray_filter=true지만 target_frame이 스캔 프레임과 같아 자차 위치를 "
+          "알 수 없음 — 레이 필터 미적용");
+      } else {
+        const std::size_t before = scan.points.size();
+        std::size_t unstable = 0;
+        apply_mask(
+          scan.points, scan.ranges,
+          ray_consistency_mask(*wall_map, scan.points, sensor_xy, &unstable));
+        const std::size_t dropped = before - scan.points.size();
+        if (dropped > 0) {
+          RCLCPP_DEBUG_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "레이 일관성 필터: %zu/%zu 포인트 기각 (벽 뒤에서 반사), "
+            "접선 입사로 판단 보류 %zu",
+            dropped, before, unstable);
+        }
+      }
+    }
+
     // ②.65 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식.
     // 벽거리(②.6)와 직교하는 기준이라 벽 fringe가 남아도 여기서 걸린다.
     // 웨이포인트 미수신 중에는 적용하지 않는다(fail-open) — 여기서 스캔을 버리면
@@ -1005,6 +1042,85 @@ private:
     return keep;
   }
 
+  /// 레이 일관성 필터 — "맵 벽보다 **뒤**에서 돌아온 빔"을 버린다.
+  ///
+  /// 2D 세계에서 빔은 벽에 막힌다. 벽보다 먼 거리를 보고했다면 그 빔은 경계를
+  /// 통과한 것이고, 되돌아온 점은 트랙 밖 구조물이다. 벽거리 필터(wall_dist_min)
+  /// 는 이걸 못 잡는다 — 그 점은 정의상 **어느 벽에서도 멀리** 떨어져 있다.
+  ///
+  /// run_0815_191056 실측 근거 (tools/bag_analysis_0815/diagonal.py):
+  ///   · 벽보다 0.4m 이상 뒤에서 온 빔이 중앙 2.5% / p90 12.6% / 최대 52.8%
+  ///   · 초과 거리 중앙 2.64m, 넘긴 벽까지 거리 중앙 3.36m
+  ///   · 거리 의존: 0.5~1m 에서 0.84% -> 5.5~6m 에서 35.6%
+  ///   · 피치 의존: 0.5~1m 에서 -0.05%p(무관), 6~6.5m 에서 +23.8%p
+  ///     -> 원인은 차체 피치로 스캔 평면이 떠서 낮은 배리어를 넘는 것.
+  ///        (근본 대책은 배리어 높이. 13.7cm 라이다 기준 20cm 배리어는 4m 앞을
+  ///         0.90도에 뚫린다 — 브레이킹 피치로 충분한 각도다.)
+  ///   · 그렇게 들어온 점들이 코리도를 가로지르는 직선으로 찍힌다
+  ///     (t=46.49 실측: 직선 잔차 1.1cm, 길이 2.5m, s=31.2 d=-0.37 -> s=33.2 d=+1.15)
+  ///
+  /// **여유를 작게 잡으면 안 된다.** 접선 입사(빔이 벽과 거의 나란한 경우)에서는
+  /// 자세가 조금만 틀어져도 기대 벽거리가 미터 단위로 튄다. 같은 백에서 자세를
+  /// ±0.10m / ±1.5도 흔들었을 때 기대거리가 0.5m 넘게 흔들린 빔이
+  ///   4~5m 15.7% · 5~6m 31.7% · 6~7m 53.0%
+  /// 였고, 하필 거기가 실물 최초 검출이 몰린 구간이다(중앙 4.82m, 94%가 4m 이상).
+  /// 그래서 두 겹으로 막는다:
+  ///   (1) 여유 ray_filter_margin_m 를 넉넉히(기본 1.5m). 넘김 초과가 중앙
+  ///       2.64m 라 이 여유로도 절반 이상은 여전히 걸린다.
+  ///   (2) **안정성 게이트** — 빔 방향을 ±ray_filter_probe_deg 흔들어 기대거리가
+  ///       ray_filter_unstable_m 이상 흔들리면 그 빔은 판단하지 않고 살린다.
+  ///       (각도 섭동은 거리 R 에서 R*dtheta 의 횡변위를 만든다. 5m·1.5도 = 13cm 로
+  ///        위치오차 섭동을 이미 덮으므로 원점 섭동은 따로 두지 않는다.)
+  ///
+  /// 진짜 장애물은 **언제나 뒤 벽보다 가깝다** — 원리상 이 필터에 걸리지 않는다.
+  std::vector<uint8_t> ray_consistency_mask(
+    const WallDistanceMap & map, const std::vector<Point2> & points,
+    const Point2 & sensor_xy, std::size_t * out_unstable) const
+  {
+    std::vector<uint8_t> keep(points.size(), 1);   // 기본은 살린다 (fail-open)
+    const double probe = ray_filter_probe_deg_ * kPi / 180.0;
+    const double cp = std::cos(probe);
+    const double sp = std::sin(probe);
+    // 레이캐스트 상한. 이보다 먼 벽은 "모른다"로 두고 판단하지 않는다.
+    const double max_range = range_max_ + ray_filter_margin_;
+    std::size_t unstable = 0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+      const double dx = points[i][0] - sensor_xy[0];
+      const double dy = points[i][1] - sensor_xy[1];
+      const double r = std::hypot(dx, dy);
+      // 여유보다 가까운 빔은 어떤 기대거리(>=0)로도 기각될 수 없다 — 조기 탈출.
+      // 넘김이 근거리에서 0.84% 뿐이라는 실측과도 맞고, 연산의 대부분을 없앤다.
+      if (!(r > ray_filter_margin_) || !std::isfinite(r)) {
+        continue;
+      }
+      const double ux = dx / r;
+      const double uy = dy / r;
+      const double e0 = map.raycast(sensor_xy[0], sensor_xy[1], ux, uy, max_range);
+      if (e0 >= max_range) {
+        continue;                            // 맵 밖/벽 없음 — 판단 보류
+      }
+      if (r <= e0 + ray_filter_margin_) {
+        continue;                            // 벽 앞에서 온 정상 빔
+      }
+      // 기각 후보다. 이 빔의 기대거리가 자세 흔들림에 얼마나 민감한지 본다.
+      const double e1 =
+        map.raycast(sensor_xy[0], sensor_xy[1], cp * ux - sp * uy, sp * ux + cp * uy, max_range);
+      const double e2 =
+        map.raycast(sensor_xy[0], sensor_xy[1], cp * ux + sp * uy, -sp * ux + cp * uy, max_range);
+      const double lo = std::min(e0, std::min(e1, e2));
+      const double hi = std::max(e0, std::max(e1, e2));
+      if (hi - lo > ray_filter_unstable_) {
+        ++unstable;
+        continue;                            // 접선 입사 — 판단하지 않는다
+      }
+      keep[i] = 0;
+    }
+    if (out_unstable != nullptr) {
+      *out_unstable = unstable;
+    }
+    return keep;
+  }
+
   /// 스캔 원본 시각 기준 TF 조회. 성공하면 true.
   /// 실패 경로마다 파이썬 판과 동일한 폴백 순서/게이트를 따른다.
   bool lookup_scan_transform(
@@ -1118,6 +1234,8 @@ private:
   std::vector<Point2> boundary_polygon_;
   bool use_map_filter_{false};
   double wall_dist_min_{0.0}, max_cluster_radius_{0.0}, map_wait_timeout_{0.0};
+  bool use_ray_filter_{false};
+  double ray_filter_margin_{0.0}, ray_filter_probe_deg_{0.0}, ray_filter_unstable_{0.0};
   bool use_track_filter_{false};
   double track_bound_inflation_{0.0}, max_view_ahead_{0.0}, max_view_behind_{0.0};
 

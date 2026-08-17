@@ -93,6 +93,69 @@ class PerceptionObstacleBridgeNode(Node):
         # 많이 막았다 (rosbag_0811 분석). 존재 불확실성은 min_confidence 와
         # is_visible 이 담당하고, 여기서는 위치 불확실성만 유한하게 둔다.
         self.declare_parameter('bridge/confidence_var_inflation_max_m', 0.10)
+        # ── 확정 정적 트랙의 중심 누적 추정 (2026-08-16) ──────────────────
+        # 위 position_var_floor/velocity_var_floor 는 **트랙 성숙도와 무관한
+        # 상수**다. 정지 콘을 랩당 90~188 번 봐도 보고하는 위치 불확실성이
+        # 계속 단일 프레임 지터(std 0.10 m) 수준이라, 하류 spliner 의
+        #   u = min(collision_sigma 3.0 * sqrt(pos_var + t^2*vel_var),
+        #           max_uncertainty_m 0.12)
+        # 가 **항상 캡 0.12 에 붙는다**. (t = static_time_uncertainty_cap 0.3)
+        #
+        # run_0815_191056 실측: 그 0.12 가 매 랩 우측 회피를 막았다.
+        #   장애물 우측 끝 -0.42 + 차반폭 0.15 + u <= 벽 클램프 0.65
+        #   -> u <= 0.08 이어야 통과하는데 0.12 라 3~6 cm 부족
+        #   -> lane_wall_no_room 260 회, 로그 14 건 중 13 건이 right,
+        #      전부 ego_s≈24 (32.58/44.72/57.01/69.58/81.87/104.22 s)
+        #
+        # 고정 원통(static_cylinder_radius_m)이 폭을 이미 잡아 두었으므로 남은
+        # 불확실성은 **중심 위치**뿐이다. 실측으로도 그렇다 — d_left/d_right 의
+        # 프레임 간 변화가 좌우 동일(p90 8.3 cm)하고 폭 변화는 med 0.0 cm 다.
+        #
+        # 그래서 확정 정적 + 충분히 본 트랙은 중심을 **누적 평균**하고, 그
+        # 평균의 분산(sigma^2/n)을 보고한다. 문턱을 무르게 하는 게 아니라
+        # 추정을 정확하게 하는 것이라 안전여유를 깎지 않는다 — 오히려 매
+        # 프레임 흔들리던 중심이 고정되어 커밋 파기(path_collision 43 회)도
+        # 같이 줄어든다.
+        #
+        # ⚠️ 조건을 느슨하게 하지 말 것. is_static 확정 + 관측수 임계를 둘 다
+        #    요구하는 이유는, 실제로는 천천히 움직이는 물체를 정적으로 오분류한
+        #    경우 누적 평균이 뒤처져 **과거 위치**를 발행하게 되기 때문이다.
+        self.declare_parameter('bridge/static_mean_min_obs', 30)
+        # 하한은 "평균의 분산"이 물리적으로 가질 수 있는 값보다 낮게 가지
+        # 않도록 잡는다. 목표는 u ~= 0.06 (<= 0.08 요구치, 여유 포함):
+        #   3.0 * sqrt(3e-4 + 0.09*1e-3) = 3.0 * 0.0197 = 0.059
+        self.declare_parameter('bridge/static_mean_position_var_floor', 3.0e-4)
+        self.declare_parameter('bridge/static_mean_velocity_var_floor', 1.0e-3)
+        # ── 같은 물체의 재등록/중복 흡수 ──────────────────────────────────
+        # detector 가 같은 콘에 **새 id** 를 붙이는 일이 잦다. run_0814_191443
+        # 실측: 새 id 561개 중 164개(29%)가 차 앞 2 m 안에서 태어나고, 그중
+        #   중복(duplicate) 96건 — 기존 트랙이 살아 있는데 0.24 m(p50) 옆에
+        #     또 하나가 생긴다. 새 쪽 수명 p50 3프레임 / 기존 p50 67프레임,
+        #     공존 p50 0.1 초. 0.30 m 콘 두 개가 0.24 m 간격일 수는 없으므로
+        #     이건 한 콘이 잠깐 둘로 쪼개진 것이다.
+        #   재등록(hand-off) 68건 — 기존 트랙이 사라지면서 같은 자리에 새 id.
+        # 둘 다 하류에서 **새 장애물**로 보인다. 그 대가가 크다:
+        #   - Welford 누적(static_mean_min_obs)이 0 부터 다시 쌓여, 바로 위
+        #     주석의 "매 랩 4cm 부족" 수정이 정작 코앞에서 안 듣는다.
+        #   - spliner 의 commit_break 가 관측수 게이트를 채운 새 id 를 보고
+        #     회피 커밋을 파기한다 (run_0814 43회).
+        # 그래서 정적 트랙에 한해 같은 자리의 새 id 를 기존 트랙으로 흡수한다.
+        # ⚠️ 동적 트랙에는 적용하지 않는다 — 두 대가 붙어 달리는 경우를 하나로
+        #    합치면 사이 공간이 사라진다. 게이트도 콘 지름(0.30)보다 크게 잡지
+        #    말 것: 그보다 넓히면 실제로 나란히 선 콘 두 개를 합치게 된다.
+        self.declare_parameter('bridge/reassoc_enabled', True)
+        # 실측 중복 분리거리 p50 0.24 m. 게이트는 콘 지름 0.30 m 까지만 —
+        # 그 이상 떨어진 둘은 물리적으로 겹치지 않으므로 별개로 둔다
+        # (p90 0.45 m 짜리는 일부러 안 잡는다).
+        self.declare_parameter('bridge/reassoc_match_s', 0.30)
+        self.declare_parameter('bridge/reassoc_match_d', 0.25)
+        # 기존 트랙이 이만큼은 관측돼 있어야 새 id 를 흡수할 자격이 있다.
+        # (갓 태어난 트랙 둘이 서로를 흡수하는 왕복을 막는다.)
+        self.declare_parameter('bridge/reassoc_min_obs', 5)
+        # 같은 트랙에 겹쳐 들어오는 검출을 몇 프레임까지 흡수할 것인가.
+        # 실측: 쪼개진 조각 수명 p50 3프레임 / 진짜 이웃 콘은 30~210프레임.
+        # 이 한도를 넘으면 별개 장애물로 되돌린다 (hold_duplicate).
+        self.declare_parameter('bridge/reassoc_max_dup_frames', 8)
         # ── 정적 장애물 고정 원통 모델 ────────────────────────────────────
         # detector 의 radius 는 "중심에서 가장 먼 점까지"라 **매 프레임 다시**
         # 측정된다. LiDAR 는 앞쪽 호만 보므로 거리·각도·빔 개수에 따라 값이
@@ -246,6 +309,17 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/position_var_floor').value)
         self.conf_inflation_max = float(
             p('bridge/confidence_var_inflation_max_m').value)
+        self.static_mean_min_obs = int(p('bridge/static_mean_min_obs').value)
+        self.static_mean_pos_var_floor = float(
+            p('bridge/static_mean_position_var_floor').value)
+        self.static_mean_vel_var_floor = float(
+            p('bridge/static_mean_velocity_var_floor').value)
+        self.reassoc_enabled = bool(p('bridge/reassoc_enabled').value)
+        self.reassoc_match_s = float(p('bridge/reassoc_match_s').value)
+        self.reassoc_match_d = float(p('bridge/reassoc_match_d').value)
+        self.reassoc_min_obs = int(p('bridge/reassoc_min_obs').value)
+        self.reassoc_max_dup_frames = int(
+            p('bridge/reassoc_max_dup_frames').value)
         self.cyl_radius = float(p('bridge/static_cylinder_radius_m').value)
         _band = [float(v) for v in p('bridge/static_cylinder_band_m').value]
         self.cyl_lo, self.cyl_hi = (_band + [0.0, 0.0])[:2]
@@ -337,12 +411,23 @@ class PerceptionObstacleBridgeNode(Node):
                 <= self.memory_inject_ahead
                 or not 1 <= self.memory_forget_misses <= 20
                 or not 0.01 <= self.memory_pos_std <= 1.0
+                # 재연결 게이트: 콘 지름(2 * static_cylinder_radius_m)을 넘기면
+                # 나란히 선 콘 두 개를 하나로 합치게 된다.
+                or not 0.0 <= self.reassoc_match_s <= 2.0 * self.cyl_radius
+                or not 0.0 <= self.reassoc_match_d <= 2.0 * self.cyl_radius
+                or not 1 <= self.reassoc_min_obs <= 100
+                or not 1 <= self.reassoc_max_dup_frames <= 100
                 or not 0.05 <= self.ego_frenet_timeout <= 5.0):
             raise RuntimeError('invalid bridge safety parameters')
 
         self.wpnts = None        # [N, 6]: s, x, y, psi, d_right, d_left
         self.track_length = 0.0
         self.tracks = {}         # id -> {'t', 'arrival_t', 's', 'd', 'vs', 'vd', 'wi'}
+        # detector id -> {'to': 기존 트랙 id, 'dup': 연속 중복 프레임 수}.
+        # 매 프레임 게이트를 다시 확인해서, 그 물체가 실제로 갈라져 나가면
+        # (게이트 밖) 매핑을 끊는다.
+        self.reassoc = {}
+        self.reassoc_absorbed = 0    # 진단용 누적 카운터
         self.wall_dist = None    # EDT 거리 테이블 [m] (맵 수신 시 1회 계산)
         self.map_origin = (0.0, 0.0)
         self.map_origin_yaw = 0.0
@@ -533,6 +618,83 @@ class PerceptionObstacleBridgeNode(Node):
             if cost < best_cost:
                 best, best_cost = a, cost
         return best
+
+    def resolve_track_id(self, src_id, s, d, is_dynamic):
+        """이 검출을 어느 트랙 id 로 취급할지 정한다 (선언부 주석 참조).
+
+        같은 자리에 이미 충분히 관측된 **정적** 트랙이 있으면 그 id 를 쓴다.
+        돌려주는 것은 이 검출을 기록/발행할 트랙 id 다. src_id 와 다르면
+        같은 물체의 재등록/중복이라는 뜻이다.
+        """
+        if not self.reassoc_enabled or is_dynamic:
+            # 동적으로 바뀐 트랙은 매핑을 끊는다 — 콘인 줄 알았던 것이
+            # 움직이기 시작하면 그때부터는 별개로 추적해야 한다.
+            self.reassoc.pop(src_id, None)
+            return src_id
+
+        def within(track):
+            # 기준점은 트랙의 **누적 평균**이다. 마지막 위치로 재확인하면,
+            # 흡수한 검출이 트랙 위치를 끌고 가고 그 위치로 다시 게이트를
+            # 보게 되어 트랙이 이웃까지 끌려간다(drift chaining). 실측에서
+            # 실제로 한 트랙이 1.0 m 떨어진 물체를 따라갔다.
+            n = int(track.get('n', 0))
+            a_s = float(track.get('mean_s', track['s'])) if n > 1 else track['s']
+            a_d = float(track.get('mean_d', track['d'])) if n > 1 else track['d']
+            return (abs(self._ds_signed(s, a_s)) <= self.reassoc_match_s
+                    and abs(d - a_d) <= self.reassoc_match_d)
+
+        # 이미 매핑돼 있으면 게이트만 재확인한다 (갈라져 나가면 끊는다).
+        entry = self.reassoc.get(src_id)
+        if entry is not None:
+            target = self.tracks.get(entry['to'])
+            if target is not None and within(target):
+                return entry['to']
+            self.reassoc.pop(src_id, None)
+
+        # 이미 자기 트랙이 있으면 그대로 쓴다.
+        if src_id in self.tracks:
+            return src_id
+
+        best, best_cost = None, float('inf')
+        for tid, track in self.tracks.items():
+            if tid == src_id or not track.get('static', False):
+                continue
+            if int(track.get('n', 0)) < self.reassoc_min_obs or not within(track):
+                continue
+            n_t = int(track.get('n', 0))
+            a_s = float(track.get('mean_s', track['s'])) if n_t > 1 else track['s']
+            a_d = float(track.get('mean_d', track['d'])) if n_t > 1 else track['d']
+            cost = (abs(self._ds_signed(s, a_s)) / max(self.reassoc_match_s, 1e-6)) ** 2 \
+                + (abs(d - a_d) / max(self.reassoc_match_d, 1e-6)) ** 2
+            if cost < best_cost:
+                best, best_cost = tid, cost
+        if best is None:
+            return src_id
+        self.reassoc[src_id] = {'to': best, 'dup': 0}
+        self.reassoc_absorbed += 1
+        self.get_logger().info(
+            f'트랙 재연결: 새 id={src_id} -> {best} '
+            f'(s={s:.2f} d={d:+.2f}, 기존 관측 {self.tracks[best].get("n", 0)}회)',
+            throttle_duration_sec=2.0)
+        return best
+
+    def hold_duplicate(self, src_id):
+        """이 중복 검출을 계속 흡수해도 되는가.
+
+        쪼개진 조각은 오래 못 산다 (run_0814 실측: 수명 p50 3프레임). 반대로
+        **실제로 옆에 있는 다른 콘**은 수십~수백 프레임을 산다. 그래서 같은
+        트랙에 계속 겹쳐 들어오는 검출은 일정 프레임까지만 흡수하고, 그보다
+        오래 버티면 별개 물체로 인정해 풀어 준다 — 진짜 장애물을 지워 버리는
+        쪽으로는 절대 기울지 않게.
+        """
+        entry = self.reassoc.get(src_id)
+        if entry is None:
+            return True                      # 매핑 없이 겹친 경우(같은 프레임 순서)
+        entry['dup'] = int(entry.get('dup', 0)) + 1
+        if entry['dup'] <= self.reassoc_max_dup_frames:
+            return True
+        self.reassoc.pop(src_id, None)
+        return False
 
     def memory_observe(self, s, d, half, fwd, is_dynamic, measured):
         """실측 프레임 하나를 기억에 반영한다.
@@ -946,7 +1108,8 @@ class PerceptionObstacleBridgeNode(Node):
         if stamp_is_zero:
             now_sec = arrival_sec
             out.header.stamp = self.get_clock().now().to_msg()
-        seen_ids = set()
+        seen_src = set()          # 이번 프레임의 **detector** id (중복 검사용)
+        seen_ids = set()          # 이번 프레임에 갱신된 **트랙** id
         # 랩 기억용: 이번 프레임에 살아남은 장애물의 (s, d, is_dynamic).
         live_entries = []
 
@@ -958,7 +1121,7 @@ class PerceptionObstacleBridgeNode(Node):
                     f'detector id={src.id}가 기억 id 대역({_MEMORY_ID_BASE}+)과 '
                     '충돌; frame 거부', throttle_duration_sec=2.0)
                 return
-            if int(src.id) < 0 or int(src.id) in seen_ids:
+            if int(src.id) < 0 or int(src.id) in seen_src:
                 self.get_logger().error(
                     f'negative/duplicate obstacle id={src.id}; frame rejected',
                     throttle_duration_sec=2.0)
@@ -1062,7 +1225,14 @@ class PerceptionObstacleBridgeNode(Node):
                     continue
 
             prev = self.tracks.get(src.id)
-            hint = prev.get('wi') if prev is not None else None
+            if prev is None:
+                # 재연결 후보의 wi 를 투영 힌트로 쓴다 (같은 자리이므로 맞다).
+                entry = self.reassoc.get(int(src.id))
+                prev_hint = (self.tracks.get(entry['to'])
+                             if entry is not None else None)
+                hint = prev_hint.get('wi') if prev_hint is not None else None
+            else:
+                hint = prev.get('wi')
             try:
                 s, d, wi, d_right_bound, d_left_bound = \
                     self.cartesian_to_frenet(x, y, hint)
@@ -1071,6 +1241,37 @@ class PerceptionObstacleBridgeNode(Node):
                     f'Frenet projection failed: {error}; frame rejected',
                     throttle_duration_sec=2.0)
                 return
+            # ── 같은 물체의 재등록/중복이면 기존 트랙 id 로 취급한다 ────────
+            # 여기서 정하는 track_id 가 (1) Welford 누적의 키, (2) 발행 id 다.
+            # 발행 id 를 유지해야 spliner 의 회피 커밋이 "새 장애물"로 깨지지
+            # 않는다 (commit_released_new_obs).
+            track_id = self.resolve_track_id(
+                int(src.id), s, d, bool(src.is_dynamic))
+            if track_id in seen_ids and self.hold_duplicate(int(src.id)):
+                # 한 트랙에 이번 프레임의 검출이 둘 붙었다 = 한 콘이 둘로
+                # 쪼개진 프레임. 먼저 처리된 쪽만 남긴다.
+                # (재연결 여부로 나누지 않는다 — 쪼개진 조각이 원본보다
+                #  msg 앞에 올 수 있고, 그때 조건을 걸면 같은 id 를 가진
+                #  장애물 두 개가 발행된다. 하류는 id 로 트랙을 관리한다.)
+                # 폭을 합치지도 않는다: 0.30 m 콘 두 개가 겹쳐 보이는 것이라
+                # 합치면 실물보다 넓어져 회랑(요구 0.52 m)을 오히려 막는다.
+                self.get_logger().info(
+                    f'중복 검출 흡수: id={src.id} (트랙 {track_id}, '
+                    f's={s:.2f} d={d:+.2f})', throttle_duration_sec=2.0)
+                seen_src.add(int(src.id))
+                continue
+            if track_id != int(src.id) and track_id in seen_ids:
+                # hold_duplicate 가 False = 중복이 너무 오래간다. 쪼개진
+                # 조각은 실측상 p50 3프레임이면 사라지므로, 이만큼 버티는
+                # 것은 **옆에 실제로 있는 다른 물체**로 봐야 한다. 별개
+                # 트랙으로 풀어 준다 (흡수 이전 동작 = 안전한 쪽).
+                self.get_logger().warn(
+                    f'중복 흡수 해제: id={src.id} 가 트랙 {track_id} 옆에서 '
+                    f'{self.reassoc_max_dup_frames}프레임 넘게 유지됨 — 별개 '
+                    f'장애물로 되돌린다 (s={s:.2f} d={d:+.2f})',
+                    throttle_duration_sec=2.0)
+                track_id = int(src.id)
+            prev = self.tracks.get(track_id)
             raw_half = max(float(src.radius), 0.05)
             # 실제 extent를 줄여 보고하면 큰 장애물의 끝을 통과 가능한 것으로
             # 오판한다. 큰 wall cluster도 보수적으로 전부 유지해 정지시키며,
@@ -1172,20 +1373,52 @@ class PerceptionObstacleBridgeNode(Node):
                 velocity_valid = False
                 vs = float(np.clip(vs, -self.max_abs_vs, self.max_abs_vs))
                 vd = float(np.clip(vd, -self.max_abs_vd, self.max_abs_vd))
-            self.tracks[src.id] = {
+            # ── 확정 정적 트랙의 중심 누적 (Welford) ──────────────────────
+            # 정적일 때만 쌓는다. 동적으로 분류되면 통계를 버려서, 오분류가
+            # 나중에 풀렸을 때 과거 위치가 평균에 남지 않게 한다.
+            raw_static = not src.is_dynamic
+            n_prev = int(prev.get('n', 0)) if prev is not None else 0
+            if raw_static and prev is not None and n_prev > 0:
+                n_obs = n_prev + 1
+                ms_prev = float(prev.get('mean_s', s))
+                md_prev = float(prev.get('mean_d', d))
+                # s 는 wrap 이 있으므로 이전 평균 기준 최단 편차로 누적한다.
+                ds_w = (s - ms_prev + self.track_length / 2.0) \
+                    % self.track_length - self.track_length / 2.0
+                mean_s = (ms_prev + ds_w / n_obs) % self.track_length
+                dd = d - md_prev
+                mean_d = md_prev + dd / n_obs
+                m2_d = float(prev.get('m2_d', 0.0)) + dd * (d - mean_d)
+            else:
+                n_obs, mean_s, mean_d, m2_d = 1, s, d, 0.0
+            self.tracks[track_id] = {
                 't': now_sec, 'arrival_t': arrival_sec, 's': s, 'd': d,
-                'vs': vs, 'vd': vd, 'wi': wi}
-            seen_ids.add(src.id)
+                'vs': vs, 'vd': vd, 'wi': wi, 'static': raw_static,
+                'n': n_obs, 'mean_s': mean_s, 'mean_d': mean_d, 'm2_d': m2_d}
+            seen_ids.add(track_id)
+            seen_src.add(int(src.id))
+            entry = self.reassoc.get(int(src.id))
+            if entry is not None:
+                # 이번 프레임엔 겹치지 않았다 = 원본이 사라진 재등록(hand-off).
+                # 연속 중복 카운터를 되돌려, 잠깐씩 겹치는 것만으로 해제되지
+                # 않게 한다.
+                entry['dup'] = 0
+
+            # 확정 정적 + 충분히 본 트랙은 **누적 평균 중심**을 발행한다
+            # (선언부 주석 참조). 매 프레임 흔들리는 순간 중심 대신 평균을
+            # 쓰므로 하류 충돌검사 판정이 프레임마다 뒤집히지 않는다.
+            use_mean = raw_static and n_obs >= self.static_mean_min_obs
+            s_pub, d_pub = (mean_s, mean_d) if use_mean else (s, d)
 
             obs = Obstacle()
-            obs.id = int(src.id)
+            obs.id = int(track_id)
             obs.position.x, obs.position.y = float(x), float(y)
-            obs.s_center = s
-            obs.d_center = d
-            obs.s_start = (s - half) % self.track_length
-            obs.s_end = (s + half) % self.track_length
-            obs.d_left = d + half
-            obs.d_right = d - half
+            obs.s_center = s_pub
+            obs.d_center = d_pub
+            obs.s_start = (s_pub - half) % self.track_length
+            obs.s_end = (s_pub + half) % self.track_length
+            obs.d_left = d_pub + half
+            obs.d_right = d_pub - half
             obs.vs = vs
             obs.vd = vd
             confidence = max(float(src.confidence), 1e-3)
@@ -1205,6 +1438,16 @@ class PerceptionObstacleBridgeNode(Node):
             # (rosbag_0806 4런). init_vel_std 0.5는 그 p90 위쪽이다.
             init_vel_var = max(self.velocity_var_floor, self.init_vel_std ** 2)
             vel_var = self.velocity_var_floor if velocity_valid else init_vel_var
+            if use_mean:
+                # 평균을 발행하므로 보고하는 분산도 **평균의 분산**이어야
+                # 한다: s^2/n. 위 상수 하한(0.01 / 0.25)은 단일 프레임 지터
+                # 기준이라 n 이 아무리 커져도 안 줄어들고, 그 탓에 하류 u 가
+                # 늘 캡 0.12 에 붙어 우측 회피가 매 랩 막혔다.
+                # 표본분산이 0 에 수렴해도 정합/자세 오차가 남으므로 하한을 둔다.
+                var_of_mean = (m2_d / (n_obs - 1)) / n_obs if n_obs > 1 else 0.0
+                pos_var = max(self.static_mean_pos_var_floor, var_of_mean)
+                # 정지가 확정된 물체의 속도 불확실성은 0.5 m/s 가 아니다.
+                vel_var = min(vel_var, self.static_mean_vel_var_floor)
             obs.s_var = pos_var
             obs.d_var = pos_var
             obs.vs_var = vel_var
@@ -1239,6 +1482,12 @@ class PerceptionObstacleBridgeNode(Node):
                  arrival_sec - t.get('arrival_t', arrival_sec) > self.forget_sec]
         for i in stale:
             del self.tracks[i]
+        if stale and self.reassoc:
+            # 사라진 트랙을 가리키던 매핑은 같이 버린다. 남겨 두면 나중에
+            # 같은 detector id 가 다른 물체로 재사용될 때 엉뚱한 트랙에 붙는다.
+            gone = set(stale)
+            for k in [k for k, v in self.reassoc.items() if v['to'] in gone]:
+                del self.reassoc[k]
 
         # 빈 배열도 그대로 전달 (spliner obs_timeout과 연동)
         self.last_source_ns = source_ns

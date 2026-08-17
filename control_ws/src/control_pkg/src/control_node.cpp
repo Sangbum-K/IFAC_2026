@@ -361,6 +361,10 @@ public:
       "map/velocity_steer_gain_max", 1.0);
     nearest_search_horizon_ = this->declare_parameter<double>(
       "map/nearest_search_horizon_m", 3.0);
+    // L1 거리를 실측 속도와 경로 계획 속도 중 **긴 쪽**으로 잡는다.
+    // false 로 두면 종전(실측 전용) 동작 — A/B 용으로만 끌 것.
+    l1_speed_uses_path_plan_ = this->declare_parameter<bool>(
+      "map/l1_speed_uses_path_plan", true);
 
     // Vehicle limits and the only non-ETH speed multiplier.
     wheelbase_ = this->declare_parameter<double>("vehicle/wheelbase_m", 0.33);
@@ -978,7 +982,7 @@ private:
 
     // LATERAL CONTROL: L1 point -> lateral acceleration -> steering lookup.
     const auto l1_result = calc_l1_point(
-      position, waypoints, speed_now, lateral_error);
+      position, waypoints, speed_now, lateral_error, lat_error_norm);
     const Point2D l1_point = l1_result.first;
     const double l1_distance = l1_result.second;
     double steering_angle = calc_steering_angle(
@@ -1175,7 +1179,8 @@ private:
     const Point2D & position,
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
     double speed_now,
-    double lateral_error)
+    double lateral_error,
+    double lat_error_norm)
   {
     idx_nearest_waypoint_ = nearest_waypoint(position, waypoints);
 
@@ -1204,9 +1209,48 @@ private:
     // Unicorn adaptive L1 (normal-driving branch): one final distance, not
     // competing speed- and curvature-selected target points.
     //   L1 = m*v + q - curvature_factor*mean(|kappa_preview|)*v^2
-    double l1_distance =
-      m_l1_ * speed_now + q_l1_ -
-      curvature_factor_ * curvature_waypoints_ * speed_now * speed_now;
+    const auto l1_from = [this](double speed) {
+        return m_l1_ * speed + q_l1_ -
+               curvature_factor_ * curvature_waypoints_ * speed * speed;
+      };
+    double l1_distance = l1_from(speed_now);
+
+    // ── L1 거리와 횡가속 명령이 같은 속도를 써야 한다 (2026-08-17) ──────────
+    // l1_distance 는 **실측** 속도(odom)로 잡는데, calc_steering_angle 의
+    //   lateral_acceleration = 2*speed_for_lookup^2 / L1 * sin(eta)
+    // 는 **경로 계획** 속도를 쓴다. 발진 순간 이 둘이 최대로 벌어진다 —
+    // 실측 0 m/s 가 L1 을 하한(= max(t_clip_min, sqrt(2)*lat_err)) 으로
+    // 눌러 놓는데 분자는 계획 5.4 m/s 의 제곱이다.
+    //   run_0815_191056 실측: 그리드에서 레이스라인 대비 0.40m 옆에 놓고
+    //   정지해 있던 7.2초 내내 조향이 -0.358 rad (한계 0.36 의 99.4%) 에
+    //   고정됐고, 발진 후 4.8초간 d 가 peak-to-peak 1.30m 로 진동했다
+    //   (부호 변화 4회). 포화가 백스톱을 깨워 속도가 1.5 로 묶이고, 낮은
+    //   속도가 L1 을 다시 줄이는 자기강화 루프였다.
+    //   같은 모델로 오프셋 0.10m 만 돼도 요구 횡가속이 22.9 m/s^2 —
+    //   실측 그립 포락선(a_lat p99 = 8.76) 의 2.6배다. 즉 **레이스라인 위에
+    //   정확히 놓아도 포화한다.** 0814 세 런(오프셋 0.03~0.13m)이 정지 중
+    //   조향 66% 까지 갔던 것도 같은 원인이다.
+    // 두 곳이 같은 속도를 쓰면 L1 ~= m*v, sin(eta) ~= e/L1 이므로 요구
+    // 횡가속이 2e/m^2 = 9.05*e 로 **속도와 무관하게 오프셋에만 비례**한다
+    // (0.40m -> 4.2 m/s^2, 포락선의 48%). 포화 없는 한계는 약 0.85m.
+    //
+    // 두 속도의 max 가 아니라 두 **거리**의 max 를 쓴다. L1(v) 는 곡률항
+    // 때문에 v 에 대해 단조가 아닐 수 있어서(dL1/dv = m - 2*cf*kappa*v),
+    // 거리로 비교해야 "L1 은 길어지기만 한다"가 곡률과 무관하게 성립한다.
+    // L1 이 길어지면 1/L1 과 sin(eta)~=e/L1 양쪽으로 횡가속이 줄어드므로
+    // 이 변경은 **새로운 포화를 만들 수 없다**. 제동/트레일링처럼 계획이
+    // 실측보다 느린 구간(run_0815 기준 전체 사이클의 34%)에서는 종전과
+    // 완전히 동일하게 동작한다.
+    if (l1_speed_uses_path_plan_ && !waypoints.empty()) {
+      const double path_speed = waypoints[idx_nearest_waypoint_].vx_mps;
+      if (std::isfinite(path_speed) && path_speed > 0.0) {
+        // calc_steering_angle 이 실제로 분자에 넣는 값과 같은 보정을 건다.
+        // (lat_err_coeff_ = 0 이면 no-op, curvature_waypoints_ 는 위에서 갱신됨)
+        l1_distance = std::max(
+          l1_distance, l1_from(speed_adjust_lat_err(path_speed, lat_error_norm)));
+      }
+    }
+
     const double lower_bound = std::min(
       std::max(t_clip_min_, std::sqrt(2.0) * lateral_error), t_clip_max_);
     l1_distance = std::clamp(l1_distance, lower_bound, t_clip_max_);
@@ -1451,6 +1495,8 @@ private:
   double max_curvature_reference_{0.8};
   double velocity_steer_gain_max_{1.0};
   double nearest_search_horizon_{3.0};
+  // L1 거리를 실측/계획 속도 중 긴 쪽으로 잡는다 (calc_l1_point 주석 참조).
+  bool l1_speed_uses_path_plan_{true};
   double wheelbase_{0.33};
   double max_speed_{4.0};
   double max_left_steering_angle_{0.4189};

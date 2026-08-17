@@ -98,6 +98,11 @@ spliner_node:
     spliner/evasion_dist: 0.35
     spliner/path_check_margin: 0.15
     spliner/boundary_tracking_margin_m: 0.10
+    # 벽 예비의 속도 의존분 — 근거는 real_car.yaml 의 같은 키 주석
+    # (run_0815_191056 실측 횡오차 p90). 실차와 반드시 같아야 한다.
+    spliner/boundary_tracking_speed_ref: 3.5
+    spliner/boundary_tracking_speed_gain: 0.08
+    spliner/boundary_tracking_margin_max: 0.22
     # control 의 vehicle/speed_scale 과 반드시 같은 값 (실차·sim 모두 1.0).
     # 예전엔 여기가 base 의 0.30 이었고 control sim.yaml 도 0.30 이라 짝은
     # 맞았지만, 그 짝이 실차(1.0)와 달라 동적 상대 trailing 속도 모델이

@@ -143,6 +143,17 @@ obstacle_detector_node:
     # 유령으로 나가는 것 방지). 이 시간을 넘기면 시끄러운 error와 함께
     # 필터 없이 진행 — 맵서버가 죽었을 때 조용히 영구 침묵하지 않게.
     map_wait_timeout_sec: 10.0
+    # ---- 레이 일관성 필터 ----
+    # 맵 벽거리 필터의 반대편. 저쪽은 벽에 '너무 가까운' 점을, 이쪽은 벽보다
+    # '뒤에서' 온 점을 버린다. 2D 에서 빔은 벽에 막히므로 벽보다 먼 거리를
+    # 보고한 빔은 경계를 통과한 것이다 (차체 피치로 스캔 평면이 떠서 낮은
+    # 배리어를 넘는다 — run_0815_191056 실측, 근거는 노드 주석).
+    # use_map_filter=true 가 전제다(기대 벽거리 출처). 기본 비활성 — 맵 필터와
+    # 같은 이유로 실차/레이스 프로파일에서 켠다.
+    use_ray_filter: false
+    ray_filter_margin_m: 1.5
+    ray_filter_probe_deg: 1.5
+    ray_filter_unstable_m: 0.5
     max_cluster_radius_m: 0.0   # 0 = 비활성
     # 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식.
     # 맵 벽거리와 직교하는 2차 기준(근거는 track_filter.py). 전역 레이스라인

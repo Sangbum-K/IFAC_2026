@@ -325,7 +325,23 @@ spliner_node:
     # 이 실패들은 일시적이라 정지가 정당하지 않다 — rosbag_0806 4런에서
     # 트레일링 1345프레임 중 트랙이 실제로 막힌 건 4프레임(0.3%)뿐이었다.
     # 감속 자체가 BlendDist를 줄여 다음 사이클의 회피 성립 확률을 올린다.
-    spliner/trailing_retry_speed: 1.5
+    # 2026-08-15: 1.5 -> 2.5. 근거와 함정은 아래 _degraded 주석 참조.
+    # ⚠️ 이 값은 곧 **정적 장애물과 접촉할 때의 속도**다. allow_stop =
+    #    !is_static 이라 정적에는 완전 정지 경로가 없다 (spliner_node.cpp
+    #    1176줄 트레이드 주석). 1.5 -> 2.5 는 운동에너지 2.8배다.
+    spliner/trailing_retry_speed: 2.5
+    # 횡 목표가 축소/포기된 트레일링(= 실제로는 못 비켜 가는 상태)의 바닥.
+    # 위 값을 올리면 BlendDist = v·sqrt(6A/a_lat) 가 **속도에 정비례**해
+    # 커져 횡 램프가 안 들어가고, "횡목표 포기 -> 현재 d 유지 -> 직진"이
+    # 같이 늘어난다. run_0814_191443 실측(트레일링 1851 사이클):
+    #     v<1.5      포기  0.0~0.2%
+    #     v1.5~2.5   포기  9.7~10.0%
+    #     v>3.0      포기 31.4%
+    # 그 분기가 7:23 접촉(t=444.27, 차 중심이 장애물 스팬 안, 여유 0.000)을
+    # 만들었다. 그래서 빠른 바닥은 **회피가 실제로 진행 중일 때만** 쓰고,
+    # 목표가 깎이면 종전 1.5 로 되돌린다.
+    # 불변식: 0 <= degraded <= trailing_retry_speed (노드가 검증한다).
+    spliner/trailing_retry_speed_degraded: 1.5
     # ApexFor의 목표 간격을 CheckPathCollision 요구치보다 이만큼 더 준다 [m].
     # 동률이면 목표 apex가 충돌박스 경계 위에 놓여 수 mm 오차로 뒤집힌다 —
     # 0807 run_164326의 랩당 16회 "회피 실패"가 전부 이것이었다
@@ -345,6 +361,30 @@ spliner_node:
     #      (perception 쪽 프레임 게이트 재스케일과 한 세트 —
     #       perception_ws/.../config/params.yaml 의 2.33x 주석 참조.)
     spliner/commit_break_min_obs: 7
+    # --- 커밋을 **만드는** 쪽의 게이트 (2026-08-17) -------------------------
+    # 종전에는 만드는 쪽에 게이트가 하나도 없었다 — FilterObstacles 는
+    # 유한성·lookahead·회랑만 보므로 1프레임짜리 유령 하나로 7m 커밋이
+    # 성립했고, 깨려면 commit_break_min_obs(7)회 관측이 필요했다.
+    #   run_0815_191056 실측: 플래너가 받은 트랙 94개 중 1프레임 21개,
+    #   7프레임 미만 67개(71%) — 전부 "만들 수는 있는데 깰 수는 없는" 부류다.
+    #   그 결과 장애물 0개인 커밋이 10.7초 유지되며 발진 속도계획을 동결했다.
+    # 생성자 검증이 commit_min_obs >= commit_break_min_obs 를 강제한다.
+    # 회피 경로 생성 자체는 이 게이트 앞이라 회피 반응은 늦지 않는다 —
+    # 늦어지는 것은 "얼리는" 시점뿐이고, 실측 비용은 7번째 관측까지
+    # 중앙 151ms / 0.43m (lookahead 10m 의 4.3%) 다.
+    spliner/commit_min_obs: 7
+    # 이 속도 미만에서는 커밋을 만들지 않는다. 정지 중 만들어진 커밋은
+    # 머리 속도가 vx=0 으로 굳어(ApplySpeedProfile 이 cur_vs_ 에 앵커)
+    # local_trajectory 의 회피상실 홀드가 전 구간 0 m/s 캡을 걸고,
+    # pos < span 이 계속 참이라 path_end 로도 만료되지 않는다.
+    spliner/commit_min_speed_mps: 0.3
+    # 전방에 아무 장애물도 없는 상태가 이만큼 이어지면 커밋을 해제한다.
+    # 0 = 비활성(종전 동작: 경로 끝까지 주행해야만 만료).
+    # 판정은 관측수/가시성 게이트를 거치지 않은 **원시** 전방 목록으로 한다 —
+    # stable_ahead 로 하면 실물이 잠깐 가려진 것만으로 풀려서 0811 에서 막은
+    # coasting fail-open 이 되살아난다. 임계는 관측된 인지 드롭아웃
+    # (0812 실측 중앙 275ms / 최대 745ms)보다 크게 잡는다.
+    spliner/commit_release_empty_sec: 1.0
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.30, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30
@@ -478,6 +518,12 @@ spliner_node:
     spliner/vehicle_half_length_m: 0.275
     spliner/vehicle_half_width_m: 0.15
     spliner/boundary_tracking_margin_m: 0.05
+    # 벽 예비의 속도 의존분 (TrackingReserve).
+    #   예비 = min(boundary_tracking_margin_m + gain*max(v - ref, 0), max)
+    # gain 0 = 예전(속도 무관) 동작. 실차 값은 real_car.yaml.
+    spliner/boundary_tracking_speed_ref: 3.5
+    spliner/boundary_tracking_speed_gain: 0.0
+    spliner/boundary_tracking_margin_max: 0.05
     # 위치/속도 분산의 footprint 충돌검사 배수.
     # ⚠️ 현재 max_uncertainty_m(0.12)에 항상 먹혀 **무효인 노브**다
     #    (0.67 이상이면 전부 같은 결과 — σ 0.18 x sigma >= 0.12).

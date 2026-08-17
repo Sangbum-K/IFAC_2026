@@ -53,6 +53,30 @@ private:
     const std::string & side,
     const f1tenth_planning_msgs::msg::Obstacle & obs) const;
 
+  // ── 기동 전체의 벽 여유 ────────────────────────────────────────────────
+  // apex 를 잡는 MinWallInSpan 창은 hold 구간(장애물 앞뒤 0.5m)뿐이다.
+  // 그런데 차는 그 뒤로 복귀 블렌드만큼 더 오프셋을 물고 간다 — 장애물
+  // **직후에 좁아지는** 코너에서는 hold 구간이 넓어도 복귀 구간이 벽이다.
+  //   run_0815_191056 s≈27.6 (헤어핀2 출구): hold 구간 우벽 0.84m 라
+  //   MoreSpace 가 right 를 골랐는데, 1.2m 뒤 우벽이 0.47m 로 줄어 복귀가
+  //   조향 기하로 불가능했다. 9랩 중 5랩이 이 선택을 했고 매 랩 벽예비가
+  //   0.02~0.13m 까지 떨어지다 마지막 랩에 2.9초 벽 접촉으로 끝났다.
+  //   같은 장애물을 left 로 가면 벽예비 +0.10m 에 복귀도 성립한다.
+  // 그래서 사이드 선택에는 진입 블렌드 + hold + 복귀 블렌드 **전 구간**의
+  // 최악 벽예유를 쓴다. apex 클램프 자체는 그대로 hold 구간 기준이다
+  // (복귀 구간까지 최소 벽폭으로 clamp 하면 apex 가 사라져 회피가 죽는다 —
+  //  좁은 것은 그 지점이지 스팬 전체가 아니다. TryLaneSwitch 의 지점별
+  //  클램프와 같은 근거).
+  //
+  // reachable: 복귀 블렌드가 벽 수축을 조향 한계 안에서 따라갈 수 있는가.
+  //   각 지점의 |d| 상한까지 내려오는 데 필요한 피크 곡률 6*Δd/L² 을
+  //   SteerKappaMax() 와 비교한다. false 면 그 사이드는 "계획은 그려지지만
+  //   차가 그릴 수 없는" 경로다.
+  // 반환: 최악 벽예유 [m] (차체 반폭 포함. 음수면 차체가 벽 안).
+  double ManeuverWorstMargin(
+    double apex, const f1tenth_planning_msgs::msg::Obstacle & obs,
+    bool * reachable = nullptr) const;
+
   // ── 연쇄 회피 그룹 ──────────────────────────────────────────────────────
   // closest 하나만 보고 사이드/오프셋을 정하면, 그 회피가 끝나기 전에 다음
   // 장애물이 closest 가 되면서 **같은 상황에 대해 답이 뒤집힌다**.
@@ -166,11 +190,17 @@ private:
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
 
+  // check_obs: 완성된 트레일링 경로를 이 장애물들과 충돌검사한다. 트레일링의
+  // 횡 램프는 종전까지 **벽만**(WithinTrackBoundary) 검사했고 장애물은 보지
+  // 않았다 — "현재 d 유지"가 장애물 정중앙인 것을 아무도 몰랐다(7:23 접촉).
+  // nullptr 이면 종전 동작(검사 없음).
   bool BuildTrailing(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks,
-    bool allow_stop = true);
+    bool allow_stop = true,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> * check_obs =
+      nullptr);
 
   // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
   // 아닌(|kappa| <= ot_max_kappa) s 구간을 raceline에서 자동 산출.
@@ -200,12 +230,19 @@ private:
   // 추월 마무리: 상대가 아직 옆이면(opp_beside) 간격이 벌어질 때까지,
   // 코너 안이면 코너 출구까지 SP 인코스를 유지한 뒤 raceline(아웃코스)으로
   // 복귀. v_floor(wpnt 단위)는 나란히 달리는 동안의 추월 페이스 하한.
-  // 복귀 완료 시 false 반환
+  //
+  // false 반환에는 **두 가지 서로 다른 뜻**이 있다:
+  //   out_completed == true  : 복귀까지 끝났다 (정상 종료).
+  //   out_completed == false : 이번 사이클 경로를 만들지 못했다 (기하/충돌/
+  //                            속도 거부). 호출부는 재시도해야 하며, 여기서
+  //                            lc_active_ 를 내리면 추월 도중 빈 경로가
+  //                            발행되어 전속 raceline 으로 튄다.
   bool BuildSpExit(
     bool opp_beside, double v_floor,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks);
+    visualization_msgs::msg::MarkerArray & out_mrks,
+    bool * out_completed = nullptr);
   // s_from부터 raceline 복귀 블렌드 창(blend_len)이 코너(|kappa| >
   // ot_max_kappa)와 겹치지 않게 되는 최소 추가 SP 유지 거리 (최대 25m).
   // "인코스 진입 - 아웃코스 탈출"의 복귀 지연을 담당한다
@@ -368,6 +405,9 @@ private:
   // 대부분 지워져 있었다. 카운터는 전수를 세고 /pitwall/reject_<사유>로 낸다.
   // const 경로(ClusterObstacles 등)에서도 세야 하므로 const + mutable 카운터.
   void NoteReject(const char * reason) const;
+  // 직전 ApplySpeedProfile 실패의 원인 위치를 사람이 읽는 문자열로. 곡률
+  // 한계였으면 "곡률 idx=i/n(p%) k=... >한계 ...", 아니면 "도달불가(감속)".
+  std::string SpeedRejectDetail() const;
   // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
   void NoteRetryTarget(double d_target);
   void PublishRejectCounts();
@@ -398,6 +438,24 @@ private:
   // 지점에 정지 상태로 도달하지 않으므로 "그때 낼 속도"로 기하를 짜야 한다.
   // 제동/속도 프로파일 등 실측 속도가 필요한 곳에는 쓰지 말 것.
   double PlanSpeed() const;
+
+  // 블렌드를 **지나는 동안** 차가 실제로 낼 속도 [m/s].
+  //
+  // BlendDist(L = v*sqrt(6A/a_lat)) 는 속도 하나를 받는데, 지금까지 그 자리에
+  // PlanSpeed()(= 계획 시점의 현재 속도)가 들어갔다. 가속 중인 직선에서는
+  // 블렌드가 끝날 때의 속도가 훨씬 커서, 그 길이로 실제 낸 피크 횡가속이
+  // 예산을 크게 넘는다 (a_lat 은 v²에 비례하는데 L 은 옛 v 로 잡혀 있다).
+  //   run_0815_191056 t=109.5~110.4 (s=32.3->35.6, A=0.67):
+  //     계획 시점 v=3.5 -> L=3.3m. 블렌드 끝 실측 v=5.9 m/s.
+  //     실제 피크 a_lat = 6*A*v²/L² = 12.8 m/s² = 예산 8.83 의 1.46배.
+  //     -> 조향 -14~-18도, 계획 대비 횡오차 +0.22m 로 벌어진 채 복귀에
+  //        들어가 오차가 +0.57m 까지 커지며 좌벽 접촉 (s≈1.5).
+  // 그래서 레이스라인 목표속도(구간 최대)와 구동계 가속으로 도달 가능한
+  // 속도 중 작은 쪽을 쓰되, PlanSpeed() 아래로는 내려가지 않는다 — 결과적으로
+  // 블렌드는 길어지기만 한다(= 완만해지기만 한다).
+  // span 은 블렌드 길이 추정치. 길이<->속도가 서로를 참조하므로 호출부에서
+  // 한 번 반복해 수렴시킨다.
+  double BlendPlanSpeed(double s_from, double span) const;
 
   // [s_from, s_to] 구간(랩 wrap 허용)에서 가장 좁은 좌/우 벽 여유.
   // apex를 한 점의 벽으로 정하면 그 구간 다른 지점에서 경계에 걸려 클램프되고,
@@ -430,17 +488,40 @@ private:
   // require_current_feasible=false는 충돌 회피보다 최대 제동 명령 발행이
   // 우선인 trailing에만 사용한다. 반환 false면 현재 상태에서 물리적으로
   // 도달할 수 없는 회피 경로다.
-  // steer_reject_ratio_override > 0 이면 곡률 기각 배율을 그 값으로 바꾼다
-  // (escape 원호 전용 — escape_steer_kappa_reject_ratio_ 주석 참조).
-  // 밴드를 넘긴 샘플만 살아나는 것이 아니라, 밴드 **안**의 샘플은 그대로
-  // sqrt(a_lat/k) 횡가속 캡을 받아 속도가 강하게 눌린다는 점에 주의.
+  // 곡률 기각 배율(steer_kappa_reject_ratio_)의 밴드를 넘긴 샘플만 살아나는
+  // 것이 아니라, 밴드 **안**의 샘플은 그대로 sqrt(a_lat/k) 횡가속 캡을 받아
+  // 속도가 강하게 눌린다는 점에 주의.
+  // out_geom_ceiling: 기하 전용 속도 상한(곡률·조향레이트·역방향 감속까지만
+  //   적용, cur_vs_ 무관)을 채워 돌려준다. 커밋 경로가 이것을 보관한다.
+  // in_geom_ceiling: 주면 위 기하 단계를 통째로 건너뛰고 이 값에서 시작한다.
+  //   커밋 재생 전용 — 이미 처리된 경로에 그냥 재실행하면 OffsetKappa 가
+  //   이중 적용되고(kappa_radpm 이 결과로 덮여 있다) base vx 도 이미 깎여
+  //   있어 속도가 절대 회복되지 않는다.
+  // ⚠️ 실패(false)로 빠져도 wpnts 는 **일부만** 갱신된 상태가 아니다:
+  //    곡률 기각 검사를 먼저 전수로 돌고, 통과한 뒤에야 kappa_radpm/vx_mps 를
+  //    쓴다. 반환값을 무시하는 호출부(BuildTrailing)가 있으므로 이 순서가
+  //    지켜져야 한다.
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible = true,
-    double steer_reject_ratio_override = -1.0) const;
+    std::vector<double> * out_geom_ceiling = nullptr,
+    const std::vector<double> * in_geom_ceiling = nullptr) const;
 
   // local_trajectory의 modulo splice는 한 바퀴 이상 경로를 표현할 수 없다.
   bool PlanSpanAllowed(double span) const;
+  // 계획 경로와 벽 사이에 남겨 두는 추적오차 예비 [m].
+  //
+  // 이 값은 오래 고정 0.10 이었다. run_0815_191056 실측(4571 프레임)에서
+  // **계획 대비 벽 방향** 횡오차 p90 은
+  //   v<2  0.05 / 2~3  0.09 / 3~4  0.08 / 4~5  0.21 / 5~9  0.22 [m]
+  // 로, 4 m/s 를 넘으면 예비가 실제 오차의 절반이었다. 같은 로그에서
+  // 발행 경로의 벽예비는 s=31~37 (5~6.7 m/s 구간)에서 정확히 0.100 에
+  // 붙어 있었다 — 지점별 클램프가 경로를 이 값까지 밀어붙이므로, 이
+  // 파라미터가 곧 고속 구간의 실제 여유였다.
+  // 그래서 v0 위로 선형 증가시킨다. v0 이하에서는 예전과 완전히 같다
+  // (좁은 저속 코너의 회피 성립률을 건드리지 않기 위한 것 — 저속에서는
+  //  실측 오차도 작다).
+  double TrackingReserve(double speed) const;
   double RequiredBoundaryMargin(double requested_margin) const;
   bool WithinTrackBoundary(int gb_idx, double d, double requested_margin) const;
 
@@ -472,6 +553,11 @@ private:
   // DoSpline 절점 스케일 상한. 조향 기하 하한이 이 배율을 넘게 요구하면
   // "만들어 놓고 나중에 거부"가 아니라 여기서 기하 불성립으로 반환한다.
   static constexpr double kMaxKnotScale{3.0};
+  // "레이스라인에서 유의미하게 벗어났는가" 판정 문턱 [m] (DoSpline 경계검사).
+  // spline_resolution_(종방향 샘플 간격)과 우연히 같은 0.1 이었으나 차원이
+  // 다르다 — 한쪽을 바꾸면 다른 쪽이 조용히 따라가는 것을 끊는다.
+  static constexpr double kOffRacelineEpsM{0.1};
+  // d(s) 스플라인 샘플 간격 [m]
   double spline_resolution_{0.1};
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
@@ -502,6 +588,11 @@ private:
   double vehicle_half_length_m_{0.275};
   double vehicle_half_width_m_{0.15};
   double boundary_tracking_margin_m_{0.05};
+  // 추적오차 예비의 속도 의존분 (TrackingReserve). ref 이하에서는 기여 0 —
+  // gain=0 으로 두면 예전(고정값) 동작과 완전히 같다.
+  double boundary_tracking_speed_ref_{3.5};   // [m/s] 이 속도까지는 고정값
+  double boundary_tracking_speed_gain_{0.0};  // [s] 초과 속도당 추가 예비
+  double boundary_tracking_margin_max_{0.05}; // [m] 예비 상한
   double collision_sigma_{2.0};
   // 정적 장애물의 시간 성장 불확실성 상한 [s]. 브릿지가 모든 장애물에
   // vs_var/vd_var를 상수(0.25)로 붙이는데, CheckPathCollision/FilterObstacles가
@@ -581,8 +672,8 @@ private:
   // squeeze 감속(apex가 벽 마진으로 축소된 회피를 배율로 감속) 제거됨.
   // 좁은 corridor에서의 속도 제한은 오프셋 곡률 기반 물리 캡
   // (OffsetKappa + path_lat_acc_max + offset_grip_cap)이 담당한다.
-  // 주의: 벽 여유(RequiredBoundaryMargin)는 아직 속도와 무관한 고정값이므로
-  // 추적오차의 속도 의존분은 현재 어디에서도 보상하지 않는다.
+  // 벽 여유(RequiredBoundaryMargin)의 추적오차 항은 2026-08-16 부터 속도
+  // 의존이다 — TrackingReserve() 주석에 실측 근거가 있다.
   double trailing_engage_dist_m_{8.0};    // trailing 감속을 시작하는 정지점 앞 거리 [m]
   // 속도 명령 -> 실제 감속 사이의 구동계 지연 [s]. 정지 프로파일이
   // v²/(2a)만 보면 이 지연 동안 굴러간 거리만큼 정지점을 넘는다
@@ -593,6 +684,13 @@ private:
   double trailing_ramp_decel_{2.0};
   // 기하 하한 초과가 **아닌** 사유로 회피가 실패했을 때의 목표 속도 [m/s].
   double trailing_retry_speed_{1.5};
+  // 횡 목표가 축소/포기된 트레일링(= 실제로 비켜 가지 못하는 상태)의 속도
+  // 바닥. trailing_retry_speed_ 는 "정적 장애물과 접촉할 때의 속도"라
+  // 올리면 BlendDist(v에 정비례)가 커져 횡 램프가 안 들어가고, 포기 빈도가
+  // 같이 오른다(실측 v<1.5 0.2% -> v1.5~2.5 10% -> v>3.0 31%). 그래서
+  // 계획이 온전할 때만 높은 값을 쓰고 깎였으면 이 값으로 내린다.
+  // 불변식: 0 <= degraded <= trailing_retry_speed_.
+  double trailing_retry_speed_degraded_{1.5};
   // ApexFor의 목표 간격을 검증기 요구치보다 이만큼 더 준다 [m].
   // 동률(목표 == 충돌박스 경계)이면 수 mm 오차로 매 사이클 자기 거부한다.
   double apex_clearance_eps_m_{0.05};
@@ -626,6 +724,22 @@ private:
   // 여전히 **경로 계획의 입력**으로는 쓰인다 (가림 중인 실물을 잊지 않도록).
   // 막는 것은 "이미 성립한 회피를 뒤집는" 권한뿐이다.
   bool commit_break_requires_visible_{true};
+  // 커밋을 **만들 수 있는** 최소 관측 수. 생성자 검증이
+  // commit_min_obs_ >= commit_break_min_obs_ 를 강제한다 — 그래야
+  // "만들 수는 있는데 깰 수는 없는" 트랙이 존재하지 않는다.
+  // 회피 경로 생성 자체는 이 게이트 앞에 있으므로 회피 반응은 늦지 않는다.
+  int commit_min_obs_{7};
+  // 이 속도 미만이면 커밋을 만들지 않는다. 정지 중 생성된 커밋은 머리
+  // 속도가 vx=0 으로 굳고(회피상실 홀드가 전 구간 0 m/s 캡을 건다),
+  // pos < span 이 영원히 참이라 path_end 로도 만료되지 않는다.
+  double commit_min_speed_{0.3};
+  // 전방에 아무 장애물도 없는 상태가 이만큼 이어지면 커밋을 해제한다.
+  // 0 이면 비활성(종전 동작). 판정은 관측수/가시성 게이트를 거치지 않은
+  // 원시 목록으로 한다 — stable_ahead 로 하면 실물이 잠깐 가려진 것만으로
+  // 커밋이 풀려서 0811 에서 막은 coasting fail-open 이 되살아난다.
+  double commit_release_empty_sec_{1.0};
+  // 전방 목록이 마지막으로 비어 있지 않았던 시각 (위 판정용).
+  rclcpp::Time last_obs_ahead_time_{0, 0, RCL_ROS_TIME};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
@@ -645,6 +759,12 @@ private:
   bool evade_attempt_active_{false};
   // 진행 중인 정적 회피 커밋 (경로 끝까지 유지 — 도중 소멸 시 벽 충돌)
   f1tenth_planning_msgs::msg::WpntArray committed_wpnts_;
+  // 커밋 경로의 기하 전용 속도 상한. 재생 때 현재 cur_vs_ 로 전방 가속
+  // envelope 만 다시 풀기 위해 보관한다 (비어 있으면 종전대로 동결값 사용).
+  std::vector<double> committed_geom_ceiling_;
+  // ApplySpeedProfile 이 마지막으로 성공했을 때의 기하 상한. 커밋 시점에
+  // 크기가 맞으면 committed_geom_ceiling_ 로 옮긴다.
+  mutable std::vector<double> last_geom_ceiling_;
   visualization_msgs::msg::MarkerArray committed_mrks_;
   double committed_start_s_{-1.0};
   double committed_until_s_{-1.0};
@@ -687,23 +807,18 @@ private:
   // 1.0이면 조향 한계를 1e-3 이라도 넘는 샘플 하나에 경로 전체가 죽는다.
   // 1.0보다 크면 그 밴드 안의 샘플은 살리되 횡가속 캡으로 속도만 눌린다.
   double steer_kappa_reject_ratio_{1.0};
-  // escape 원호 전용 곡률 기각 배율 (2026-08-12).
-  // escape 경로는 포물선 원호가 끝나는 지점에서 hold(기울기 0)로 급전환하며
-  // 잔여 헤딩 2A/L 을 한 점에서 꺾는다. 그 접합부 곡률이 1.14~1.77 로 나와
-  // 통상 배율(1.15 -> 문턱 1.303)에 걸려 **escape 가 한 번도 발행되지 못했다**
-  // (2026-08-12 시뮬: escape_speed_profile 91, escape_active 0).
-  // 이 배율을 크게 주면 꺾인 경로가 그대로 발행된다 — 차가 그 꺾임을 못 따라가
-  // **밖으로 밀리는(언더스티어) 거동을 실제로 관측**하기 위한 것이다.
-  // 근본 해결은 접합부에 기울기 완화 구간을 넣어 꺾임 자체를 없애는 것이고,
-  // 그러면 접합 곡률이 0.785 로 떨어져 이 배율이 다시 필요 없어진다.
-  double escape_steer_kappa_reject_ratio_{2.0};
-  // 위 두 완화(require_current_feasible 면제 + 곡률 밴드 확대)를 켜는 스위치.
-  // **기본 false = 커밋된 동작 그대로.** true 로 켜면 escape 원호가 자기
-  // 접합부 꺾임을 안은 채로 발행되고, 차가 그걸 못 따라가 밖으로 밀리는
-  // 거동을 관측할 수 있다. 관측 전용이며 실차에 켠 채로 올리면 안 된다.
-  // 근본 해결(접합부 기울기 완화)이 들어가면 이 스위치는 삭제 대상이다.
-  bool escape_relax_for_observation_{false};
+  // (escape_steer_kappa_reject_ratio_ / escape_relax_for_observation_ 제거)
+  // 두 노브는 "원호 끝 -> hold 급전환이 잔여 헤딩을 한 점에서 꺾어 접합부
+  // 곡률이 1.14~1.77 로 튄다"를 우회하려고 넣은 관측용 완화였다. 그 꺾임은
+  // BuildEscapeArc 의 기울기 완화 구간(원호 0.4D + ease 0.6D, 두 구간 피크가
+  // 모두 5A/D²)이 들어가면서 없어졌고, 배포 yaml 4개 어디에도 스위치가 없어
+  // 완화가 켜진 적이 한 번도 없다 — 즉 reject_ratio 쪽은 읽힌 적조차 없다.
   bool lc_active_{false};
+  // BuildSpExit 이 연속으로 경로 생성에 실패한 횟수. 일시적 거부는 재시도로
+  // 버티되(빈 경로 발행 = 전속 raceline 복귀를 막는다), 계속 실패하면
+  // lc_active_ 를 내려 SP 상태에 영구히 갇히지 않게 한다.
+  int sp_exit_fail_count_{0};
+  static constexpr int kSpExitMaxFail{10};   // 20Hz 기준 0.5초
 
   // State
   f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
@@ -711,6 +826,11 @@ private:
   f1tenth_planning_msgs::msg::ObstacleArray predicted_obstacles_;
   rclcpp::Time predicted_stamp_{0, 0, RCL_ROS_TIME};
   std::vector<f1tenth_planning_msgs::msg::Wpnt> gb_wpnts_;
+  // 파생 캐시(ot_sectors_, sp_d_, sp_vx_)가 어느 레이아웃으로 만들어졌는지.
+  // sp_d_/sp_vx_ 는 **gb 인덱스로 직접 첨자**되므로 gb_wpnts_ 가 다른 크기로
+  // 재발행되면 out-of-bounds 다. 레이아웃이 바뀌면 파생물을 전부 무효화한다.
+  size_t gb_layout_size_{0};
+  double gb_layout_len_{0.0};
   double gb_vmax_{0.0};
   // 트랙 한 바퀴 길이 = 마지막 wpnt s + 점 간격. 마지막 s가 아니라 반드시
   // '+ 간격'이어야 한다 — local_trajectory_node / perception 브릿지가 쓰는
@@ -749,6 +869,14 @@ private:
   // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
   // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
   mutable std::string cycle_rejects_;
+  // ApplySpeedProfile 이 곡률 한계로 경로를 버렸을 때 **어느 점**이 걸렸는지.
+  // 거부 로그는 호출자(TryLaneSwitch/DoSpline/...)에 있는데 사유가 "기하곡률>
+  // 조향한계 또는 감속 불가"로 뭉뚱그려져 있어, 머리 곡률 수정이 실제로
+  // 먹었는지 백에서 확인할 방법이 없었다. const 경로라 mutable.
+  mutable int speed_reject_idx_{-1};
+  mutable int speed_reject_n_{0};
+  mutable double speed_reject_kappa_{0.0};
+  mutable double speed_reject_limit_{0.0};
   bool trace_cycles_{true};
   // 이번 사이클에 Tier1/Tier2가 "조향 기하 하한을 못 채움"(= 어떤 속도로도
   // 불가)으로 거부했는가. 매 Run() 시작에 false로 리셋한다.
