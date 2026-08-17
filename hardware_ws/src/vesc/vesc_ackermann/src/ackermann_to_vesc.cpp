@@ -51,8 +51,11 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
 : Node("ackermann_to_vesc_node", options),
   actual_speed_(0.0),
   last_vesc_state_time_(0, 0, RCL_ROS_TIME),
+  last_ackermann_cmd_time_(0, 0, RCL_ROS_TIME),
   has_vesc_state_(false),
-  braking_active_(false)
+  has_last_ackermann_cmd_time_(false),
+  braking_active_(false),
+  accel_speed_lead_(0.0)
 {
   // get conversion parameters
   speed_to_erpm_gain_ = declare_parameter<double>("speed_to_erpm_gain");
@@ -61,6 +64,13 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
     declare_parameter<double>("steering_angle_to_servo_gain");
   steering_to_servo_offset_ =
     declare_parameter<double>("steering_angle_to_servo_offset");
+  accel_speed_lead_enabled_ = declare_parameter<bool>("accel_speed_lead_enabled");
+  accel_speed_lead_time_s_ = declare_parameter<double>("accel_speed_lead_time_s");
+  accel_speed_lead_max_mps_ = declare_parameter<double>("accel_speed_lead_max_mps");
+  accel_speed_lead_target_max_mps_ =
+    declare_parameter<double>("accel_speed_lead_target_max_mps");
+  accel_speed_lead_rise_rate_mps2_ =
+    declare_parameter<double>("accel_speed_lead_rise_rate_mps2");
   brake_control_enabled_ = declare_parameter<bool>("brake_control_enabled");
   ackermann_brake_max_ = declare_parameter<double>("ackermann_brake_max");
   brake_speed_error_gain_ = declare_parameter<double>("brake_speed_error_gain");
@@ -72,14 +82,17 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
   vesc_state_timeout_ = declare_parameter<double>("vesc_state_timeout");
 
   if (
-    speed_to_erpm_gain_ == 0.0 || ackermann_brake_max_ <= 0.0 ||
+    speed_to_erpm_gain_ == 0.0 || accel_speed_lead_time_s_ < 0.0 ||
+    accel_speed_lead_max_mps_ < 0.0 || accel_speed_lead_target_max_mps_ <= 0.0 ||
+    accel_speed_lead_rise_rate_mps2_ <= 0.0 ||
+    ackermann_brake_max_ <= 0.0 ||
     brake_speed_error_gain_ < 0.0 || brake_decel_threshold_ < 0.0 ||
     brake_entry_speed_error_ < 0.0 || brake_overspeed_error_ < 0.0 ||
     brake_release_speed_error_ < 0.0 ||
     brake_release_speed_error_ >= brake_entry_speed_error_ ||
     brake_min_vehicle_speed_ < 0.0 || vesc_state_timeout_ <= 0.0)
   {
-    throw std::invalid_argument("Invalid VESC braking parameters");
+    throw std::invalid_argument("Invalid VESC longitudinal control parameters");
   }
 
   // create publishers to VESC motor and servo commands
@@ -104,13 +117,59 @@ void AckermannToVesc::vescStateCallback(const VescStateStamped::SharedPtr state)
 
 void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPtr cmd)
 {
-  // calc vesc electric RPM (speed)
-  Float64 erpm_msg;
-  erpm_msg.data = speed_to_erpm_gain_ * cmd->drive.speed + speed_to_erpm_offset_;
-
   // calc steering angle (servo)
   Float64 servo_msg;
   servo_msg.data = steering_to_servo_gain_ * cmd->drive.steering_angle + steering_to_servo_offset_;
+
+  const rclcpp::Time command_time = now();
+  const double state_age = has_vesc_state_ ?
+    (command_time - last_vesc_state_time_).seconds() : vesc_state_timeout_ + 1.0;
+  const bool state_is_fresh =
+    has_vesc_state_ && state_age >= 0.0 && state_age <= vesc_state_timeout_;
+  const bool command_is_finite =
+    std::isfinite(cmd->drive.speed) && std::isfinite(cmd->drive.acceleration);
+
+  double command_dt = 0.0;
+  if (has_last_ackermann_cmd_time_) {
+    command_dt = (command_time - last_ackermann_cmd_time_).seconds();
+  }
+  last_ackermann_cmd_time_ = command_time;
+  has_last_ackermann_cmd_time_ = true;
+
+  const bool command_dt_is_valid =
+    std::isfinite(command_dt) && command_dt > 0.0 && command_dt <= vesc_state_timeout_;
+  if (!command_dt_is_valid) {
+    accel_speed_lead_ = 0.0;
+  }
+
+  // 계획된 양의 가속도를 이용해 DRIVE 목표 속도를 선행시킨다. 실제 속도가
+  // 원래 명령 속도에 가까워질수록 보정값을 줄이고, 설정된 최고속도를 넘지 않는다.
+  double drive_speed = cmd->drive.speed;
+  const bool speed_lead_is_allowed =
+    accel_speed_lead_enabled_ && state_is_fresh && command_is_finite &&
+    command_dt_is_valid && !braking_active_ &&
+    cmd->drive.speed >= 0.0 && actual_speed_ >= 0.0 &&
+    cmd->drive.acceleration > 0.0 && actual_speed_ < cmd->drive.speed;
+  if (speed_lead_is_allowed) {
+    const double requested_lead = accel_speed_lead_time_s_ * cmd->drive.acceleration;
+    const double speed_deficit = cmd->drive.speed - actual_speed_;
+    const double target_headroom =
+      std::max(0.0, accel_speed_lead_target_max_mps_ - cmd->drive.speed);
+    const double target_speed_lead = std::min(
+      accel_speed_lead_max_mps_,
+      std::min(requested_lead, std::min(speed_deficit, target_headroom)));
+    const double max_lead_rise = accel_speed_lead_rise_rate_mps2_ * command_dt;
+    accel_speed_lead_ = std::min(target_speed_lead, accel_speed_lead_ + max_lead_rise);
+  } else {
+    // 가속 종료, BRAKE, 과속, 후진 또는 센서 이상 시에는 하강 제한을 적용하지
+    // 않고 보정값을 즉시 제거해 원래 목표 속도로 돌아간다.
+    accel_speed_lead_ = 0.0;
+  }
+  drive_speed += accel_speed_lead_;
+
+  // calc vesc electric RPM (speed)
+  Float64 erpm_msg;
+  erpm_msg.data = speed_to_erpm_gain_ * drive_speed + speed_to_erpm_offset_;
 
   // publish
   if (rclcpp::ok()) {
@@ -121,13 +180,6 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPt
       erpm_pub_->publish(erpm_msg);
       return;
     }
-
-    const double state_age = has_vesc_state_ ?
-      (now() - last_vesc_state_time_).seconds() : vesc_state_timeout_ + 1.0;
-    const bool state_is_fresh =
-      has_vesc_state_ && state_age >= 0.0 && state_age <= vesc_state_timeout_;
-    const bool command_is_finite =
-      std::isfinite(cmd->drive.speed) && std::isfinite(cmd->drive.acceleration);
 
     Float64 current_msg;
     current_msg.data = 0.0;

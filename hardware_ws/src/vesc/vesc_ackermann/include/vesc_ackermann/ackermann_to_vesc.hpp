@@ -53,6 +53,9 @@ private:
   // conversion gain and offset
   double speed_to_erpm_gain_, speed_to_erpm_offset_;
   double steering_to_servo_gain_, steering_to_servo_offset_;
+  bool accel_speed_lead_enabled_;
+  double accel_speed_lead_time_s_, accel_speed_lead_max_mps_;
+  double accel_speed_lead_target_max_mps_, accel_speed_lead_rise_rate_mps2_;
   bool brake_control_enabled_;
   double ackermann_brake_max_, brake_speed_error_gain_;
   double brake_decel_threshold_, brake_entry_speed_error_;
@@ -72,8 +75,11 @@ private:
   // Latest VESC feedback and longitudinal mode state
   double actual_speed_;
   rclcpp::Time last_vesc_state_time_;
+  rclcpp::Time last_ackermann_cmd_time_;
   bool has_vesc_state_;
+  bool has_last_ackermann_cmd_time_;
   bool braking_active_;
+  double accel_speed_lead_;
 
   // ROS callbacks
   void ackermannCmdCallback(const AckermannDriveStamped::SharedPtr cmd);
