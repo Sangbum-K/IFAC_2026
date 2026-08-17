@@ -290,6 +290,13 @@ def dec_obstacles(b):
         dyn = c.u8() != 0
         c.f32()                      # confidence
         radius = c.f32()
+        # ⚠️ Obstacle.msg 끝의 is_visible 을 반드시 소비할 것. 빼먹으면 다음
+        # 원소의 필드가 통째로 한 칸씩 밀려 **두 번째 장애물부터 전부 쓰레기**가
+        # 된다 (첫 번째만 맞아서 알아채기 어렵다). run_0817_194156 에서
+        # 10266 프레임 중 5194 (50.6%, = 장애물 2개 이상인 모든 프레임) 가
+        # 이렇게 깨져 있었고, 실제 화면에는 맵 (0,0)·(0,-1.22) 에 유령 원이
+        # 그려졌다 — dyn 자리에도 쓰레기가 들어가 점선(동적)으로 보인다.
+        c.u8()                       # is_visible (그리진 않지만 소비해야 한다)
         out.append((round(px, 2), round(py, 2), round(radius, 2), int(dyn)))
     return frame, out
 
