@@ -109,6 +109,9 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/apex_clearance_eps_m", 0.05);
     this->declare_parameter("spliner/commit_break_min_obs", 3);
     this->declare_parameter("spliner/commit_break_requires_visible", true);
+    this->declare_parameter("spliner/commit_min_obs", 7);
+    this->declare_parameter("spliner/commit_min_speed_mps", 0.3);
+    this->declare_parameter("spliner/commit_release_empty_sec", 1.0);
     this->declare_parameter("spliner/creep_escape_speed", 0.6);
     // 원호 이탈 (BuildEscapeArc) — 근거는 spliner_node.hpp 선언부 주석.
     this->declare_parameter("spliner/escape_arc_enabled", true);
@@ -218,6 +221,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/commit_break_min_obs").as_int());
     commit_break_requires_visible_ =
         this->get_parameter("spliner/commit_break_requires_visible").as_bool();
+    commit_min_obs_ = static_cast<int>(
+        this->get_parameter("spliner/commit_min_obs").as_int());
+    commit_min_speed_ =
+        this->get_parameter("spliner/commit_min_speed_mps").as_double();
+    commit_release_empty_sec_ =
+        this->get_parameter("spliner/commit_release_empty_sec").as_double();
     creep_escape_speed_ =
         this->get_parameter("spliner/creep_escape_speed").as_double();
     escape_arc_enabled_ =
@@ -344,6 +353,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         trailing_retry_speed_degraded_ > trailing_retry_speed_ ||
         apex_clearance_eps_m_ < 0.0 || apex_clearance_eps_m_ > 0.5 ||
         commit_break_min_obs_ < 1 || commit_break_min_obs_ > 20 ||
+        // 만들기 게이트가 깨기 게이트보다 느슨하면 "커밋은 만들 수 있는데
+        // 깰 수는 없는" 트랙이 생긴다 — run_0815 에서 전체 트랙의 71%가
+        // 그 부류였고 그게 10.7초 유령 커밋의 원인이다. 대칭을 강제한다.
+        commit_min_obs_ < commit_break_min_obs_ || commit_min_obs_ > 20 ||
+        commit_min_speed_ < 0.0 || commit_min_speed_ > 3.0 ||
+        commit_release_empty_sec_ < 0.0 || commit_release_empty_sec_ > 10.0 ||
         creep_escape_speed_ < 0.0 || creep_escape_speed_ > 3.0 ||
         dyn_pass_speed_ratio_ < 1.0 || dyn_pass_speed_ratio_ > 2.0 ||
         cls_min_nb_meas_ < 2 || cls_min_nb_meas_ > 100 ||
@@ -941,6 +956,15 @@ void SplinerNode::Run() {
         obs_copy.obstacles = ClusterObstacles(obs_copy.obstacles);
         auto all_ahead_now = ObstaclesInLookahead(obs_copy.obstacles);
 
+        // 커밋 해제 판정용 타이머. 관측수/가시성 게이트를 거치지 않은 **원시**
+        // 전방 목록으로 갱신한다 — stable_ahead 를 쓰면 실물이 잠깐 가려진
+        // 것만으로 "아무것도 없다"가 되어 0811 에서 막은 coasting fail-open 이
+        // 되살아난다. 인지가 stale 인 사이클은 근거가 없으므로 세지 않는다
+        // (그 분기는 어차피 커밋을 즉시 지운다).
+        if (perception_stale || !all_ahead_now.empty()) {
+            last_obs_ahead_time_ = this->now();
+        }
+
         if (perception_stale) {
             // 마지막 장애물 위치를 추측해 계속 회피하는 대신 즉시 최대 제동
             // 프로파일을 발행한다. sensor가 복구되어 fresh empty array가 오면
@@ -1031,7 +1055,25 @@ void SplinerNode::Run() {
                     }
                 }
             }
-            if (pos < span && !new_obs_beyond_commit &&
+            // ── 장애물 소멸 해제 (2026-08-17) ─────────────────────────────
+            // 해제 경로가 perception_stale / 경로충돌 / new_obs_beyond_commit /
+            // path_end 넷뿐이었다. 장애물이 0개면 CheckPathCollision 은 루프를
+            // 한 번도 돌지 않고 "충돌 없음"을 돌려주고 new_obs_beyond_commit 은
+            // 장애물이 있어야 성립하므로, **유일한 출구가 경로 끝까지 주행하는
+            // 것**이었다. 정지 상태에서는 원리적으로 영원히 안 풀린다.
+            //   run_0815_191056: 장애물 0개인 커밋이 정지 7.2초 + 주행 7.3m =
+            //   10.7초 유지 → 그동안 발진 속도계획이 동결됐고, 만료 순간
+            //   회피상실 홀드가 0 m/s 캡을 걸어 0.81초 정지로 이어졌다.
+            // 커밋이 막으려던 위험("복귀 중 raceline 전속 경로로 급전환")은
+            // 정의상 장애물이 있을 때만 존재하므로, 전방이 완전히 빈 상태가
+            // 충분히 이어졌으면 놓아 주는 것이 안전하다. 임계는 관측된 인지
+            // 드롭아웃(0812 실측 중앙 275ms / 최대 745ms)보다 크게 잡는다.
+            const double empty_for =
+                (this->now() - last_obs_ahead_time_).seconds();
+            const bool nothing_ahead =
+                commit_release_empty_sec_ > 0.0 && all_ahead_now.empty() &&
+                std::isfinite(empty_for) && empty_for >= commit_release_empty_sec_;
+            if (pos < span && !new_obs_beyond_commit && !nothing_ahead &&
                 CheckPathCollision(committed_wpnts_.wpnts, stable_ahead, nullptr)) {
                 evasion_wpnts.wpnts = committed_wpnts_.wpnts;
                 // ── 기하는 얼리되 속도는 갱신한다 (2026-08-15) ─────────────
@@ -1073,9 +1115,13 @@ void SplinerNode::Run() {
                     "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu reason=%s",
                     pos, span, stable_ahead.size(),
                     new_obs_beyond_commit ? "new_obs_beyond_commit"
-                                          : (pos < span ? "path_collision" : "path_end"));
+                        : nothing_ahead   ? "nothing_ahead"
+                        : (pos < span ? "path_collision" : "path_end"));
                 if (new_obs_beyond_commit) {
                     NoteReject("commit_released_new_obs");
+                }
+                if (nothing_ahead) {
+                    NoteReject("commit_released_nothing_ahead");
                 }
                 committed_until_s_ = -1.0;
                 committed_obs_end_s_ = -1.0;
@@ -1275,8 +1321,45 @@ void SplinerNode::Run() {
 
             // 정적 장애물 회피 성공 -> 경로 끝까지 커밋 (동적/예측 상대는
             // 움직이므로 커밋하지 않고 기존처럼 매 사이클 갱신)
-            if (evasion_valid && !used_trailing &&
-                closest.is_static && !evasion_wpnts.wpnts.empty()) {
+            //
+            // ── 커밋 승격 게이트 (2026-08-17) ─────────────────────────────
+            // 커밋을 **만드는** 쪽에는 게이트가 하나도 없었다. FilterObstacles
+            // 는 유한성·lookahead·회랑만 보고, ClassifyObstacles 는 관측이
+            // cls_min_nb_meas 에 못 미치면 perception 의 is_static 을 그대로
+            // 통과시킨다 — 즉 1프레임짜리 유령 하나로 7m 커밋이 성립했다.
+            // 반대로 깨는 쪽(StableObstacles)은 commit_break_min_obs 회 관측
+            // + is_visible 을 요구한다. 이 비대칭이 run_0815_191056 의 원인이다:
+            //   플래너가 받은 트랙 94개 중 1프레임 21개, 7프레임 미만 67개(71%).
+            //   이들은 커밋을 만들 수는 있어도 깰 수는 없다.
+            // 회피 **경로 생성**은 이 게이트 앞에 그대로 두므로 회피 반응
+            // 지연은 0 이다. 얼리는 것만 미룬다 — 커밋의 목적("복귀 중
+            // raceline 전속 경로로 급전환 방지")은 기동이 이미 진행 중일
+            // 때만 의미가 있다. 실측 비용: 7번째 관측까지 중앙 151ms / 0.43m
+            // (lookahead 10m 의 4.3%). 진짜 장애물은 39.4Hz 로 연속 관측되고
+            // 프레임 수 분포가 1~6 / 10 이상으로 이봉형이라 7 이 그 골짜기다.
+            //
+            // 정지 중 커밋도 막는다. 정지 상태에서 만들어진 커밋은 머리 속도가
+            // vx=0 으로 굳어 local_trajectory 의 회피상실 홀드가 전 구간
+            // 0 m/s 캡을 걸고(run_0815 실측 0.81초 정지), pos < span 이 계속
+            // 참이라 path_end 로도 만료되지 않는다.
+            // cls_tracks_ 는 클러스터 전 원시 id 로 채워지는데 ClusterObstacles
+            // 가 병합 시 min(a.id, b.id) 를 남기므로 이 조회는 유효하다
+            // (위 stable_for_release 와 같은 방식).
+            const auto obs_seen = [this](int32_t id) {
+                auto it = cls_tracks_.find(id);
+                return (it == cls_tracks_.end())
+                    ? 0 : static_cast<int>(it->second.s_hist.size());
+            };
+            const bool commit_candidate =
+                evasion_valid && !used_trailing &&
+                closest.is_static && !evasion_wpnts.wpnts.empty();
+            const bool commit_obs_ok = obs_seen(closest.id) >= commit_min_obs_;
+            const bool commit_speed_ok = std::abs(cur_vs_) >= commit_min_speed_;
+            if (commit_candidate && !commit_obs_ok) {
+                NoteReject("commit_deferred_unstable_obs");
+            } else if (commit_candidate && !commit_speed_ok) {
+                NoteReject("commit_deferred_standstill");
+            } else if (commit_candidate) {
                 committed_wpnts_ = evasion_wpnts;
                 committed_mrks_ = mrks;
                 // 기하 전용 속도 상한을 같이 보관한다. 마지막으로 성공한

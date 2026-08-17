@@ -724,6 +724,22 @@ private:
   // 여전히 **경로 계획의 입력**으로는 쓰인다 (가림 중인 실물을 잊지 않도록).
   // 막는 것은 "이미 성립한 회피를 뒤집는" 권한뿐이다.
   bool commit_break_requires_visible_{true};
+  // 커밋을 **만들 수 있는** 최소 관측 수. 생성자 검증이
+  // commit_min_obs_ >= commit_break_min_obs_ 를 강제한다 — 그래야
+  // "만들 수는 있는데 깰 수는 없는" 트랙이 존재하지 않는다.
+  // 회피 경로 생성 자체는 이 게이트 앞에 있으므로 회피 반응은 늦지 않는다.
+  int commit_min_obs_{7};
+  // 이 속도 미만이면 커밋을 만들지 않는다. 정지 중 생성된 커밋은 머리
+  // 속도가 vx=0 으로 굳고(회피상실 홀드가 전 구간 0 m/s 캡을 건다),
+  // pos < span 이 영원히 참이라 path_end 로도 만료되지 않는다.
+  double commit_min_speed_{0.3};
+  // 전방에 아무 장애물도 없는 상태가 이만큼 이어지면 커밋을 해제한다.
+  // 0 이면 비활성(종전 동작). 판정은 관측수/가시성 게이트를 거치지 않은
+  // 원시 목록으로 한다 — stable_ahead 로 하면 실물이 잠깐 가려진 것만으로
+  // 커밋이 풀려서 0811 에서 막은 coasting fail-open 이 되살아난다.
+  double commit_release_empty_sec_{1.0};
+  // 전방 목록이 마지막으로 비어 있지 않았던 시각 (위 판정용).
+  rclcpp::Time last_obs_ahead_time_{0, 0, RCL_ROS_TIME};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};

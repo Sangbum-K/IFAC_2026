@@ -491,10 +491,29 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
     if (avoidance_is_fresh && !avoidance_copy.empty()) {
       // 선두 몇 점의 최솟값을 쓴다 — 선두 한 점만 보면 그 점이 이미 지나간
       // 뒤의 값일 수 있어 상한이 실제 계획보다 높아진다.
+      //
+      // ── 기준점은 반드시 **차 앞**이어야 한다 (2026-08-17) ────────────────
+      // 커밋된 회피 경로는 s 가 고정이라 차가 전진해도 머리가 뒤에 남는다.
+      // 배열 선두를 그대로 쓰면 이미 한참 지나온 점의 속도가 상한이 된다.
+      // 정지 중 만들어진 커밋이면 그 점의 vx 는 0 이다 (ApplySpeedProfile 이
+      // 머리를 cur_vs_ 에 앵커하므로) — run_0815_191056 실측:
+      //   "회피 경로 상실 0.02s — 속도 상한 0.00 m/s 유지 (130점 캡)"
+      //   명령 속도 0 이 10.366~11.175s (0.81초), 차속 2.09 -> 0.90 m/s.
+      //   그 커밋의 머리는 s=0.14 인데 차는 s=7.5 에 있었다.
+      // 이 홀드의 목적은 "장애물 상실이 **가속** 신호가 되지 않게"이므로
+      // 기준은 지금 차가 향하는 구간이어야 한다. 뒤쪽 점을 건너뛰면
+      // 같은 상황에서 상한이 3.9 m/s (경로 끝 계획속도) 로 나온다.
+      std::size_t begin = 0U;
+      while (begin + 1U < avoidance_copy.size() &&
+        PositiveModulo(current_s - avoidance_copy[begin].s_m, track_length) <
+        track_length * 0.5)
+      {
+        ++begin;
+      }
       const std::size_t look =
-        std::min<std::size_t>(avoidance_copy.size(), 5U);
+        std::min<std::size_t>(avoidance_copy.size() - begin, 5U);
       double head = std::numeric_limits<double>::infinity();
-      for (std::size_t i = 0; i < look; ++i) {
+      for (std::size_t i = begin; i < begin + look; ++i) {
         const double v = avoidance_copy[i].vx_mps;
         if (std::isfinite(v) && v >= 0.0) {
           head = std::min(head, v);

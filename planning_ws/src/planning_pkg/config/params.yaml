@@ -361,6 +361,30 @@ spliner_node:
     #      (perception 쪽 프레임 게이트 재스케일과 한 세트 —
     #       perception_ws/.../config/params.yaml 의 2.33x 주석 참조.)
     spliner/commit_break_min_obs: 7
+    # --- 커밋을 **만드는** 쪽의 게이트 (2026-08-17) -------------------------
+    # 종전에는 만드는 쪽에 게이트가 하나도 없었다 — FilterObstacles 는
+    # 유한성·lookahead·회랑만 보므로 1프레임짜리 유령 하나로 7m 커밋이
+    # 성립했고, 깨려면 commit_break_min_obs(7)회 관측이 필요했다.
+    #   run_0815_191056 실측: 플래너가 받은 트랙 94개 중 1프레임 21개,
+    #   7프레임 미만 67개(71%) — 전부 "만들 수는 있는데 깰 수는 없는" 부류다.
+    #   그 결과 장애물 0개인 커밋이 10.7초 유지되며 발진 속도계획을 동결했다.
+    # 생성자 검증이 commit_min_obs >= commit_break_min_obs 를 강제한다.
+    # 회피 경로 생성 자체는 이 게이트 앞이라 회피 반응은 늦지 않는다 —
+    # 늦어지는 것은 "얼리는" 시점뿐이고, 실측 비용은 7번째 관측까지
+    # 중앙 151ms / 0.43m (lookahead 10m 의 4.3%) 다.
+    spliner/commit_min_obs: 7
+    # 이 속도 미만에서는 커밋을 만들지 않는다. 정지 중 만들어진 커밋은
+    # 머리 속도가 vx=0 으로 굳어(ApplySpeedProfile 이 cur_vs_ 에 앵커)
+    # local_trajectory 의 회피상실 홀드가 전 구간 0 m/s 캡을 걸고,
+    # pos < span 이 계속 참이라 path_end 로도 만료되지 않는다.
+    spliner/commit_min_speed_mps: 0.3
+    # 전방에 아무 장애물도 없는 상태가 이만큼 이어지면 커밋을 해제한다.
+    # 0 = 비활성(종전 동작: 경로 끝까지 주행해야만 만료).
+    # 판정은 관측수/가시성 게이트를 거치지 않은 **원시** 전방 목록으로 한다 —
+    # stable_ahead 로 하면 실물이 잠깐 가려진 것만으로 풀려서 0811 에서 막은
+    # coasting fail-open 이 되살아난다. 임계는 관측된 인지 드롭아웃
+    # (0812 실측 중앙 275ms / 최대 745ms)보다 크게 잡는다.
+    spliner/commit_release_empty_sec: 1.0
     # 컨트롤러의 wpnt 속도 스케일과 반드시 일치 (sim tracker/speed_scale 0.30, 실차 1.0).
     # 불일치 시 동적 상대 trailing에서 상대보다 느리게 따라가 격차가 벌어진다.
     spliner/cmd_speed_scale: 0.30
