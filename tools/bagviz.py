@@ -57,6 +57,9 @@ def read_vesc_calib():
 
 # ---------------------------------------------------------------- CDR reader
 
+_AT_END_WARNED = set()      # CDR.at_end 경고는 메시지 종류당 한 번만
+
+
 class CDR:
     """XCDR1 little-endian reader. 4바이트 encapsulation 헤더 이후부터 정렬 계산."""
     __slots__ = ("b", "o")
@@ -130,6 +133,26 @@ class CDR:
         t = self.time()
         frame = self.string()
         return t, frame
+
+    def at_end(self, total, what):
+        """payload 를 끝까지 읽었는지 확인 (한 번만 경고).
+
+        배열 원소 디코더가 msg 의 트레일링 필드를 빼먹으면 원소마다 커서가
+        밀려 두 번째 원소부터 전부 쓰레기가 되는데, 값 자체는 그럴듯해서
+        화면만 봐서는 못 알아챈다 (Obstacle.is_visible 사고, dec_obstacles 참고).
+        남은 바이트 수는 그 어긋남을 드러내는 유일한 싼 신호다.
+
+        꼬리 3바이트까지는 봐준다 — CDR 은 payload 를 4바이트 경계로 패딩하므로
+        정상 디코드도 0~3 B 를 남긴다 (bool 로 끝나는 Obstacle 이 딱 그렇다).
+        반대로 필드를 하나 빠뜨리면 원소마다 재정렬까지 겹쳐 4 B 이상 남는다.
+        """
+        if total - self.o < 4 or what in _AT_END_WARNED:
+            return
+        _AT_END_WARNED.add(what)
+        print("⚠ %s 디코더가 payload 를 %d B 남겼습니다 (커서 %d / %d) — "
+              ".msg 에 필드가 추가됐는지 확인하세요. 지금 그려지는 값은 "
+              "두 번째 원소부터 밀렸을 수 있습니다."
+              % (what, total - self.o, self.o, total), file=sys.stderr)
 
 
 def quat_yaw(qx, qy, qz, qw):
@@ -298,6 +321,12 @@ def dec_obstacles(b):
         # 그려졌다 — dyn 자리에도 쓰레기가 들어가 점선(동적)으로 보인다.
         c.u8()                       # is_visible (그리진 않지만 소비해야 한다)
         out.append((round(px, 2), round(py, 2), round(radius, 2), int(dyn)))
+    # 위 사고가 조용했던 이유는 밀린 디코더도 "그럴듯한" 숫자를 뱉기 때문이다.
+    # 원소당 소비 바이트가 msg 와 어긋나면 커서가 payload 끝에 못 닿으므로,
+    # 그 한 가지만 확인하면 같은 사고를 눈에 보이게 만들 수 있다. (n>64 는
+    # 위에서 일부러 잘라 읽으므로 검사 대상이 아니다.)
+    if n <= 64:
+        c.at_end(len(b), "ObstacleArray")
     return frame, out
 
 
