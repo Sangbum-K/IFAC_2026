@@ -8,7 +8,6 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>eigen3_cmake_module</buildtool_depend>
   <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
@@ -24,6 +23,7 @@
        build_all.sh가 planning_ws를 먼저 빌드하므로 순서는 이미 보장돼 있다. -->
   <depend>f1tenth_planning_msgs</depend>
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>nlohmann_json</test_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <export>

@@ -34,9 +34,7 @@
 #include "rclcpp/rclcpp.hpp"
 
 #include "builtin_interfaces/msg/time.hpp"
-#include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
-#include "geometry_msgs/msg/vector3.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 
@@ -50,6 +48,7 @@
 #include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
 
 #include "perception_pkg/classifier.hpp"
+#include "perception_pkg/cluster_filters.hpp"
 #include "perception_pkg/clustering.hpp"
 #include "perception_pkg/distance_transform.hpp"
 #include "perception_pkg/preprocessing.hpp"
@@ -174,56 +173,65 @@ private:
   // ── 파라미터 ────────────────────────────────────────────────────────────
   void declare_all_parameters()
   {
-    this->declare_parameter<double>("range_min", 0.05);
-    this->declare_parameter<double>("range_max", 10.0);
+    range_min_ = this->declare_parameter<double>("range_min", 0.05);
+    range_max_ = this->declare_parameter<double>("range_max", 10.0);
     this->declare_parameter<double>("fov_min_deg", -135.0);
     this->declare_parameter<double>("fov_max_deg", 135.0);
-    this->declare_parameter<int>("median_kernel", 3);
+    median_kernel_ = static_cast<int>(this->declare_parameter<int>("median_kernel", 3));
 
     // adaptive breakpoint 클러스터링: 임계값이 센서 거리에 따라 커지므로
     // 구 cluster_eps(고정 거리)는 필요 없다.
     this->declare_parameter<double>("lambda_angle_deg", 10.0);
-    this->declare_parameter<double>("sigma", 0.015);
-    this->declare_parameter<int>("min_cluster_size", 3);
+    sigma_ = this->declare_parameter<double>("sigma", 0.015);
+    min_cluster_size_ =
+      static_cast<int>(this->declare_parameter<int>("min_cluster_size", 3));
     // 벽에서 떨어진(열린 공간) 클러스터에만 적용하는 완화된 최소 크기.
     // min_cluster_size를 올린 이유는 벽 fringe 억제였는데, 그 대가로 벽에서
     // 먼 작은 물체까지 함께 잘린다 — run_0806_155621에서 폭 0.2m 물체(스캔 4점)가
     // 15프레임 미검출되어 하류에 0.48~0.63m짜리 '가짜 틈'이 생겼다. 실제로 막힌
     // 통로를 열렸다고 판단하면 그 틈으로 회피를 시도하므로 위험하다.
     // 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수 없다. 0이면 비활성.
-    this->declare_parameter<int>("min_cluster_size_open", 0);
-    this->declare_parameter<double>("open_space_dist_m", 0.50);
+    min_cluster_size_open_ =
+      static_cast<int>(this->declare_parameter<int>("min_cluster_size_open", 0));
+    open_space_dist_ = this->declare_parameter<double>("open_space_dist_m", 0.50);
 
-    this->declare_parameter<double>("gating_distance", 0.5);
+    gating_distance_ = this->declare_parameter<double>("gating_distance", 0.5);
     // 크기 일관성 게이트: 트랙이 보던 반경 대비 후보 클러스터 반경의 비가
     // 이 배수를 넘으면 매칭하지 않는다. 0/1 이하면 비활성.
-    this->declare_parameter<double>("radius_ratio_max", 4.0);
-    this->declare_parameter<int>("track_timeout", 10);
+    radius_ratio_max_ = this->declare_parameter<double>("radius_ratio_max", 4.0);
+    track_timeout_ = static_cast<int>(this->declare_parameter<int>("track_timeout", 10));
 
     // 표준 association을 넓히지 않고, primary match에 실패한 이미 확정된
     // 동적 트랙만 마지막 실측 위치로 짧게 재획득한다.
-    this->declare_parameter<double>("dynamic_reacquire_gate_multiplier", 1.6);
-    this->declare_parameter<double>("dynamic_reacquire_timeout_sec", 0.20);
+    dynamic_reacquire_gate_multiplier_ =
+      this->declare_parameter<double>("dynamic_reacquire_gate_multiplier", 1.6);
+    dynamic_reacquire_timeout_sec_ =
+      this->declare_parameter<double>("dynamic_reacquire_timeout_sec", 0.20);
     // retire 뒤에야 보이는 코너/FOV 이탈은 map 좌표 CV 대신 레이스라인 Frenet
     // s/d로 한 번 더 보수적으로 재식별한다. TrackBounds를 못 받으면 비활성이다.
-    this->declare_parameter<double>("dynamic_frenet_reid_timeout_sec", 1.25);
-    this->declare_parameter<double>("dynamic_frenet_reid_lateral_gate_m", 0.45);
-    this->declare_parameter<double>("dynamic_frenet_reid_progress_slack_m", 0.80);
-    this->declare_parameter<double>("dynamic_frenet_reid_backtrack_m", 0.30);
+    dynamic_frenet_reid_timeout_sec_ =
+      this->declare_parameter<double>("dynamic_frenet_reid_timeout_sec", 1.25);
+    dynamic_frenet_reid_lateral_gate_m_ =
+      this->declare_parameter<double>("dynamic_frenet_reid_lateral_gate_m", 0.45);
+    dynamic_frenet_reid_progress_slack_m_ =
+      this->declare_parameter<double>("dynamic_frenet_reid_progress_slack_m", 0.80);
+    dynamic_frenet_reid_backtrack_m_ =
+      this->declare_parameter<double>("dynamic_frenet_reid_backtrack_m", 0.30);
 
 
-    this->declare_parameter<double>("v_thresh", 0.25);
-    this->declare_parameter<int>("n_confirm", 5);
-    this->declare_parameter<int>("n_release", 8);
+    v_thresh_ = this->declare_parameter<double>("v_thresh", 0.25);
+    n_confirm_ = static_cast<int>(this->declare_parameter<int>("n_confirm", 5));
+    n_release_ = static_cast<int>(this->declare_parameter<int>("n_release", 8));
     // 정적/동적 위치분산 근거 (map 프레임)
-    this->declare_parameter<double>("static_pos_std", 0.08);
-    this->declare_parameter<double>("dynamic_pos_std", 0.20);
-    this->declare_parameter<int>("dynamic_release", 40);
+    static_pos_std_ = this->declare_parameter<double>("static_pos_std", 0.08);
+    dynamic_pos_std_ = this->declare_parameter<double>("dynamic_pos_std", 0.20);
+    dynamic_release_ =
+      static_cast<int>(this->declare_parameter<int>("dynamic_release", 40));
     // 재식별(occlusion 후 같은 id 부활) + 미확정 트랙 게이팅
-    this->declare_parameter<double>("reid_distance", 0.7);
-    this->declare_parameter<double>("reid_timeout_sec", 1.0);
-    this->declare_parameter<int>("pos_hist_len", 20);
-    this->declare_parameter<int>("min_hits", 3);
+    reid_distance_ = this->declare_parameter<double>("reid_distance", 0.7);
+    reid_timeout_ = this->declare_parameter<double>("reid_timeout_sec", 1.0);
+    pos_hist_len_ = static_cast<int>(this->declare_parameter<int>("pos_hist_len", 20));
+    min_hits_ = static_cast<int>(this->declare_parameter<int>("min_hits", 3));
     // ── 초 단위 창 (프레임 상수 대체) ────────────────────────────────────
     // 위 track_timeout / n_confirm / n_release / dynamic_release / pos_hist_len
     // 은 전부 프레임 수라, 발행 주기가 바뀌면 뜻하는 벽시계 창이 같이 바뀐다
@@ -238,128 +246,74 @@ private:
     // ⚠️ min_hits 는 의도적으로 프레임으로 남긴다 — 이건 시간 창이 아니라
     //    "센서 노이즈는 프레임 단위로 뜬다"는 프레임 도메인 게이트다
     //    (params.yaml 의 근거 주석 참조).
-    this->declare_parameter<double>("track_timeout_sec", 0.0);
-    this->declare_parameter<double>("n_confirm_sec", 0.0);
-    this->declare_parameter<double>("n_release_sec", 0.0);
-    this->declare_parameter<double>("dynamic_release_sec", 0.0);
-    this->declare_parameter<double>("pos_hist_sec", 0.0);
+    track_timeout_sec_ = this->declare_parameter<double>("track_timeout_sec", 0.0);
+    n_confirm_sec_ = this->declare_parameter<double>("n_confirm_sec", 0.0);
+    n_release_sec_ = this->declare_parameter<double>("n_release_sec", 0.0);
+    dynamic_release_sec_ = this->declare_parameter<double>("dynamic_release_sec", 0.0);
+    pos_hist_sec_ = this->declare_parameter<double>("pos_hist_sec", 0.0);
     // 실측 주기 EMA 계수. 0에 가까울수록 느리게 반응한다.
-    this->declare_parameter<double>("rate_ema_alpha", 0.05);
+    rate_ema_alpha_ = this->declare_parameter<double>("rate_ema_alpha", 0.05);
 
     this->declare_parameter<std::string>("scan_topic", "/scan");
     this->declare_parameter<std::string>("obstacle_topic", "/perception/obstacles");
     this->declare_parameter<std::string>("target_frame", "map");
     this->declare_parameter<double>("tf_timeout_sec", 0.05);
-    this->declare_parameter<bool>("require_source_stamp", true);
-    this->declare_parameter<double>("max_source_age_sec", 0.20);
-    this->declare_parameter<double>("source_future_tolerance_sec", 0.05);
+    require_source_stamp_ = this->declare_parameter<bool>("require_source_stamp", true);
+    max_source_age_ = this->declare_parameter<double>("max_source_age_sec", 0.20);
+    source_future_tolerance_ =
+      this->declare_parameter<double>("source_future_tolerance_sec", 0.05);
     // 고속주행에서는 latest TF fallback이 위치를 체계적으로 틀리게 하므로 기본 금지.
-    this->declare_parameter<bool>("tf_allow_latest_fallback", false);
-    this->declare_parameter<double>("tf_max_age_sec", 0.05);
+    tf_allow_latest_fallback_ =
+      this->declare_parameter<bool>("tf_allow_latest_fallback", false);
+    tf_max_age_ = this->declare_parameter<double>("tf_max_age_sec", 0.05);
     // time-travel lookup의 경유(fixed) 프레임. ''(기본) = 비활성.
     this->declare_parameter<std::string>("tf_fixed_frame", "");
     // target_frame(map) 기준. 기본 [0.0]은 "비활성" sentinel (파이썬 판과 동일 규약).
     this->declare_parameter<std::vector<double>>("boundary_polygon_xy", {0.0});
 
     // ---- 맵 벽 포인트 필터 ----
-    this->declare_parameter<bool>("use_map_filter", false);
+    use_map_filter_ = this->declare_parameter<bool>("use_map_filter", false);
     this->declare_parameter<std::string>("map_topic", "/map");
-    this->declare_parameter<double>("wall_dist_min_m", 0.15);
-    this->declare_parameter<double>("map_wait_timeout_sec", 10.0);
+    wall_dist_min_ = this->declare_parameter<double>("wall_dist_min_m", 0.15);
+    map_wait_timeout_ = this->declare_parameter<double>("map_wait_timeout_sec", 10.0);
 
     // ---- 레이 일관성 필터 (맵 필터와 같은 WallDistanceMap 을 쓴다) ----
     // 벽거리 필터의 **반대편**을 막는다: 저쪽은 벽에 너무 가까운 점을,
     // 이쪽은 벽보다 뒤에서 온 점을 버린다. 근거는 ray_consistency_mask 주석.
     // use_map_filter 가 켜져 있어야 동작한다 (맵이 없으면 기대거리가 없다).
-    this->declare_parameter<bool>("use_ray_filter", false);
+    use_ray_filter_ = this->declare_parameter<bool>("use_ray_filter", false);
     // 기대 벽거리 대비 이만큼 넘어야 기각. 접선 입사 민감도 때문에 작게 잡으면
     // 원거리 실물을 버린다 — 실측 근거는 ray_consistency_mask 주석 (1)번.
-    this->declare_parameter<double>("ray_filter_margin_m", 1.5);
+    ray_filter_margin_ = this->declare_parameter<double>("ray_filter_margin_m", 1.5);
     // 안정성 판정용 빔 방향 섭동각 [deg]. 자세 오차 대표값.
-    this->declare_parameter<double>("ray_filter_probe_deg", 1.5);
+    ray_filter_probe_deg_ = this->declare_parameter<double>("ray_filter_probe_deg", 1.5);
     // 섭동으로 기대거리가 이만큼 이상 흔들리면 그 빔은 판단하지 않는다.
-    this->declare_parameter<double>("ray_filter_unstable_m", 0.5);
+    ray_filter_unstable_ = this->declare_parameter<double>("ray_filter_unstable_m", 0.5);
 
     // ---- 트랙 경계(Frenet) 필터 ----
-    this->declare_parameter<bool>("use_track_filter", false);
+    use_track_filter_ = this->declare_parameter<bool>("use_track_filter", false);
     this->declare_parameter<std::string>("global_waypoints_topic", "/global_waypoints");
-    this->declare_parameter<double>("track_bound_inflation_m", 0.10);
-    this->declare_parameter<double>("max_view_ahead_m", 6.0);
-    this->declare_parameter<double>("max_view_behind_m", 2.0);
+    track_bound_inflation_ =
+      this->declare_parameter<double>("track_bound_inflation_m", 0.10);
+    max_view_ahead_ = this->declare_parameter<double>("max_view_ahead_m", 6.0);
+    max_view_behind_ = this->declare_parameter<double>("max_view_behind_m", 2.0);
 
     // 물리적으로 불가능한 크기의 클러스터 거부. 0.0 = 비활성.
-    this->declare_parameter<double>("max_cluster_radius_m", 0.0);
+    max_cluster_radius_ = this->declare_parameter<double>("max_cluster_radius_m", 0.0);
     // 스캔 처리율 상한.
     this->declare_parameter<double>("process_rate_hz", 20.0);
   }
 
   void read_and_validate_parameters()
   {
-    range_min_ = this->get_parameter("range_min").as_double();
-    range_max_ = this->get_parameter("range_max").as_double();
     fov_min_ = this->get_parameter("fov_min_deg").as_double() * kPi / 180.0;
     fov_max_ = this->get_parameter("fov_max_deg").as_double() * kPi / 180.0;
-    median_kernel_ = static_cast<int>(this->get_parameter("median_kernel").as_int());
 
     lambda_angle_ = this->get_parameter("lambda_angle_deg").as_double() * kPi / 180.0;
-    sigma_ = this->get_parameter("sigma").as_double();
-    min_cluster_size_ = static_cast<int>(this->get_parameter("min_cluster_size").as_int());
-    min_cluster_size_open_ =
-      static_cast<int>(this->get_parameter("min_cluster_size_open").as_int());
-    open_space_dist_ = this->get_parameter("open_space_dist_m").as_double();
-
-    v_thresh_ = this->get_parameter("v_thresh").as_double();
-    n_confirm_ = static_cast<int>(this->get_parameter("n_confirm").as_int());
-    n_release_ = static_cast<int>(this->get_parameter("n_release").as_int());
-    static_pos_std_ = this->get_parameter("static_pos_std").as_double();
-    dynamic_pos_std_ = this->get_parameter("dynamic_pos_std").as_double();
-    dynamic_release_ = static_cast<int>(this->get_parameter("dynamic_release").as_int());
-    min_hits_ = static_cast<int>(this->get_parameter("min_hits").as_int());
-    gating_distance_ = this->get_parameter("gating_distance").as_double();
-    radius_ratio_max_ = this->get_parameter("radius_ratio_max").as_double();
-    track_timeout_ = static_cast<int>(this->get_parameter("track_timeout").as_int());
-    dynamic_reacquire_gate_multiplier_ =
-      this->get_parameter("dynamic_reacquire_gate_multiplier").as_double();
-    dynamic_reacquire_timeout_sec_ =
-      this->get_parameter("dynamic_reacquire_timeout_sec").as_double();
-    dynamic_frenet_reid_timeout_sec_ =
-      this->get_parameter("dynamic_frenet_reid_timeout_sec").as_double();
-    dynamic_frenet_reid_lateral_gate_m_ =
-      this->get_parameter("dynamic_frenet_reid_lateral_gate_m").as_double();
-    dynamic_frenet_reid_progress_slack_m_ =
-      this->get_parameter("dynamic_frenet_reid_progress_slack_m").as_double();
-    dynamic_frenet_reid_backtrack_m_ =
-      this->get_parameter("dynamic_frenet_reid_backtrack_m").as_double();
-    reid_distance_ = this->get_parameter("reid_distance").as_double();
-    reid_timeout_ = this->get_parameter("reid_timeout_sec").as_double();
-    pos_hist_len_ = static_cast<int>(this->get_parameter("pos_hist_len").as_int());
-    track_timeout_sec_ = this->get_parameter("track_timeout_sec").as_double();
-    n_confirm_sec_ = this->get_parameter("n_confirm_sec").as_double();
-    n_release_sec_ = this->get_parameter("n_release_sec").as_double();
-    dynamic_release_sec_ = this->get_parameter("dynamic_release_sec").as_double();
-    pos_hist_sec_ = this->get_parameter("pos_hist_sec").as_double();
-    rate_ema_alpha_ = this->get_parameter("rate_ema_alpha").as_double();
 
     const double rate = this->get_parameter("process_rate_hz").as_double();
     const double tf_timeout_sec = this->get_parameter("tf_timeout_sec").as_double();
-    require_source_stamp_ = this->get_parameter("require_source_stamp").as_bool();
-    max_source_age_ = this->get_parameter("max_source_age_sec").as_double();
-    source_future_tolerance_ = this->get_parameter("source_future_tolerance_sec").as_double();
-    tf_allow_latest_fallback_ = this->get_parameter("tf_allow_latest_fallback").as_bool();
-    tf_max_age_ = this->get_parameter("tf_max_age_sec").as_double();
     tf_fixed_frame_ = trim(this->get_parameter("tf_fixed_frame").as_string());
-    use_map_filter_ = this->get_parameter("use_map_filter").as_bool();
-    wall_dist_min_ = this->get_parameter("wall_dist_min_m").as_double();
-    max_cluster_radius_ = this->get_parameter("max_cluster_radius_m").as_double();
-    map_wait_timeout_ = this->get_parameter("map_wait_timeout_sec").as_double();
-    use_ray_filter_ = this->get_parameter("use_ray_filter").as_bool();
-    ray_filter_margin_ = this->get_parameter("ray_filter_margin_m").as_double();
-    ray_filter_probe_deg_ = this->get_parameter("ray_filter_probe_deg").as_double();
-    ray_filter_unstable_ = this->get_parameter("ray_filter_unstable_m").as_double();
-    use_track_filter_ = this->get_parameter("use_track_filter").as_bool();
-    track_bound_inflation_ = this->get_parameter("track_bound_inflation_m").as_double();
-    max_view_ahead_ = this->get_parameter("max_view_ahead_m").as_double();
-    max_view_behind_ = this->get_parameter("max_view_behind_m").as_double();
 
     if (!std::isfinite(track_bound_inflation_) ||
       !(track_bound_inflation_ >= 0.0 && track_bound_inflation_ <= 1.0) ||
@@ -942,7 +896,9 @@ private:
       clusters.erase(
         std::remove_if(
           clusters.begin(), clusters.end(),
-          [&](const Cluster & c) {return c.radius > max_cluster_radius_;}),
+          [&](const Cluster & c) {
+            return !passes_cluster_radius_gate(c.radius, max_cluster_radius_);
+          }),
         clusters.end());
       if (clusters.size() != before) {
         RCLCPP_WARN_THROTTLE(
@@ -1035,7 +991,8 @@ private:
     std::vector<uint8_t> keep(points.size(), 0);   // 맵 밖 포인트는 버린다
     for (std::size_t i = 0; i < points.size(); ++i) {
       double d = 0.0;
-      if (map.distance_at(points[i][0], points[i][1], d) && d >= wall_dist_min_) {
+      const bool distance_available = map.distance_at(points[i][0], points[i][1], d);
+      if (passes_wall_distance_gate(distance_available, d, wall_dist_min_)) {
         keep[i] = 1;
       }
     }

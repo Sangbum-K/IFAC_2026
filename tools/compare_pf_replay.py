@@ -582,9 +582,15 @@ def replay_diagnostics(log_records):
     slip_values = []
     deskew_values = []
     rejected = []
+    current_cpp_runtime = False
+    legacy_python_runtime = False
     for _, message in log_records:
         if message.name != 'particle_filter':
             continue
+        if 'engine cpp' in message.msg or 'C++ RangeLib' in message.msg:
+            current_cpp_runtime = True
+        if message.msg.startswith('Initializing range method:'):
+            legacy_python_runtime = True
         if message.msg.startswith('PF sync:'):
             sync_lines.append(message.msg)
             match = SYNC_PATTERN.match(message.msg)
@@ -685,6 +691,7 @@ def replay_diagnostics(log_records):
                 })
         if 'Rejected PF scan update' in message.msg:
             rejected.append(message.msg)
+            legacy_python_runtime = True
     timing = {}
     for name in ('rate', 'compute', 'turnaround', 'age', 'cpu'):
         timing[name] = percentile_summary([
@@ -729,7 +736,17 @@ def replay_diagnostics(log_records):
         'deskew': deskew,
         'deskew_last': deskew_values[-1] if deskew_values else {},
         'last_sync_line': sync_lines[-1] if sync_lines else None,
-        'logged_jump_rejections': len(rejected),
+        'logged_jump_rejections': (
+            'UNOBSERVABLE'
+            if current_cpp_runtime or not legacy_python_runtime
+            else len(rejected)
+        ),
+        'jump_rejection_metric': (
+            'CURRENT_CPP_NO_COMPATIBLE_EVENT_LOG'
+            if current_cpp_runtime
+            else ('LEGACY_PYTHON_THROTTLED_LOG_LINES'
+                  if legacy_python_runtime else 'RUNTIME_UNKNOWN')
+        ),
         'jump_rejection_lines': rejected,
     }
 
