@@ -145,7 +145,8 @@ python3 -m pytest planning_ws/src/planning_pkg/test -q
 | 증상 | 조치 |
 |---|---|
 | `range_libc 를 찾을 수 없습니다` | `git clone https://github.com/f1tenth/range_libc ~/range_libc`<br>다른 곳에 있으면 `RANGE_LIBC=<경로> ./build_all.sh sim` |
-| `ModuleNotFoundError: f110_gym` | `git clone https://github.com/f1tenth/f1tenth_gym ~/f1tenth_gym`<br>`cd ~/f1tenth_gym && python3 -m pip install --user -e .` |
+| `ModuleNotFoundError: f110_gym` 또는 `No module named 'gym'` | `git clone https://github.com/f1tenth/f1tenth_gym ~/f1tenth_gym`<br>`cd ~/f1tenth_gym && python3 -m pip install --user -e .`<br>(`gym`·`numba`·`pyglet` 이 여기 딸려 온다. 설치 후 `python3 -c 'import numpy; print(numpy.__file__)'` 가 `dist-packages` 인지 확인) |
+| launch 가 `file not found: [Errno 2] ... 'xacro'` 로 즉사 | `sudo apt install ros-humble-xacro`<br>`robot_description` 을 `Command(['xacro ', ...])` 로 만드므로 **실행파일**이 있어야 한다. 없으면 노드 하나가 죽는 게 아니라 launch 가 통째로 죽는다. |
 | `build_map.py 의존성 부족` | `python3 -m pip install --user numpy scipy pillow pyyaml matplotlib scikit-image` |
 | 랩타임·CTE 오버레이가 안 뜸 | `sudo apt install ros-humble-rviz-2d-overlay-msgs ros-humble-rviz-2d-overlay-plugins` 후 재빌드 |
 | `source setup.bash` 오류 | zsh 에서는 `setup.zsh` |
