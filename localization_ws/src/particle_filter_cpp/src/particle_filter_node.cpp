@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -442,7 +441,6 @@ private:
     core->initialize_global(permissible);
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      map_info_ = map.info;
       occupancy_map_ = std::move(occupancy_map);
       range_method_ = std::move(range_method);
       core_ = std::move(core);
@@ -571,7 +569,6 @@ private:
       message->twist.twist.angular.z};
     const std::size_t reset_count = odom_buffer_.time_reset_count();
     if (!odom_buffer_.append(sample)) {
-      ++odom_reject_count_;
       return;
     }
     if (odom_buffer_.time_reset_count() != reset_count) {
@@ -922,7 +919,6 @@ private:
           reject = false;
         }
         if (reject) {
-          ++jump_reject_count_;
           ++consecutive_jump_rejects_;
           core_->restore_motion_only(prior_particles, prior_weights, action);
         } else {
@@ -1318,7 +1314,6 @@ private:
   std::vector<Pose2d> permissible_poses_;
   std::unique_ptr<ranges::OMap> occupancy_map_;
   std::unique_ptr<ranges::RangeMethod> range_method_;
-  std::optional<nav_msgs::msg::MapMetaData> map_info_;
   std::atomic<bool> map_initialized_{false};
   std::atomic<bool> map_request_sent_{false};
   std::atomic<bool> odom_initialized_{false};
@@ -1369,7 +1364,6 @@ private:
   std::atomic<std::size_t> scan_out_of_order_count_{0};
   std::atomic<std::size_t> scan_shape_drop_count_{0};
   std::atomic<std::size_t> worker_error_count_{0};
-  std::atomic<std::size_t> odom_reject_count_{0};
   std::atomic<std::size_t> imu_reject_count_{0};
   std::atomic<std::size_t> imu_sync_miss_count_{0};
   std::atomic<std::size_t> scan_match_invalid_count_{0};
@@ -1378,7 +1372,6 @@ private:
   std::atomic<std::size_t> quality_lost_update_count_{0};
   std::atomic<std::size_t> quality_lost_transition_count_{0};
   std::atomic<std::size_t> stationary_hold_count_{0};
-  std::atomic<std::size_t> jump_reject_count_{0};
   std::atomic<std::size_t> slip_event_count_{0};
   std::atomic<std::size_t> slip_recovery_count_{0};
   std::atomic<std::size_t> slip_bypass_count_{0};

@@ -24,7 +24,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -59,7 +58,6 @@ add_executable(obstacle_detector_node src/obstacle_detector_node.cpp)
 target_link_libraries(obstacle_detector_node perception_core)
 ament_target_dependencies(obstacle_detector_node
   rclcpp
-  std_msgs
   sensor_msgs
   nav_msgs
   geometry_msgs
@@ -73,7 +71,6 @@ ament_target_dependencies(obstacle_detector_node
 add_executable(obstacle_viz_node src/obstacle_viz_node.cpp)
 ament_target_dependencies(obstacle_viz_node
   rclcpp
-  std_msgs
   geometry_msgs
   visualization_msgs
   f1tenth_perception_msgs
@@ -91,6 +88,7 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(nlohmann_json REQUIRED)
   ament_add_gtest(test_tracker_reacquisition
     test/test_tracker_reacquisition.cpp
   )
@@ -103,6 +101,16 @@ if(BUILD_TESTING)
     test/test_wall_distance_map.cpp
   )
   target_link_libraries(test_wall_distance_map perception_core)
+  ament_add_gtest(test_obstacle_radius_gate
+    test/test_obstacle_radius_gate.cpp
+  )
+  target_link_libraries(test_obstacle_radius_gate
+    perception_core
+    nlohmann_json::nlohmann_json
+  )
+  target_compile_definitions(test_obstacle_radius_gate PRIVATE
+    RADIUS_GATE_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/run_0809_231809_61_2_radius_gate.json"
+  )
 endif()
 
 ament_package()
