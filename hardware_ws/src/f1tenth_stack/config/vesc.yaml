@@ -109,7 +109,7 @@
     # 선행시킨다. 보정값은 max_mps와 실제 속도 오차로 제한하므로 계획 속도에
     # 가까워질수록 0으로 줄어든다. 모터 구동 전류를 직접 명령하는 방식은 아니다.
     accel_speed_lead_enabled: true
-    accel_speed_lead_time_s: 0.05
+    accel_speed_lead_time_s: 0.08
     accel_speed_lead_max_mps: 0.30
     accel_speed_lead_target_max_mps: 7.0
     accel_speed_lead_rise_rate_mps2: 6.0
