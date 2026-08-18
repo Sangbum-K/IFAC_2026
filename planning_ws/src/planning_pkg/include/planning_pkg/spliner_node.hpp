@@ -97,6 +97,17 @@ private:
     const std::string & side,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & group,
     bool * clears_all) const;
+  // d_hold 를 유지하는 구간에 걸치는 **다른** 장애물이 그 오프셋을 막는가.
+  // TryLaneSwitch 의 clears 판정이 closest_obs 하나만 봐서 생긴 구멍을 막는다
+  // (run_0818_205422 25.31s 충돌 — 그 함수의 주석 참조). 막는 장애물이 있으면
+  // 그 박스를 *blocker 로 돌려준다. 사이드는 묻지 않는다: d_hold 가 박스 왼쪽
+  // 이든 오른쪽이든 요구 간격 밖이기만 하면 이 오프셋은 그것을 지나갈 수 있다.
+  bool HoldClearsOthers(
+    double d_hold,
+    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+    double hold_through_s,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
+    f1tenth_planning_msgs::msg::Obstacle * blocker) const;
 
   bool DoSpline(
     const f1tenth_planning_msgs::msg::Obstacle & closest_obs,

@@ -1987,6 +1987,66 @@ double SplinerNode::GroupApex(
     return d;
 }
 
+bool SplinerNode::HoldClearsOthers(
+    double d_hold,
+    const f1tenth_planning_msgs::msg::Obstacle &closest_obs,
+    double hold_through_s,
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
+    f1tenth_planning_msgs::msg::Obstacle *blocker) const {
+    if (!std::isfinite(d_hold) || track_len_ <= 0.0) {
+        return true;
+    }
+    // hold 구간은 BuildLaneSwitch 가 실제로 오프셋을 유지하는 범위와 같아야
+    // 한다 — 여기서 낙관적으로 좁게 잡으면 사전 필터를 통과한 뒤 검증기에서
+    // 죽는, 지금 고치려는 것과 같은 형태의 구멍이 생긴다.
+    // (장애물 앞뒤 0.5m 여유까지 포함. BuildLaneSwitch 의 hold_start/hold_end.)
+    const double span = Mod(closest_obs.s_end - closest_obs.s_start, track_len_);
+    const double behind = Mod(cur_s_ - closest_obs.s_start, track_len_);
+    const bool alongside = behind < span + 1.0;
+    const double dist_front =
+        alongside ? 0.0 : Mod(closest_obs.s_start - cur_s_, track_len_);
+    double dist_back = alongside
+        ? Mod(closest_obs.s_end - cur_s_, track_len_)
+        : dist_front + span;
+    if (std::isfinite(hold_through_s)) {
+        const double through = Mod(hold_through_s - cur_s_, track_len_);
+        if (through <= lookahead_m_) {
+            dist_back = std::max(dist_back, through);
+        }
+    }
+    const double hold_start = std::max(dist_front - 0.5, 0.0);
+    const double hold_end = dist_back + 0.5;
+
+    for (const auto &o : all_ahead) {
+        if (o.id == closest_obs.id) {
+            continue;   // 호출자가 사이드까지 따져서 따로 본다
+        }
+        if (!std::isfinite(o.s_start) || !std::isfinite(o.s_end) ||
+            !std::isfinite(o.d_left) || !std::isfinite(o.d_right)) {
+            continue;
+        }
+        // 자차 기준 상대거리로 unwrap — 뒤에 있는 장애물은 ~track_len 이 되어
+        // 아래 겹침 비교에서 자연히 걸러진다 (EvasionGroup 과 같은 규약).
+        const double a = Mod(o.s_start - cur_s_, track_len_);
+        const double b = a + Mod(o.s_end - o.s_start, track_len_);
+        if (a > hold_end || b < hold_start) {
+            continue;
+        }
+        // 사이드를 묻지 않는다 — d_hold 가 이 박스의 어느 쪽이든 요구 간격
+        // 밖이면 지나갈 수 있다. 통로가 **레이스라인이 아닌 곳**에 있는
+        // 배치(장애물 사이 게이트)에서 사이드를 강제하면 정답을 잃는다.
+        const double need = RequiredObstacleClearance(o);
+        if (d_hold >= o.d_left + need || d_hold <= o.d_right - need) {
+            continue;
+        }
+        if (blocker != nullptr) {
+            *blocker = o;
+        }
+        return false;
+    }
+    return true;
+}
+
 double SplinerNode::ApexFor(
     const std::string &side,
     const f1tenth_planning_msgs::msg::Obstacle &obs) const {
@@ -2219,8 +2279,15 @@ bool SplinerNode::TryLaneSwitch(
         }
         const double apex = ApexFor(side, closest_obs);
         const double need_c = RequiredObstacleClearance(closest_obs);
-        return (side == "left") ? (apex >= closest_obs.d_left + need_c)
-                                : (apex <= closest_obs.d_right - need_c);
+        const bool closest_ok =
+            (side == "left") ? (apex >= closest_obs.d_left + need_c)
+                             : (apex <= closest_obs.d_right - need_c);
+        // 아래 루프와 같은 식이어야 한다 — 잠긴 사이드가 "closest 는 비켜
+        // 가지만 그 레인 위에 다른 장애물이 서 있는" 상태면 그 사이드는
+        // 성립하지 않는 것이고, 잠금을 유지할 이유가 없다.
+        return closest_ok &&
+               HoldClearsOthers(apex, closest_obs, closest_obs.s_end,
+                                all_ahead, nullptr);
     };
     if (committed_side && !side_clears(last_ot_side_)) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
@@ -2271,6 +2338,37 @@ bool SplinerNode::TryLaneSwitch(
                                  : closest_obs.d_right - need_clear,
                 closest_obs.d_right, closest_obs.d_left);
             NoteReject("lane_wall_no_room");
+            continue;
+        }
+        // ── 레인 위의 **다른** 장애물 (2026-08-18) ────────────────────────
+        // 위 clears 는 closest_obs(또는 GroupApex 가 본 그룹) 하나만 본
+        // 판정이다. 그 하나를 비켜 갔다고 그 오프셋이 빈 것은 아니다.
+        //   run_0818_205422 25.31s 충돌 — s=35.5 직선에 콘 두 개가
+        //   #13 d[-0.25,+0.10] (레이스라인 위) / #14 d[+0.68,+1.02] (좌벽 옆),
+        //   사이 통로 0.58~0.64 m. closest 는 s_end 가 6 cm 작은 #14 였고,
+        //   ApexFor("right", #14) 는 상한 클램프 0.0 때문에 **d_hold=0.00**,
+        //   즉 레이스라인 그 자체를 돌려줬다. 0.00 <= 0.68-0.27 이라 이
+        //   clears 를 통과했고("LaneSwitch right d_hold=0.00" 로그),
+        //   ok_lane_switch 로 커밋까지 먹었다. 그 레이스라인 위에 #13 이
+        //   서 있다는 사실은 이 단계에서 아무도 보지 않았다.
+        //   0.24초 뒤 committed_break(path_collision) 로 깨졌지만, 그 사이
+        //   **#13 이 closest 가 된 유일한 프레임(22.60s)** 이 커밋 홀드로
+        //   지나가 버렸다 — 그 프레임의 답은 d=+0.36 으로 통과였다.
+        //   (다음 랩 37.77s 에 같은 프레임이 커밋 없이 와서 6.2 m/s 통과.)
+        // 그래서 "이 오프셋이 hold 구간 전체에서 비어 있는가"를 여기서 본다.
+        // 검증기(CheckPathCollision)가 어차피 잡아내지만, 여기서 걸러야
+        // 가짜 성공이 커밋/retry_d_target_ 을 오염시키지 않는다.
+        f1tenth_planning_msgs::msg::Obstacle hold_blocker;
+        if (!HoldClearsOthers(d_hold, closest_obs, hold_through_s, all_ahead,
+                              &hold_blocker)) {
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+                "LaneSwitch %s 레인 불가: d_hold=%.2f 위에 다른 장애물 "
+                "(id %d, s[%.1f,%.1f], d[%.2f,%.2f], 필요 %.2f)",
+                side.c_str(), d_hold, hold_blocker.id,
+                hold_blocker.s_start, hold_blocker.s_end,
+                hold_blocker.d_right, hold_blocker.d_left,
+                RequiredObstacleClearance(hold_blocker));
+            NoteReject("lane_hold_blocked_by_other");
             continue;
         }
         // 이 레인은 장애물 여유를 만족한다 — 뒤이은 속도/충돌 검증에서
