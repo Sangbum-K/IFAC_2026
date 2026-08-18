@@ -78,8 +78,12 @@ TEST(TrackerReacquisition, NeverUsesRecoveryForStaticTrack)
 TEST(TrackerReacquisition, RefusesAmbiguousDynamicCandidate)
 {
   auto tracker = make_tracker();
+  // 두 후보는 gating_distance(0.45m)보다 멀어야 한다 — 그보다 가까우면
+  // tracker가 "쪼개진 한 물체"로 보고 두 번째 ID를 만들지 않는다
+  // (tracker.cpp 9번 파편 스폰 억제). 여기서 검증하려는 것은 그게 아니라
+  // "한 cluster에 active dynamic 후보가 둘이면 재연결하지 않는다"이다.
   auto tracks = tracker.step(
-    {make_cluster(-0.10, 0.0), make_cluster(0.10, 0.0)}, 0.0);
+    {make_cluster(-0.30, 0.0), make_cluster(0.30, 0.0)}, 0.0);
   ASSERT_EQ(tracks.size(), 2u);
   for (auto & track : tracks) {
     track->ever_dynamic = true;
@@ -161,7 +165,10 @@ TEST(TrackerReacquisition, FrenetReidRejectsAmbiguousDynamicReentry)
   EXPECT_TRUE(tracks.empty());
 
   // 후보가 두 개면 어느 쪽도 기존 dynamic ID를 받지 않는다.
-  tracks = tracker.step({make_cluster(1.0, 0.6), make_cluster(1.0, 0.7)}, 0.20, &bounds);
+  // 간격은 gating_distance(0.45m)보다 넓게 둔다 — 더 가까우면 파편 스폰 억제가
+  // 두 번째 ID를 막아 이 테스트의 전제(후보 2개)가 성립하지 않는다.
+  // (1.0,0.10): s=1.0 d=0.10, (1.0,0.6): s=1.6 d=0 — 둘 다 Frenet 후보 조건 안.
+  tracks = tracker.step({make_cluster(1.0, 0.6), make_cluster(1.0, 0.10)}, 0.20, &bounds);
   ASSERT_EQ(tracks.size(), 2u);
   EXPECT_EQ(tracks[0]->id, 1);
   EXPECT_EQ(tracks[1]->id, 2);

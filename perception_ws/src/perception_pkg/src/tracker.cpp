@@ -583,11 +583,63 @@ std::vector<TrackPtr> Tracker::step(
   //
   // 현재 프레임에 retire된 트랙까지 포함해 re-ID를 먼저 시도한다.
   // 실패했을 때만 신규 ID를 만든다.
+  //
+  // ── 파편 스폰 억제 (2026-08-18, run_0817_194156) ────────────────────────
+  // 이미 이번 프레임에 소비된 cluster 로부터 gating_distance_ 안에 남아 있는
+  // cluster 는 **같은 물체가 쪼개진 파편**으로 보고 새 ID 를 만들지 않는다.
+  //
+  // 근거: 한 물체의 연속 표면이 adaptive breakpoint 문턱 근처에서 프레임마다
+  // 붙었다 갈라진다 (clustering.hpp 의 kSafetyFactor 주석). 갈라지면 그리디
+  // 매칭은 트랙당 cluster 하나만 주므로 파편이 새 ID 로 태어나고, 다음 프레임에
+  // 다시 합쳐지면 짝을 잃은 쪽이 0.80s 코스팅으로 계속 발행된다. 실측:
+  //   · 신규 트랙 229개 중 19%(44개)가 기존 트랙 0.45m 안에서 태어났고
+  //     그중 82%가 반경 <0.10m 파편
+  //   · 발행 인스턴스 16,475개 중 21.5%가 0.45m 안에 짝을 가진 중복
+  //     (쌍 간격 p50 0.23m, 큰 쪽 r 0.16 / 작은 쪽 r 0.04)
+  //
+  // gating_distance_ 를 그대로 쓴다 — 그보다 멀면 애초에 같은 트랙으로 매칭될
+  // 수 없으니 "별개 물체"라는 판정과 기준이 하나로 유지된다. 억제해도 그 자리는
+  // 이웃 트랙이 이미 점유하고 있으므로 플래너가 보는 가용공간은 줄지 않는다.
+  //
+  // 남은 cluster 끼리도 같은 규칙을 적용해야 **첫 검출부터 쪼개진** 물체가
+  // 두 ID 로 태어나는 것을 막는다. 그래서 큰 것부터 스폰하고(본체가 ID 를
+  // 갖는다) 스폰한 cluster 를 곧바로 소비 처리한다.
   // ================================================================
+  std::vector<std::size_t> leftovers;
+  leftovers.reserve(clusters.size());
   for (std::size_t ci = 0; ci < clusters.size(); ++ci) {
     if (!cluster_used[ci]) {
-      spawn(clusters[ci], stamp);
+      leftovers.push_back(ci);
     }
+  }
+  // 점 수 내림차순. 동점은 원래 각도 순서를 유지한다(삽입 순서 계약).
+  std::stable_sort(
+    leftovers.begin(), leftovers.end(),
+    [&clusters](std::size_t a, std::size_t b) {
+      return clusters[a].points.size() > clusters[b].points.size();
+    });
+
+  for (const std::size_t ci : leftovers) {
+    bool fragment = false;
+    if (gating_distance_ > 0.0) {
+      for (std::size_t cj = 0; cj < clusters.size(); ++cj) {
+        if (cj == ci || !cluster_used[cj]) {
+          continue;
+        }
+        const double d = std::hypot(
+          clusters[ci].centroid[0] - clusters[cj].centroid[0],
+          clusters[ci].centroid[1] - clusters[cj].centroid[1]);
+        if (d < gating_distance_) {
+          fragment = true;
+          break;
+        }
+      }
+    }
+    if (fragment) {
+      continue;
+    }
+    spawn(clusters[ci], stamp);
+    cluster_used[ci] = 1;
   }
 
   return tracks_;

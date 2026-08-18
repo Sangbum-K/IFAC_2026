@@ -24,3 +24,6 @@ rosbag0808/
 # 로스백 원본 (개당 70~135MB, GitHub 100MB 한도 초과 — 레포에 올리지 않는다)
 rosbag_*/
 *.db3
+
+# 백 재생 A/B 산출물 (pkl·로그·db3, 재생성 가능)
+tools/bag_analysis_0818/out/
