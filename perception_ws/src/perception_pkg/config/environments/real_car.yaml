@@ -193,7 +193,7 @@ obstacle_detector_node:
     # 아니다. 트래킹 전에 버려 재식별/코스팅으로 되살아나지 않게 한다.
     # 0.60 -> 0.35: 0.60은 차량 반경(0.32)의 두 배라 사실상 아무것도 못 막았다.
     # 0.35는 상대차 측면(0.55m -> 반경 0.28)까지 통과시키면서 벽 덩어리는 자른다.
-    max_cluster_radius_m: 0.35
+    max_cluster_radius_m: 0.55
     # ---- 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식 ----
     # 맵 벽거리와 직교하는 2차 기준. 벽거리만으로는 정합 오차 fringe를 못 잡고,
     # 문턱을 더 올리면 코리도(폭 0.96~2.42m)를 먹는다. 근거는 track_filter.py.
