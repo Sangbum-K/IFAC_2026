@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 global_trajectory_node:
   ros__parameters:
-    # my_track0810 실차: v-max 7, 계획 mu 0.80 (raceline 재생성 시 접미사 함께 교체)
+    # my_track0817 실차: v-max 7, 계획 mu 0.90 (raceline 재생성 시 접미사 함께 교체)
     # margin 0.08 = 소형 트랙 회피 corridor 확보용 (build_map MARGIN, 주행선 불변)
     # 랩 32.2 m, safe_dist는 adaptive 0.38~0.55 m (CSV 첫 줄 헤더에 기록).
     # 2026-08-07: 옛 my_track 라인은 b05264b에서 삭제됐는데 이 기본값만 남아
@@ -18,7 +18,11 @@ global_trajectory_node:
     # (CSV 파일명은 어느 env 오버레이도 덮지 않으므로 이 줄이 항상 쓰인다).
     # ⚠️ 실제 주행 속도는 environments/<env>.yaml의 velocity_scale이 결정한다 —
     # control의 vehicle/max_speed_mps와 짝을 맞출 것 (real_car.yaml 주석 참조).
-    global_trajectory/trajectory_csv_file: my_track0810_iqp_max7.00ms_margin0.08m_mu0.80.csv
+    # 2026-08-18: 0810 -> 0817. 08-17 실차 런(run_0817_194156)이 my_track0817 로
+    # 달렸다 — 백의 /map 이 395x319 res 0.05 origin (-13.055981, -7.690340) 으로
+    # maps/my_track0817.yaml 과 정확히 일치한다. 위 08-11 주석이 예고한 사고를
+    # 또 반복하지 않으려면 여기가 현행 맵이어야 한다.
+    global_trajectory/trajectory_csv_file: my_track0817_iqp_max7.00ms_margin0.08m_mu0.90.csv
     # SP는 전 구간 경계/조향 검증을 통과한 파일만 map:= 또는 CLI로 원자적으로
     # 연결한다. 현재 기본 SP는 R_min 한계 위반이라 안전 기본값은 비활성.
     global_trajectory/overtaking_csv_file: ""
@@ -100,12 +104,16 @@ local_trajectory_node:
     local_trajectory/minimum_stop_buffer_m: 1.5
     # ── 회피상실 홀드 [s] ─────────────────────────────────────────────────
     # 회피 경로가 빈 배열로 바뀐 뒤 직전 속도 상한을 유지할 시간.
-    # 0 = 홀드 없음(옛 fail-open). 근거는 cpp 의 declare_parameter 주석 —
-    # 관측된 인지 공백 중앙값(275ms)의 약 2배.
+    # 0 = 홀드 없음(옛 fail-open). 근거는 cpp 의 declare_parameter 주석.
     # ⚠️ 만료되면 캡이 **통째로** 사라져 레이스라인 전속으로 돌아간다.
     #    즉 아래 바닥의 노출(≤ 이 시간 동안 1.5 m/s)보다 만료 뒤가 더 크다 —
     #    바닥을 논할 때 이 값을 같이 봐야 한다.
-    local_trajectory/avoidance_loss_hold_sec: 0.5
+    # 0.5 -> 1.0 (2026-08-19): 0.5 는 detector 의 track_timeout_sec(0.80)보다
+    # 짧아 **perception 이 아직 트랙을 살려 둔 동안 플래너가 먼저 상한을 풀었다.**
+    # run_0818_232744 id7 조우에서 0.86s 공백 중 15.83s 에 만료되어 local 선두가
+    # 6.72 로 뛰었고 명령이 3.37 -> 4.78 로 올랐다 (그때 장애물 0.96m 앞,
+    # 최근접 0.15m). 자세한 타임라인은 cpp 주석 참조.
+    local_trajectory/avoidance_loss_hold_sec: 1.0
     # ── 회피상실 홀드의 바닥 [m/s] ────────────────────────────────────────
     # 홀드(avoidance_loss_hold_sec)는 "장애물을 잃은 것이 **가속** 신호가
     # 되지 않게" 하는 장치다. 그런데 기억해 둔 선두 속도가 0 에 가까우면
@@ -358,6 +366,25 @@ spliner_node:
     #    !is_static 이라 정적에는 완전 정지 경로가 없다 (spliner_node.cpp
     #    1176줄 트레이드 주석). 1.5 -> 2.5 는 운동에너지 2.8배다.
     spliner/trailing_retry_speed: 2.5
+    # ── 동적 트레일링 속도 바닥 [m/s] (2026-08-19) ─────────────────────────
+    # allow_stop = !is_static 이라 동적에는 바닥이 없었다. run_0818 실측:
+    #   정적 대상 트레일링 발행속도 p50 2.50~2.52 (바닥이 지켜짐)
+    #   동적 대상               p50 1.78~1.85, 72~76%가 2.5 미만
+    # 레이스라인 4.66 대비 39%. 상대(0.85~1.4 m/s)의 두 배 이상인 절대값을
+    # 두어 "따라가기"가 성립하지 않게 한다 — 회피하거나 부딪히거나.
+    # ⚠️ 비상정지·geom_blocked(어떤 속도로도 회피 불가)에서는 자동 해제된다.
+    #    그 해제가 없으면 갇혔을 때 그대로 박는다 (lane_wall_no_room 이 1위
+    #    기각 사유, 초당 3.8~4.1). 0 으로 두면 종전 동작(정지까지 허용).
+    spliner/dyn_trailing_floor_mps: 3.0
+    # ── 동적 상대용 제동 감속도 [m/s²] (2026-08-19) ────────────────────────
+    # 정적은 위 trailing_decel(1.0) 그대로. 동적만 이 값을 쓴다.
+    # v_allow 식이 이미 "늦게 밟기"라서(engage 밖에선 캡 없음) 바꿔야 할 것은
+    # a 하나였다 — 2단계 계약을 따로 만들 필요가 없었다.
+    # ⚠️ 2.5 는 쓰지 말 것. run_0818 두 백에서 감속 요구 구간만 골라 재면
+    #   v 0.5~1.5 p50 0.81 / v 2.5~3.5 p50 1.33~1.52 / v 3.5~5.0 p50 1.55
+    #   (p90 도 2.6 이하) 로 속도 의존이고, 2.5 는 어느 구간에서도 p90 이상이라
+    #   정지점을 오버슛한다 (trailing_decel 주석의 run_0806 경고와 같은 실패).
+    spliner/trailing_decel_dyn: 1.5
     # 횡 목표가 축소/포기된 트레일링(= 실제로는 못 비켜 가는 상태)의 바닥.
     # 위 값을 올리면 BlendDist = v·sqrt(6A/a_lat) 가 **속도에 정비례**해
     # 커져 횡 램프가 안 들어가고, "횡목표 포기 -> 현재 d 유지 -> 직진"이
@@ -370,6 +397,20 @@ spliner_node:
     # 목표가 깎이면 종전 1.5 로 되돌린다.
     # 불변식: 0 <= degraded <= trailing_retry_speed (노드가 검증한다).
     spliner/trailing_retry_speed_degraded: 1.5
+    # ── 동적 트레일링 목표 속도의 노이즈 제거 (2026-08-18) ────────────────
+    # BuildTrailing 의 v_target 은 obs.vs 를 그대로 쓰는데, 그 vs 는 브릿지가
+    # id별 (s,d) 유한차분 + LPF(alpha 0.3) 로 만든 값이라 노이즈 바닥이 신호와
+    # 같은 크기다. **정지가 증명된 트랙**(3.3초에 0.59 m 이동)에서 실측:
+    #     vs 표준편차 0.43~0.45 m/s / 순간 |vs| 최대 1.36~1.51 m/s
+    #     22개 트랙 전체 vs std  p50 0.23 / p90 0.42 m/s   (run_0815)
+    # 이 값을 목표 속도로 쓰면 상대가 정속으로 가도 명령이 매 사이클 흔들려
+    # 가속·제동을 반복한다. 지금 있는 완충 v_corner_actual 은 **상한**이라
+    # 하향 스파이크를 못 막는다.
+    # true 면 ClassifyObstacles 가 이미 쌓고 있는 관측 창(vs_hist, 10프레임)의
+    # 평균을 쓴다. 새 자료구조가 없고, 정적은 어차피 vs=0 이라 영향이 없다.
+    # ⚠️ 대가는 상대 급감속 대응이 창 길이만큼(~0.25 s @40Hz) 늦어지는 것이다.
+    #    trailing_gap_m(2.5) 가 그 지연을 흡수하는 완충이다.
+    spliner/trailing_vs_filter: true
     # ApexFor의 목표 간격을 CheckPathCollision 요구치보다 이만큼 더 준다 [m].
     # 동률이면 목표 apex가 충돌박스 경계 위에 놓여 수 mm 오차로 뒤집힌다 —
     # 0807 run_164326의 랩당 16회 "회피 실패"가 전부 이것이었다
@@ -679,17 +720,31 @@ spliner_node:
                                          # = 장애물반폭(0.15)+회피간격(0.20)+경계여유(0.15)
                                          # my_track 넓은쪽 벽여유 mean 0.57/max 0.72라 0.95는 섹터 0개.
                                          # 0.50이면 직선부 3구간(~15 m, 랩의 47%)이 섹터로 잡힘
-    spliner/ot_max_kappa: 0.4            # 섹터 판정 최대 곡률 [rad/m] (was 0.1, R>=2.5m)
-                                         # my_track은 R_min 1.35m·평균 R 3.6m라 0.1(R>=10m)이면
-                                         # 직선이 하나도 없다. 0.4로 완만한 구간만 섹터에 포함
+    spliner/ot_max_kappa: 0.20           # 섹터 판정 최대 곡률 [rad/m] (R>=5.0m, was 0.4)
+                                         # 2026-08-18: 0.4(R>=2.5m)는 랩의 90%를 섹터로 만들어
+                                         # 게이트가 사실상 안 걸렸다 — 코너 추월까지 상시 허용.
+                                         # run_0815 /global_waypoints(386점, 38.6m) 실측 스윕:
+                                         #   0.40 -> 섹터 4개 90% / 0.20 -> 2개 42% / 0.10 -> 2개 31%
+                                         # 문턱을 조여도 남는 직선은 항상 같은 둘(s~15~20, s~29~2)이라
+                                         # 0.20 이 "코너 제외"의 최소 침습 지점이다.
+                                         # ⚠️ ot_min_clearance 는 이 트랙에서 통과율 100%(최소 벽여유
+                                         #    0.80 > 문턱 0.50)라 실제로 거르는 조건은 곡률 하나뿐이다.
     # SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋 대신
     # SP 라인으로 갈아타 통과 (라인이 상대와 겹치는 구간이면 자동 폴백)
     # 런타임/CSV 양쪽 검증을 모두 통과한 SP를 만든 뒤에만 true.
     spliner/sp_lane_change: false
     spliner/lc_pass_clear_m: 2.5         # 추월 완료 판정: 상대 앞머리가 ego 뒤로 이만큼
                                          # 벌어져야 raceline 복귀 (was 4.0, 소형 트랙)
-    spliner/ot_sector_min_len_m: 3.0     # 이보다 짧은 구간은 섹터에서 제외 (was 8.0)
-                                         # 31.5 m 랩엔 8 m 연속 직선이 없어 섹터 0개였음
+    spliner/ot_sector_min_len_m: 9.0     # 이보다 짧은 구간은 섹터에서 제외 [m] (was 3.0)
+                                         # 3.0 은 "직선인가"만 봤고 "회피를 끝낼 수 있는가"는
+                                         # 안 봤다. 회피 1회 필요 거리는 BlendDist 공식
+                                         #   v*sqrt(6A/a_lat) + 장애물 + 복귀블렌드
+                                         #   = 5.8*sqrt(6*0.50/8.83) + 0.5 + 5.0 = 8.9 m
+                                         # (A = evasion_dist 0.35 + 콘반폭 0.15, 직선부 평균 5.8 m/s)
+                                         # 그래서 9.0. run_0815 기준 5.4 m 짜리 짧은 직선이 빠지고
+                                         # 메인 직선(s 29.4~1.6, 10.8 m) 하나만 남는다 = 랩의 28%.
+                                         # 부수 효과: 섹터가 하나면 "짧은 비섹터 간격이 섹터를
+                                         # 쪼개 in_sector 가 한 사이클 깜빡이는" 문제도 사라진다.
     # spliner/ot_sectors: [10.0, 50.0]   # 수동 지정 [s0,s1, s0,s1,...] — 주석이면 자동 산출
                                          # (빈 리스트 []는 rclcpp 타입 오류로 노드가 죽으니 금지)
     # (spliner/ot_bound_mindist 제거: 섹터 안/밖에서 경계 마진을 바꾸려던 장치였는데
@@ -704,7 +759,36 @@ spliner_node:
     # (경계 마진 완화는 그 전에 제거됐으므로, 섹터의 남은 효과는 "섹터 밖에서
     #  동적 상대 회피 금지" 하나뿐이었다). 이제 2.0 까지 허용한다.
     # 기본값은 1.0 유지 — 올리려면 실차에서 한 단계씩.
+    # 추월 섹터에서 레이스라인 속도에 곱하는 배율. **동적/준정적 전용** 이다
+    # (정적 회피는 항상 1.0 — spliner_node.cpp 의 ot_boost_ok 참조).
+    # 1.0 -> 1.25 (2026-08-19): 상대보다 빨리 지나가려면 속도 우위가 필요한데
+    # 이 값이 1.0 이라 추월 부스트가 사실상 꺼져 있었다.
+    # 물리 캡(sqrt(a_lat/k), 조향 한계)이 그대로 걸리므로 직선에서만 살아나고
+    # 코너에서는 자동으로 눌린다.
+    # ⚠️ A/B 필수: a_lat p90 이 포락선(8.76)의 86~105% 로 이미 여유가 없다.
+    #    켠 뒤 a_lat p90 이 8.76 을 넘지 않는지 반드시 다시 잴 것.
+    # 기본값은 **1.0(부스트 없음)** 을 유지한다 — test_default_profile_is_fail_safe
+    # 가 요구하는 fail-safe 계약이다. 실제 값은 환경 오버레이에서 켠다.
     spliner/ot_speed_scale: 1.0
+    # ── 준정적 추월 (2026-08-18) ──────────────────────────────────────────
+    # "정적 회피 기구를 동적에도 이어서 쓴다". 확실히 따라잡고 있는 상대는
+    # 기동 동안의 상대 이동이 작아 기하 문제가 정적과 거의 같아지므로,
+    # 정적 전용이던 **경로 커밋**과 **회피 목표 유지(retry_d)** 를 열어 준다.
+    #
+    # ⚠️ 여는 것은 기구뿐이고 **운동 모델은 절대 정적으로 바꾸지 않는다.**
+    #    is_static=true 로 만들면 ClassifyObstacles 가 obs.vs/vd 를 0 으로
+    #    강제하고(spliner_node.cpp), 그러면 CheckPathCollision 의 motion_s 가
+    #    사라져 **복귀 지점에서 상대와 접촉**한다 (같은 파일 950줄, 실측 0.01 m).
+    #    그래서 여기서는 is_static 을 건드리지 않고 별도 플래그로만 처리하며,
+    #    lane switch 의 hold 구간을 상대가 그동안 이동할 거리만큼 연장한다.
+    #
+    # free spline(Tier 2)은 준정적에서도 열지 않는다 — 자유 최적화라 입력이
+    # 조금만 흔들려도 매 사이클 다른 모양이 나오는 것이 애초의 문제였다.
+    spliner/qs_overtake: true
+    # 이만큼은 확실히 따라잡고 있어야 준정적으로 본다 [m/s].
+    # 근거: vs 노이즈 p90 이 0.42 m/s 다 (위 trailing_vs_filter 주석).
+    # 접근속도 문턱이 그 아래면 노이즈만으로 준정적이 켜진다.
+    spliner/qs_min_closing_mps: 0.6
     spliner/path_check_margin: 0.20      # 차 반폭 0.15 + 최소 불확실성 여유
     # 장애물 클러스터링: 사이를 통과 못 하는 배치를 하나의 박스로 병합해
     # "바깥으로 크게 도는" 회피를 후보에 넣는다. 원시 상대와 예측
@@ -719,6 +803,22 @@ spliner_node:
     spliner/cls_min_std: 0.16            # std_s/std_d 둘 다 미만이면 정적 표 [m]
     spliner/cls_max_std: 0.2             # 하나라도 초과하면 정적 표 리셋 [m]
     spliner/cls_vs_reset: 0.1            # 최근 |vs| 평균 미만이면 정지 재분류 [m/s]
+    # 위 조건을 **연속으로** 이만큼 만족해야 뒤집는다 (2026-08-19).
+    # 문턱만 올리는 안은 폐기 — run_0818 실측에서 실제 이동 트랙도 10프레임
+    # 이동평균이 일시적으로(p50 3~4 프레임) 문턱 아래로 내려가, 문턱 0.3 이면
+    # 이동 트랙의 26~36% 가 정적으로 오분류됐다. 지속 10 이면 3%/0% 로 떨어진다.
+    # ⚠️ 이 경로는 vs_hist 가 kClsVsWindow(10) 를 채운 트랙만 탄다. run_0818 의
+    # 단명 유령은 관측이 p50 1~2 개라 애초에 도달하지 못한다 — 진짜 멈춘
+    # 상대차(장수 트랙)를 위한 경로다. 그 장면이 담긴 백이 아직 없어 미검증.
+    spliner/cls_vs_hold: 10
+    # ── 멈춘 상대의 잔여 모션 마진 ────────────────────────────────────────
+    # 정적으로 되돌아간 '한때 동적' 트랙에만 적용. is_static 이 서면 모션 전파가
+    # 완전히 꺼져 재출발이 침범 전까지 안 보이는 것을 막는 **마진**이다(예측 아님).
+    # 0.3 = 진짜 정지 트랙 |vs| p90 (0.320/0.328, run_0818 두 백).
+    # max_m 0 이면 기능 자체가 꺼진다. 회랑이 좁아지므로 A/B 시
+    # reject_lane_wall_no_room(현 3.8~4.1/s)이 늘지 않는지 반드시 확인할 것.
+    spliner/ever_dynamic_residual_vs: 0.3
+    spliner/ever_dynamic_residual_max_m: 0.20
 
 # 벽 충돌/진행불능(stuck) 판정·복구 감독 (mina Task 4).
 # Planning은 판정+요청만: /planner/recovery/state (String),
@@ -894,4 +994,4 @@ planner_visualizer_node:
     planning_viz/loop_rate_hz: 10.0
     # trajectory_csv_file 과 같은 맵이어야 한다 (섞이면 시각화 중앙선만 다른
     # 트랙을 그려서 "레이스라인이 코스를 벗어난 것처럼" 보인다).
-    planning_viz/centerline_csv_file: my_track0810_centerline.csv
+    planning_viz/centerline_csv_file: my_track0817_centerline.csv

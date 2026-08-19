@@ -26,7 +26,7 @@ Tracker make_tracker(
 {
   // primary gate=0.45m, active-dynamic recovery gate=min(0.7, 0.45*1.6)=0.7m
   return Tracker(
-    0.45, 1, 0.70, 1.0, 10, 4.0, 1.6, reacquire_timeout_sec,
+    0.45, 1, 0.70, 1.0, 3.0, 4.0, 1.6, reacquire_timeout_sec,
     frenet_reid_timeout_sec, 0.45, frenet_progress_slack_m, 0.30);
 }
 
@@ -129,7 +129,7 @@ TEST(TrackerReacquisition, FrenetReidentifiesUniqueDynamicTrackAfterCornerFovGap
   ASSERT_EQ(tracks.size(), 1u);
   tracks.front()->ever_dynamic = true;
   tracks.front()->is_dynamic = true;
-  tracks.front()->dynamic_streak = 4;
+  tracks.front()->dynamic_time = 0.20;
   tracks.front()->confidence = 1.0;
 
   tracks = tracker.step({make_cluster(0.2, 0.0)}, 0.05, &bounds);
@@ -199,7 +199,7 @@ TEST(TrackTimestamp, MatchedUpdateThenCoastUsesFrameTimestamps)
 
 TEST(TrackTimestamp, DirectUpdateDefinesNextPredictionEpoch)
 {
-  Track track(0, make_cluster(0.0, 0.0), 0.0, 10);
+  Track track(0, make_cluster(0.0, 0.0), 0.0, 3.0);
   track.predict(1.0);
   track.update(make_cluster(1.0, 0.0), 1.0);
   ASSERT_GT(track.kf.vx(), 0.0);

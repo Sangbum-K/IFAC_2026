@@ -241,9 +241,21 @@ class OpponentPredictorNode(Node):
                     source_age > self.odom_timeout or
                     source_age < -self.source_future_tolerance)):
             self.ego_stamp = None
+            # ── 2026-08-19: 무엇에 걸렸는지 찍는다 ────────────────────────
+            # run_0818_232744 에서 이 로그가 62초 내내 나왔는데
+            # /car_state/frenet/odom 의 실측 지연은 p50 18ms / p90 30ms 로
+            # odom_timeout(0.20)보다 한참 안쪽이었다. 즉 지연이 아니라 다른
+            # 조건(스탬프 0, 미래 스탬프, 비유한값, 또는 노드 clock 소스와
+            # 헤더 시각의 불일치)이 원인일 가능성이 크다. 값을 봐야 좁혀진다.
             self.get_logger().error(
                 'invalid, unstamped, or stale Frenet odometry; '
-                'prediction disabled',
+                'prediction disabled '
+                f'[ego_s={self.ego_s} ego_vs={self.ego_vs} '
+                f'stamp_ns={source.nanoseconds} '
+                f'age={source_age:.3f}s timeout={self.odom_timeout:.3f}s '
+                f'future_tol={self.source_future_tolerance:.3f}s '
+                f'require_stamp={self.require_source_stamp} '
+                f'use_sim_time={self.get_parameter("use_sim_time").value}]',
                 throttle_duration_sec=2.0)
             return
         self.ego_stamp = source if source.nanoseconds else now

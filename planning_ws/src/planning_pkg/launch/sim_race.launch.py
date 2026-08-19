@@ -306,6 +306,21 @@ def launch_setup(context, *args, **kwargs):
         # LiDAR 특성이 다를 뿐 아니라 /tf를 6배로 쏟아 구독자 tf 버퍼를 포화시켜
         # obstacle_detector가 전 스캔을 버린다. 물리 스텝(100 Hz)은 그대로다.
         'sensor_publish_rate_hz': 40.0,
+        # 라이다 장착 위치 [m]. hardware sensors.yaml 의 base_to_laser_x 실측값.
+        # gym 기본 0.275 와 5 mm 차이지만, 이건 진짜로 물리에 들어간다 —
+        # gym_bridge 가 lidar_dist 로 넘겨 f110_gym 이 그 위치에서 레이를 쏜다.
+        'scan_distance_to_base_link': 0.28,
+        # ⚠️ 빔 수/FOV 는 여기서 못 맞춘다. 실차는 1081빔 · FOV 4.712389 rad
+        #   (270.00°) 인데 f110_gym 은 RaceCar(num_beams=1080, fov=4.7) 로
+        #   **하드코딩**돼 있고 f110_env / Simulator 둘 다 그 인자를 안 받는다
+        #   (base_classes.py:69, f110_env.py:192). gym_config 의 scan_beams /
+        #   scan_fov 는 ROS 메시지 헤더에만 쓰이므로, 여기서 1081/4.7124 를
+        #   넣으면 **실제 레이와 어긋난 헤더**를 발행하게 된다 — 구독자가
+        #   angle_min + i*inc 로 복원하는 점 위치가 통째로 틀어진다.
+        #   남는 차이는 각분해능 0.0043559(sim) vs 0.00436332(실차) = 0.17%.
+        #   4.5 m 거리의 0.30 m 차량이 sim 15.3점 / 실차 15.3점으로 같은 정수라
+        #   min_cluster_size 같은 점수 문턱은 그대로 옮겨 쓸 수 있다.
+        #   더 좁히려면 f110_gym 자체를 저장소로 벤더링해서 고쳐야 한다.
     }
     vehicle_profile = LaunchConfiguration('vehicle').perform(context).strip().lower()
     if vehicle_profile not in ('gym_default', 'real_car'):
@@ -432,14 +447,32 @@ def launch_setup(context, *args, **kwargs):
                     {'opponent/park_x': park_x, 'opponent/park_y': park_y}],
         output='screen',
     )
-    # lidar 모드에선 raw frenet 관측이 /perception/obstacles_frenet으로 오므로 remap
+    # 상대 예측기는 planner_stack 이 아니라 여기서 뜬다 (planner_stack 은 sim env
+    # 에서 predictor:=auto -> off). 그래서 env 오버레이도 **여기서 직접** 얹어야
+    # 한다 — 안 그러면 environments/<env>.yaml 의 predictor/* 가 sim 에서만
+    # 조용히 무시되고, 실차와 다른 예측 파라미터로 동적 장애물을 검증하게 된다.
+    predictor_params = [params_file]
+    if planner_env:
+        env_params = os.path.join(
+            planning_share, 'config', 'environments', planner_env + '.yaml')
+        if os.path.isfile(env_params):
+            predictor_params.append(env_params)
+    # 관측 소스는 인지 모드가 정한다. lidar 모드는 실차와 같은 자리
+    # (/perception/obstacles_frenet = 브릿지 출력), ground_truth 모드는
+    # virtual_obstacle_node 가 직접 쏘는 /perception/obstacles 다.
+    # env 오버레이가 lidar 기준으로 적혀 있으므로 마지막에 명시적으로 덮는다
+    # (예전엔 remap 으로 같은 일을 했는데, 오버레이가 들어오면 remap 은 param
+    #  으로 바뀐 토픽 이름과 안 맞아 아무 것도 안 하게 된다).
+    predictor_params.append({
+        'predictor/obstacle_topic': ('/perception/obstacles_frenet'
+                                     if lidar_perception
+                                     else '/perception/obstacles'),
+    })
     opponent_predictor_node = Node(
         package='planning_pkg',
         executable='opponent_predictor_node.py',
         name='opponent_predictor_node',
-        parameters=[params_file],
-        remappings=([('/perception/obstacles', '/perception/obstacles_frenet')]
-                    if lidar_perception else []),
+        parameters=predictor_params,
         output='screen',
     )
 
@@ -560,7 +593,7 @@ def generate_launch_description():
                                           '빈 값이면 params.yaml 기본값만 사용.'),
         DeclareLaunchArgument('vehicle', default_value='gym_default',
                               description='gym 차량 물리 프로파일: gym_default | real_car. '
-                                          'real_car는 mu 0.90 / a_max 4.5 / s_max 0.3578 / '
+                                          'real_car는 mu 0.90 / a_max 4.5 / 조향 좌 0.3800·우 -0.3578 / '
                                           'v_max 7.0 등 실측값을 넣어 고속 슬립까지 '
                                           '실차에 맞춘다.'),
         DeclareLaunchArgument('map_filter', default_value='',

@@ -61,12 +61,22 @@ particle_filter:
     max_pose_jump_translation_m: 0.30
     max_pose_jump_yaw_rad: 0.35
     rangelib_variant: 0
-    # C++ 판은 이 둘의 **기본값이 true** 이고, 하나라도 켜져 있으면
-    # validate_supported_configuration() 이 FATAL 로 죽는다
-    # ("refusing to ignore enabled geometry features"). 실차 localize.yaml 은
-    # 둘 다 false 로 명시하는데 이 파일만 빠져 있어서, PF 가 sim 에서 매번
-    # 즉사했다 — 그러면 map->odom 이 안 나오고 인지·플래닝이 통째로 굶는다.
-    # (실차와 같은 이유: deskew 와 IMU ground filter 둘 다 0809 백에서 퇴행)
+    # --- 검증 프로파일 게이트 (실차 localize.yaml 과 같은 값, 둘 다 false) ---
+    # ⚠️ 이 두 줄을 빼면 PF 가 아예 안 뜬다. 노드 기본값이 둘 다 true 인데,
+    # particle_filter_cpp 는 validate_supported_configuration() 에서
+    #   "refusing to ignore enabled geometry features"
+    # 로 예외를 던지고 즉사한다 (particle_filter_node.cpp).
+    #
+    # 2026-08-18 발견: PF 를 파이썬 -> C++ 로 바꾼 커밋(17441cf)이 이 가드를
+    # 들여왔는데 실차 localize.yaml 만 false 를 명시하고 이 파일은 안 따라갔다.
+    # 그래서 그 이후로 run_sim.sh 의 기본 프로파일(sim_real_car, pf:=true)은
+    # 위치추정 없이 돌고 있었다 — map->odom TF 도 /pf/pose/odom 도 안 나오므로
+    # frenet/인지/플래닝이 전부 실차와 다른 입력 위에서 검증된 셈이다.
+    # 실차 경로는 localize.yaml 이 false 를 갖고 있어 멀쩡했고, 그래서 실차에서는
+    # 이 어긋남이 드러날 방법이 없었다.
+    # 값 자체의 근거는 실차와 같다 — deskew 와 IMU ground filter 둘 다
+    # 0809 백에서 퇴행했다. (origin/main 8f618fa 가 같은 수정을 독립적으로
+    #  했고, 그 커밋에만 있던 이 한 줄을 머지하면서 옮겨 적는다.)
     deskew_enabled: false
     ground_filter_enabled: false
 

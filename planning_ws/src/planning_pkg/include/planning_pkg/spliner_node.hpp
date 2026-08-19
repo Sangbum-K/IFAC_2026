@@ -150,6 +150,26 @@ private:
   // IsPredictionTube 로 먼저 걸러야 한다 (StableObstacles 참조).
   int ObsSeen(int32_t id) const;
 
+  // 이 id 가 spliner 분류 이력에서 한 번이라도 동적이었나 (ObsClsTrack::ever_dynamic).
+  // 모르는 id 면 false — 처음 보는 트랙에 마진을 주지 않는다.
+  bool WasEverDynamic(int32_t id) const;
+
+  // 관측 창(cls_tracks_.vs_hist, 최대 kClsVsWindow)의 vs 평균.
+  // 트랙 이력이 없으면 fallback 을 그대로 돌려준다. BuildTrailing 의 목표
+  // 속도에서 단일 프레임 노이즈(실측 std 0.43~0.45 m/s)를 걷어내는 용도.
+  // ⚠️ vs_hist 는 ClassifyObstacles 가 **정적 덮어쓰기 전** 원시 vs 를 쌓는다.
+  //    정적 장애물은 그 뒤 obs.vs=0 이 되므로 이 함수를 태우지 말 것.
+  double ObsVsMean(int32_t id, double fallback) const;
+
+  // 준정적 추월 판정 — "확실히 따라잡고 있는 동적 상대".
+  // 참이면 정적 전용이던 기구(경로 커밋 / retry_d 유지)를 열어 준다.
+  // ⚠️ 운동 모델은 바꾸지 않는다. is_static 은 그대로 false 이므로
+  //    PredictObstacleMovement 의 등속 전파와 CheckPathCollision 의
+  //    motion_s/motion_d 가 전부 살아 있다 — 이것이 "정적으로 취급"과
+  //    결정적으로 다른 점이고, 복귀 지점 접촉(실측 0.01 m)을 막는 이유다.
+  bool QuasiStaticOvertake(
+    const f1tenth_planning_msgs::msg::Obstacle & obs) const;
+
   // 커밋된 정적 회피 경로를 **무효화할 자격이 있는** 장애물만 남긴다.
   // 관측 이력(cls_tracks_)이 commit_break_min_obs_ 이상인 트랙만 통과시킨다.
   // 갓 뜬 1~2프레임짜리 유령이 이미 성립한 회피를 파기하고 정지 궤적으로
@@ -435,11 +455,22 @@ private:
   // 대부분 지워져 있었다. 카운터는 전수를 세고 /pitwall/reject_<사유>로 낸다.
   // const 경로(ClusterObstacles 등)에서도 세야 하므로 const + mutable 카운터.
   void NoteReject(const char * reason) const;
+
+  // 거부가 **아닌** 사건을 센다 — 성공(ok_*), 폴백 발행(trailing), 중간 마커,
+  // veto 기록(cluster_merge_blocks_track).
+  //
+  // ⚠️ 2026-08-19 신설. 그 전에는 이것들도 NoteReject 로 세어서
+  // `/pitwall/reject_trailing` 같은 이름으로 나갔고, 읽는 사람이 전부
+  // "거부 횟수"로 오독했다 (run_0818 진단 두 건이 같은 함정에 빠졌다).
+  // 실제로 `NoteReject("trailing")` 은 "Trailing fallback ..." 성공 로그 직후
+  // `return true` 바로 앞에 있다 — **발행 성공 카운터**다.
+  // 이쪽은 `/pitwall/outcome_*` 로 나가고, reject_* 에는 진짜 거부만 남는다.
+  void NoteOutcome(const char * outcome) const;
   // 직전 ApplySpeedProfile 실패의 원인 위치를 사람이 읽는 문자열로. 곡률
   // 한계였으면 "곡률 idx=i/n(p%) k=... >한계 ...", 아니면 "도달불가(감속)".
   std::string SpeedRejectDetail() const;
   // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
-  void NoteRetryTarget(double d_target);
+  void NoteRetryTarget(double d_target, double obs_vd = 0.0);
   void PublishRejectCounts();
   /// 커밋 경로를 release_s 에서 잘라 낸다 (꼬리가 blocking_s 의 장애물과
   /// 충돌할 때). 웨이포인트·기하 상한·마커를 함께 줄이고 committed_until_s_
@@ -741,6 +772,8 @@ private:
   // 계획이 온전할 때만 높은 값을 쓰고 깎였으면 이 값으로 내린다.
   // 불변식: 0 <= degraded <= trailing_retry_speed_.
   double trailing_retry_speed_degraded_{1.5};
+  // 트레일링 목표 속도에 관측 창 평균을 쓸 것인가 (params.yaml 주석 참조).
+  bool trailing_vs_filter_{true};
   // ApexFor의 목표 간격을 검증기 요구치보다 이만큼 더 준다 [m].
   // 동률(목표 == 충돌박스 경계)이면 수 mm 오차로 매 사이클 자기 거부한다.
   double apex_clearance_eps_m_{0.05};
@@ -751,6 +784,60 @@ private:
   double cls_min_std_{0.16};     // std_s, std_d 둘 다 미만이면 정적 표 [m]
   double cls_max_std_{0.2};      // 하나라도 초과하면 정적 표 리셋 [m]
   double cls_vs_reset_{0.1};     // 최근 |vs| 평균이 미만이면 정지 재분류 [m/s]
+  // "멈춘 상대" 재분류에 요구하는 **연속 사이클 수**.
+  //
+  // 문턱만 올리는 방식은 폐기했다 — run_0818 두 백 실측에서, 실제로 움직이는
+  // 트랙도 10프레임 이동평균이 문턱 아래로 잠깐씩 내려간다:
+  //     문턱 0.1 -> 이동 트랙 오분류  4% / 9%
+  //     문턱 0.2 ->                  16% / 18%
+  //     문턱 0.3 ->                  26% / 36%
+  // 그런데 그 하강은 **일시적**이다 (구간 길이 p50 3~4 프레임, 최대 14~23).
+  // 진짜 멈춘 차는 계속 아래에 머무르므로 지속 조건이 둘을 깨끗이 가른다:
+  //     문턱 0.2 + 지속 10 -> 오분류 3% / 0%
+  //     문턱 0.2 + 지속 20 -> 오분류 0% / 0%
+  int cls_vs_hold_{10};
+  // ── 재등록 시 분류 이력 승계 (#15) ────────────────────────────────────
+  // 조우 도중 같은 물체에 새 id 가 붙으면 관측 이력이 0 이 되어 분류가
+  // 정적으로 되돌아가고 커밋이 파기된다. 방금 사라진 **동적** 트랙의
+  // 외삽 위치와 이 거리 안이면 이력을 그대로 물려받는다.
+  // 0 이면 기능 off. 정적 트랙은 대상이 아니다(콘끼리 이력이 새는 것 방지).
+  double cls_inherit_dist_m_{0.6};
+  double cls_inherit_timeout_sec_{0.5};
+  // ── 멈춘 상대의 잔여 모션 마진 ────────────────────────────────────────
+  // 한 번 동적이었다가 정적으로 되돌아간 트랙은 재출발할 수 있다. is_static
+  // 이 서면 PredictObstacleMovement 가 그대로 반환하고 FilterObstacles 의
+  // lateral_motion 도 0 이 되어 **미래 위치를 아예 안 본다**.
+  // 예측이 아니라 **마진**이다 — 완전한 재출발(0 -> 2 m/s)은 어떤 상수로도
+  // 못 덮는다. "정지로 판정한 근거가 |vs| < 문턱뿐"이라는 사실을 반영해
+  // 그 문턱 수준의 이동 가능성만 남긴다.
+  // 0.3 = run_0818 두 백에서 map 변위 0.20m 미만인 '진짜 정지' 트랙의
+  // |vs| p90 (0.320 / 0.328). 그 이상은 정지가 아니라고 봐도 된다.
+  // 동적 트레일링 속도 바닥 [m/s]. 0 이면 종전대로 바닥 없음(정지까지 허용).
+  // 정적 바닥(trailing_retry_speed 2.5)보다 **높다** — 의도된 것이다.
+  // 근거·해제 조건은 BuildTrailing 의 사용처 주석 참조.
+  double dyn_trailing_floor_{3.0};
+  // 동적 상대용 트레일링 제동 감속도 [m/s²]. 정적은 trailing_decel_(1.0) 유지.
+  //
+  // v_allow 식(rem >= v·T + (v²-v_target²)/2a)이 이미 "늦게 밟기"를 구현하고
+  // 있다 — engage 밖에서는 캡이 아예 없고, 안에서만 이 곡선이 걸린다. 그래서
+  // 2단계 계약을 따로 만들 필요가 없었고, 바꿔야 할 것은 a 하나였다.
+  //
+  // ⚠️ 2.5 는 쓰지 말 것. run_0806 주석의 경고가 맞다 — run_0818 두 백에서
+  // **감속 요구 구간만** 골라 속도대별 실측 감속을 보면
+  //     v 0.5~1.5 : p50 0.81  p90 1.10
+  //     v 2.5~3.5 : p50 1.33~1.52  p90 2.03~2.11
+  //     v 3.5~5.0 : p50 1.55       p90 2.17~2.58
+  // 로 **속도 의존**이고, 2.5 는 어느 구간에서도 p90 이상이라 프로파일이
+  // 감속을 너무 늦게 시작해 정지점을 오버슛한다.
+  // 1.5 = 동적 트레일링이 실제로 도는 3~5 m/s 대의 p50. 1.0 대비 rem 5 m 에서
+  // 허용속도가 3.03 -> 3.57 (레이스라인 4.66 의 65% -> 77%).
+  double trailing_decel_dyn_{1.5};
+  double ever_dynamic_residual_vs_{0.3};
+  // 위 마진의 절대 상한 [m]. eta 가 길면 마진이 무한정 커져 회랑을 먹는다 —
+  // 이 트랙 코리도가 0.96~2.42 m 이고 lane_wall_no_room 이 이미 1위 기각
+  // 사유(초당 3.8~4.1)라, 상한 없이 켜면 회피가 더 자주 막힌다.
+  // 0 이면 이 기능 자체가 꺼진다.
+  double ever_dynamic_residual_max_m_{0.20};
   static constexpr size_t kClsWindow{20};     // 위치 std 계산 관측 창
   static constexpr size_t kClsVsWindow{10};   // vs 평균 관측 창 (unicorn vs_list 10)
   struct ObsClsTrack {
@@ -760,8 +847,17 @@ private:
     double s_ref{0.0};
     int static_count{0};
     int total_count{0};
+    // vs 평균이 cls_vs_reset 아래로 **연속** 유지된 사이클 수 (아래 cls_vs_hold).
+    int vs_low_run{0};
     bool has_flag{false};        // 분류 확정 여부 (미확정이면 perception 플래그 유지)
     bool static_flag{false};
+    // 이 트랙이 한 번이라도 동적으로 분류된 적이 있나.
+    // perception 의 Track::ever_dynamic 과 같은 개념인데, 그 필드는 메시지에
+    // 실려 오지 않으므로 spliner 가 자기 분류 이력으로 따로 기억한다.
+    // 쓰임: 정적으로 되돌아간 '멈춘 상대'에게도 최소한의 모션 마진을 남긴다
+    // (PredictObstacleMovement). is_static=true 는 모션 전파를 완전히 끄는데,
+    // 그러면 상대가 재출발해도 실제 침범 전까지 아무 신호가 없다.
+    bool ever_dynamic{false};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
   std::map<int32_t, ObsClsTrack> cls_tracks_;
@@ -808,6 +904,14 @@ private:
   // 주석이 약속한 "섹터 내 공격 모드"가 원리적으로 성립할 수 없었다
   // (배포 yaml 3개 모두 1.0 = 항등). 이제 허용하되 기본값은 1.0 유지.
   double ot_speed_scale_{1.0};
+  // ── 준정적 추월 ────────────────────────────────────────────────────────
+  bool qs_overtake_enabled_{true};
+  double qs_min_closing_mps_{0.6};
+  // 이번 사이클의 최근접 장애물이 준정적인가. Run() 이 매 사이클 갱신하고
+  // TryLaneSwitch / BuildTrailing / 커밋 승격이 읽는다. 사이클 안에서만
+  // 유효한 값이므로 사이클 진입 시 반드시 false 로 초기화할 것.
+  bool qs_active_{false};
+  bool qs_active_prev_{false};   // pitwall 이벤트 상승엣지용
   std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
   // "직전 사이클에 회피를 시도했는가"의 상승엣지 래치.
@@ -932,6 +1036,8 @@ private:
   static constexpr size_t kEvasionGroupMax{4};
   // 거부 사유 카운터 (NoteReject/PublishRejectCounts).
   mutable std::map<std::string, int> reject_counts_;
+  // 거부가 아닌 사건 카운터 (NoteOutcome). reject_ 와 섞지 않는다 — 위 주석 참조.
+  mutable std::map<std::string, int> outcome_counts_;
   rclcpp::Time reject_publish_stamp_{0, 0, RCL_ROS_TIME};
   // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
   // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
@@ -974,7 +1080,23 @@ private:
   double retry_d_target_{0.0};
   rclcpp::Time retry_d_stamp_{0, 0, RCL_ROS_TIME};
   bool has_retry_d_{false};
-  static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간
+  static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간 (정적/준정적)
+  /// 목표를 기록할 때 대상 장애물의 횡속도 [m/s]. 동적 유지에서 경과 시간만큼
+  /// 목표 d 를 따라 옮기는 데 쓴다 (아래 kRetryDHoldDynSec 주석 참조).
+  double retry_d_vd_{0.0};
+  /// 동적 상대에 대한 목표 유효 시간 [s]. 정적보다 **짧게** 잡는다.
+  ///
+  /// 2026-08-18 에 이 유지를 정적/준정적으로 좁힌 근거는 "움직이는 상대에
+  /// 최대 0.7 초 전 목표 d 를 붙잡으면 상대 2 m/s 에서 1.4 m 어긋난 자리를
+  /// 겨눈다" 였고, 미뤄 둔 설계 질문은 "상대가 움직이는 동안 목표 d 를 어떻게
+  /// 갱신할 것인가" 였다. 답:
+  ///   · 목표는 **횡(d)** 이고, 상대의 종방향 이동은 d 를 바꾸지 않는다.
+  ///     그래서 어긋남을 만드는 것은 vs 가 아니라 **vd** 뿐이다.
+  ///   · 그러면 vd·age 만큼 목표를 따라 옮기면 된다 (아래 d_goal 계산).
+  ///   · 그래도 vd 추정 오차가 age 에 비례해 쌓이므로 창 자체를 짧게 둔다.
+  /// run_0818 두 백 실측 |vd| 는 p90 0.30 m/s 수준이라, 0.30 s 창이면 보정
+  /// 후 잔여 오차가 0.09 m — 차 반폭(0.15)보다 작다.
+  static constexpr double kRetryDHoldDynSec{0.30};
   std::mutex mutex_obstacles_;
   std::mutex mutex_gb_wpnts_;
 
