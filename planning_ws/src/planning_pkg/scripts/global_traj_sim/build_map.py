@@ -316,7 +316,21 @@ MU         = 1.00    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
 # ⚠️ 이 값을 바꾸면 planning_pkg/config/params.yaml 의
 #    global_trajectory/validation_mu 를 같은 값으로 올려야 한다. 안 맞추면
 #    런타임이 CSV 를 거부하고 global_trajectory_node 가 abort 한다.
-MU_PROFILE = 0.90
+#
+# 2026-08-19 0.90 -> 0.98: 사용자가 실제 랩타임 7.5s를 위해 명시적으로 요청,
+# 차대 여분이 있어 접촉/슬립을 감수하겠다고 확인함. 1.00(= 위 MU, 폐루프
+# 검증 상한과 정확히 같은 값)까지 시도했으나 test_line_resolver.py의
+# "MU > MU_PROFILE" 불변식(게이트가 계획보다 관대해야 함 = 컨트롤러 보정
+# 마진을 0으로 만들지 않음)을 깬다 — 그래서 0.98로 한 칸 물러섰다. my_track0818
+# 실측으로 그 차이는 오픈루프 7.04->7.09s, 폐루프 7.68->7.73s, 0.05s뿐이라
+# 마진을 버릴 값어치가 없었다. 1.02부터는 velocity_profile()의 마찰원 투영이
+# s=3.8~22.7의 최협 코너들에서 즉시 FAIL한다(그 지점들 합성요구가 mu*g에
+# 거의 붙어 있어 더 올려도 랩타임이 안 움직임, my_track0818 실측).
+# ⚠️ MU(=1.00) 자체가 "물리량이 아니다"고 그 옆 주석이 명시하고, 07-31
+# 슬립 없이 실증된 실제 최대는 0.70g 뿐이다 — 이 값은 안전마진이 아니라
+# "이론상 CSV가 이 이상은 못 간다"는 상한을 쓴 것이지 실차가 이 그립을
+# 낸다는 보장이 아니다.
+MU_PROFILE = 0.98
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -648,7 +662,19 @@ LAT_ERR_STRAIGHT_S = 0.030   # [s] 직선(직전 |k| <= LOW) 의 |lat err|/v
 #    0810 0.173/0.164 · 0811 0.180/0.195 · 0812 0.195/0.180 · 0813 0.197/0.176
 #    전부 PASS, 합성 7.16~8.55. (머지 전에는 0812 IQP 가 0.245 로 임계값 2%
 #    앞이었다 — adaptive L1 이 그 맵에서 가장 크게 개선했다.)
-LAT_ERR_CORNER_S = 0.075     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
+#
+# 2026-08-19 0.075 -> 0.065: 사용자가 실제 랩타임 7.5s 목표로 명시적으로
+# 요청, 차대 여분으로 접촉/슬립을 감수하겠다고 확인. ⚠️ 바로 위 08-13 표
+# 자체가 0.065를 **검토 후 기각**했던 값이다 — 이유는 랩타임이 아니라 안전
+# 마진: 완주한 백의 코너 실효 기울기 최대 0.057 대비 0.065는 1.14배 마진뿐
+# 이라 실제로 **충돌한 백이 보인 기울기(0.104)보다 작다.** 즉 이 값은
+# "시뮬은 통과하지만 과거 벽 접촉 사고의 여유보다 타이트한" 값으로 이미
+# 한 번 분석·기각된 이력이 있다 — 지금 다시 채택하는 것은 그 위험을
+# 알면서 감수하는 것이다. my_track0818 실측: 0.075->0.070->0.065 순서로
+# 랩 8.03->7.98->7.95s, |lat err|max 0.254->0.254->0.279m, 백스톱 개입
+# 9->9->23회로 늘어나며 0.060에서는 더 이상 안 줄어든다(코너 폭 상한이 아닌
+# 다른 것이 묶기 시작) — 0.065가 이 손잡이의 실질적 하한이다.
+LAT_ERR_CORNER_S = 0.065     # [s] 코너(직전 |k| >= HIGH) 의 |lat err|/v
 LAT_ERR_KAPPA_LOW = 0.05     # [1/m] 이하는 직선 취급 (R >= 20 m)
 # [1/m] 이상은 코너 취급. 2026-08-11: 0.30(R 3.3 m) -> 0.50(R 2.0 m).
 # 이 트랙의 '중간 코너'(|k| 0.30~0.50, R 2.0~3.3 m)는 0.30 기준에서 전부 100%
@@ -2927,9 +2953,41 @@ class PurePursuitSim:
                 -self.max_steer_rate * self.dt,
                 self.max_steer_rate * self.dt)
 
+            # --- 0단: 추종 백스톱 (control_node.cpp:1060-1122 그대로 미러링) --
+            # 2026-08-19까지는 이게 시뮬 루프에 없었다 — deployment_profiles.
+            # backstop_metrics() 가 로그를 사후 분석해서 "백스톱이 몇 번
+            # 발화했을지"만 보고했을 뿐, 그 캡을 실제로 걸어 속도를 깎지는
+            # 않았다. 그래서 백스톱이 자주 발화하는(=경로오차/조향포화가 큰)
+            # 튜닝일수록 폐루프 랩타임이 실제보다 낙관적으로 나왔다. 여기서
+            # slew 이전 목표 속도(v_target)에 직접 캡을 걸어 C++ 와 같은
+            # 순서(백스톱 -> slew)를 맞춘다.
+            backstop = self.profile.get("backstop")
+            if backstop and backstop.get("enabled"):
+                backstop_cap = self.profile["max_speed_mps"]
+                if path_err > backstop["path_error_m"]:
+                    over_err = min(
+                        (path_err - backstop["path_error_m"]) /
+                        max(backstop["path_error_m"], 1e-3), 1.0)
+                    backstop_cap = min(
+                        backstop_cap, v - over_err * (v - backstop["min_speed_mps"]))
+                sat = abs(steer) / max(self.max_steer, 1e-3)
+                sat_min_err = backstop["sat_min_path_error_m"]
+                sat_err_ok = sat_min_err <= 0.0 or path_err > sat_min_err
+                if sat > backstop["steer_sat_ratio"] and sat_err_ok:
+                    over_sat = min(
+                        (sat - backstop["steer_sat_ratio"]) /
+                        max(1.0 - backstop["steer_sat_ratio"], 1e-3), 1.0)
+                    backstop_cap = min(
+                        backstop_cap, v - over_sat * (v - backstop["min_speed_mps"]))
+                backstop_cap = max(backstop_cap, backstop["min_speed_mps"])
+            else:
+                backstop_cap = None
+
             # --- 1단: 컨트롤러 속도 명령 + slew (control_node.cpp 와 동일) ----
             v_target = self._speed_target(
                 pos, theta, v, int(target_idx))
+            if backstop_cap is not None:
+                v_target = min(v_target, backstop_cap)
             previous_command = speed_command
             speed_command = previous_command + float(np.clip(
                 v_target - previous_command,

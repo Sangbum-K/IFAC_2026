@@ -136,6 +136,17 @@ BRAKE_DECEL_PER_AMP = 0.14
 #     결정하고 (2) 제동 진입 조건을 계획 ax 기반(brake_decel_threshold)으로
 #     실제 열리게 만든 뒤 (3) 그 백으로 BRAKE_DECEL_PER_AMP 를 재측정한다.
 #     지금 값을 그냥 5.0 으로 내리면 계획만 느려지고 실차 거동은 안 변한다.
+#
+# 2026-08-19 (1) 첫 실행: 5.0 으로 내렸다가, 같은 날 되돌림 — vesc.yaml
+# ackermann_brake_max 를 7.0 으로 올리는 쪽을 택했다(하드웨어 브레이크 전류
+# 상한 변경, 실차 검증 전까지는 "미검증"). (2) 도 같은 날 구현: ackermann_
+# to_vesc 의 진입 조건을 speed_error(사후 오차) 대신 계획 자체(cmd.
+# acceleration)로 바꾸고, 브레이크 전류에 피드포워드 항(요구 감속 - 코스팅)/
+# BRAKE_DECEL_PER_AMP 를 추가했다 — 이 상수가 이제 그 피드포워드가 쓰는
+# 실제 물리 상수다(전에는 계획 전용이라 실차 거동과 분리돼 있었다). (3)
+# 여전히 미해결: 이 상수 자체(브레이크 크레딧 0.14 A^-1)는 1A 실측에서
+# 외삽한 값 — 새 피드포워드가 실제로 여는지, 크레딧이 5A/7A 대역에서도
+# 선형인지는 다음 실차 세션에서 재측정 전까지 가정이다.
 BRAKE_AMPS_PLANNED = 7.0
 
 # 레이스라인 생성 속도 상한. build_map.py 의 V_MAX 가 이 값을 그대로 쓴다
@@ -154,11 +165,22 @@ BRAKE_AMPS_PLANNED = 7.0
 #    control_node.cpp calc_steering_angle 이 조향 LUT 를 **웨이포인트 계획
 #    속도**(speed_for_lookup)로 조회하고 a_lat 도 v_plan² 로 계산한다. 계획이
 #    실제보다 빠르면 조향이 (v_plan/v_real)² 배로 과대 산출된다.
-RACELINE_V_MAX = 7.0
+#
+# 2026-08-19 7.0 -> 8.5: control real_car.yaml vehicle/max_speed_mps 와 짝을
+# 맞춤. LUT를 IFAC_realcar_v2(control_ws/.../steering_lookup/, 8백 풀링 보정 +
+# 7~8.5 추정 확장)로 바꿔야 이 값이 controller_profile() 의 fail-closed LUT
+# 범위 검사를 통과한다 — LUT 파일 주석 참조. ⚠️ 위 스윕(6.0~10 전부 7.52s 동일)
+# 이 보여주듯 이 상수 자체는 이 트랙에서 랩타임을 거의 못 움직인다 — 실제로
+# 코너를 더 빠르게 도는 건 여전히 MU_PROFILE/LAT_ERR_CORNER_S 쪽 문제이고,
+# 그 값들은 실차 재측정 없이 못 올린다. 7.0 이상 구간은 이 차로 달려본 적이
+# 없으므로 8.5 자체도 "이 속도까지 명령이 나갈 수 있다"이지 "이 속도에서
+# 안전이 검증됐다"가 아니다.
+RACELINE_V_MAX = 8.5
 
 # 속도 프로파일(velocity_profile)이 계획에 쓰는 제동 한계 = 코스팅 + 브레이크
-# 크레딧(BRAKE_AMPS_PLANNED, vesc.yaml 과 동기). 현재 1.4 + 0.12*5.0 = 2.0 —
-# 실측 풀브레이크 p50(-1.9~-2.0)을 막 넘어선다. 실제로 그 전류가 물리는지는
+# 크레딧(BRAKE_AMPS_PLANNED, vesc.yaml 과 동기). 2026-08-19 기준
+# 1.4 + 0.14*5.0 = 2.10 (옛 주석의 1.4+0.12*5.0=2.0 은 BRAKE_DECEL_PER_AMP가
+# 0.12->0.14 로 재산정된 뒤 안 갱신된 드리프트였다). 실제로 그 전류가 물리는지는
 # 폐루프 시뮬(VescLongitudinalPlant)이 본다.
 A_DEC_PLANNED = A_DEC_MAX + BRAKE_DECEL_PER_AMP * BRAKE_AMPS_PLANNED
 
@@ -332,6 +354,24 @@ _PROFILE_SIGNATURE_EXTRA_FIELDS = (
     "curvature_factor", "speed_lookahead_s", "steering_lut", "vesc",
     "backstop",
 )
+
+
+def _steering_lut_max_speed(relative_path):
+    """LUT 헤더 행의 마지막(최대) 속도 열을 읽는다.
+
+    control_node.cpp의 로더가 헤더 단조증가를 이미 강제하므로 마지막 값이
+    곧 최대다. CSV 전체를 파싱하는 build_map._load_steering_lut과 달리
+    첫 줄만 읽어 build_map의 무거운 의존성(scipy/skimage/PIL) 없이 쓴다.
+    """
+    path = (WORKSPACE_ROOT / relative_path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"배포 steering LUT 없음: {path}")
+    with open(path, "r", encoding="utf-8") as handle:
+        header = handle.readline()
+    values = [float(cell) for cell in header.strip().split(",")]
+    if len(values) < 2:
+        raise ValueError(f"steering LUT 헤더 열이 부족함: {path}")
+    return values[-1]
 
 
 def _resolve_cpp_real_car(name, source):
@@ -544,6 +584,24 @@ def controller_profile(name):
         raise ValueError(f"{name}: C++ MAP/L1 steering LUT가 지정되지 않음")
     if profile["kind"] == "python_pure_pursuit" and lut is not None:
         raise ValueError(f"{name}: Python pure pursuit에 LUT를 지정할 수 없음")
+    # 2026-08-19: LUT 범위 초과 질의는 control_node.cpp도 build_map._lookup_
+    # steer_angle도 조용히 최근접 열을 재사용한다 (의도된 동작 — 실차에서
+    # 갑자기 조향각 0을 던지는 것보다 낫다). 하지만 계획/런타임 속도 상한이
+    # LUT가 실제로 실측한 범위를 넘어서면 그 재사용이 상시로 일어나는데, 그건
+    # "LUT가 이 속도를 안다"는 게 아니라 "LUT의 가장 가까운 실측치로 조용히
+    # 대체한다"는 뜻이다 — 위 wheelbase/steer_rad 드리프트 검사와 같은 fail-
+    # closed 철학을 여기도 적용한다. 예: RACELINE_V_MAX 나 vehicle/max_speed_mps
+    # 를 LUT 재적합 없이 7.0 위로 올리면(§TUNING_STATUS 11, "10 m/s면 LUT부터
+    # 막힌다") 여기서 바로 죽어야지, 시뮬 결과가 조용히 7.0 m/s 열로 클램프된
+    # 채 나와서는 안 된다.
+    if lut is not None:
+        lut_max_speed = _steering_lut_max_speed(lut)
+        if profile["max_speed_mps"] > lut_max_speed + 1e-9:
+            raise ValueError(
+                f"{name}: max_speed_mps={profile['max_speed_mps']:.3f} 가 "
+                f"steering LUT 실측 최대 속도 {lut_max_speed:.3f} m/s를 넘음 "
+                f"({lut}). 이 범위 밖 질의는 조용히 최근접 열로 클램프되므로 "
+                "LUT 재적합 없이는 이 프로파일로 검증할 수 없음")
     return profile
 
 

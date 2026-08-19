@@ -267,9 +267,13 @@ def launch_setup(context, *args, **kwargs):
     #   s_min -0.4189 -> -0.3578: deployment_profiles.MAX_RIGHT_STEER
     #   s_max  0.4189 ->  0.3800: deployment_profiles.MAX_LEFT_STEER
     #                           (실차의 방향별 control clamp와 동일)
-    #   v_max 20.0   -> 7.0   : deployment_profiles.RACELINE_V_MAX
-    #                          (vesc.yaml speed_max 32000 / gain 4255.1 = 7.52 이
-    #                           하드웨어 천장이라 7.0이 그 아래로 들어간다)
+    #   v_max 20.0   -> 8.5   : deployment_profiles.RACELINE_V_MAX
+    #                          (2026-08-19: vesc.yaml speed_max 40000 / gain
+    #                           4255.1 = 9.40 이 하드웨어 천장이라 8.5가 그
+    #                           아래로 들어간다. 조향 LUT도 8.5까지 확장했지만
+    #                           7.0 위는 이 차로 달려본 적 없는 추정 구간이다
+    #                           — control real_car.yaml map/steering_lut_file
+    #                           주석 참조)
     #   width/length 0.31/0.58 -> 0.30/0.55 : recovery/vehicle_{width,length}_m
     # 유지: lf+lr=0.3302 = 실차 wheelbase 0.33 / sv_max 3.2 = hardware
     #   max_servo_speed / m·I·h·C_Sf·C_Sr 는 실측이 없어 gym 기본값.
@@ -296,7 +300,7 @@ def launch_setup(context, *args, **kwargs):
         'vehicle.mu': 0.90,
         'vehicle.a_max': 4.5,
         'vehicle.s_min': -0.3578, 'vehicle.s_max': 0.3800,
-        'vehicle.v_max': 7.0, 'vehicle.v_min': -1.0,
+        'vehicle.v_max': 8.5, 'vehicle.v_min': -1.0,
         'vehicle.width': 0.30, 'vehicle.length': 0.55,
         # 실차 Hokuyo /scan 40 Hz (run_0804 실측 748msg/18.5s). gym 기본 250 Hz는
         # LiDAR 특성이 다를 뿐 아니라 /tf를 6배로 쏟아 구독자 tf 버퍼를 포화시켜

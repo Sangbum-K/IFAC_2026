@@ -25,7 +25,7 @@ control:
     # wpnt 속도로 조회하는 구조 때문에 조향까지 과다해진다. speed_scale 0.30 은
     # planning 의 spliner/cmd_speed_scale 과 짝은 맞았지만 그 짝 자체가 실차(1.0)와
     # 달라서, sim 만 동적 상대 trailing 을 3분의 1 속도로 돌고 있었다.
-    "vehicle/max_speed_mps": 7.0
+    "vehicle/max_speed_mps": 8.5
     "vehicle/speed_scale": 1.0
 
     # --- gym 에는 VESC plant 가 없으므로 명령단에서 차의 가감속/조향 한계를 건다 ---

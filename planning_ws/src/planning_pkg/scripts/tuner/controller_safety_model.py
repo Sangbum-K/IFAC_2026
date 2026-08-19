@@ -42,7 +42,7 @@ from deployment_profiles import (          # noqa: E402,F401
 import deployment_profiles as _profiles     # noqa: E402
 
 G = 9.81
-MODEL_VERSION = 'tuner-controller-safety-2026-08-13-v6'
+MODEL_VERSION = 'tuner-controller-safety-2026-08-19-v7'
 # Restricted-AST digest of the generator functions that must remain numerically
 # paired with this lightweight copy.  Any generator algorithm edit locks tuner
 # saves until this model and its parity test are deliberately updated.
@@ -54,8 +54,16 @@ MODEL_VERSION = 'tuner-controller-safety-2026-08-13-v6'
 # waypoint, which is what the tracking backstop measures) so the generator can
 # report how hard a raceline leans on that safety net.  Simulated dynamics are
 # unchanged -- the backstop cap is reported, never applied.
+# 2026-08-19 v7: the backstop cap is now actually *applied* to the pre-slew
+# speed target in both copies, same order as control_node.cpp (backstop, then
+# slew) -- v6's "reported, never applied" gap meant a tuning that leaned hard
+# on the backstop (frequent path-error/steer-saturation triggers) got an
+# optimistic closed-loop lap time, since the sim kept driving at the ungated
+# target speed regardless. Discovered while pushing MU_PROFILE/LAT_ERR_CORNER_S
+# aggressively for my_track0818 -- backstop trigger count jumped 9->31 steps
+# and the old lap-time number didn't reflect any of that.
 GENERATOR_MODEL_AST_SHA256 = (
-    '28dbe10d23059e8792a70c825aa3c6d0b41754fed17bda081ac82a52d4b00dee')
+    '3bd6d4f914f6dd2d2f58be28ae3e7a525cfecff9d3ee98f19a603e49f26a9cb6')
 VEHICLE_HALF_WIDTH_M = 0.15
 VEHICLE_HALF_LENGTH_M = 0.275
 
@@ -544,9 +552,40 @@ class PurePursuitSim:
                 -self.max_steer_rate * self.dt,
                 self.max_steer_rate * self.dt)
 
+            # Stage 0: tracking backstop (control_node.cpp:1060-1122), mirrored
+            # exactly. Previously reported post-hoc only (backstop_metrics) and
+            # never actually applied here -- tunings that lean on the backstop
+            # a lot got an optimistic lap time. Cap the pre-slew speed target,
+            # same order as the real controller (backstop, then slew).
+            backstop = self.profile.get('backstop')
+            if backstop and backstop.get('enabled'):
+                backstop_cap = self.profile['max_speed_mps']
+                if path_error > backstop['path_error_m']:
+                    over_err = min(
+                        (path_error - backstop['path_error_m']) /
+                        max(backstop['path_error_m'], 1e-3), 1.0)
+                    backstop_cap = min(
+                        backstop_cap,
+                        speed - over_err * (speed - backstop['min_speed_mps']))
+                saturation = abs(steering) / max(self.max_steer, 1e-3)
+                sat_min_err = backstop['sat_min_path_error_m']
+                sat_err_ok = sat_min_err <= 0.0 or path_error > sat_min_err
+                if saturation > backstop['steer_sat_ratio'] and sat_err_ok:
+                    over_sat = min(
+                        (saturation - backstop['steer_sat_ratio']) /
+                        max(1.0 - backstop['steer_sat_ratio'], 1e-3), 1.0)
+                    backstop_cap = min(
+                        backstop_cap,
+                        speed - over_sat * (speed - backstop['min_speed_mps']))
+                backstop_cap = max(backstop_cap, backstop['min_speed_mps'])
+            else:
+                backstop_cap = None
+
             # Stage 1: controller speed command + slew (control_node.cpp).
             speed_target = self._speed_target(
                 position, theta, speed, target_index)
+            if backstop_cap is not None:
+                speed_target = min(speed_target, backstop_cap)
             previous_command = speed_command
             speed_command = previous_command + float(np.clip(
                 speed_target - previous_command,

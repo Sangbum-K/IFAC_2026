@@ -178,10 +178,31 @@ public:
     return !table_.empty();
   }
 
+  double table_max_velocity() const
+  {
+    return table_.front().back();
+  }
+
+  std::size_t out_of_range_query_count() const
+  {
+    return out_of_range_query_count_;
+  }
+
   double lookup_steer_angle(double acceleration, double velocity) const
   {
     if (!loaded()) {
       return 0.0;
+    }
+
+    // 2026-08-19: LUT는 실측 범위 밖 질의를 던지지 않고 조용히 최근접 열을
+    // 재사용한다(실차에서 조향각 0을 던지는 것보다 안전 — 아래는 그대로
+    // 둔다). 다만 그게 "상시로" 일어나면 계획/실측 속도가 재적합 없이 LUT
+    // 캘리브레이션 범위를 벗어났다는 뜻이라 관측 가능해야 한다
+    // (deployment_profiles.controller_profile의 정적 fail-closed 검사와 짝).
+    if (velocity < table_.front()[1] - kEpsilon ||
+      velocity > table_.front().back() + kEpsilon)
+    {
+      ++out_of_range_query_count_;
     }
 
     const double sign = acceleration > 0.0 ? 1.0 : -1.0;
@@ -260,6 +281,7 @@ public:
 
 private:
   std::vector<std::vector<double>> table_;
+  mutable std::size_t out_of_range_query_count_{0};
 };
 
 class ControlNode : public rclcpp::Node
@@ -1362,6 +1384,16 @@ private:
     }
 
     double steering_angle = lookup_steer_angle(lateral_acceleration, speed_for_lookup);
+    if (steer_lookup_.loaded() &&
+      speed_for_lookup > steer_lookup_.table_max_velocity() + kEpsilon)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "Steering LUT query %.2f m/s exceeds calibrated max %.2f m/s -- "
+        "reusing nearest column (total out-of-range queries so far: %zu)",
+        speed_for_lookup, steer_lookup_.table_max_velocity(),
+        steer_lookup_.out_of_range_query_count());
+    }
     steering_angle = acc_scaling(steering_angle, acceleration_samples);
     steering_angle = speed_steer_scaling(steering_angle, speed_for_lookup);
     steering_angle *= std::clamp(

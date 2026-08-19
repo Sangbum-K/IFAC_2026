@@ -200,6 +200,14 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPt
 
     const double speed_error = actual_speed_ - cmd->drive.speed;
     const bool above_brake_speed = actual_speed_ >= brake_min_vehicle_speed_;
+    // 2026-08-19: 계획(cmd.acceleration) 기반 진입 + 피드포워드 전류를 넣었다가
+    // 도로 뺐다. accel_speed_lead(계획 가속도 리드)를 실차에서 체감이 안
+    // 좋다고 이미 껐는데, 이 브레이크 변경도 같은 계열(오차를 기다리지 않고
+    // 계획값을 바로 액추에이터에 먹인다)이라 실차 검증 없이 그대로 남겨두는
+    // 위험을 사용자가 원치 않음 — 리액티브 전용(사후 speed_error 기반)으로
+    // 되돌린다. deployment_profiles.VescLongitudinalPlant.step() 이 폐루프
+    // 시뮬에서 쓰는 모델도 원래 이 리액티브 로직 그대로였다(피드포워드로
+    // 갱신된 적이 없다) — 즉 이 되돌림은 랩타임 시뮬 결과에 영향이 없다.
     const bool planned_deceleration =
       cmd->drive.acceleration <= -brake_decel_threshold_ &&
       speed_error >= brake_entry_speed_error_;
