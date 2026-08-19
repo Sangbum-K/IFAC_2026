@@ -65,6 +65,24 @@ std::vector<Cluster> adaptive_cluster_points(
   double sigma,
   int min_cluster_size);
 
+
+/// 반경 게이트를 넘긴 클러스터를 **버리는 대신** 최대 간격에서 쪼갠다.
+///
+/// 근거: run_0818 두 백에서 `max_cluster_radius_m 0.35` 거부가 초당 0.30~0.32회
+/// 로 꾸준했는데, F1TENTH 상대차 반경이 0.31 이라 **경계선**이다. 벽 fringe 와
+/// 병합되면 0.35 를 넘고, 지금 동작은 그 덩어리를 통째로 지워 안에 있던 실물도
+/// 같이 사라진다. 실측 프레임 비율이 33.8% 밖에 안 되는 주요 후보다.
+///
+/// points 가 각도순이라는 성질을 이용해 인접 점 간 거리가 가장 큰 곳에서
+/// 나누고, 각 조각에 대해 재귀적으로 반복한다. 조각이 min_points 미만이면
+/// 버린다 — 쪼개다 파편만 남는 것을 막기 위한 것이고, 하나도 남지 않으면
+/// 호출자가 원본을 지우는 종전 동작으로 돌아가면 된다.
+///
+/// max_depth 로 재귀를 제한한다(벽처럼 정말 큰 덩어리에서 무한 분할 방지).
+std::vector<Cluster> split_oversized_cluster(
+  const Cluster & cluster, double max_radius, std::size_t min_points,
+  int max_depth = 4);
+
 }  // namespace perception_pkg
 
 #endif  // PERCEPTION_PKG__CLUSTERING_HPP_

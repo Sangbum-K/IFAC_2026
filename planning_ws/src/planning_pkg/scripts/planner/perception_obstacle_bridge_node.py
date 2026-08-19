@@ -1560,16 +1560,42 @@ class PerceptionObstacleBridgeNode(Node):
             # 가려진 상대도 같은 id 로 추적하는 것이 그 커밋의 목적이라서다.
             vs, vd = 0.0, 0.0
             velocity_valid = False
+            # 순간이동으로 직전 속도를 유지한 경우. 시드 경로로 덮지 않는다.
+            vel_held = False
             if prev is not None:
                 dt = now_sec - prev['t']
                 if 1e-3 < dt < 1.35:
                     ds = (s - prev['s'] + self.track_length / 2.0) % self.track_length \
                         - self.track_length / 2.0
-                    a = self.lpf_alpha
-                    vs = a * (ds / dt) + (1.0 - a) * prev['vs']
-                    vd = a * ((d - prev['d']) / dt) + (1.0 - a) * prev['vd']
-                    velocity_valid = True
-            if not velocity_valid:
+                    # ── 2026-08-19: max_abs 클립을 LPF **앞**으로 옮긴다 ────────────
+                    # 예전에는 LPF 를 먼저 태우고 그 출력만 잘랐다. 그러면 순간이동
+                    # 1회가 필터를 통과하며 한계 밑으로 내려앉아 그대로 살아남는다.
+                    # run_0818_205917 t=75.709 실측: 20 ms 에 0.709 m (= 34.85 m/s)
+                    # 가 튀었고 lpf_alpha=0.25 라
+                    #     0.25*34.85 + 0.75*1.4547 = 9.8036   (백 실측 9.803781)
+                    # 이 max_abs_vs(10.0) 보다 작아 클립을 빠져나갔다.
+                    #
+                    # 그리고 클립이 아니라 **기각**이다. 순간이동은 "값이 큰 관측"이
+                    # 아니라 다른 물체에 잘못 붙은 프레임이라 속도 근거 자체가 없다.
+                    # 클립하면 여전히 max_abs_vs 만큼이 필터에 주입된다.
+                    raw_vs = ds / dt
+                    raw_vd = (d - prev['d']) / dt
+                    if (abs(raw_vs) > self.max_abs_vs
+                            or abs(raw_vd) > self.max_abs_vd):
+                        vs, vd = prev['vs'], prev['vd']
+                        vel_held = True
+                        self.get_logger().warn(
+                            f'속도 순간이동 기각: id={src.id} '
+                            f'raw_vs={raw_vs:.1f} raw_vd={raw_vd:.1f} '
+                            f'(한계 {self.max_abs_vs:.1f}/{self.max_abs_vd:.1f}) '
+                            f'— 직전 속도 유지',
+                            throttle_duration_sec=2.0)
+                    else:
+                        a = self.lpf_alpha
+                        vs = a * raw_vs + (1.0 - a) * prev['vs']
+                        vd = a * raw_vd + (1.0 - a) * prev['vd']
+                        velocity_valid = True
+            if not velocity_valid and not vel_held:
                 # 첫 관측/재획득: detector의 칼만필터 속도를 Frenet으로 투영해
                 # 시드로 쓴다. detector는 target_frame(=map)에서 트래킹하므로
                 # 이 속도에는 ego 이동이 섞여 있지 않다 — "laser 프레임이라
@@ -1589,6 +1615,9 @@ class PerceptionObstacleBridgeNode(Node):
                         and abs(seed_vs) <= self.max_abs_vs
                         and abs(seed_vd) <= self.max_abs_vd):
                     vs, vd = seed_vs, seed_vd
+            # 최종 안전망. 위에서 raw 를 이미 걸렀고 시드 경로도 자체 검사를 하므로
+            # 정상 흐름에서는 걸리지 않는다 — prev 유지값이 옛 한계로 들어온
+            # 경우(파라미터를 낮춘 직후) 정도만 남는다.
             if abs(vs) > self.max_abs_vs or abs(vd) > self.max_abs_vd:
                 velocity_valid = False
                 vs = float(np.clip(vs, -self.max_abs_vs, self.max_abs_vs))

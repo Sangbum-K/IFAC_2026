@@ -111,7 +111,13 @@ perception_obstacle_bridge_node:
     bridge/require_source_stamp: true
     bridge/projection_window_wpnts: 80
     bridge/projection_reacquire_distance_m: 1.5
-    bridge/max_abs_vs_mps: 10.0
+    # 10.0 -> 4.0 (2026-08-19). 이 값은 이제 **기각 문턱**이다 — 브릿지가 LPF
+    # 앞에서 raw 를 검사해 넘으면 프레임을 통째로 버린다(직전 속도 유지).
+    # 근거: run_0818 두 백에서 실제 상대 최고속도가 2.1 m/s 였고, 이동 트랙의
+    # |vs| p90 이 2.02~2.06 이다. 4.0 은 그 두 배라 진짜 상대는 절대 안 걸리고,
+    # 순간이동(20 ms 에 0.709 m = 34.85 m/s)만 걸러낸다.
+    # ⚠️ 다른 맵(더 빠른 상대)으로 옮기면 재검토할 것. 이 트랙 전용 값이다.
+    bridge/max_abs_vs_mps: 4.0
     bridge/max_abs_vd_mps: 4.0
     # 맵 벽거리 필터 (근거·주의사항은 race_map.yaml 동일 블록 주석 참조).
     # localization.launch.py의 map_server가 /map을 latched 발행.
@@ -296,6 +302,12 @@ perception_obstacle_bridge_node:
 
 spliner_node:
   ros__parameters:
+    # 1.0 -> 1.25 (2026-08-19). **동적/준정적 전용** 이다 — 정적 회피는 항상 1.0
+    # (spliner_node.cpp 의 ot_boost_ok). 상대보다 빨리 지나가려면 속도 우위가
+    # 필요한데 이 값이 1.0 이라 추월 부스트가 사실상 꺼져 있었다.
+    # 물리 캡(sqrt(a_lat/k)·조향 한계)이 그대로 걸려 직선에서만 살아난다.
+    # ⚠️ A/B 필수: a_lat p90 이 포락선(8.76)의 86~105% 로 여유가 없다.
+    spliner/ot_speed_scale: 1.25
     spliner/obstacle_topic: /perception/obstacles_frenet   # 브릿지 출력
     # ── 원호 이탈 (2026-08-11) ─────────────────────────────────────────────
     # 라인스위치/스플라인이 **조향 기하 하한**으로 거부했을 때만 도는 마지막

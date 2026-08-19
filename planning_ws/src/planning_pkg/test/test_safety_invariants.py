@@ -573,3 +573,211 @@ def test_low_speed_floors_stay_aligned():
     assert 0.0 <= steer_min < backstop_floor, (
         f"steer_plan_speed_min_mps={steer_min} 가 저속 바닥 "
         f"{backstop_floor} 보다 좁지 않다")
+
+
+# --- sim <-> 실차 위치추정(PF) 파리티 ------------------------------------------
+PF_PKG = WORKSPACE / "localization_ws" / "src" / "particle_filter_cpp"
+PF_REAL_YAML = PF_PKG / "config" / "localize.yaml"
+PF_SIM_YAML = PF_PKG / "config" / "localize_sim.yaml"
+PF_NODE_SRC = PF_PKG / "src" / "particle_filter_node.cpp"
+
+# sim 이 실차와 **의도적으로** 다른 PF 키. 전부 배선(토픽·프레임)이다.
+PF_WIRING_EXEMPT = {
+    "scan_topic",        # 실차 /scan, sim 은 가상장애물이 합성된 /scan_overlay
+    "base_frame",        # gym 네임스페이스
+    "laser_frame",
+    "imu_topic",         # gym 에는 IMU 가 없다 (아래 주석 참조)
+}
+
+
+def _pf_declared_defaults():
+    """particle_filter_node.cpp 의 declare_parameter<T>("name", default) 수집."""
+    source = PF_NODE_SRC.read_text(encoding="utf-8")
+    defaults = {}
+    for match in re.finditer(
+            r'declare_parameter\s*(?:<[^>]*>)?\s*\(\s*"([^"]+)"\s*,', source):
+        index, depth, buffer = match.end(), 1, ""
+        while index < len(source) and depth > 0:
+            char = source[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            buffer += char
+            index += 1
+        defaults[match.group(1)] = " ".join(buffer.split())
+    assert len(defaults) > 50, "declare_parameter 수집 실패 — 정규식을 확인할 것"
+    return defaults
+
+
+def _as_scalar(text):
+    literal = str(text).strip().strip('"').lower()
+    if literal in ("true", "false"):
+        return literal == "true"
+    try:
+        return float(literal)
+    except ValueError:
+        return literal
+
+
+def test_sim_pf_profile_matches_real_car():
+    """sim PF 의 **실효** 설정이 실차 localize.yaml 과 같아야 한다.
+
+    localize_sim.yaml 은 실차 파일의 부분집합이라, 안 적은 키는 C++ 노드
+    기본값으로 돈다. 그 기본값이 실차 값과 다르면 sim 은 다른 PF 를 돌리는
+    셈인데 어느 파일을 봐도 드러나지 않는다.
+
+    2026-08-18 실제 사고: deskew_enabled / ground_filter_enabled 의 노드
+    기본값이 true 인데 실차만 false 를 명시하고 있었다. 이 둘이 켜져 있으면
+    particle_filter_cpp 는 validate_supported_configuration() 에서 예외를
+    던지고 **즉사한다** — PF 를 C++ 로 바꾼 뒤로 run_sim.sh 의 기본 프로파일
+    (sim_real_car, pf:=true)에 위치추정이 아예 없었다.
+    """
+    defaults = _pf_declared_defaults()
+    real = _ros_params(_yaml(PF_REAL_YAML), "particle_filter")
+    sim = _ros_params(_yaml(PF_SIM_YAML), "particle_filter")
+
+    drifted = []
+    for key, real_value in real.items():
+        if key in PF_WIRING_EXEMPT or key not in defaults:
+            continue          # 노드가 선언하지 않는 키는 양쪽 다 죽은 값이다
+        effective = sim[key] if key in sim else _as_scalar(defaults[key])
+        if _as_scalar(effective) != _as_scalar(real_value):
+            source = "localize_sim.yaml" if key in sim else "노드 기본값"
+            drifted.append(f"{key} (real={real_value!r}, sim={effective!r} <- {source})")
+    assert not drifted, (
+        "sim PF 실효 설정이 실차와 어긋남 -> " + ", ".join(drifted))
+
+
+def test_sim_pf_passes_supported_profile_gate():
+    """PF 노드가 거부하는 조합을 sim 설정이 만들지 않는지 직접 확인.
+
+    위 파리티 테스트와 겹쳐 보이지만 다른 것을 막는다: 실차 쪽 값이 바뀌면
+    파리티는 계속 통과하면서 sim 만 기동 불가가 될 수 있다.
+    """
+    sim = _ros_params(_yaml(PF_SIM_YAML), "particle_filter")
+    assert sim.get("ground_filter_enabled") is False
+    assert sim.get("deskew_enabled") is False
+    assert sim.get("range_method") == "glt"
+    assert "refusing to ignore enabled geometry features" in \
+        PF_NODE_SRC.read_text(encoding="utf-8"), \
+        "PF 의 프로파일 게이트가 사라졌다면 이 테스트의 전제를 다시 볼 것"
+
+
+# --- sim <-> 실차 LiDAR 기하 ---------------------------------------------------
+# run_0817_194156 /scan 실측 (실차 Hokuyo). 이 셋이 인지의 '거리별 클러스터
+# 점수'를 결정하므로, min_cluster_size 같은 실차 백 기반 문턱을 sim 에서
+# 재현하려면 같아야 한다.
+REAL_LIDAR_BEAMS = 1081
+REAL_LIDAR_FOV_RAD = 4.712389          # = 3π/2, angle_min/max = ∓2.356194
+REAL_LIDAR_ANGLE_INCREMENT = 0.00436332
+GYM_BRIDGE_SRC = (WORKSPACE / "sim_ws" / "src" / "f1tenth_gym_ros" /
+                  "f1tenth_gym_ros" / "gym_bridge.py")
+
+
+def test_sim_gym_lidar_matches_real_scan():
+    """sim LiDAR 가 실차 /scan 과 맞춰질 수 있는 만큼 맞춰져 있는지."""
+    vehicle = _sim_race_real_car_vehicle()
+
+    # 라이다 장착 위치는 hardware 실측 extrinsic 이 단일 기준이다.
+    # 이건 f110_gym 에 lidar_dist 로 실제 전달되므로 물리에 반영된다.
+    sensors = _yaml(WORKSPACE / "hardware_ws" / "src" / "f1tenth_stack" /
+                    "config" / "sensors.yaml")
+    base_to_laser_x = _ros_params(sensors, "sensor_extrinsics")["base_to_laser_x"]
+    assert vehicle["scan_distance_to_base_link"] == pytest.approx(base_to_laser_x)
+
+    # 빔 수/FOV 는 **덮으면 안 된다**. f110_gym 은 num_beams=1080 / fov=4.7 로
+    # 하드코딩돼 있고 그 인자를 받는 경로가 없어서, gym_config 의 값을 바꾸면
+    # 실제 레이와 다른 헤더를 발행하게 된다 (구독자가 복원하는 점이 통째로 틀어짐).
+    assert "scan_beams" not in vehicle and "scan_fov" not in vehicle, (
+        "scan_beams/scan_fov 를 덮으면 헤더만 바뀌고 실제 레이는 그대로다 — "
+        "f110_gym 을 벤더링해서 고치지 않는 한 넣지 말 것")
+
+    # gym_bridge 가 publish 하는 angle_increment 는 f110_gym 내부 빔 간격과
+    # 같아야 한다 (ScanSimulator2D 는 fov/(num_beams-1) 로 쏜다). 예전엔
+    # fov/num_beams 를 발행해서 마지막 빔 방향이 한 칸(≈0.25°) 틀어져 있었다.
+    assert "scan_fov / (scan_beams - 1)" in \
+        GYM_BRIDGE_SRC.read_text(encoding="utf-8"), \
+        "gym_bridge 의 angle_inc 가 f110_gym 빔 간격과 어긋난다"
+
+    # 남는 각분해능 차이는 실차 대비 0.5% 안이어야 한다. 인지의 클러스터 점수
+    # 문턱(min_cluster_size 등)이 전부 실차 백에서 나왔으므로, 여기가 벌어지면
+    # 같은 물체가 sim 에서 다른 점수로 잡힌다.
+    gym = _ros_params(
+        _yaml(WORKSPACE / "sim_ws" / "src" / "f1tenth_gym_ros" / "config" /
+              "sim.yaml"), "bridge")
+    sim_increment = gym["scan_fov"] / (gym["scan_beams"] - 1)
+    assert sim_increment == pytest.approx(REAL_LIDAR_ANGLE_INCREMENT, rel=5e-3), (
+        f"sim 각분해능 {sim_increment} 가 실차 {REAL_LIDAR_ANGLE_INCREMENT} 와 "
+        "0.5% 넘게 다르다")
+
+
+# ── 정적/동적 분리 불변식 (2026-08-19) ──────────────────────────────────────
+# run_0818 수정에서 넣은 동적 전용 완화들은 전부 "정적 경로는 건드리지 않는다"를
+# 전제로 승인됐다. 그 전제가 조용히 깨지면(게이트 한 줄이 사라지면) 오래 튜닝된
+# 정적 회피 거동이 통째로 바뀌므로, 소스 수준에서 못 박아 둔다.
+SPLINER_CPP = PKG / "src" / "spliner_node.cpp"
+
+
+def _spliner_source():
+    return SPLINER_CPP.read_text(encoding="utf-8")
+
+
+def test_overtake_speed_scale_is_dynamic_only():
+    """추월 속도 배율(ot_speed_scale)이 정적 장애물에 새지 않는다."""
+    src = _spliner_source()
+    # ① 배율은 ot_boost_ok 게이트를 반드시 통과해야 한다.
+    assert "const bool ot_boost_ok = !closest.is_static || qs_active_;" in src, (
+        "ot_boost_ok 게이트가 사라졌다 — 정적 회피에 추월 배율이 걸린다"
+    )
+    assert "(in_sector && ot_boost_ok) ? ot_speed_scale_ : 1.0" in src, (
+        "active_speed_scale_ 대입이 ot_boost_ok 를 안 거친다"
+    )
+    # ② 게이트를 우회하는 무조건 대입이 없어야 한다.
+    unconditional = re.findall(
+        r"active_speed_scale_\s*=\s*ot_speed_scale_\s*;", src)
+    assert not unconditional, (
+        "ot_speed_scale_ 을 무조건 대입하는 곳이 생겼다: %r" % unconditional
+    )
+    # ③ 매 사이클 1.0 으로 내려야 한다. 이 값은 장애물 분기 안에서만 대입되므로,
+    #    리셋이 없으면 장애물이 없는 사이클에 직전 동적 배율이 그대로 남아
+    #    정적 경로/커밋 재생으로 샌다 (qs_active_ 와 같은 이유).
+    assert re.search(r"active_speed_scale_\s*=\s*1\.0\s*;", src), (
+        "사이클 시작 리셋(active_speed_scale_ = 1.0)이 없다"
+    )
+
+
+def test_dynamic_only_trailing_relaxations_are_gated():
+    """동적 전용 트레일링 완화가 정적 분기로 새지 않는다."""
+    src = _spliner_source()
+    # gap 안쪽 ×0.85 감속은 정적에만 남는다 (동적은 감속이 아니라 회피가 답).
+    assert re.search(
+        r"if \(obs\.is_static\) \{\s*\n\s*v_target_actual \*= 0\.85;", src), (
+        "×0.85 가 is_static 게이트 밖으로 나왔다 — 동적에서 붙을수록 뒤로 밀린다"
+    )
+    # 동적 속도 바닥은 비상정지와 geom_blocked 에서 반드시 해제된다.
+    assert "!emergency_stop && dyn_trailing_floor_ > 0.0 && !geom_blocked_now" in src, (
+        "동적 트레일링 바닥의 해제 조건(비상정지/geom_blocked)이 사라졌다 — "
+        "양쪽이 막힌 상태에서 바닥을 강제하면 그대로 접촉한다"
+    )
+    # 제동 감속도는 정적/동적이 분리돼 있어야 한다.
+    assert ("(obs.is_static || emergency_stop) ? trailing_decel_ "
+            ": trailing_decel_dyn_") in src, (
+        "decel_eff 분기가 사라졌다 — 정적 제동 프로파일이 같이 바뀐다"
+    )
+
+
+def test_static_trailing_floor_is_not_lowered_by_dynamic_floor():
+    """동적 바닥(3.0)이 정적 바닥(trailing_retry_speed)을 대체하지 않는다."""
+    params = _ros_params(_yaml(PARAMS), "spliner_node")
+    static_floor = params["spliner/trailing_retry_speed"]
+    dyn_floor = params["spliner/dyn_trailing_floor_mps"]
+    # 정적 바닥은 오래 검증된 값이라 동적 수정이 건드리면 안 된다.
+    assert static_floor == pytest.approx(2.5), (
+        "정적 트레일링 바닥이 바뀌었다 — run_0818 회귀 감시 지표(발행속도 p50 "
+        "2.50~2.52)의 기준값이다"
+    )
+    # 동적 바닥은 별개 파라미터로 존재해야 한다 (정적 값 재사용 금지).
+    assert dyn_floor > 0.0

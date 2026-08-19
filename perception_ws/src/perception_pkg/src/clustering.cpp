@@ -83,4 +83,47 @@ std::vector<Cluster> adaptive_cluster_points(
   return clusters;
 }
 
+
+std::vector<Cluster> split_oversized_cluster(
+  const Cluster & cluster, double max_radius, std::size_t min_points,
+  int max_depth)
+{
+  std::vector<Cluster> out;
+  if (cluster.points.size() < min_points) {
+    return out;
+  }
+  if (max_depth <= 0 || cluster.radius <= max_radius ||
+    cluster.points.size() < 2U * min_points)
+  {
+    // 더 못 쪼개거나 쪼갤 필요가 없다. 게이트를 통과할 때만 채택한다.
+    if (cluster.radius <= max_radius) {
+      out.push_back(cluster);
+    }
+    return out;
+  }
+  // 인접 점 간 거리가 가장 큰 곳에서 나눈다. 양쪽이 모두 min_points 를
+  // 채울 수 있는 위치만 후보로 본다.
+  std::size_t cut = 0;
+  double widest = -1.0;
+  for (std::size_t i = min_points; i + min_points <= cluster.points.size(); ++i) {
+    const double dx = cluster.points[i][0] - cluster.points[i - 1][0];
+    const double dy = cluster.points[i][1] - cluster.points[i - 1][1];
+    const double gap = std::sqrt(dx * dx + dy * dy);
+    if (gap > widest) {
+      widest = gap;
+      cut = i;
+    }
+  }
+  if (cut == 0) {
+    return out;
+  }
+  const Cluster a = make_cluster(cluster.points, 0, cut);
+  const Cluster b = make_cluster(cluster.points, cut, cluster.points.size());
+  for (const auto & part : {a, b}) {
+    auto sub = split_oversized_cluster(part, max_radius, min_points, max_depth - 1);
+    out.insert(out.end(), sub.begin(), sub.end());
+  }
+  return out;
+}
+
 }  // namespace perception_pkg

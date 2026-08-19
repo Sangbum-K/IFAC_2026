@@ -145,7 +145,14 @@ class GymBridge(Node):
         scan_beams = self.get_parameter('scan_beams').value
         self.angle_min = -scan_fov / 2.
         self.angle_max = scan_fov / 2.
-        self.angle_inc = scan_fov / scan_beams
+        # f110_gym 은 빔을 fov/(num_beams-1) 간격으로 쏜다
+        # (laser_models.py ScanSimulator2D.angle_increment). 여기서 fov/num_beams
+        # 로 publish 하면 **시뮬 내부의 실제 빔 방향과 어긋난 값**이 나간다:
+        # 구독자는 angle_min + i*angle_inc 로 점을 복원하므로 마지막 빔에서
+        # 한 칸(≈0.25°) 틀어지고, 5 m 거리에서 2.2 cm 어긋난다.
+        # 실차 Hokuyo 도 fov/(beams-1) 이다 (run_0817_194156 /scan 실측:
+        # 1081 빔 · angle_increment 0.00436332 = 4.7124/1080).
+        self.angle_inc = scan_fov / (scan_beams - 1)
         self.ego_namespace = self.get_parameter('ego_namespace').value
         ego_odom_topic = self.ego_namespace + '/' + self.get_parameter('ego_odom_topic').value
         self.scan_distance_to_base_link = self.get_parameter('scan_distance_to_base_link').value

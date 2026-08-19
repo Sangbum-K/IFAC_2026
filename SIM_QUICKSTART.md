@@ -23,7 +23,7 @@ cd ~/IFAC_ws
 ## 2. 실행
 
 ```zsh
-./run_sim.sh my_track0810
+./run_sim.sh my_track0817
 ```
 
 source·프로세스 정리는 `run_sim.sh` 가 알아서 한다. **맵 이름은 필수다.**
@@ -40,10 +40,10 @@ ls planning_ws/src/planning_pkg/config/global_trajectory/*_iqp_*.csv \
 ## 3. 옵션
 
 ```zsh
-./run_sim.sh my_track0810 --plain      # gym 기본 물리 + GT odom (빠른 확인)
-./run_sim.sh my_track0810 --gt         # 위치추정만 GT
-./run_sim.sh my_track0810 --no-rviz    # RViz 없이
-./run_sim.sh my_track0810 map_filter:=false   # 브릿지 벽필터 끄고 A/B
+./run_sim.sh my_track0817 --plain      # gym 기본 물리 + GT odom (빠른 확인)
+./run_sim.sh my_track0817 --gt         # 위치추정만 GT
+./run_sim.sh my_track0817 --no-rviz    # RViz 없이
+./run_sim.sh my_track0817 map_filter:=false   # 브릿지 벽필터 끄고 A/B
 ```
 
 그 외 인자는 `ros2 launch` 로 그대로 넘어간다 (`suffix:=…` 등).
@@ -54,7 +54,7 @@ ls planning_ws/src/planning_pkg/config/global_trajectory/*_iqp_*.csv \
 ego 차량 전방 3–8 m 지점에 상대 차량을 스폰한다.
 
 ```zsh
-./run_sim.sh my_track0810 --plain
+./run_sim.sh my_track0817 --plain
 ```
 
 `DetectedObstacles (LiDAR)` 디스플레이가 실제 C++ 인지 결과를 보여 준다.
@@ -96,7 +96,12 @@ ros2 topic echo /perception/obstacles_detected
 | | 기본 (`sim_real_car`) | `--plain` (`sim`) |
 |---|---|---|
 | 위치추정 | particle_filter (실차와 동일) | gym GT odom |
-| 차량물리 | mu 0.90 / a_max 4.5 / s_max 0.3578 | mu 1.0489 / a_max 9.51 / s_max 0.4189 |
+| 차량물리 | mu 0.90 / a_max 4.5 / 조향 좌 0.3800·우 -0.3578 | mu 1.0489 / a_max 9.51 / s_max ±0.4189 |
+| LiDAR | 40 Hz / 라이다 x 0.28 m (실차 실측) | gym 기본 250 Hz / 0.275 m |
+
+빔 수(1080)와 FOV(4.7 rad)는 두 프로파일 모두 gym 고정이다 — 실차는 1081빔 /
+4.712389 rad 이지만 f110_gym 이 하드코딩이라 못 바꾼다. 남는 각분해능 차이는
+0.17% 라 인지의 점수 문턱은 그대로 옮겨 쓸 수 있다.
 | 용도 | **실차 판정 근거로 쓸 수 있는 쪽** | 빠른 확인 |
 
 `--plain` 은 PF 가 없어서 `localization_gate` 가 꺼진다(켜면 출발 못 함).
@@ -125,7 +130,7 @@ python3 -m pytest planning_ws/src/planning_pkg/test -q
 |---|---|
 | `맵 이름이 필요합니다` | 맵 이름을 줄 것 (2장) |
 | `raceline 없음` 으로 죽음 | 그 맵의 CSV 가 없다 → `./simm.sh <맵>` |
-| iqp CSV 가 여러 벌이라 거부 | `suffix:=max7.00ms_margin0.08m_mu0.80` 처럼 명시 |
+| iqp CSV 가 여러 벌이라 거부 | `suffix:=max7.00ms_margin0.08m_mu0.90` 처럼 명시 |
 | `<ws>_ws가 빌드되지 않았습니다` | `./build_all.sh sim` |
 | 차가 출발 안 함 (기본 프로파일) | PF 미수렴 → `/pf/localization_quality` 확인 |
 | 파라미터를 고쳤는데 그대로 | 6장 (재빌드) |

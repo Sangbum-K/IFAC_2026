@@ -100,15 +100,16 @@ Track::Track(
   int track_id,
   const Cluster & cluster,
   double stamp,
-  std::size_t hist_len)
+  double hist_sec)
 : id(track_id),
   kf(cluster.centroid[0], cluster.centroid[1]),
   last_stamp(stamp),
   last_measurement_stamp(stamp),
   radius(cluster.radius),
-  pos_hist_len(hist_len)
+  pos_hist_sec(hist_sec)
 {
   pos_hist.push_back(cluster.centroid);
+  pos_hist_t.push_back(stamp);
 }
 
 void Track::predict(double stamp)
@@ -136,13 +137,24 @@ void Track::update(
   // 다시 관측되었으므로 miss 초기화
   misses = 0;
 
+  // ⚠️ last_measurement_stamp 를 덮기 전에 간격을 확정한다.
+  last_meas_dt = std::max(stamp - last_measurement_stamp, 0.0);
   last_stamp = stamp;
   last_measurement_stamp = stamp;
 
   pos_hist.push_back(cluster.centroid);
+  pos_hist_t.push_back(stamp);
 
-  while (pos_hist.size() > pos_hist_len) {
+  // 개수가 아니라 **시간**으로 자른다. 개수 상한은 측정 간격이 균일할 때만
+  // 시간 창과 같은데, 실측률이 트랙마다 29~63% 로 흩어져 있어(run_0818)
+  // 같은 개수가 트랙마다 3~9 초를 뜻했다. kPosHistMax 는 시각이 깨졌을 때의
+  // 메모리 가드일 뿐 정상 동작에서는 시간 창이 먼저 걸린다.
+  while (pos_hist_t.size() > 1 &&
+    (stamp - pos_hist_t.front() > pos_hist_sec ||
+    pos_hist_t.size() > kPosHistMax))
+  {
     pos_hist.pop_front();
+    pos_hist_t.pop_front();
   }
 }
 
@@ -158,8 +170,13 @@ void Track::reacquire(
   misses = 0;
   last_stamp = stamp;
   last_measurement_stamp = stamp;
+  // 재획득은 긴 공백을 건너뛴 재시작이다. 그 공백을 분류 시간으로 적립하면
+  // occlusion 한 번이 확정/해제를 만들어 버린다.
+  last_meas_dt = 0.0;
   pos_hist.clear();
+  pos_hist_t.clear();
   pos_hist.push_back(cluster.centroid);
+  pos_hist_t.push_back(stamp);
 }
 
 
@@ -169,7 +186,7 @@ Tracker::Tracker(
   int track_timeout,
   double reid_distance,
   double reid_timeout,
-  int pos_hist_len,
+  double pos_hist_sec,
   double radius_ratio_max,
   double dynamic_reacquire_gate_multiplier,
   double dynamic_reacquire_timeout_sec,
@@ -181,9 +198,7 @@ Tracker::Tracker(
   track_timeout_(track_timeout),
   reid_distance_(reid_distance),
   reid_timeout_(reid_timeout),
-  pos_hist_len_(
-    static_cast<std::size_t>(
-      std::max(1, pos_hist_len))),
+  pos_hist_sec_(std::max(0.05, pos_hist_sec)),
   radius_ratio_max_(radius_ratio_max),
   dynamic_reacquire_gate_multiplier_(
     std::max(dynamic_reacquire_gate_multiplier, 1.0)),
@@ -226,11 +241,11 @@ TrackPtr Tracker::revive(
   const Retired & retired, const Cluster & cluster, double stamp) const
 {
   auto track = std::make_shared<Track>(
-    retired.id, cluster, stamp, pos_hist_len_);
+    retired.id, cluster, stamp, pos_hist_sec_);
   track->ever_dynamic = retired.ever_dynamic;
   track->is_dynamic = retired.is_dynamic;
-  track->dynamic_streak = retired.dynamic_streak;
-  track->static_streak = retired.static_streak;
+  track->dynamic_time = retired.dynamic_time;
+  track->static_time = retired.static_time;
   track->confidence = retired.confidence;
 
   // 현 관측 위치에서 다시 시작하고, 코너 전 접선 속도는 재사용하지 않는다.
@@ -673,8 +688,8 @@ void Tracker::retire(
       last_measurement[1],
       track.last_measurement_stamp,
 
-      track.dynamic_streak,
-      track.static_streak,
+      track.dynamic_time,
+      track.static_time,
       track.confidence,
 
       track.ever_dynamic,
@@ -774,7 +789,7 @@ void Tracker::spawn(
     next_id_,
     cluster,
     stamp,
-    pos_hist_len_));
+    pos_hist_sec_));
 
   ++next_id_;
 }

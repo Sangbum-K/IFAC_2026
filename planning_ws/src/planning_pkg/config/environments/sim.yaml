@@ -48,7 +48,7 @@ perception_obstacle_bridge_node:
     bridge/require_source_stamp: true
     bridge/projection_window_wpnts: 80
     bridge/projection_reacquire_distance_m: 1.5
-    bridge/max_abs_vs_mps: 10.0
+    bridge/max_abs_vs_mps: 4.0   # real_car 미러 (근거는 real_car.yaml)
     bridge/max_abs_vd_mps: 4.0
     # A/B로 끄고 싶으면 launch에서 map_filter:=false — yaml을 고치지 말 것
     # (launch 인자가 env yaml보다 나중에 적용된다).
@@ -96,6 +96,12 @@ perception_obstacle_bridge_node:
 # --- 이하 real_car.yaml과 완전히 동일 (근거 주석은 real_car.yaml 참조) ---
 spliner_node:
   ros__parameters:
+    # 1.0 -> 1.25 (2026-08-19). **동적/준정적 전용** 이다 — 정적 회피는 항상 1.0
+    # (spliner_node.cpp 의 ot_boost_ok). 상대보다 빨리 지나가려면 속도 우위가
+    # 필요한데 이 값이 1.0 이라 추월 부스트가 사실상 꺼져 있었다.
+    # 물리 캡(sqrt(a_lat/k)·조향 한계)이 그대로 걸려 직선에서만 살아난다.
+    # ⚠️ A/B 필수: a_lat p90 이 포락선(8.76)의 86~105% 로 여유가 없다.
+    spliner/ot_speed_scale: 1.25
     spliner/obstacle_topic: /perception/obstacles_frenet
     spliner/escape_arc_enabled: true
     spliner/escape_arc_lat_acc: 8.83   # 08-12: 5.5 -> 7.85, 08-13: -> 8.83 (real_car.yaml 근거)

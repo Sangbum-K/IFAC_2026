@@ -118,7 +118,8 @@ done
 
 info "map:=$map_arg env:=$env_arg ${extra[*]}"
 if [[ $env_arg == sim_real_car ]]; then
-  print "  실차 근사: particle_filter / mu 0.90·a_max 4.5·조향 ±0.3578 / LiDAR 40 Hz"
+  print "  실차 근사: particle_filter / mu 0.90·a_max 4.5 / 조향 좌 0.3800·우 -0.3578"
+  print "            LiDAR 40 Hz · 라이다 x 0.28 m (빔 1080/FOV 4.7 은 gym 고정)"
   print "  ⓘ 벽이 장애물로 잡혀 차가 출발 안 할 수 있습니다 (실차 08-04와 같은 현상)."
 fi
 

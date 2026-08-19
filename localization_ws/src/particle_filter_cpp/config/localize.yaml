@@ -163,5 +163,9 @@ particle_filter:
 
 map_server:
   ros__parameters:
-    # assuming map file is in particle_filter_cpp/maps
-    map: 'my_track0807'
+    # map:= 를 안 주고 실행했을 때의 폴백. 맵은 <ws>/maps 에 있다.
+    # 2026-08-18: 0807 -> 0817. 08-17 실차 런(run_0817_194156)의 /map 이
+    # my_track0817 (395x319, res 0.05, origin -13.055981/-7.690340) 이다.
+    # 현행 트랙과 어긋난 폴백은 map:= 를 빠뜨린 실행이 옛 맵으로 조용히
+    # 측위하게 만든다 (planning params.yaml 의 같은 사고 주석 참조).
+    map: 'my_track0817'

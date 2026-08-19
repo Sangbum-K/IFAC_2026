@@ -101,7 +101,7 @@ public:
 
     tracker_ = std::make_unique<Tracker>(
       gating_distance_, track_timeout_, reid_distance_, reid_timeout_,
-      pos_hist_len_, radius_ratio_max_, dynamic_reacquire_gate_multiplier_,
+      t_pos_hist_, radius_ratio_max_, dynamic_reacquire_gate_multiplier_,
       dynamic_reacquire_timeout_sec_, dynamic_frenet_reid_timeout_sec_,
       dynamic_frenet_reid_lateral_gate_m_, dynamic_frenet_reid_progress_slack_m_,
       dynamic_frenet_reid_backtrack_m_);
@@ -300,6 +300,8 @@ private:
 
     // 물리적으로 불가능한 크기의 클러스터 거부. 0.0 = 비활성.
     max_cluster_radius_ = this->declare_parameter<double>("max_cluster_radius_m", 0.0);
+    cluster_split_enabled_ =
+      this->declare_parameter<bool>("cluster_split_enabled", true);
     // 스캔 처리율 상한.
     this->declare_parameter<double>("process_rate_hz", 20.0);
   }
@@ -417,6 +419,23 @@ private:
       !(min_hits_ >= 1 && min_hits_ <= track_timeout_))
     {
       throw std::invalid_argument("invalid detector geometry/tracking parameters");
+    }
+
+    // ── 분류/이력 창을 초로 확정한다 (2026-08-19) ────────────────────────
+    // 이 넷은 **측정 프레임**에서만 전진하는 카운터의 문턱이라, 발행 주기로
+    // 환산하면 실측률의 역수만큼 창이 늘어난다. 초를 그대로 내려보낸다.
+    const double legacy_dt = 1.0 / kLegacyTuneHz;
+    t_confirm_ = n_confirm_sec_ > 0.0 ? n_confirm_sec_ : n_confirm_ * legacy_dt;
+    t_release_ = n_release_sec_ > 0.0 ? n_release_sec_ : n_release_ * legacy_dt;
+    t_dynamic_release_ = dynamic_release_sec_ > 0.0
+      ? dynamic_release_sec_ : dynamic_release_ * legacy_dt;
+    t_pos_hist_ = pos_hist_sec_ > 0.0 ? pos_hist_sec_ : pos_hist_len_ * legacy_dt;
+    if (!(t_confirm_ > 0.0 && t_confirm_ <= 60.0) ||
+      !(t_release_ > 0.0 && t_release_ <= 60.0) ||
+      !(t_dynamic_release_ > 0.0 && t_dynamic_release_ <= 120.0) ||
+      !(t_pos_hist_ > 0.0 && t_pos_hist_ <= 60.0))
+    {
+      throw std::invalid_argument("invalid classifier time windows");
     }
 
     min_period_ = 1.0 / rate;
@@ -608,8 +627,13 @@ private:
     if (measured_dt_ <= 1e-6) {
       return;
     }
-    const bool any_sec = track_timeout_sec_ > 0.0 || n_confirm_sec_ > 0.0 ||
-      n_release_sec_ > 0.0 || dynamic_release_sec_ > 0.0 || pos_hist_sec_ > 0.0;
+    // ⚠️ 2026-08-19: 환산 대상이 track_timeout **하나만** 남았다.
+    // n_confirm / n_release / dynamic_release / pos_hist 는 이제 초 단위
+    // 그대로 classifier/tracker 로 내려간다 — 그 카운터들은 **측정 프레임**
+    // 에서만 전진하는데 여기서 **발행 주기**로 나누고 있어서 창이 실측률의
+    // 역수만큼(run_0818 기준 3배) 늘어나 있었다. track_timeout 은 misses 와
+    // 비교하고 misses 는 발행 사이클마다 오르므로 이쪽만 프레임이 맞다.
+    const bool any_sec = track_timeout_sec_ > 0.0;
     if (!any_sec) {
       return;
     }
@@ -633,20 +657,16 @@ private:
     // track_timeout >= min_hits 불변식은 여기서도 지켜야 한다.
     track_timeout_ = std::max(
       frames(track_timeout_sec_, track_timeout_, 1), min_hits_);
-    n_confirm_ = frames(n_confirm_sec_, n_confirm_, 1);
-    n_release_ = frames(n_release_sec_, n_release_, 1);
-    dynamic_release_ = frames(dynamic_release_sec_, dynamic_release_, 1);
-    pos_hist_len_ = frames(pos_hist_sec_, pos_hist_len_, 2);
     if (tracker_) {
       tracker_->set_track_timeout(track_timeout_);
-      tracker_->set_pos_hist_len(pos_hist_len_);
     }
     RCLCPP_INFO(
       this->get_logger(),
       "프레임 창 재환산 (실측 %.1f Hz, dt %.1f ms): track_timeout=%d "
-      "n_confirm=%d n_release=%d dynamic_release=%d pos_hist_len=%d",
-      1.0 / measured_dt_, 1000.0 * measured_dt_, track_timeout_, n_confirm_,
-      n_release_, dynamic_release_, pos_hist_len_);
+      "| 시간 창(환산 없음): confirm=%.2fs release=%.2fs "
+      "dyn_release=%.2fs pos_hist=%.2fs",
+      1.0 / measured_dt_, 1000.0 * measured_dt_, track_timeout_,
+      t_confirm_, t_release_, t_dynamic_release_, t_pos_hist_);
   }
 
   // ── 콜백: /scan ────────────────────────────────────────────────────────
@@ -893,18 +913,52 @@ private:
         largest = std::max(largest, c.radius);
       }
       const std::size_t before = clusters.size();
-      clusters.erase(
-        std::remove_if(
-          clusters.begin(), clusters.end(),
-          [&](const Cluster & c) {
-            return !passes_cluster_radius_gate(c.radius, max_cluster_radius_);
-          }),
-        clusters.end());
-      if (clusters.size() != before) {
+      // ── 2026-08-19: 버리는 대신 **쪼갠다** ────────────────────────────────
+      // 상대차 반경(0.31)이 게이트(0.35)의 경계선이라, 벽 fringe 와 병합되면
+      // 덩어리째 지워지며 안의 실물도 같이 사라진다. 각도순 점열을 최대 간격
+      // 에서 나눠 게이트를 통과하는 조각만 살린다. 조각이 하나도 안 남으면
+      // 종전대로 그 클러스터는 사라진다(= 진짜 벽).
+      std::size_t split_recovered = 0;
+      std::size_t split_dropped = 0;
+      if (cluster_split_enabled_) {
+        std::vector<Cluster> kept;
+        kept.reserve(clusters.size());
+        for (const auto & c : clusters) {
+          if (passes_cluster_radius_gate(c.radius, max_cluster_radius_)) {
+            kept.push_back(c);
+            continue;
+          }
+          auto parts = split_oversized_cluster(
+            c, max_cluster_radius_,
+            static_cast<std::size_t>(std::max(min_cluster_size_, 1)));
+          if (parts.empty()) {
+            ++split_dropped;
+          } else {
+            split_recovered += parts.size();
+            kept.insert(kept.end(), parts.begin(), parts.end());
+          }
+        }
+        clusters.swap(kept);
+      } else {
+        clusters.erase(
+          std::remove_if(
+            clusters.begin(), clusters.end(),
+            [&](const Cluster & c) {
+              return !passes_cluster_radius_gate(c.radius, max_cluster_radius_);
+            }),
+          clusters.end());
+      }
+      oversize_seen_ += (before > clusters.size() || split_recovered > 0)
+        ? 1U : 0U;
+      oversize_recovered_ += split_recovered;
+      oversize_dropped_ += split_dropped;
+      if (clusters.size() != before || split_recovered > 0) {
         RCLCPP_WARN_THROTTLE(
           this->get_logger(), *this->get_clock(), 2000,
-          "%zu개 초대형 클러스터 거부 (max_radius=%.2fm, 최대 %.2fm) — 벽/구조물로 판단",
-          before - clusters.size(), max_cluster_radius_, largest);
+          "초대형 클러스터 %.2fm > %.2fm — 분할 %zu조각 회수 / %zu개 폐기 "
+          "(누적 회수 %zu / 폐기 %zu)",
+          largest, max_cluster_radius_, split_recovered, split_dropped,
+          oversize_recovered_, oversize_dropped_);
       }
     }
 
@@ -918,8 +972,8 @@ private:
 
     for (const auto & track : active_tracks) {
       classify_track(
-        *track, track->misses == 0, v_thresh_, n_confirm_, n_release_,
-        static_pos_std_, dynamic_pos_std_, dynamic_release_);
+        *track, track->misses == 0, v_thresh_, t_confirm_, t_release_,
+        static_pos_std_, dynamic_pos_std_, t_dynamic_release_);
 
       // 관측이 부족한(확정 전) 트랙은 노이즈 클러스터일 수 있어 발행하지 않는다.
       // 단, 한 번 동적 확정된 상대는 occlusion 코스팅 중에도 계속 발행해
@@ -1174,9 +1228,21 @@ private:
   double dynamic_frenet_reid_backtrack_m_{0.0};
   double reid_distance_{0.0}, reid_timeout_{0.0};
   int pos_hist_len_{2};
+  /// 초대형 클러스터를 삭제 대신 분할할 것인가 (false = 종전 동작).
+  bool cluster_split_enabled_{true};
+  /// 진단 카운터. 로그가 THROTTLE 이라 횟수를 셀 수 없어 누적을 같이 찍는다.
+  std::size_t oversize_seen_{0}, oversize_recovered_{0}, oversize_dropped_{0};
   // 초 단위 창 (0 이하 = 비활성, 위 프레임 값 사용)
   double track_timeout_sec_{0.0}, n_confirm_sec_{0.0}, n_release_sec_{0.0};
   double dynamic_release_sec_{0.0}, pos_hist_sec_{0.0};
+  // 분류/이력 창의 **확정 값** [s]. classifier 와 tracker 는 이것만 본다.
+  // *_sec 가 설정돼 있으면 그대로, 없으면 옛 프레임 값을 kLegacyTuneHz 로
+  // 환산해 넣는다(그 상수들이 튜닝된 기준 주기).
+  double t_confirm_{0.78}, t_release_{1.23};
+  double t_dynamic_release_{6.04}, t_pos_hist_{2.99};
+  /// 프레임 단위 상수(n_confirm 등)가 튜닝된 기준 주기 [Hz].
+  /// params.yaml 의 "was N @6.6Hz -> M @15.4Hz" 주석이 이 값을 말한다.
+  static constexpr double kLegacyTuneHz{15.4};
   double rate_ema_alpha_{0.05};
   double measured_dt_{0.0};        ///< 처리 간 실측 dt EMA [s] (0 = 미측정)
   double last_window_dt_{0.0};     ///< 마지막으로 프레임 창을 환산한 dt

@@ -18,6 +18,8 @@
 # 실차 판정 근거로 쓸 수 있는 건 sim_real_car 쪽뿐이다.
 obstacle_detector_node:
   ros__parameters:
+    # real_car 미러 (근거는 real_car.yaml 의 같은 키 주석)
+    cluster_split_enabled: true
     # --- 배선: sim ---
     scan_topic: /scan_overlay
     obstacle_topic: /perception/obstacles_detected
@@ -75,7 +77,8 @@ obstacle_detector_node:
     ray_filter_unstable_m: 0.5
     # 2차 방어선: F1TENTH 차량(0.30x0.55 m) 클러스터 반경은 ~0.32 m.
     # 이보다 크면 장애물이 아니다 — 트래킹 전에 버린다.
-    max_cluster_radius_m: 0.35
+    # 0.35 -> 0.55: real_car 미러 (3b3af85 가 real_car 만 올려 어긋나 있었다).
+    max_cluster_radius_m: 0.55
     # ---- 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식 ----
     # /global_waypoints는 planner_stack의 global_trajectory_node가 발행한다.
     use_track_filter: true

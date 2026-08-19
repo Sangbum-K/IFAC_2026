@@ -64,7 +64,8 @@ def launch_setup(context, *args, **kwargs):
         #     (거동 파라미터는 real_car.yaml과 동일, 배선만 sim)
         #   - pf:=true      : GT가 아니라 진짜 particle_filter로 위치추정
         #   - vehicle:=real_car : gym 차량 물리를 실측값(mu 0.90 / a_max 4.5 /
-        #     s_max 0.3578 / v_max 7.0)으로 — 고속 슬립이 실차와 같은 지점에서 나게 한다
+        #     조향 좌 0.3800·우 -0.3578 / v_max 7.0)으로 — 고속 슬립이 실차와 같은
+        #     지점에서 나게 한다. LiDAR 40 Hz·라이다 x 0.28 m 도 여기서 온다
         #     (단일 기준은 sim_race.launch.py REAL_CAR_VEHICLE. 여기 적힌
         #      mu 0.75 / a_max 3.5 / s_max 0.36 은 08-10 동기화 이전 값이었다)
         #   - map 기본값도 실차가 지금 달리는 트랙
