@@ -38,7 +38,7 @@ control:
     # 상단(5.94 m/s)이 통째로 잘려서 sim이 그날 차와 다른 속도 프로파일을 달린다.
     # bag 실측(rosbag_0805): 명령 speed max 5.94 / p95 5.58,
     # 달성 /odom max 5.28 / p95 5.01 — 명령을 못 따라가는 것 자체가 재현 대상이다.
-    "vehicle/max_speed_mps": 8.5
+    "vehicle/max_speed_mps": 9.0
     "vehicle/speed_scale": 1.0
     # 0.3578 rad = 20.51° — 2026-08-11 gain 재적합(-0.8564 / 0.3935)에서
     # 우측(구속측) servo 포화 한계 (0.70-0.3935)/-0.8564 자체. 옛 0.36은 이

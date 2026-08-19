@@ -166,16 +166,17 @@ BRAKE_AMPS_PLANNED = 7.0
 #    속도**(speed_for_lookup)로 조회하고 a_lat 도 v_plan² 로 계산한다. 계획이
 #    실제보다 빠르면 조향이 (v_plan/v_real)² 배로 과대 산출된다.
 #
-# 2026-08-19 7.0 -> 8.5: control real_car.yaml vehicle/max_speed_mps 와 짝을
-# 맞춤. LUT를 IFAC_realcar_v2(control_ws/.../steering_lookup/, 8백 풀링 보정 +
-# 7~8.5 추정 확장)로 바꿔야 이 값이 controller_profile() 의 fail-closed LUT
+# 2026-08-19 7.0 -> 8.5 -> 9.0(같은 날 저녁): control real_car.yaml
+# vehicle/max_speed_mps 와 짝을 맞춤. LUT를 IFAC_realcar_v3(11백 풀링 보정 +
+# 7~9.0 추정 확장)로 바꿔야 이 값이 controller_profile() 의 fail-closed LUT
 # 범위 검사를 통과한다 — LUT 파일 주석 참조. ⚠️ 위 스윕(6.0~10 전부 7.52s 동일)
-# 이 보여주듯 이 상수 자체는 이 트랙에서 랩타임을 거의 못 움직인다 — 실제로
-# 코너를 더 빠르게 도는 건 여전히 MU_PROFILE/LAT_ERR_CORNER_S 쪽 문제이고,
-# 그 값들은 실차 재측정 없이 못 올린다. 7.0 이상 구간은 이 차로 달려본 적이
-# 없으므로 8.5 자체도 "이 속도까지 명령이 나갈 수 있다"이지 "이 속도에서
+# 이 보여주듯 이 상수 자체는 이 트랙에서 랩타임을 거의 못 움직인다 — my_track0818
+# 실측도 마찬가지(v_max 8.5여도 프로파일은 7 m/s대에서 자연히 묶임, 0% 클램프).
+# 사용자 요청으로 "형식상" 9.0까지 열어둔 것 — 실제로 코너를 더 빠르게 도는 건
+# MU_PROFILE/LAT_ERR_CORNER_S 쪽 문제다. 7.0 이상 구간은 이 차로 달려본 적이
+# 없으므로 9.0 자체도 "이 속도까지 명령이 나갈 수 있다"이지 "이 속도에서
 # 안전이 검증됐다"가 아니다.
-RACELINE_V_MAX = 8.5
+RACELINE_V_MAX = 9.0
 
 # 속도 프로파일(velocity_profile)이 계획에 쓰는 제동 한계 = 코스팅 + 브레이크
 # 크레딧(BRAKE_AMPS_PLANNED, vesc.yaml 과 동기). 2026-08-19 기준

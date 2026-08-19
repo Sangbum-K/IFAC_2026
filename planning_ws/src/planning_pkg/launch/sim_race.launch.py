@@ -300,7 +300,7 @@ def launch_setup(context, *args, **kwargs):
         'vehicle.mu': 0.90,
         'vehicle.a_max': 4.5,
         'vehicle.s_min': -0.3578, 'vehicle.s_max': 0.3800,
-        'vehicle.v_max': 8.5, 'vehicle.v_min': -1.0,
+        'vehicle.v_max': 9.0, 'vehicle.v_min': -1.0,
         'vehicle.width': 0.30, 'vehicle.length': 0.55,
         # 실차 Hokuyo /scan 40 Hz (run_0804 실측 748msg/18.5s). gym 기본 250 Hz는
         # LiDAR 특성이 다를 뿐 아니라 /tf를 6배로 쏟아 구독자 tf 버퍼를 포화시켜
