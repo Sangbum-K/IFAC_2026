@@ -94,6 +94,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/boundary_tracking_speed_ref", 3.5);
     this->declare_parameter("spliner/boundary_tracking_speed_gain", 0.0);
     this->declare_parameter("spliner/boundary_tracking_margin_max", 0.05);
+    // 벽 여유를 "장애물 옆을 지날 때" 속도로 재기 위한 감속 크레딧 [m/s^2].
+    // 0 = 예전 동작(현재 속도 그대로)과 비트 단위로 같다. 근거는
+    // ArrivalSpeed()/RequiredBoundaryMarginAt() 주석.
+    this->declare_parameter("spliner/boundary_arrival_decel_mps2", 0.0);
+    // 트레일링 횡 램프의 장애물 검사 on/off. false = 예전 동작(벽만 검사).
+    this->declare_parameter("spliner/trailing_ramp_obstacle_check", false);
     this->declare_parameter("spliner/collision_sigma", 2.0);
     // 정적 장애물의 속도분산 시간 성장 상한 [s] / 회피 기하 계획 속도 하한 [m/s]
     this->declare_parameter("spliner/static_time_uncertainty_cap", 0.3);
@@ -212,6 +218,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     // 노브가 되는 것이 이 파일에서 반복된 사고라 여기서 올려 맞춘다.
     boundary_tracking_margin_max_ =
         std::max(boundary_tracking_margin_max_, boundary_tracking_margin_m_);
+    boundary_arrival_decel_mps2_ = this->get_parameter(
+        "spliner/boundary_arrival_decel_mps2").as_double();
+    trailing_ramp_obstacle_check_ = this->get_parameter(
+        "spliner/trailing_ramp_obstacle_check").as_bool();
     collision_sigma_ = this->get_parameter("spliner/collision_sigma").as_double();
     static_time_uncertainty_cap_ =
         this->get_parameter("spliner/static_time_uncertainty_cap").as_double();
@@ -330,6 +340,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         vehicle_half_length_m_, vehicle_half_width_m_,
         boundary_tracking_margin_m_, boundary_tracking_speed_ref_,
         boundary_tracking_speed_gain_, boundary_tracking_margin_max_,
+        boundary_arrival_decel_mps2_,
         collision_sigma_, path_check_margin_,
         static_time_uncertainty_cap_, max_uncertainty_m_, plan_speed_floor_,
         cluster_gap_s_m_, cluster_gap_d_m_,
@@ -377,6 +388,11 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         path_accel_max_ <= 0.0 || path_accel_max_ > 20.0 ||
         path_decel_max_ <= 0.0 || path_decel_max_ > 20.0 ||
         plant_decel_mps2_ <= 0.0 || plant_decel_mps2_ > 20.0 ||
+        // 벽 여유의 감속 크레딧은 **플랜트가 실제로 낼 수 있는 감속** 이상을
+        // 주장할 수 없다. 그 위는 "브레이크가 실제보다 잘 듣는다"는 가정이라
+        // 도착 속도를 과소평가하고, 그만큼 벽 예비가 얇아진다.
+        boundary_arrival_decel_mps2_ < 0.0 ||
+        boundary_arrival_decel_mps2_ > plant_decel_mps2_ ||
         path_jerk_max_ <= 0.0 || path_jerk_max_ > 100.0 ||
         planning_delay_sec_ < 0.0 || planning_delay_sec_ > 1.0 ||
         vehicle_half_length_m_ < 0.05 || vehicle_half_length_m_ > 2.0 ||
@@ -492,6 +508,16 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     RCLCPP_INFO(this->get_logger(),
         "spliner params: lookahead=%.1fm evasion_dist=%.2fm obs_traj_tresh=%.2fm",
         lookahead_m_, evasion_dist_, obs_traj_tresh_);
+    // 2026-08-19 에 들어온 두 스위치는 트랙에서 되돌릴 일이 생긴다. 되돌렸는지
+    // 를 ros2 param get 없이 launch 로그 한 줄로 확인할 수 있어야 한다
+    // (둘 다 off = 이 커밋 이전과 비트 단위로 같은 동작).
+    RCLCPP_INFO(this->get_logger(),
+        "spliner 회피 스위치: trailing_ramp_obstacle_check=%s "
+        "boundary_arrival_decel=%.2f m/s^2 %s",
+        trailing_ramp_obstacle_check_ ? "ON" : "off",
+        boundary_arrival_decel_mps2_,
+        (!trailing_ramp_obstacle_check_ && boundary_arrival_decel_mps2_ <= 0.0)
+            ? "(둘 다 off — 2026-08-19 이전 동작)" : "");
 
     if (ot_speed_scale_ > 1.0) {
         RCLCPP_WARN(this->get_logger(),
@@ -2176,8 +2202,18 @@ bool SplinerNode::HoldClearsOthers(
 double SplinerNode::ApexFor(
     const std::string &side,
     const f1tenth_planning_msgs::msg::Obstacle &obs) const {
+    // apex 는 hold 구간(장애물 앞뒤 0.5 m)에서 유지하는 오프셋이므로, 벽 여유도
+    // **그 구간에 도달했을 때** 속도로 재야 한다. 아직 도달 전이면 그만큼
+    // 감속 크레딧을 준다 (RequiredBoundaryMarginAt 주석 — 이 한 곳이
+    // run_0819_180345 t=267.05 의 6 mm 를 만든 자리다).
+    // 이미 옆에 들어왔거나 사정권 밖이면 크레딧 0 = 종전과 같다.
+    double dist_to_hold =
+        Mod(Mod(obs.s_start - 0.5, track_len_) - cur_s_, track_len_);
+    if (!std::isfinite(dist_to_hold) || dist_to_hold > lookahead_m_) {
+        dist_to_hold = 0.0;
+    }
     const double boundary_margin =
-        RequiredBoundaryMargin(spline_bound_mindist_);
+        RequiredBoundaryMarginAt(spline_bound_mindist_, dist_to_hold);
     // apex 오프셋은 장애물 옆을 지나는 hold 구간 내내 유지되므로, 벽 여유도
     // 그 구간에서 가장 좁은 값을 써야 한다. 한 점(gb_idx)의 벽으로 정하면
     // 같은 구간의 더 좁은 지점에서 경계 클램프가 걸리고, 그 클램프가 장애물
@@ -4300,12 +4336,111 @@ bool SplinerNode::BuildTrailing(
         }
         return true;
     };
+    // ── A (2026-08-19): 횡 램프를 장애물과도 대조한다 ──────────────────────
+    // 위 ramp_ok 는 **벽만** 본다. 그래서 목표가 장애물 반대편일 때 벽 검사만
+    // 통과하면 아래 되감기 사다리가 아예 돌지 않고, 장애물 정중앙을 겨눈
+    // 램프가 그대로 발행됐다.
+    //   run_0819_180345 t=267.05 실측: 자차 d=+0.78 에서 목표 -0.07 로 램프 ->
+    //   장애물(s[0.21,0.55] d[0.21,0.55]) 지점의 경로 d = +0.45 = 박스 정중앙.
+    //   0.65 초 뒤 4.0 m/s 로 정면충돌. 근거리(3 m 이내) 발행경로 2224 건 중
+    //   120 건(5.4%)이 **발행 시점에 이미 관통**이었고 그중 89%가 트레일링이다.
+    // 충돌 자체는 아래 check_obs 분기가 이미 감지하고 있었다 — 그런데 대응이
+    // 속도 프로파일뿐이었고, 그 분기의 주석이 스스로 적어 두었듯 발동 거리
+    // (0.2~5.6 m)에서는 정지 곡선이 되지 못한다. 즉 "관통하는 것을 알면서
+    // 발행하고, 못 세우는 브레이크에 안전을 맡기는" 구조였다.
+    //
+    // 후보마다 경로를 지어 CheckPathCollision 을 부르면 이분 탐색 12회 x
+    // 장애물수 만큼 든다. 여기서는 같은 판정을 Frenet 평면에서 바로 잰다 —
+    // 요구 간격은 검증기와 같은 RequiredObstacleClearance 이고, 종방향 박스도
+    // 검증기와 같이 차 반길이만큼 넓힌다. 양수 = 그 간격을 지키고 지나간다.
+    // strict=true  -> 검증기와 같은 계획 마진(RequiredObstacleClearance, ~0.27).
+    //                  되감기가 **겨누는 목표**다.
+    // strict=false -> 차 반폭(0.15). 실제로 차체가 닿는가 = **개입 문턱**이다.
+    // 문턱과 목표를 나눈 이유: 같은 백에서 계획 마진만 침범한(차체는 안 닿는)
+    // 경로가 664 사이클 중 363(55%)이었다. 그것까지 손대면 트레일링의 55%에서
+    // 속도 바닥이 2.5 -> 1.5 m/s 로 내려간다 — 대가가 이득보다 크다.
+    // 문턱을 차체로 좁히면 개입은 301 사이클(트레일링의 25%)로 줄고, 정작
+    // 고쳐야 할 "실제로 닿던 경로"는 그 301 이 전부다.
+    auto ramp_obstacle_slack = [&](double goal, double len, double back,
+                                   bool strict) {
+        double worst = std::numeric_limits<double>::infinity();
+        if (check_obs == nullptr) {
+            return worst;
+        }
+        for (const auto &o : *check_obs) {
+            if (!std::isfinite(o.s_start) || !std::isfinite(o.s_end) ||
+                !std::isfinite(o.d_left) || !std::isfinite(o.d_right)) {
+                continue;
+            }
+            // 자차 기준 상대거리로 unwrap — 뒤에 있는 장애물은 ~track_len 이
+            // 되어 아래 사정권 비교에서 자연히 걸러진다 (HoldClearsOthers 와
+            // 같은 규약).
+            const double lo_s = Mod(o.s_start - cur_s_, track_len_) -
+                                vehicle_half_length_m_;
+            const double hi_s = lo_s + Mod(o.s_end - o.s_start, track_len_) +
+                                2.0 * vehicle_half_length_m_;
+            if (lo_s > planned_span) {
+                continue;               // 이 경로가 닿지 않는 곳
+            }
+            const double need =
+                strict ? RequiredObstacleClearance(o) : vehicle_half_width_m_;
+            for (int i = 0; i < n; ++i) {
+                const double dist = i * wpnt_dist_;
+                if (dist < lo_s || dist > hi_s) {
+                    continue;
+                }
+                const double d = d_profile(dist, goal, len, back);
+                worst = std::min(
+                    worst,
+                    std::max(o.d_right - need - d, d - (o.d_left + need)));
+            }
+        }
+        return worst;
+    };
+    // 벽 **과** 장애물을 모두 통과해야 성립이다. 어느 쪽이 물었는지는 로그에
+    // 반드시 남긴다 — ramp_ok 의 bind_* 가 도입된 이유가 정확히 "어느 점이
+    // 물었는지가 로그에 없어서 인과를 재구성으로만 세울 수 있었다" 였고,
+    // 벽/장애물 구분 없이 bind_* 만 찍으면 장애물 구속일 때 s=0 d=0 한계=0 이
+    // 나가 같은 실패를 되풀이한다.
+    bool bind_obstacle = false;
+    double bind_slack = 0.0;
+    // 장애물 마진을 사다리의 합격 조건에 넣는 것은 **이번 사이클에 개입하기로
+    // 정한 경우**뿐이다. 벽 때문에 사다리가 도는 사이클(= 예전부터 돌던 것)의
+    // 합격 조건은 예전 그대로 벽 하나여야 한다 — 아니면 손댈 이유가 없던
+    // 사이클까지 목표가 깎이고 속도 바닥이 내려간다.
+    bool require_obstacle_margin = false;
+    auto ramp_clear = [&](double goal, double len, double *bind_s = nullptr,
+                          double *bind_d = nullptr, double *bind_limit = nullptr) {
+        if (!ramp_ok(goal, len, bind_s, bind_d, bind_limit)) {
+            return false;
+        }
+        if (!require_obstacle_margin) {
+            return true;
+        }
+        const double slack =
+            ramp_obstacle_slack(goal, len, back_len_for(goal), true);
+        if (slack < 0.0) {
+            // 진단 인자를 요구한 호출(= 바깥 1회)에서만 기록한다. 이분 탐색의
+            // 내부 호출까지 쓰면 마지막 후보 값으로 덮여 원인이 흐려진다.
+            if (bind_s != nullptr) {
+                bind_obstacle = true;
+                bind_slack = slack;
+            }
+            return false;
+        }
+        return true;
+    };
     double d_ramp_len = ramp_len_for(d_goal);
     double d_back_len = back_len_for(d_goal);
     bool hold_current_d = emergency_stop;
     double bind_s = 0.0, bind_d = 0.0, bind_limit = 0.0;
-    if (!hold_current_d &&
-        !ramp_ok(d_goal, d_ramp_len, &bind_s, &bind_d, &bind_limit))
+    // 개입 문턱은 **차체 접촉**이다 (위 ramp_obstacle_slack 주석의 301/664).
+    const bool wall_bad = !hold_current_d &&
+        !ramp_ok(d_goal, d_ramp_len, &bind_s, &bind_d, &bind_limit);
+    const bool body_bad = !hold_current_d && trailing_ramp_obstacle_check_ &&
+        ramp_obstacle_slack(d_goal, d_ramp_len, d_back_len, false) < 0.0;
+    require_obstacle_margin = body_bad;
+    if (wall_bad || body_bad)
     {
         // ── 성립하는 최대 오프셋 탐색 (2026-08-13) ──────────────────────
         // 예전에는 여기서 곧장 d_goal = 0 (raceline 복귀)이었다. 그런데
@@ -4345,7 +4480,7 @@ bool SplinerNode::BuildTrailing(
         for (int it = 0; it < 12; ++it) {
             const double mid = 0.5 * (lo + hi);
             const double cand = goal_at(mid);
-            if (ramp_ok(cand, ramp_len_for(cand))) {
+            if (ramp_clear(cand, ramp_len_for(cand))) {
                 lo = mid;
             } else {
                 hi = mid;
@@ -4362,17 +4497,82 @@ bool SplinerNode::BuildTrailing(
         d_ramp_len = ramp_len_for(d_goal);
         d_back_len = back_len_for(d_goal);
         if (made_progress) {
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
-                "Trailing 횡목표 축소: %.2f -> %.2f (구속 s=%.2f d=%.2f 한계 %.2f)",
-                full_goal, d_goal, bind_s, bind_d, bind_limit);
+            if (bind_obstacle) {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                    "Trailing 횡목표 축소: %.2f -> %.2f "
+                    "(장애물 구속, 원목표 여유 %.3f m)",
+                    full_goal, d_goal, bind_slack);
+            } else {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                    "Trailing 횡목표 축소: %.2f -> %.2f "
+                    "(벽 구속 s=%.2f d=%.2f 한계 %.2f)",
+                    full_goal, d_goal, bind_s, bind_d, bind_limit);
+            }
         } else {
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
-                "Trailing 횡목표 포기: %.2f -> 현재 %.2f 유지 "
-                "(구속 s=%.2f d=%.2f 한계 %.2f)",
-                full_goal, cur_d_, bind_s, bind_d, bind_limit);
+            if (bind_obstacle) {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                    "Trailing 횡목표 포기: %.2f -> 현재 %.2f 유지 "
+                    "(장애물 구속, 원목표 여유 %.3f m)",
+                    full_goal, cur_d_, bind_slack);
+            } else {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                    "Trailing 횡목표 포기: %.2f -> 현재 %.2f 유지 "
+                    "(벽 구속 s=%.2f d=%.2f 한계 %.2f)",
+                    full_goal, cur_d_, bind_s, bind_d, bind_limit);
+            }
         }
         NoteReject(made_progress ? "trailing_d_goal_shrunk"
                                  : "trailing_d_goal_zeroed");
+        // ── ★ 되감기의 바닥은 "현재 자리"가 아니다 (2026-08-19) ──────────────
+        // 위 사다리는 lo=0 = cur_d_ 를 "최악이 여기까지"인 안전 바닥으로 놓고
+        // 설계됐다. **벽에 대해서는** 맞다 — 경로는 자차가 이미 나가 있는 쪽으로
+        // 더 나가지 않는다. 그런데 **장애물에 대해서는 틀리다**: 지금 있는 자리가
+        // 곧 장애물 정면일 수 있다.
+        //   run_0819_180345 재구성: 이 한 줄을 그대로 둔 채 위 장애물 검사만
+        //   붙이면 차체 접촉 경로가 120 -> 232 건으로 **두 배**가 된다
+        //   (근거리 3 m 이내 발행경로 2224 건 기준). 반대로 여기서 여유가 큰
+        //   후보를 고르면 105 건으로 줄고, 여유가 나빠지는 프레임은 0 이다.
+        // 그래서 후보가 전부 성립하지 않을 때는 "유지"가 아니라 **벽을 지키는
+        // 후보 중 여유가 가장 큰 쪽**을 고른다. 벽 불변식(ramp_ok)은 그대로
+        // 요구하므로 이 구제가 차를 트랙 밖으로 내보내는 일은 없다.
+        // 이 스캔은 사다리가 실패하고 진행량이 0 인 사이클에서만 돈다.
+        if (!made_progress && trailing_ramp_obstacle_check_) {
+            // 발동 문턱도 최대화 대상도 **차체 여유**다. 계획 마진으로 재면
+            // 손댈 이유가 없는 자리에서까지 옮기게 된다.
+            double best_slack = ramp_obstacle_slack(
+                d_goal, d_ramp_len, d_back_len, false);
+            if (best_slack < 0.0) {
+                double best_f = 0.0;
+                // 이분 탐색이 아니라 균등 스캔이다 — 여유는 후보 f 에 대해
+                // 단조가 아니다 (장애물 박스를 가로지르면 양끝이 크고 가운데가
+                // 작다). 단조 가정으로 이분하면 정확히 그 가운데로 수렴한다.
+                for (int it = 1; it <= 10; ++it) {
+                    const double f = 0.1 * static_cast<double>(it);
+                    const double cand = goal_at(f);
+                    const double len = ramp_len_for(cand);
+                    if (!ramp_ok(cand, len)) {
+                        continue;       // 벽 불변식은 그대로 지킨다
+                    }
+                    const double slack =
+                        ramp_obstacle_slack(cand, len, back_len_for(cand), false);
+                    if (slack > best_slack) {
+                        best_slack = slack;
+                        best_f = f;
+                    }
+                }
+                if (best_f > 0.0) {
+                    const double held = d_goal;
+                    d_goal = goal_at(best_f);
+                    d_ramp_len = ramp_len_for(d_goal);
+                    d_back_len = back_len_for(d_goal);
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                        "Trailing 유지가 장애물과 접촉 — 차체 여유 최대 후보로 "
+                        "이동 (d %.2f -> %.2f, 차체 여유 %.3f m)",
+                        held, d_goal, best_slack);
+                    NoteReject("trailing_hold_pierces_obstacle");
+                }
+            }
+        }
         // ── 횡 계획이 깎였으면 속도 바닥도 낮춘다 (2026-08-15) ─────────────
         // trailing_retry_speed_ 는 "정적 장애물을 못 피했을 때 그 속도로
         // 접촉한다"는 뜻이다 (allow_stop = !is_static 이라 정적에는 완전
@@ -5753,12 +5953,69 @@ double SplinerNode::TrackingReserve(double speed) const {
                     boundary_tracking_margin_max_);
 }
 
-double SplinerNode::RequiredBoundaryMargin(double requested_margin) const {
-    // 속도는 PlanSpeed() — 회피 기하 예산이 전부 이 값을 쓰므로 여기만 실측
-    // 속도를 쓰면 정지/크리프에서 예비가 튄다. (PlanSpeed 주석 참조)
+double SplinerNode::ArrivalSpeed(double dist_ahead) const {
+    // dist_ahead 앞 지점에 **도달했을 때** 차가 낼 속도 [m/s].
+    //
+    // 감속 크레딧이 0 이면 PlanSpeed() 를 그대로 돌려준다 = 예전 동작.
+    // 크레딧이 있으면 그 감속으로 낼 수 있는 가장 낮은 속도를 쓴다. 상한은
+    // 파라미터 검증이 plant_decel_mps2_ 로 묶어 두므로, "브레이크가 실제보다
+    // 잘 듣는다"고 주장할 수는 없다.
+    const double v0 = PlanSpeed();
+    const double a = boundary_arrival_decel_mps2_;
+    if (!(a > 0.0) || !std::isfinite(dist_ahead) || dist_ahead <= 0.0) {
+        return v0;
+    }
+    const double v2 = v0 * v0 - 2.0 * a * dist_ahead;
+    return std::max(std::sqrt(std::max(v2, 0.0)), plan_speed_floor_);
+}
+
+double SplinerNode::RequiredBoundaryMarginAt(
+    double requested_margin, double dist_ahead) const {
+    // ── 벽 여유는 "지금 속도"가 아니라 "그 자리를 지날 때 속도"로 재야 한다 ──
+    //
+    // TrackingReserve 는 추종오차를 덮는 예비인데, 덮어야 할 오차는 차가
+    // **그 지점 옆을 지나는 동안**의 오차다. 그런데 여기 들어가던 값은 늘
+    // PlanSpeed() = 계획 시점의 현재 속도였다. 감속하며 접근하는 상황에서는
+    // 도착 속도가 훨씬 낮은데도 지금 속도로 예비를 잡으므로, 예비가 과대해져
+    // 통로를 스스로 닫는다.
+    //   run_0819_180345 t=267.05 실측: 좌벽 1.145, 장애물 왼쪽 끝 0.51.
+    //   필요 d = 0.51 + 0.27 = 0.781. 현재 v=5.53 -> 예비 0.22(상한) ->
+    //   허용 상한 0.775 = **6 mm 부족**으로 좌측 통로가 닫혔다. 그 6 mm 때문에
+    //   목표가 반대쪽(-0.07)으로 뒤집혔고, 0.65 초 뒤 장애물 정중앙에 4.0 m/s
+    //   로 부딪혔다. 같은 구간에서 차는 이미 2.29 m/s^2 로 감속 중이었고,
+    //   도착 속도는 4.1~4.4 m/s 였다 — 그 값으로 재면 상한이 0.846 이라
+    //   65 mm 여유로 열린다.
+    // 같은 결함을 BuildLaneSwitch 는 이미 BlendPlanSpeed 로 고쳤다("비교 대상은
+    // '지금 속도'가 아니라 '진입 구간을 지나는 동안 낼 속도'다"). 여기만 옛
+    // 형태로 남아 있었다.
+    //
+    // ⚠️ 이것은 **완화다** — 한 방향으로만 움직인다. run_0819_180345 재구성
+    //    (lookahead 내 6094 검사, 크레딧 2.0): 통로 열림 60.5% -> 62.6%,
+    //    막힘->열림 128 건(2.1%), 열림->막힘 0 건. 벽 여유 감소는 중앙 2 mm /
+    //    p90 96 mm / 최대 120 mm 이고 프레임의 49% 는 정확히 0 이다.
+    //    (최대 120 mm = 예비 상한 0.22 와 기본값 0.10 의 차 전폭.)
+    //
+    // 이 완화가 안전한 이유는 **크레딧의 모양**에 있다. sqrt(v^2 - 2*a*d) 는
+    // 거리가 짧을수록 지금 속도에 수렴하므로, 여유를 실제로 지켜야 하는
+    // 근접 구간에서는 크레딧이 사라진다. 같은 재구성의 거리별 감소 최대치:
+    //     0~1 m  42 mm |  1~2 m  79 mm |  2~3 m 111 mm |  4 m 이상 120 mm
+    // 즉 전폭 크레딧은 4 m 이상 남았을 때(= 5.5 m/s 에서 0.7 초 이상 제동
+    // 시간이 있을 때)만 나오고, 그 판정은 아직 예비 결정이다.
+    //
+    // ⚠️ 남는 가정: "접근 중 실제로 이 감속률로 줄인다". 강제되지는 않는다
+    //    (여기서는 속도 프로파일을 아직 모른다). 근거는 실측이다 —
+    //    run_0819_180345 t=267.00~267.70 트레일링 접근의 실측 감속이
+    //    2.29 m/s^2 였다. 가정이 깨지면 벽 예비가 위 표만큼 얇아진다.
+    //    되돌리려면 boundary_arrival_decel_mps2 를 0 으로 두면 된다 —
+    //    그때 이 함수는 종전과 비트 단위로 같다.
     return std::max(
         std::max(requested_margin, 0.0),
-        vehicle_half_width_m_ + TrackingReserve(PlanSpeed()));
+        vehicle_half_width_m_ + TrackingReserve(ArrivalSpeed(dist_ahead)));
+}
+
+double SplinerNode::RequiredBoundaryMargin(double requested_margin) const {
+    // 거리 정보가 없는 호출부는 종전대로 현재 속도로 잰다 (보수적).
+    return RequiredBoundaryMarginAt(requested_margin, 0.0);
 }
 
 bool SplinerNode::WithinTrackBoundary(

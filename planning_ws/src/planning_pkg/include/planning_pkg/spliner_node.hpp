@@ -589,6 +589,14 @@ private:
   // (좁은 저속 코너의 회피 성립률을 건드리지 않기 위한 것 — 저속에서는
   //  실측 오차도 작다).
   double TrackingReserve(double speed) const;
+
+  // dist_ahead 앞 지점에 도달했을 때의 속도 [m/s]. 감속 크레딧
+  // (boundary_arrival_decel_mps2_) 이 0 이면 PlanSpeed() 와 같다.
+  double ArrivalSpeed(double dist_ahead) const;
+  // 벽 여유를 **그 지점을 지날 때** 속도로 재는 형태. 근거는 .cpp 주석.
+  // dist_ahead = 0 이면 RequiredBoundaryMargin() 과 완전히 같다.
+  double RequiredBoundaryMarginAt(
+    double requested_margin, double dist_ahead) const;
   double RequiredBoundaryMargin(double requested_margin) const;
   bool WithinTrackBoundary(int gb_idx, double d, double requested_margin) const;
 
@@ -660,6 +668,14 @@ private:
   double boundary_tracking_speed_ref_{3.5};   // [m/s] 이 속도까지는 고정값
   double boundary_tracking_speed_gain_{0.0};  // [s] 초과 속도당 추가 예비
   double boundary_tracking_margin_max_{0.05}; // [m] 예비 상한
+  // 벽 여유를 "그 지점에 도달했을 때" 속도로 재기 위한 감속 크레딧 [m/s^2].
+  // 0 = 예전(현재 속도) 동작과 비트 단위로 동일. 상한은 plant_decel_mps2_ —
+  // 그 위는 브레이크 성능을 실제보다 높게 주장하는 것이라 예비가 얇아진다.
+  double boundary_arrival_decel_mps2_{0.0};
+  // 트레일링 횡 램프를 장애물과도 대조할 것인가. false = 예전 동작(벽만).
+  // 개입 문턱은 **차체 접촉**이고 되감기 목표는 계획 마진이다 — 근거는
+  // BuildTrailing 의 ramp_obstacle_slack 주석 (301/664 사이클).
+  bool trailing_ramp_obstacle_check_{false};
   double collision_sigma_{2.0};
   // 정적 장애물의 시간 성장 불확실성 상한 [s]. 브릿지가 모든 장애물에
   // vs_var/vd_var를 상수(0.25)로 붙이는데, CheckPathCollision/FilterObstacles가

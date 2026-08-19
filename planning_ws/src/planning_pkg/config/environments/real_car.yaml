@@ -473,6 +473,19 @@ spliner_node:
     spliner/boundary_tracking_speed_ref: 3.5
     spliner/boundary_tracking_speed_gain: 0.08
     spliner/boundary_tracking_margin_max: 0.22
+    # 벽 여유를 도착 속도로 재기 위한 감속 크레딧 [m/s^2] (params.yaml 주석).
+    # 2.0 은 실측 근거가 있는 값이다 — run_0819_180345 의 트레일링 접근
+    # 267.00~267.70 실측 감속이 2.29 m/s^2 였고, plant_decel_mps2(2.38)가
+    # 그 상한이다. 2.0 은 그보다 16% 보수적이고, 문제의 프레임에서 좌측 상한을
+    # 0.775 -> 0.825 로 올려 필요치 0.781 을 44 mm 여유로 넘긴다.
+    # 크레딧을 1.4 아래로 내리면 이 사례가 다시 닫힌다(0.775~0.80).
+    # 효과: 문제의 구간에서 좌측 통로가 열려 있는 시간이 3 프레임(0.05 s) ->
+    # 13 프레임(0.27 s) 이 되고, 목표가 반대쪽으로 뒤집힌 267.048 프레임이
+    # 열린 채 유지된다 (retry_d_target_ 유지창 0.70 s 안에 통과가 끝난다).
+    spliner/boundary_arrival_decel_mps2: 2.0
+    # 트레일링 횡 램프의 장애물 검사 (params.yaml 주석). 실차 켬.
+    # 되돌리려면 이 한 줄을 false 로 — 재빌드 없이 launch 재시작만 하면 된다.
+    spliner/trailing_ramp_obstacle_check: true
     # (제거) stop_margin_m / stop_ramp_dist_m: spliner에 없는 파라미터였음 —
     # 정지 거동은 trailing_gap_m / trailing_decel / trailing_engage_dist_m가 담당
     # 실차 컨트롤러는 wpnt 속도를 그대로 사용 -> 반드시 1.0 (sim은 0.5).

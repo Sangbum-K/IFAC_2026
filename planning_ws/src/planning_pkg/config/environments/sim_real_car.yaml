@@ -172,6 +172,10 @@ spliner_node:
     spliner/boundary_tracking_speed_ref: 3.5
     spliner/boundary_tracking_speed_gain: 0.08
     spliner/boundary_tracking_margin_max: 0.22
+    # ↓ real_car.yaml 과 반드시 같아야 한다 (test_sim_profiles_mirror_real_car).
+    #   근거·득실은 params.yaml / real_car.yaml 주석 참조.
+    spliner/boundary_arrival_decel_mps2: 2.0
+    spliner/trailing_ramp_obstacle_check: true
     spliner/cmd_speed_scale: 1.0
 
 opponent_predictor_node:
