@@ -105,12 +105,14 @@ def main():
     node = StandCommander(gain, offset)
     try:
         if args.mode == 'hold':
+            node.steering = args.value
             servo = node.servo_of(args.value)
             print(f'  delta = {args.value:+.4f} rad ({math.degrees(args.value):+6.2f} deg)'
                   f'   servo = {servo:.4f}   [Ctrl+C to stop]')
             rclpy.spin(node)
         else:
             for value in frange(args.start, args.stop, args.step):
+                node.steering = value
                 servo = node.servo_of(value)
                 flag = '  <-- OUTSIDE servo_min/max' if not 0.05 <= servo <= 0.95 else ''
                 print(f'  delta = {value:+.4f} rad ({math.degrees(value):+6.2f} deg)'

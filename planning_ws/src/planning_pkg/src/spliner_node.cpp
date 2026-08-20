@@ -2536,8 +2536,30 @@ bool SplinerNode::TryLaneSwitch(
         // 아래 루프와 같은 식이어야 한다 — 잠긴 사이드가 "closest 는 비켜
         // 가지만 그 레인 위에 다른 장애물이 서 있는" 상태면 그 사이드는
         // 성립하지 않는 것이고, 잠금을 유지할 이유가 없다.
+        //
+        // ── 검사 구간은 closest 가 아니라 **그룹 끝**까지다 (2026-08-20) ────
+        // 종전에는 hold_through_s 로 closest_obs.s_end 를 넘겨, HoldClearsOthers
+        // 가 보는 창이 [앞끝-0.5, closest.s_end+0.5] 뿐이었다. 그래서 그룹
+        // 안의 **뒤쪽** 장애물이 잠긴 레인 위에 서 있어도 창 밖이라 안 보였고,
+        // "잠긴 쪽이 깨끗하다"로 판정돼 양보가 열리지 않았다.
+        //   run_0820_201714 4:45 (대각 배치): 박스 A s=35.2~35.6 d[-0.16,+0.18],
+        //   박스 B s=37.95~38.3 d[+0.47,+0.81]. 좌측 apex 0.53 은 A 는 비켜
+        //   가지만 B 에 정면으로 막힌다. B 는 A 끝에서 2.35 m 뒤 — 창(0.5 m)
+        //   밖이라 잠금이 유지됐고, 215 사이클이 lane_side_switch_blocked_mid_
+        //   evasion 으로 트레일링에 떨어졌다(그중 211 = 98%). 같은 런에서
+        //   양보(lane_side_switch_yielded)는 327 초 동안 2 번 열렸다.
+        // 아래 실제 레인 생성 루프가 hold 를 그룹 끝까지 늘리는 것과 같은 식을
+        // 쓴다 — 사전 판정과 생성이 같은 구간을 봐야 한다.
+        double lock_through_s = closest_obs.s_end;
+        if (evasion_group.size() > 1 && track_len_ > 0.0) {
+            double far = Mod(closest_obs.s_end - cur_s_, track_len_);
+            for (const auto &o : evasion_group) {
+                far = std::max(far, Mod(o.s_end - cur_s_, track_len_));
+            }
+            lock_through_s = Mod(cur_s_ + far, track_len_);
+        }
         return closest_ok &&
-               HoldClearsOthers(apex, closest_obs, closest_obs.s_end,
+               HoldClearsOthers(apex, closest_obs, lock_through_s,
                                 all_ahead, nullptr);
     };
     if (committed_side && !side_clears(last_ot_side_)) {
@@ -4916,11 +4938,31 @@ bool SplinerNode::BuildTrailing(
     // 다만 실패하면 **곡률/그립 속도 캡이 하나도 안 걸린 채** 발행된다는 뜻이라
     // 조용히 넘기면 안 된다 (경로는 손대인 곳 없이 온전하다 —
     // ApplySpeedProfile 이 검사를 전수로 먼저 돌고 통과 뒤에만 쓴다).
-    if (!ApplySpeedProfile(out_wpnts.wpnts, false)) {
+    //
+    // ── 2026-08-20: 곡률 초과를 "미적용"이 아니라 "캡 적용"으로 받는다 ─────
+    // 트레일링은 마지막 티어라 버릴 경로가 없다. 그런데 하드 기각은 "버려라"
+    // 이므로, 반환값을 무시하고 그대로 발행하면 캡이 통째로 사라진다. 남는
+    // 수동 제동 곡선은 reachable_v 바닥(= reachable_v(0)==v0)에 눌려 선두가
+    // 현재 속도와 같으므로 실효 캡이 0 이다 — 기동이 급할수록 더 빨리 가는
+    // 역전이 여기서 만들어졌다 (run_0820_201714 4:45, 선언부 주석 참조).
+    // 소프트 모드를 쓰면 위반 지점에도 sqrt(a_lat/k) 캡이 걸리고, 그 값이
+    // ApplySpeedProfile 의 역방향 감속 pass 를 타고 경로 앞쪽으로 전파된다.
+    int steer_clamp_idx = -1;
+    if (!ApplySpeedProfile(out_wpnts.wpnts, false, nullptr, nullptr,
+                           &steer_clamp_idx)) {
         NoteReject("trailing_speed_profile_skipped");
         RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "Trailing 속도 프로파일 미적용 (%s) — 수동 제동 프로파일만 발행",
             SpeedRejectDetail().c_str());
+    } else if (steer_clamp_idx >= 0) {
+        NoteReject("trailing_steer_curv_clamped");
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 2000,
+            "Trailing 램프가 조향 한계를 넘음 (%s) — 경로는 유지하고 "
+            "횡가속 캡으로 감속 (해당 점 %.2f m/s)",
+            SpeedRejectDetail().c_str(),
+            (steer_clamp_idx < static_cast<int>(out_wpnts.wpnts.size()))
+                ? out_wpnts.wpnts[static_cast<size_t>(steer_clamp_idx)].vx_mps
+                : -1.0);
     }
 
     // ── 램프가 장애물을 향하면 속도 바닥을 걷고 제동한다 (2026-08-15) ──────
@@ -6670,8 +6712,12 @@ bool SplinerNode::ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible,
     std::vector<double> *out_geom_ceiling,
-    const std::vector<double> *in_geom_ceiling) const {
+    const std::vector<double> *in_geom_ceiling,
+    int *steer_reject_idx_out) const {
     speed_reject_idx_ = -1;      // 호출마다 초기화 (직전 호출 값이 새지 않게)
+    if (steer_reject_idx_out != nullptr) {
+        *steer_reject_idx_out = -1;
+    }
     if (wpnts.size() < 2) {
         return !wpnts.empty();
     }
@@ -6816,9 +6862,19 @@ bool SplinerNode::ApplySpeedProfile(
         // 나머지는 원본이 남는 **반쯤 갱신된 입력**이 됐다. 대부분의 호출부는
         // 실패 시 경로를 버리지만 BuildTrailing 은 반환값을 쓰지 않으므로
         // 그 뒤섞인 곡률이 그대로 발행됐다.
+        // ── 소프트 모드는 버리지 않고 캡만 건다 (2026-08-20) ───────────────
+        // steer_reject_idx_out 이 주어지면 위반 인덱스만 기록하고 아래 캡
+        // 루프를 그대로 태운다. 근거는 선언부 주석(run_0820_201714 4:45).
+        // 비유한 곡률은 소프트 모드에서도 하드 기각이다 — sqrt(a/k) 가 NaN 이
+        // 되어 속도와 kappa_radpm 을 동시에 오염시킨다. 그래서 첫 위반에서
+        // 멈추지 않고 **전수로** 훑어 비유한 값을 끝까지 찾는다.
+        int soft_reject_idx = -1;
         for (size_t i = 0; i < n; ++i) {
             const double k = std::abs(curvature[i]);
-            if (!std::isfinite(k) || k > steering_curvature_reject + 1e-3) {
+            if (std::isfinite(k) && k <= steering_curvature_reject + 1e-3) {
+                continue;
+            }
+            if (soft_reject_idx < 0) {
                 // 어느 점이 걸렸는지 남긴다 — 호출자의 거부 로그가 이 값을
                 // 붙여 찍는다. 머리(idx 0~2)가 반복해서 걸리면 위 좁힌-윈도
                 // 수정이 아직 부족하다는 뜻이다.
@@ -6826,9 +6882,16 @@ bool SplinerNode::ApplySpeedProfile(
                 speed_reject_n_ = static_cast<int>(n);
                 speed_reject_kappa_ = k;
                 speed_reject_limit_ = steering_curvature_reject;
+                soft_reject_idx = static_cast<int>(i);
+            }
+            if (steer_reject_idx_out == nullptr || !std::isfinite(k)) {
                 NoteReject("speed_steer_curv");
                 return false;
             }
+        }
+        if (soft_reject_idx >= 0) {
+            *steer_reject_idx_out = soft_reject_idx;
+            NoteReject("speed_steer_curv_clamped");
         }
         for (size_t i = 0; i < n; ++i) {
             const double k = std::abs(curvature[i]);

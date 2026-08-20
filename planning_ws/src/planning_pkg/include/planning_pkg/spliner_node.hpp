@@ -569,11 +569,29 @@ private:
   //    곡률 기각 검사를 먼저 전수로 돌고, 통과한 뒤에야 kappa_radpm/vx_mps 를
   //    쓴다. 반환값을 무시하는 호출부(BuildTrailing)가 있으므로 이 순서가
   //    지켜져야 한다.
+  // steer_reject_idx_out: 주면 **소프트 모드**가 된다 — 곡률이 조향 기각
+  //   밴드를 넘어도 경로를 버리지 않고, 첫 위반 인덱스를 여기 넣은 뒤
+  //   sqrt(a_lat/k) 횡가속 캡을 전 구간에 그대로 적용한다 (위반 없으면 -1).
+  //   버릴 상위 티어가 없는 호출부(BuildTrailing)를 위한 것이다.
+  //
+  //   왜 필요한가 (2026-08-20, run_0820_201714 4:45):
+  //     하드 기각은 "경로를 버려라"인데 트레일링은 마지막 티어라 버릴 것이
+  //     없어 반환값을 무시하고 그대로 발행한다. 그러면 **곡률/그립 캡이
+  //     하나도 안 걸린 채** 나가고, 남는 수동 제동 곡선은 reachable_v 바닥에
+  //     눌려 선두가 현재 속도와 같다 = 캡이 없는 것과 같다. 그 결과 기동이
+  //     급할수록(곡률이 클수록) 더 빨리 가는 역전이 생긴다.
+  //     실측: s=34.92 에서 k=1.48>1.30 으로 기각되자 발행 경로 속도가
+  //     2.4 -> 5.7 m/s 로 튀었고 명령이 4.45 -> 5.45 로 되올라가 5.4 m/s 로
+  //     장애물에 접촉했다. 같은 자리 직전 랩(4.25 m/s 진입)은 통과했다.
+  //     런 전체 3499 사이클 중 230(6.6%)이 이 상태였고 사유는 전부 곡률이다.
+  //   ⚠️ 유한하지 않은 곡률은 소프트 모드에서도 하드 기각이다 — sqrt(a/k) 가
+  //      NaN 이 되어 속도를 오염시킨다.
   bool ApplySpeedProfile(
     std::vector<f1tenth_planning_msgs::msg::Wpnt> & wpnts,
     bool require_current_feasible = true,
     std::vector<double> * out_geom_ceiling = nullptr,
-    const std::vector<double> * in_geom_ceiling = nullptr) const;
+    const std::vector<double> * in_geom_ceiling = nullptr,
+    int * steer_reject_idx_out = nullptr) const;
 
   // local_trajectory의 modulo splice는 한 바퀴 이상 경로를 표현할 수 없다.
   bool PlanSpanAllowed(double span) const;

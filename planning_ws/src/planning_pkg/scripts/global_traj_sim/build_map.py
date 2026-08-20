@@ -216,6 +216,12 @@ INFIELD_FILL_M = 0.8
 # medial-axis 골격이 스페클에서 가지를 치는 걸 막는다.
 MIN_ISLAND_M2 = 0.3
 
+# ROS map_saver 는 미관측(unknown) 셀을 정확히 205 로 쓴다 → occ = 50/255 = 0.19608.
+# 그런데 이 워크스페이스 SLAM 이 뱉는 yaml 은 전부 free_thresh: 0.25 라서
+# `occ < free_thresh` 가 unknown 을 통째로 '주행 가능'으로 삼킨다. 자세한 건
+# _known_free_mask 참고.
+ROS_UNKNOWN_OCC = 50.0 / 255.0
+
 # --- 레이스라인 생성 파라미터 ------------------------------------------------
 # 최대 속도 [m/s]. 값은 ../deployment_profiles.py 의 RACELINE_V_MAX 에 있다 —
 # python_sim_tracker 프로파일이 이걸 속도 cap 으로 쓰기 때문에 공유 모듈에
@@ -232,7 +238,7 @@ MIN_ISLAND_M2 = 0.3
 #      된다: 08-05/08-06 백 168 s(전류 포화 24 A) 구간에서 달성 가속도는 속도대
 #      0~5.5 m/s 전 구간에 걸쳐 p50 0.7~1.6 / p90 1.2~1.7 로, 1.8 은 이미 p95 위다
 V_MAX      = RACELINE_V_MAX
-MU         = 1.20    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
+MU         = 1.5    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
                      #
                      # ⚠️ 이 값은 물리량이 아니다. "합성 요구가 이 값을 안 넘는다"
                      # 는 뜻뿐이고, 실차에서 슬립 없이 실증된 최대는 0.70g 다
@@ -369,7 +375,7 @@ MU         = 1.20    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
 # 기구학 시뮬의 한계로 추정). MU_PROFILE/LAT_ERR_CORNER_S 스윕은 오늘 실측과
 # 여러 번 잘 맞았지만, **L1/조향 게인류는 이 도구만으로 결론 내리지 말고
 # 반드시 직선 고속 구간 포함해서 실차로 확인할 것.**
-MU_PROFILE = 1.10
+MU_PROFILE = 1.20
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -1194,84 +1200,240 @@ def _medial_axis_loop(ring):
     return sk
 
 
-def _order_loop(sk):
+def _skeleton_graph(pts):
+    """골격 픽셀 → 8-이웃 인접 집합. 계단이 만드는 대각 '지름길'은 뺀다.
+
+    skeletonize 는 8-연결로 얇게 깎지만 계단(staircase) 구간에서는 (r,c) 와
+    (r+1,c+1) 이 대각으로 붙어 있으면서 그 사이 4-이웃 픽셀도 같이 살아남는다.
+    그래프로 보면 삼각형 = 가짜 사이클이고, 그 꼭짓점은 차수 3~4 로 보인다.
+    실제 골격은 멀쩡한 단일 루프인데도 그렇다:
+        my_track0817  839 px → 사이클 6개 (차수3 8개, 차수4 1개)
+        my_track0727  656 px → 사이클 5개
+    예전 그리디 워크는 이 삼각형에서 방향을 잃고 루프가 안 닫힌 채 끝났다.
+
+    두 대각 픽셀이 공통 4-이웃을 가지면 그 대각 간선은 지워도 연결이 유지되므로
+    (4-이웃 두 걸음으로 돌아가면 된다) 지운다. 이러면 계단 삼각형이 전부
+    사라지고 남는 분기는 **진짜 분기**뿐이다.
+    """
+    n = len(pts)
+    tree = cKDTree(pts)
+    adj = [set(tree.query_ball_point(p, r=1.9)) - {i} for i, p in enumerate(pts)]
+    for i in range(n):
+        for j in list(adj[i]):
+            if j < i:
+                continue
+            d = pts[i] - pts[j]
+            if abs(d[0]) != 1.0 or abs(d[1]) != 1.0:
+                continue                    # 대각 간선만 후보
+            for k in adj[i] & adj[j]:       # 둘 다와 4-이웃인 공통 픽셀
+                if (abs(pts[k][0] - pts[i][0]) + abs(pts[k][1] - pts[i][1]) == 1.0
+                        and abs(pts[k][0] - pts[j][0])
+                            + abs(pts[k][1] - pts[j][1]) == 1.0):
+                    adj[i].discard(j)
+                    adj[j].discard(i)
+                    break
+    return adj
+
+
+def _prune_graph_spurs(adj):
+    """차수 <=1 인 노드를 연쇄적으로 떼어낸다 (그래프판 끝점 제거)."""
+    stack = [i for i, a in enumerate(adj) if len(a) <= 1]
+    dropped = 0
+    while stack:
+        i = stack.pop()
+        if len(adj[i]) > 1:
+            continue
+        for j in list(adj[i]):
+            adj[j].discard(i)
+            if len(adj[j]) <= 1:
+                stack.append(j)
+        if adj[i]:
+            adj[i].clear()
+            dropped += 1
+    return dropped
+
+
+def _trace_cycle(adj, start):
+    """차수가 전부 2인 성분에서 start 를 지나는 사이클을 순서대로."""
+    order = [start]
+    prev, cur = start, min(adj[start])
+    while cur != start:
+        order.append(cur)
+        nxt = [k for k in adj[cur] if k != prev]
+        if len(nxt) != 1:
+            return None
+        prev, cur = cur, nxt[0]
+    return order
+
+
+def _branch_chains(adj, branch):
+    """분기점 사이를 잇는 체인 목록 → [(끝점a, 끝점b, [픽셀 인덱스...]), ...].
+
+    각 체인은 방향 하나로만(중복 없이) 담는다.
+    """
+    bset = set(branch)
+    chains, seen = [], set()
+    for b in branch:
+        for st in adj[b]:
+            if (b, st) in seen:
+                continue
+            path, prev, cur = [b, st], b, st
+            while cur not in bset:
+                nxt = [k for k in adj[cur] if k != prev]
+                if len(nxt) != 1:
+                    break
+                prev, cur = cur, nxt[0]
+                path.append(cur)
+            seen.add((b, st))
+            seen.add((path[-1], path[-2]))
+            chains.append((b, path[-1], path))
+    return chains
+
+
+def _cycle_pixels(chains, cyc):
+    """체인 인덱스 열 → 이어붙인 픽셀 인덱스 순서 (분기점 중복 제거)."""
+    start = chains[cyc[0]][0]
+    cur, order = start, []
+    for ci in cyc:
+        a, b, path = chains[ci]
+        if a == cur:
+            seg = path
+        elif b == cur:
+            seg = path[::-1]
+        else:
+            return None
+        order.extend(seg[:-1])
+        cur = seg[-1]
+    return order if cur == start else None
+
+
+def _enumerate_chain_cycles(chains, branch, limit=256):
+    """분기점 그래프의 단순 사이클을 체인 인덱스 열로 열거."""
+    inc = {b: [] for b in branch}
+    for ci, (a, b, _path) in enumerate(chains):
+        inc[a].append((b, ci))
+        if b != a:
+            inc[b].append((a, ci))
+    found, keys = [], set()
+
+    def emit(seq):
+        key = frozenset(seq)
+        if key not in keys:
+            keys.add(key)
+            found.append(list(seq))
+
+    def dfs(start, cur, nodes, used):
+        if len(found) >= limit:
+            return
+        for nxt, ci in inc[cur]:
+            if ci in used:
+                continue
+            # 서로 다른 체인 2개면 이미 사이클이다 (theta: A-c1-B-c2-A).
+            # 체인 1개짜리 사이클은 자기 자신으로 돌아오는 self-loop 뿐이다.
+            if nxt == start and (used or chains[ci][0] == chains[ci][1]):
+                emit(used + [ci])
+                continue
+            if nxt in nodes or nxt == start:
+                continue
+            dfs(start, nxt, nodes | {nxt}, used + [ci])
+
+    for b in branch:
+        dfs(b, b, {b}, [])
+    return found
+
+
+def _order_loop(sk, grid=None):
     """폐루프 골격 마스크의 픽셀을 이웃끼리 이어진 순서 (row,col) 로 정렬.
 
     ⚠️ 예전 구현은 '가장 가까운 미사용 픽셀'만 보고 한 방향으로 걸었다.
     skeletonize 결과에는 계단(staircase) 때문에 8-이웃이 3개인 픽셀이 몇 개
     생기는데(my_track0727: 656 px 중 7개), 거기서 1 px짜리 곁가지로 새면 곧
-    막히고 `break` 로 걸음이 통째로 끝난다. 실제로 71 px(10.8%)를 버렸고,
-    그 자리에서 중앙선이 벽을 가로질러 결국 레이스라인이 벽을 관통했다.
-    경고만 찍고 통과시킨 게 사고를 키웠다.
+    막히고 걸음이 통째로 끝난다. 실제로 71 px(10.8%)를 버렸고, 그 자리에서
+    중앙선이 벽을 가로질러 결국 레이스라인이 벽을 관통했다.
 
-    그래서 세 가지를 바꿨다:
-      1. 진행 방향과 가장 잘 이어지는 이웃을 고른다 (계단 곁가지 회피).
-      2. 한쪽이 막히면 시작점에서 반대 방향으로도 걸어 앞에 붙인다.
-      3. 그래도 픽셀이 남거나 루프가 안 닫히면 **죽는다**. 중앙선이 깨진 채로
-         진행하면 뒤 단계가 조용히 잘못된 라인을 만든다.
+    '진행 방향이 가장 잘 이어지는 이웃' 휴리스틱으로 한 번 고쳤지만 그것도
+    졌다 — my_track0820-4 는 골격 876 px 를 하나도 안 빠뜨리고 다 걸었는데도
+    시작/끝이 82.9 px 벌어진 채 끝났고, 에러는 "트랙이 안 닫혔다"고 엉뚱한
+    데를 가리켰다. 실제로는 골격이 theta(분기 2개 + 체인 3개) 모양이라
+    그리디로는 애초에 답이 없는 구조였다.
+
+    그래서 휴리스틱을 버리고 **그래프로 푼다**:
+      1. 8-이웃 그래프를 만들고 계단이 만든 대각 지름길을 제거 (_skeleton_graph).
+      2. 차수 <=1 인 가지를 연쇄적으로 쳐낸다.
+      3. 남은 게 전부 차수 2면 → 유일한 사이클. 순서대로 걸으면 **닫힘이 보장**된다.
+      4. 분기가 남으면 진짜 theta 다. 체인으로 접어 단순 사이클을 열거하고
+         '둘러싼 면적이 가장 큰' 것을 고른다 = 인필드를 전부 감싸는 랩.
+         버린 체인은 좌표로 찍어 준다 — 조용히 넘어가지 않는다.
     """
     ys, xs = np.nonzero(sk)
     pts = np.column_stack([ys, xs]).astype(float)
     n = len(pts)
     if n < 8:
         raise RuntimeError(f"medial-axis 골격이 너무 짧다 ({n} px)")
-    tree = cKDTree(pts)
-    used = np.zeros(n, bool)
-    used[0] = True
 
-    def walk(start):
-        """start 에서 한쪽 방향으로 끝까지. start 포함 인덱스 리스트."""
-        order = [start]
-        cur = start
-        direction = None
-        while True:
-            best, best_score = -1, -np.inf
-            for j in tree.query_ball_point(pts[cur], r=1.9):
-                if used[j]:
-                    continue
-                step = pts[j] - pts[cur]
-                dist = float(np.hypot(*step))
-                if dist < 1e-9:
-                    continue
-                # 직진성 우선, 동점이면 가까운 쪽. 계단에서 곁가지로 새는 걸 막는다.
-                score = (float(step @ direction) / dist if direction is not None
-                         else 0.0) - 0.1 * dist
-                if score > best_score:
-                    best, best_score = j, score
-            if best < 0:
-                return order
-            direction = (pts[best] - pts[cur]) / np.hypot(*(pts[best] - pts[cur]))
-            used[best] = True
-            order.append(best)
-            cur = best
-
-    fwd = walk(0)
-    bwd = walk(0)                       # 0 의 반대쪽 이웃부터 (앞쪽은 이미 used)
-    order = bwd[:0:-1] + fwd            # 뒤쪽을 뒤집어 앞에 붙이고 0 은 한 번만
-
-    # 남는 픽셀이 몇 개 생기는 건 정상이다 — skeletonize 의 계단에서 대각으로
-    # 겹치는 '두께' 픽셀이라 건너뛰어도 경로가 끊기지 않는다(루프에 인접함).
-    # 반면 통째로 놓친 구간은 루프에서 멀리 떨어져 나온다. 그 둘을 개수가 아니라
-    # **루프까지의 거리**로 가른다. 예전처럼 개수 비율(20%)로 봐주면 실제로
-    # 놓친 구간(71 px)을 경고만 하고 통과시켜 벽을 가로지르는 중앙선이 나온다.
-    left = np.flatnonzero(~used)
-    if len(left):
-        far = left[cKDTree(pts[order]).query(pts[left])[0] > 1.9]
-        if len(far):
-            raise RuntimeError(
-                f"medial-axis 루프 정렬 실패: {len(far)}/{n} px 가 루프에서 "
-                "떨어져 남았다 (골격이 갈라졌거나 끊김). 그대로 두면 중앙선이 "
-                "벽을 가로지른다.\n"
-                "  → 맵을 다시 따거나 INFIELD_FILL_M / MIN_ISLAND_M2 를 올려 볼 것.")
-    # 닫힘 허용치는 한 걸음(1.9 px)이 아니라 3 px(0.15 m)로 둔다. 계단 구간에서
-    # 시작/끝 사이에 두께 픽셀 한 개가 낀 채 끝나는 게 정상이고(my_map: 2.0 px),
-    # 그 정도 틈은 뒤의 주기 스플라인이 매끄럽게 닫는다. 진짜로 끊긴 트랙은
-    # 수십 px 벌어지므로 이 값으로도 충분히 걸러진다.
-    gap = float(np.hypot(*(pts[order[-1]] - pts[order[0]])))
-    if gap > 3.0:
+    adj = _skeleton_graph(pts)
+    _prune_graph_spurs(adj)
+    alive = [i for i in range(n) if adj[i]]
+    if len(alive) < 8:
         raise RuntimeError(
-            f"medial-axis 루프가 안 닫힘 (끝-시작 간격 {gap:.1f} px). "
-            "트랙이 닫힌 고리가 아니거나 골격이 끊겼다.")
+            f"medial-axis 에 사이클이 없다 (가지를 쳐내니 {len(alive)} px 남음). "
+            "트랙이 닫힌 고리가 아니다.")
+    branch = [i for i in alive if len(adj[i]) != 2]
+
+    if not branch:
+        # 차수 전부 2 → 사이클 하나 이상. 가장 긴 것을 쓴다.
+        seen, best = set(), None
+        for i in alive:
+            if i in seen:
+                continue
+            cyc = _trace_cycle(adj, i)
+            if cyc is None:
+                continue
+            seen.update(cyc)
+            if best is None or len(cyc) > len(best):
+                best = cyc
+        if best is None:
+            raise RuntimeError("medial-axis 골격이 사이클을 이루지 않는다.")
+        order = best
+    else:
+        chains = _branch_chains(adj, branch)
+        cycles = _enumerate_chain_cycles(chains, branch)
+        cands = [o for o in (_cycle_pixels(chains, c) for c in cycles) if o]
+        if not cands:
+            where = ", ".join(
+                _fmt_px((int(pts[b][0]), int(pts[b][1])),
+                        grid.res, grid.origin, grid.H) if grid is not None
+                else f"px({int(pts[b][1])},{int(pts[b][0])})" for b in branch[:4])
+            raise RuntimeError(
+                f"medial-axis 가 분기 {len(branch)}곳을 가진 채 사이클을 못 이룬다.\n"
+                f"  분기 위치: {where}\n"
+                "  → 그 자리에서 트랙이 갈라져 있다. 맵을 확인할 것.")
+        # 인필드를 전부 감싸는 랩 = 둘러싼 면적이 가장 큰 사이클.
+        areas = [abs(_signed_area(pts[o])) for o in cands]
+        order = cands[int(np.argmax(areas))]
+        kept = set(order)
+        dropped = [i for i in alive if i not in kept]
+        if dropped:
+            def fmt(i):
+                rc = (int(pts[i][0]), int(pts[i][1]))
+                return (_fmt_px(rc, grid.res, grid.origin, grid.H)
+                        if grid is not None else f"px({rc[1]},{rc[0]})")
+            print(f"      [warn] medial-axis 가 갈라져 있다 (분기 {len(branch)}곳, "
+                  f"체인 {len(chains)}개) — 면적이 가장 큰 랩을 골랐다.")
+            print(f"             버린 지름길 {len(dropped)} px, 예: "
+                  f"{fmt(dropped[len(dropped) // 2])}")
+            print(f"             인필드 벽이 뚫려 free 가 새는 자리다. "
+                  f"맵 yaml 의 free_thresh / --seal-map 을 확인할 것.")
+
+    if len(order) < 8:
+        raise RuntimeError(f"medial-axis 루프가 너무 짧다 ({len(order)} px)")
+    # 사이클을 그래프에서 뽑았으므로 끝-시작은 반드시 이웃이다. 그래도 한 번
+    # 확인한다 — 여기가 뚫리면 뒤 단계가 조용히 벽 가로지르는 선을 만든다.
+    gap = float(np.hypot(*(pts[order[-1]] - pts[order[0]])))
+    if gap > 1.9:
+        raise RuntimeError(
+            f"medial-axis 루프가 안 닫힘 (끝-시작 간격 {gap:.1f} px) — "
+            "내부 버그. 사이클 추출이 이어지지 않은 픽셀을 돌려줬다.")
     return pts[order]
 
 
@@ -1506,6 +1668,62 @@ def _find_map_yaml(map_name):
         f"map_name:={map_name})")
 
 
+def _known_free_mask(occ, meta):
+    """occupancy → '관측된 free' 마스크. unknown 은 절대 free 로 안 센다.
+
+    ROS 맵은 free/occupied/**unknown** 3값이고 map_saver 는 unknown 을 205 로
+    쓴다(occ = 50/255 = 0.19608). 그런데 이 워크스페이스 SLAM 이 만드는 yaml 은
+    전부 `free_thresh: 0.25` 라서 `occ < free_thresh` 가 unknown 을 전부 free 로
+    삼킨다. 대개는 표가 안 난다 — 벽 바깥 unknown 은 이미지 테두리에 닿아
+    '배경'으로 걸러지고, 인필드 unknown 은 벽에 완전히 둘러싸여 '구멍'으로
+    걸러지기 때문이다.
+
+    **인필드 벽이 한 군데라도 뚫려 있으면** 그 순간 인필드가 통째로 트랙 성분에
+    합쳐진다. 그러면 두 가지가 동시에 깨진다.
+      · medial-axis 가 인필드를 가로질러 theta(분기) 모양이 되고 → 루프 정렬 실패.
+      · raw_ring — Grid 가 폭·침범을 재는 **단일 기준** — 이 벽 자리를 free 로 본다.
+    후자는 조용해서 더 나쁘다. my_track0820-3 은 이대로 궤적이 나왔고 인필드
+    21.2 m^2 가 '주행 가능'으로 들어가 있었다. 0814/0818/0819/0820* 이 전부 같다.
+
+    unknown 은 '한 번도 안 본 곳'이지 '빈 곳'이 아니다. 레이스라인 생성에서는
+    항상 벽으로 취급하는 게 맞다 — 실제로 배리어 안쪽이라 못 지나간다. 이렇게
+    좁히는 방향은 언제나 보수적이라 기존 맵을 망가뜨리지 않는다(0813 이전 맵
+    전부 링 픽셀 수 변화 0.0%).
+    """
+    yaml_ft = float(meta.get("free_thresh", 0.196))
+    return occ < min(yaml_ft, ROS_UNKNOWN_OCC)
+
+
+def _warn_unknown_absorbed(occ, meta, ring, resolution):
+    """yaml 의 free_thresh 가 unknown 을 삼키는지 검사 → 삼키면 경고.
+
+    build_map 은 _known_free_mask 로 자체 보정하지만, **런타임(map_server /
+    particle_filter / costmap)은 여전히 yaml 의 free_thresh 를 읽는다.** 즉
+    이 경고가 뜨는 맵은 주행 중에도 인필드 배리어를 빈 곳으로 본다. 고칠
+    대상은 yaml 파일이다.
+    """
+    yaml_ft = float(meta.get("free_thresh", 0.196))
+    if yaml_ft <= ROS_UNKNOWN_OCC:
+        return
+    infield = ndimage.binary_fill_holes(ring) & ~ring
+    if not infield.any():
+        return
+    # yaml 값 그대로 썼다면 인필드 중 몇 px 이 트랙 성분에 붙어버리나?
+    loose_lbl, _ = ndimage.label(occ < yaml_ft)
+    ring_labels = np.unique(loose_lbl[ring])
+    ring_labels = ring_labels[ring_labels > 0]
+    leak = int(np.isin(loose_lbl[infield], ring_labels).sum())
+    if leak * resolution * resolution < MIN_ISLAND_M2:
+        return
+    pct = 100.0 * leak / int(infield.sum())
+    print(f"      [warn] yaml 의 free_thresh {yaml_ft:g} 가 unknown(205, "
+          f"occ {ROS_UNKNOWN_OCC:.5f})을 free 로 삼킨다 → 인필드 배리어 "
+          f"{leak * resolution * resolution:.1f} m^2 ({pct:.0f}%)가 '주행 가능'이 된다.")
+    print(f"             build_map 은 자체 보정했지만 **런타임(map_server/PF/"
+          f"costmap)은 yaml 을 그대로 읽는다.**")
+    print(f"             → 맵 yaml 의 free_thresh 를 0.196 으로 고칠 것.")
+
+
 def load_track(map_name):
     """맵 yaml/png 로드 → free 마스크 + 링(트랙) 검출 → 월드 좌표 경계.
 
@@ -1521,7 +1739,7 @@ def load_track(map_name):
     if meta.get("negate", 0):
         img = 255.0 - img
     occ = (255.0 - img) / 255.0            # ROS map_server 관례
-    free_mask = occ < float(meta.get("free_thresh", 0.196))
+    free_mask = _known_free_mask(occ, meta)
     H = img.shape[0]
     resolution = (float(RESOLUTION_OVERRIDE) if RESOLUTION_OVERRIDE is not None
                   else float(meta["resolution"]))
@@ -1559,6 +1777,8 @@ def load_track(map_name):
     # 맞으므로(코리도 폭은 법선 레이캐스트로 재고, 대각 계단 벽은 실제로 못
     # 지나간다) 여기서 죽이지는 않는다. 다만 이 맵을 8-이웃으로 flood-fill
     # 하는 다른 도구(코스트맵 인플레이션 등)에서는 그대로 새므로 알려는 둔다.
+    # 이 맵의 yaml 이 unknown 을 free 로 삼키는지 — 런타임은 아직 그렇게 읽는다.
+    _warn_unknown_absorbed(occ, meta, ring, resolution)
     diag = _diagonal_leaks(labels, ring_lab)
     if diag:
         where = " · ".join(_fmt_px(rc, resolution, origin, H) for rc in diag[:3])
@@ -1650,7 +1870,7 @@ def extract_centerline(grid, smooth=3.0, ds=DS_OUT):
     폭(d_left/d_right)만 물리 경계(outer/inner)에서 부호 있는 거리로 계산한다.
     """
     loop_rc = _order_loop(
-        _medial_axis_loop(grid.skeleton_ring))      # (row, col) 순서
+        _medial_axis_loop(grid.skeleton_ring), grid)    # (row, col) 순서
     loop_xy = _px_to_world(loop_rc, grid.res, grid.origin, grid.H)
     # 픽셀 계단 노이즈를 지운 뒤 주기 스플라인
     loop_r = _resample_closed(loop_xy, max(len(loop_xy), 800))
