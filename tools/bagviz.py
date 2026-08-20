@@ -301,15 +301,17 @@ def dec_tf_static(b):
 
 
 def dec_obstacles(b):
-    """Return the declared frame and compact obstacle tuples."""
+    """Return the header stamp, declared frame and compact obstacle tuples."""
     c = CDR(b)
-    _header_t, frame = c.header()
+    header_t, frame = c.header()
     n = c.u32()
     out = []
     for _ in range(min(n, 64)):
         c.i32()
         px, py, _pz = c.f64n(3)
-        c.skip_f64(3)                # velocity
+        # 속도는 KF 추정이고 position 과 같은 프레임(= header.frame_id)이다.
+        # 뷰어가 프레임 시각과 커서 시각의 차이를 이 속도로 메운다.
+        vx, vy, _vz = c.f64n(3)
         dyn = c.u8() != 0
         c.f32()                      # confidence
         radius = c.f32()
@@ -319,15 +321,16 @@ def dec_obstacles(b):
         # 10266 프레임 중 5194 (50.6%, = 장애물 2개 이상인 모든 프레임) 가
         # 이렇게 깨져 있었고, 실제 화면에는 맵 (0,0)·(0,-1.22) 에 유령 원이
         # 그려졌다 — dyn 자리에도 쓰레기가 들어가 점선(동적)으로 보인다.
-        c.u8()                       # is_visible (그리진 않지만 소비해야 한다)
-        out.append((round(px, 2), round(py, 2), round(radius, 2), int(dyn)))
+        vis = c.u8() != 0            # 이번 프레임 측정됨 / False = 코스팅 외삽
+        out.append((round(px, 2), round(py, 2), round(radius, 2), int(dyn),
+                    round(vx, 2), round(vy, 2), int(vis)))
     # 위 사고가 조용했던 이유는 밀린 디코더도 "그럴듯한" 숫자를 뱉기 때문이다.
     # 원소당 소비 바이트가 msg 와 어긋나면 커서가 payload 끝에 못 닿으므로,
     # 그 한 가지만 확인하면 같은 사고를 눈에 보이게 만들 수 있다. (n>64 는
     # 위에서 일부러 잘라 읽으므로 검사 대상이 아니다.)
     if n <= 64:
         c.at_end(len(b), "ObstacleArray")
-    return frame, out
+    return header_t, frame, out
 
 
 # ---------------------------------------------------------------- PNG writer
@@ -608,15 +611,29 @@ def extract(db_path):
         })
     out["particles"] = particles
 
-    # --- 장애물 (laser frame → JS에서 차량 포즈로 변환)
+    # --- 장애물 (보통 map frame, 아니면 JS에서 차량 포즈로 변환)
+    #
+    # ⚠️ 두 가지를 스캔과 반드시 맞출 것. 예전에는 둘 다 어긋나 있어서 동적
+    # 장애물의 빨간 원이 라이다 점보다 한참 뒤를 따라왔다.
+    #  ① 표본율 — 옛 상한 600 개는 길이와 무관한 고정값이라 40 Hz·11 분 백
+    #     (run_0820_235246, 26 251 msg)에서 stride 44 = **1.1 s 간격**이 됐다.
+    #     그 사이 상대는 2 m/s(p50)로 2 m 넘게 움직인다. 스캔과 같은 20 Hz 로.
+    #  ② 시간축 — 스캔·포즈는 header 스탬프를 쓰는데 장애물만 bag 기록 시각을
+    #     썼다. 발행 지연이 p50 7 ms / p90 61 ms / max 453 ms 라 그만큼 더
+    #     밀린다. detector 는 스캔 header 를 그대로 물려주므로 source_time 을
+    #     쓰면 같은 스캔과 정확히 같은 시각이 된다.
+    # 정렬만 맞추면 KF 중심은 이미 스캔 점 위에 있다 (|최근접거리-radius|
+    # p50 0.088 m, 속도 외삽 τ=-0.025~+0.10 s 구간에서 평평 → 지각 지연을
+    # 인위적으로 앞당길 이유가 없다).
     obs = []
-    for t, b in fetch("/perception/obstacles", 600):
+    obs_cap = max(1, int(math.ceil(dur * 20.0)))
+    for t, b in fetch("/perception/obstacles", obs_cap):
         try:
-            frame, lst = dec_obstacles(b)
+            header_t, frame, lst = dec_obstacles(b)
         except Exception:
             continue
         if lst:
-            obs.append({"t": round(t, 3), "f": frame, "o": lst})
+            obs.append({"t": round(source_time(header_t, t), 4), "f": frame, "o": lst})
     out["obs"] = obs
 
     # --- 랩: frenet s wrap (없으면 레이스라인 최근접 투영으로 s 복원)
@@ -1306,6 +1323,7 @@ function onData(d){
   if(d.error){ setStatus("오류: "+d.error,true); return; }
   D=d; tCur=0; playing=false; mapImg=null;
   D.scanTimes=D.scans.map(s=>s.t+0.5*(s.dt||0)*Math.max(0,s.r.length-1));
+  D.obsTimes=D.obs.map(o=>o.t);   // 스캔과 같은 header 시간축
   vmax=1;
   if(D.glb) D.glb.vx.forEach(v=>{ if(v>vmax)vmax=v; });
   D.pose.v.forEach(v=>{ if(Math.abs(v)>vmax)vmax=Math.abs(v); });
@@ -1494,7 +1512,10 @@ function buildLegend(){
   if(D.scans.length) rows.push(`<div class="row"><span class="dot" style="background:${C("ink2")}"></span>LiDAR 스캔</div>`);
   if(D.look.t.length) rows.push(`<div class="row"><span class="dot" style="background:${C("yellow")}"></span>룩어헤드 점</div>`);
   if(D.particles.length) rows.push(`<div class="row"><span class="dot" style="background:rgba(57,135,229,0.35)"></span>PF 파티클 구름</div>`);
-  if(D.obs.length) rows.push(`<div class="row"><span class="dot" style="border:2px solid ${C("red")};background:none"></span>장애물</div>`);
+  if(D.obs.length){
+    rows.push(`<div class="row"><span class="dot" style="border:2px solid ${C("red")};background:none"></span>장애물 (점선=동적, 화살표=0.5 s 예상 변위)</div>`);
+    rows.push(`<div class="row"><span class="dot" style="border:2px solid rgba(230,103,103,0.40);background:none"></span>코스팅 (측정 없이 KF 외삽)</div>`);
+  }
   if(D.startLine) rows.push(`<div class="row"><span class="sw" style="background:rgba(255,255,255,0.6)"></span>결승선 (s=0)</div>`);
   el.innerHTML=rows.join("");
 }
@@ -1621,25 +1642,54 @@ function drawTrack(){
       }
     }
   }
-  // 장애물
+  // 장애물 — 스캔과 같은 header 시간축이므로 "직전"이 아니라 "최근접" 프레임을
+  // 쓰고, 스캔과 같은 0.15 s 창을 넘으면 그리지 않는다. 옛 코드는 bisect + 1 s
+  // 창이라 탐지가 끊긴 뒤에도 최대 1 초 묵은 원을 붙잡고 있었다 (동적 상대가
+  // 2 m/s 로 지나가면 2 m 뒤처진 유령이 된다). 남는 시간차는 KF 속도로 메운다.
   if(D.obs.length&&pi>=0){
-    const ts=D.obs.map(o=>o.t), i=bisect(ts,tCur);
-    if(i>=0&&Math.abs(tCur-ts[i])<1){
-      tctx.strokeStyle=C("red"); tctx.lineWidth=2;
+    const i=nearestIndex(D.obsTimes,tCur);
+    if(i>=0&&Math.abs(tCur-D.obsTimes[i])<0.15){
+      tctx.lineWidth=2;
       const item=D.obs[i], obsPose=poseAt(item.t);
-      item.o.forEach(([ox,oy,r,dyn])=>{
-        let wx2=ox, wy2=oy;
-        if((item.f||"").replace(/^\//,"")!=="map"&&obsPose){
-          const isLaser=(item.f||"").replace(/^\//,"")==="laser";
+      // 20 Hz 로 뽑으므로 정상 구간의 dt 는 25 ms 이하다. 상한을 두어 표본이
+      // 성길 때도 속도 외삽이 유령을 만들어내지 못하게 한다.
+      const dt=Math.max(-0.12,Math.min(0.12,tCur-item.t));
+      const frame=(item.f||"").replace(/^\//,"");
+      const isLaser=frame==="laser";
+      item.o.forEach(([ox,oy,r,dyn,vx,vy,vis])=>{
+        // 속도는 position 과 같은 프레임이므로 변환 전에 전파한다.
+        let wx2=ox+(dyn?(vx||0)*dt:0), wy2=oy+(dyn?(vy||0)*dt:0);
+        let hx=wx2+(vx||0)*0.5, hy=wy2+(vy||0)*0.5;   // 0.5 s 뒤 예상 위치
+        if(frame!=="map"&&obsPose){
           const yaw=obsPose.yaw+(isLaser?(D.laserOff[2]||0):0);
           const bx=obsPose.x+(isLaser?D.laserOff[0]*Math.cos(obsPose.yaw)-D.laserOff[1]*Math.sin(obsPose.yaw):0);
           const by=obsPose.y+(isLaser?D.laserOff[0]*Math.sin(obsPose.yaw)+D.laserOff[1]*Math.cos(obsPose.yaw):0);
-          wx2=bx+ox*Math.cos(yaw)-oy*Math.sin(yaw);
-          wy2=by+ox*Math.sin(yaw)+oy*Math.cos(yaw);
+          const rx=(x,y)=>bx+x*Math.cos(yaw)-y*Math.sin(yaw);
+          const ry=(x,y)=>by+x*Math.sin(yaw)+y*Math.cos(yaw);
+          const ax=wx2, ay=wy2, cx=hx, cy=hy;
+          wx2=rx(ax,ay); wy2=ry(ax,ay); hx=rx(cx,cy); hy=ry(cx,cy);
         }
+        // 코스팅(is_visible=false)은 측정이 아니라 KF 외삽이다. 같은 빨강으로
+        // 그리면 "라이다에 없는데 원만 있다"가 버그처럼 보인다 — 흐리게 구분.
+        // (run_0820_235246: 동적 13.7 %, 정적 75.9 % 가 코스팅이었다.)
+        const measured=(vis===undefined)||!!vis;
+        tctx.strokeStyle=measured?C("red"):"rgba(230,103,103,0.40)";
+        const X=W2SX(wx2), Y=W2SY(wy2);
         tctx.beginPath();
-        tctx.arc(W2SX(wx2),W2SY(wy2),Math.max(4,(r||0.15)*view.s),0,6.283);
+        tctx.arc(X,Y,Math.max(4,(r||0.15)*view.s),0,6.283);
         tctx.setLineDash(dyn?[4,3]:[]); tctx.stroke(); tctx.setLineDash([]);
+        // 동적이면 속도 화살표(0.5 s 예상 변위)까지 그린다 — 원만 봐서는
+        // 상대가 어느 쪽으로 가는지 알 수 없다.
+        if(dyn&&Math.hypot(vx||0,vy||0)>0.3){
+          const HX=W2SX(hx), HY=W2SY(hy), a=Math.atan2(HY-Y,HX-X);
+          tctx.beginPath(); tctx.moveTo(X,Y); tctx.lineTo(HX,HY); tctx.stroke();
+          tctx.beginPath();
+          tctx.moveTo(HX,HY);
+          tctx.lineTo(HX-7*Math.cos(a-0.4),HY-7*Math.sin(a-0.4));
+          tctx.moveTo(HX,HY);
+          tctx.lineTo(HX-7*Math.cos(a+0.4),HY-7*Math.sin(a+0.4));
+          tctx.stroke();
+        }
       });
     }
   }
