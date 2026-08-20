@@ -51,7 +51,14 @@ global_trajectory_node:
     # 2026-08-19: 0.90 -> 0.98 -> 1.10 -> 1.15 -> 1.10(되돌림), build_map.py
     # MU_PROFILE과 짝. 1.15는 실차에서 기각된 map/m_l1=0.35 전용 값이었다 —
     # 근거와 경위는 그 상수 주석 참조.
-    global_trajectory/validation_mu: 1.10
+    # 2026-08-21: 1.10 -> 1.15. 접촉 위험을 감수하고 추가 접지력을 쓰는
+    # 0821-1.csv(mu_profile=1.15)를 strict 모드에서 로드하기 위한 실험 설정.
+    # 2026-08-21: 1.15 -> 1.30. run_0821_054711 실측 7.10 s에서 6.70 s를
+    # 겨냥한 0821-6.65.csv의 합성가속도 요구(mu 환산 1.293)와 짝.
+    # 기존 0821-1.csv는 그대로 보관하며 이 값에서도 계속 로드 가능하다.
+    # 2026-08-21: 1.30 -> 1.40. 안정적이었던 0821-6.65보다 한 단계 과한
+    # mkcsv 기본값(build_map MU_PROFILE=1.40)과 짝. 기존 저-mu CSV도 허용한다.
+    global_trajectory/validation_mu: 1.40
     global_trajectory/validation_wheelbase_m: 0.33
     # 2026-08-11: 0.36 -> 0.3578 (gain 재적합 후 대칭 한계 자체).
     # CSV 의 |kappa| 상한을 tan(이 값)/wheelbase 로 정하므로 낮추면 검증이

@@ -338,6 +338,7 @@ DEFAULT_GATE_TARGET = "real"
 
 _PROFILE_NUMERIC_FIELDS = (
     "planner_speed_scale", "controller_speed_scale", "max_speed_mps",
+    "trajectory_validation_mu",
     "lookahead_gain", "lookahead_offset", "lookahead_min_m",
     "lookahead_max_m", "wheelbase_m", "max_steer_rad",
     "max_left_steer_rad", "max_right_steer_rad",
@@ -353,7 +354,12 @@ _PROFILE_NUMERIC_FIELDS = (
 # vesc 는 brake_max/gain/entry/overspeed/release 중재를 정한다.
 _PROFILE_SIGNATURE_EXTRA_FIELDS = (
     "curvature_factor", "speed_lookahead_s", "steering_lut", "vesc",
-    "backstop",
+    "backstop", "lat_err_coeff", "speed_lookahead_for_steer_s",
+    "max_lateral_error_m", "max_curvature_reference",
+    "l1_speed_uses_path_plan", "steer_plan_speed_min_mps",
+    "acc_scaler_for_steer", "dec_scaler_for_steer",
+    "start_scale_speed", "end_scale_speed", "downscale_factor",
+    "velocity_steer_gain_max", "nearest_search_horizon_m",
 )
 
 
@@ -388,9 +394,22 @@ def _resolve_cpp_real_car(name, source):
         control, "vehicle/max_left_steering_angle_rad", control_src)
     max_right_steer = _require_number(
         control, "vehicle/max_right_steering_angle_rad", control_src)
+    l1_speed_uses_path_plan = control.get("map/l1_speed_uses_path_plan")
+    if not isinstance(l1_speed_uses_path_plan, bool):
+        raise ValueError(
+            f"{name}: {control_src} 의 map/l1_speed_uses_path_plan 이 bool이 아님")
+    backstop_enabled = control.get("map/backstop_enabled")
+    if not isinstance(backstop_enabled, bool):
+        raise ValueError(
+            f"{name}: {control_src} 의 map/backstop_enabled 가 bool이 아님")
     profile = {
         "planner_speed_scale": _require_number(
             planning, "global_trajectory/velocity_scale", planning_src),
+        # 생성기의 MU_PROFILE보다 작으면 CSV 생성은 성공해도 실차 launch에서
+        # global_trajectory_node가 즉시 거부한다. 프로파일 계약에 넣어 mkcsv가
+        # 긴 최적화 전에 그 드리프트를 잡게 한다.
+        "trajectory_validation_mu": _require_number(
+            planning, "global_trajectory/validation_mu", planning_src),
         "controller_speed_scale": _require_number(
             control, "vehicle/speed_scale", control_src),
         "max_speed_mps": _require_number(
@@ -409,12 +428,39 @@ def _resolve_cpp_real_car(name, source):
             control, "map/t_clip_max", control_src),
         "speed_lookahead_s": _require_number(
             control, "map/speed_lookahead", control_src, positive=False),
-        # 추종 백스톱 (control_node.cpp:1008-1093). 폐루프 시뮬은 이 캡을
-        # 적용하지 않지만, 생성한 라인이 안전망을 얼마나 건드리는지는
-        # backstop_report() 로 보고한다 — LAT_ERR_CORNER_S 선정 기준이 바로
-        # 이 임계 초과 여부다.
+        "lat_err_coeff": _require_number(
+            control, "map/lat_err_coeff", control_src, positive=False),
+        "speed_lookahead_for_steer_s": _require_number(
+            control, "map/speed_lookahead_for_steer", control_src,
+            positive=False),
+        "max_lateral_error_m": _require_number(
+            control, "map/max_lateral_error_m", control_src),
+        "max_curvature_reference": _require_number(
+            control, "map/max_curvature_reference", control_src),
+        "l1_speed_uses_path_plan": l1_speed_uses_path_plan,
+        "steer_plan_speed_min_mps": _require_number(
+            control, "map/steer_plan_speed_min_mps", control_src,
+            positive=False),
+        "acc_scaler_for_steer": _require_number(
+            control, "map/acc_scaler_for_steer", control_src,
+            positive=False),
+        "dec_scaler_for_steer": _require_number(
+            control, "map/dec_scaler_for_steer", control_src,
+            positive=False),
+        "start_scale_speed": _require_number(
+            control, "map/start_scale_speed", control_src, positive=False),
+        "end_scale_speed": _require_number(
+            control, "map/end_scale_speed", control_src),
+        "downscale_factor": _require_number(
+            control, "map/downscale_factor", control_src, positive=False),
+        "velocity_steer_gain_max": _require_number(
+            control, "map/velocity_steer_gain_max", control_src),
+        "nearest_search_horizon_m": _require_number(
+            control, "map/nearest_search_horizon_m", control_src),
+        # 추종 백스톱 (control_node.cpp:1008-1093). 폐루프 시뮬과 사후
+        # backstop_report()가 모두 같은 기준으로 적용/보고한다.
         "backstop": {
-            "enabled": bool(control.get("map/backstop_enabled", False)),
+            "enabled": backstop_enabled,
             "path_error_m": _require_number(
                 control, "map/backstop_path_error_m", control_src),
             "steer_sat_ratio": _require_number(
@@ -422,6 +468,8 @@ def _resolve_cpp_real_car(name, source):
             "sat_min_path_error_m": _require_number(
                 control, "map/backstop_sat_min_path_error_m", control_src,
                 positive=False),
+            "steering_reference_rad": _require_number(
+                control, "map/backstop_steering_reference_rad", control_src),
             "min_speed_mps": _require_number(
                 control, "map/backstop_min_speed_mps", control_src,
                 positive=False),
@@ -491,6 +539,8 @@ def _resolve_python_sim_tracker(name, source):
     return {
         "planner_speed_scale": _require_number(
             planning, "global_trajectory/velocity_scale", planning_src),
+        "trajectory_validation_mu": _require_number(
+            planning, "global_trajectory/validation_mu", planning_src),
         "controller_speed_scale": _require_number(
             tracker, "tracker/speed_scale", tracker_src),
         # tracker 에는 속도 cap 파라미터가 없다 (wpnt 속도를 그대로 스케일).
@@ -559,7 +609,8 @@ def controller_profile(name):
             not (0.0 < profile["controller_speed_scale"] <= 1.0):
         raise ValueError(f"{name}: speed scale은 (0, 1]이어야 함")
     positive = (
-        "max_speed_mps", "lookahead_min_m", "lookahead_max_m",
+        "max_speed_mps", "trajectory_validation_mu",
+        "lookahead_min_m", "lookahead_max_m",
         "wheelbase_m", "max_steer_rad", "max_left_steer_rad",
         "max_right_steer_rad", "max_steer_rate_radps",
         "max_accel_mps2", "max_decel_mps2", "plant_accel_max_mps2",
@@ -567,8 +618,59 @@ def controller_profile(name):
     )
     if any(profile[field] <= 0.0 for field in positive):
         raise ValueError(f"{name}: 차량/제어 한계는 양수여야 함")
+    if profile["trajectory_validation_mu"] > 1.5:
+        raise ValueError(f"{name}: global trajectory validation mu는 1.5 이하여야 함")
     if profile["lookahead_max_m"] < profile["lookahead_min_m"]:
         raise ValueError(f"{name}: lookahead min/max가 뒤집힘")
+    if profile["kind"] == "cpp_map_l1":
+        extra_numeric = (
+            "lat_err_coeff", "speed_lookahead_for_steer_s",
+            "max_lateral_error_m", "max_curvature_reference",
+            "steer_plan_speed_min_mps", "acc_scaler_for_steer",
+            "dec_scaler_for_steer", "start_scale_speed", "end_scale_speed",
+            "downscale_factor", "velocity_steer_gain_max",
+            "nearest_search_horizon_m",
+        )
+        if any(not isinstance(profile.get(field), (int, float)) or
+               isinstance(profile.get(field), bool) or
+               not np.isfinite(profile[field]) for field in extra_numeric):
+            raise ValueError(f"{name}: MAP-L1 추가 파라미터가 유한 숫자가 아님")
+        if not (0.0 < profile["lookahead_gain"] <= 5.0) or \
+                not (-5.0 <= profile["lookahead_offset"] <= 10.0) or \
+                not (0.0 <= profile["curvature_factor"] <= 5.0) or \
+                not (0.0 <= profile["speed_lookahead_s"] <= 2.0) or \
+                not (0.0 <= profile["speed_lookahead_for_steer_s"] <= 2.0) or \
+                not (0.0 <= profile["lat_err_coeff"] <= 1.0) or \
+                not (0.0 <= profile["acc_scaler_for_steer"] <= 5.0) or \
+                not (0.0 <= profile["dec_scaler_for_steer"] <= 5.0) or \
+                not (0.0 <= profile["start_scale_speed"] <
+                     profile["end_scale_speed"] <= 30.0) or \
+                not (0.0 <= profile["downscale_factor"] <= 1.0) or \
+                not (0.0 < profile["max_lateral_error_m"] <= 5.0) or \
+                not (0.0 < profile["max_curvature_reference"] <= 5.0) or \
+                not (1.0 <= profile["velocity_steer_gain_max"] <= 3.0) or \
+                not (0.5 <= profile["nearest_search_horizon_m"] <= 20.0) or \
+                not (0.0 <= profile["steer_plan_speed_min_mps"] <= 2.0):
+            raise ValueError(f"{name}: MAP-L1 추가 파라미터 범위가 잘못됨")
+        backstop = profile.get("backstop")
+        if not isinstance(backstop, dict) or \
+                not isinstance(backstop.get("enabled"), bool):
+            raise ValueError(f"{name}: backstop 설정이 매핑/bool이 아님")
+        backstop_numeric = (
+            "path_error_m", "steer_sat_ratio", "sat_min_path_error_m",
+            "steering_reference_rad", "min_speed_mps")
+        if any(not isinstance(backstop.get(field), (int, float)) or
+               isinstance(backstop.get(field), bool) or
+               not np.isfinite(backstop[field]) for field in backstop_numeric):
+            raise ValueError(f"{name}: backstop 파라미터가 유한 숫자가 아님")
+        if not (0.0 < backstop["path_error_m"] <= 5.0) or \
+                not (0.0 < backstop["steer_sat_ratio"] <= 1.0) or \
+                not (0.0 <= backstop["sat_min_path_error_m"] <
+                     backstop["path_error_m"]) or \
+                not (0.0 < backstop["steering_reference_rad"] <=
+                     profile["max_steer_rad"]) or \
+                not (0.0 <= backstop["min_speed_mps"] <= 10.0):
+            raise ValueError(f"{name}: backstop 파라미터 범위가 잘못됨")
     if profile["max_steer_rad"] >= 0.5 * np.pi:
         raise ValueError(f"{name}: max steer가 자전거 모델 범위를 벗어남")
     if abs(profile["max_steer_rad"] - min(
@@ -689,12 +791,9 @@ def backstop_metrics(log, profile):
     로 통과시키면서 "그 구간 내내 안전망 위에 앉아 있다"는 사실은 어디에도
     남기지 않았다.
 
-    ⚠️ 이것은 **지표이지 재시뮬레이션이 아니다.** 시뮬은 여전히 백스톱 캡을
-    적용하지 않으므로 여기 나오는 낙폭만큼 실제로 느려진 랩타임이 아니다.
-    C++ 와 같은 식(control_node.cpp:1016-1086)으로 '지금 속도에서 안전망이
-    걸었을 캡'을 계산해 그 차이를 보고할 뿐이다. 캡이 실제로 적용되는지는
-    그 순간의 speed_command 와 비교해야 하는데, 로그의 v_ref 는 slew 를 이미
-    거친 값이라 복원할 수 없다.
+    이것은 시뮬에서 이미 적용된 백스톱을 같은 기준으로 사후 집계하는 지표다.
+    낙폭은 당시 실속도 대비 즉시 계산한 cap 차이이며, 실제 명령에는 그 cap 뒤
+    slew가 적용되므로 낙폭 합계를 랩타임 손실로 직접 환산하면 안 된다.
 
     반환: 백스톱 없는 프로파일이거나 비활성이면 None. 그 외에는 미발화라도
     dict 를 돌려준다 — 매니페스트에 "0 번 발화"가 남는 것과 항목 자체가 없는
@@ -705,7 +804,7 @@ def backstop_metrics(log, profile):
         return None
     path_err = np.asarray(log["path_err"], dtype=float)
     speed = np.asarray(log["v"], dtype=float)
-    max_steer = profile["max_steer_rad"]
+    max_steer = backstop["steering_reference_rad"]
     saturation = np.abs(np.asarray(log["steer"], dtype=float)) / max(
         max_steer, 1e-3)
 

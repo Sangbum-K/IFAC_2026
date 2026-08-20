@@ -31,17 +31,19 @@ PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
 - `skimage`(medial-axis 중앙선)가 필요한데, pip으로 깔면 numpy 2.x를 딸려
   깔아서 같은 문제를 만든다 → 깐 뒤 venv의 numpy를 uninstall해서 되돌릴 것.
 
-### 옵션은 없다 — 상수를 고친다
+### 기본값은 소스에, 일회성 스윕은 CLI에 둔다
 
 > 📄 **"CSV 속도가 왜 이 값인가"는 [SPEED_PARAMS.md](SPEED_PARAMS.md) 를 먼저 볼 것.**
 > 어느 상수가 속도를 정하고 어느 게 아무 효과도 없는지, 실차 백 실측 근거와
-> 게이트 스윕표까지 한 곳에 정리돼 있다. (요약: `V_MAX` 와 `MU_PROFILE` 은
-> 이 트랙에서 랩타임을 못 움직인다. `LAT_ERR_CORNER_S` 다.)
+> 게이트 스윕표까지 한 곳에 정리돼 있다. 오래된 표는 0808 기하의 기록이고,
+> 현재 0821 기하에서는 `MU_PROFILE`도 실제로 랩타임을 움직인다.
 
 **트랙 생성 파라미터**는 `build_map.py` 상단 `설정` 블록에 모여 있다
-(`MU` 0.75, `MU_PROFILE` 0.65, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP`
+(`MU` 1.50, `MU_PROFILE` 1.40, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP`
 True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
-표와 의미는 maps/README.md 참고.
+기본 `mkcsv <맵>`은 이 값을 사용한다. `--mu-profile` 등은 스윕용이며 실제
+사용값이 generation manifest에 남는다. 확정값은 상단 상수와 근거 주석으로
+옮겨 다음 `mkcsv`에서도 재현되게 한다. 표와 의미는 maps/README.md 참고.
 
 **라인-벽 이격은 이제 상수가 아니라 구간별로 다르다.** SLAM 트랙은 폭이
 2배 넘게 변하는데(my_track 0.9~2.15 m) 균일 `SAFE_DIST` 하나로는 넓은 곳에서
@@ -51,7 +53,7 @@ True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
 창으로 rolling-min 해서 좁은 게이트 앞에서 미리 완화한다. 좁혀서 얻은 여유는
 `ADAPTIVE_SPEED_BY_WIDTH`가 속도로 갚는다 —
 `v ≤ (벽여유 − 차 반폭) / lat_err_slope`. 이 기울기는 이제 단일 상수가 아니라
-직전 곡률로 `LAT_ERR_STRAIGHT_S`(0.030) ↔ `LAT_ERR_CORNER_S`(0.117) 사이를
+직전 곡률로 `LAT_ERR_STRAIGHT_S`(0.030) ↔ `LAT_ERR_CORNER_S`(0.065) 사이를
 보간한 값이다 (옛 `LAT_ERR_PER_MPS` 는 없어졌다 — 자세한 건 SPEED_PARAMS.md).
 `ADAPTIVE_SAFE_DIST=False`로 두면 예전 균일 `SAFE_DIST` 동작이다.
 
@@ -75,6 +77,12 @@ YAML(0.742/4.0) 세 벌이 전부 달랐고, CSV는 실차가 달리지 않는 �
 > Python simulation tracker는 실행·보고만 한다(advisory). 예전처럼 둘 다
 > gate로 하려면 `--profiles all`. 실차 CSV가 시뮬 프로파일 실패로 막히던
 > 문제를 없애면서도 결과는 계속 보인다.
+>
+> 2026-08-21부터 실차 추종 시뮬의 footprint 예측은 advisory다. 0821-1은
+> 모델 `|d|max≈0.63 m` 대 실측 `≈0.16 m`, 안정적이었던 0821-6.65도 모델이
+> 크게 과대예측했기 때문이다. CSV 형식, 정적 차체-벽 footprint, 곡률,
+> 조향/조향속도, plant, 마찰원은 계속 hard gate이고 Python sim profile의
+> 폐루프 footprint도 hard gate다.
 >
 > 종방향 plant는 `ackermann_to_vesc`의 DRIVE/COAST/BRAKE 중재를 그대로
 > 모델링한다(임계값은 `hardware_ws .../vesc.yaml`에서 읽음). 제동 전류
