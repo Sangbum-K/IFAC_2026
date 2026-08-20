@@ -147,6 +147,8 @@ spliner_node:
     spliner/blend_dist_max_m: 8.0
     # 레이스라인 생성 MU_PROFILE(0.80) x g. real_car.yaml 과 동일 (근거는 그쪽 주석).
     spliner/path_lat_acc_max: 8.83
+    # 실차와 동일 (근거는 real_car.yaml 같은 키 주석). 시뮬 A/B 용.
+    spliner/dyn_path_lat_acc_max: 10.79
     spliner/path_decel_max: 6.0
     spliner/lane_blend_out_m: 5.0
     # 조기 라인 스위치 (real_car.yaml과 동일). 곡률이 이보다 작은 직선 구간에서만

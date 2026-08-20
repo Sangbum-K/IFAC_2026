@@ -116,6 +116,8 @@ spliner_node:
     spliner/blend_lat_acc_max: 8.83    # 08-12: 5.0 -> 7.85, 08-13: -> 8.83 (MU_PROFILE 0.90)
     spliner/blend_dist_max_m: 8.0
     spliner/path_lat_acc_max: 8.83
+    # 실차와 동일 (근거는 real_car.yaml 같은 키 주석).
+    spliner/dyn_path_lat_acc_max: 10.79
     spliner/path_decel_max: 6.0
     spliner/lane_blend_out_m: 5.0
     spliner/early_switch_kappa_max: 0.10
