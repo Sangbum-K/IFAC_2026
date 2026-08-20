@@ -38,14 +38,14 @@ ament_target_dependencies(frenet_frame_node
 # spliner_node의 회피 궤적(/planner/avoidance/otwpnts)이 유효하면 splice
 add_executable(local_trajectory_node src/local_trajectory_node.cpp)
 ament_target_dependencies(local_trajectory_node
-  rclcpp nav_msgs f1tenth_planning_msgs
+  rclcpp nav_msgs std_msgs f1tenth_planning_msgs
 )
 
 # 장애물 회피 스플라인 플래너 (ForzaETH/unicorn spliner C++ 포팅)
 # /perception/obstacles -> /planner/avoidance/otwpnts (20 Hz)
 add_executable(spliner_node src/spliner_node.cpp)
 ament_target_dependencies(spliner_node
-  rclcpp nav_msgs visualization_msgs f1tenth_planning_msgs
+  rclcpp nav_msgs std_msgs visualization_msgs f1tenth_planning_msgs
 )
 
 # 벽 충돌/진행불능(stuck) 판정·복구 감독 (mina Task 4).

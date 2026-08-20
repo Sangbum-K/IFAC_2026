@@ -757,10 +757,27 @@ def test_dynamic_only_trailing_relaxations_are_gated():
         r"if \(obs\.is_static\) \{\s*\n\s*v_target_actual \*= 0\.85;", src), (
         "×0.85 가 is_static 게이트 밖으로 나왔다 — 동적에서 붙을수록 뒤로 밀린다"
     )
-    # 동적 속도 바닥은 비상정지와 geom_blocked 에서 반드시 해제된다.
-    assert "!emergency_stop && dyn_trailing_floor_ > 0.0 && !geom_blocked_now" in src, (
-        "동적 트레일링 바닥의 해제 조건(비상정지/geom_blocked)이 사라졌다 — "
-        "양쪽이 막힌 상태에서 바닥을 강제하면 그대로 접촉한다"
+    # 동적 속도 바닥의 해제 계약 (2026-08-20 개정).
+    # ① 비상정지에서는 **완전히** 해제된다 (바닥 자체를 거치지 않는다).
+    assert "!emergency_stop && dyn_trailing_floor_ > 0.0" in src, (
+        "동적 트레일링 바닥의 비상정지 해제가 사라졌다"
+    )
+    # ② geom_blocked 는 '해제'가 아니라 '하향'이다. 종전에는 통로가 없을 때
+    #    바닥을 통째로 풀었는데, 코너에서 회피 통로가 없는 상태가 바로
+    #    geom_blocked 라 **바닥이 필요한 바로 그 순간에 사라졌다**
+    #    (run_0819 84~89s: 발행 명령 최저 0.59 m/s, 앞차는 1.5~1.8).
+    #    상대 속도 아래로 내려가는 것은 어떤 안전도 사지 못한다 — 같은 속도면
+    #    간격이 유지되고, 더 느리면 벌어지기만 할 뿐 상황은 바뀌지 않는다.
+    #    그래서 절대 바닥(3.0)은 포기하되 상대 속도까지만 내려간다.
+    assert re.search(
+        r"const double floor_use = geom_blocked_now\s*\?\s*"
+        r"std::max\(obs_vs_eff, 0\.0\)\s*:\s*dyn_trailing_floor_;",
+        src, re.S), (
+        "geom_blocked 시 바닥이 '상대 속도까지 하향'이 아니게 바뀌었다 — "
+        "0 으로 풀면 앞차보다 느려져 랩타임만 잃고, 3.0 을 강제하면 접촉한다"
+    )
+    assert "geom_blocked_now" in src, (
+        "geom_blocked 분기 자체가 사라졌다"
     )
     # 제동 감속도는 정적/동적이 분리돼 있어야 한다.
     assert ("(obs.is_static || emergency_stop) ? trailing_decel_ "
@@ -781,3 +798,196 @@ def test_static_trailing_floor_is_not_lowered_by_dynamic_floor():
     )
     # 동적 바닥은 별개 파라미터로 존재해야 한다 (정적 값 재사용 금지).
     assert dyn_floor > 0.0
+
+
+# ── 동적 전용 그립 예산 분리 (2026-08-20) ────────────────────────────────────
+# 이 묶음이 지키는 계약은 하나다: **정적 회피는 종전과 비트 단위로 같아야 한다.**
+# path_lat_acc_max(8.83)는 정적 회피 기하가 오래 맞춰 온 값이고, 레이스라인은
+# build_map.py 의 MU_PROFILE 로 생성된다. 그 격차 때문에 코너에서 마찰원
+# 잔여가 0이 되어 BlendLatAcc이 하한 2.0에 고착되고 동적 회피가 전부 기각되는데
+# (run_0819 헤어핀 A 53% / B 59%), 정적을 같이 올릴 수는 없어 예산을 분리했다.
+
+def _generator_mu_profile():
+    """build_map.py 의 MU_PROFILE 을 AST 로 읽는다.
+
+    숫자를 베껴 적지 않는 이유는 실제로 어긋난 적이 있기 때문이다 —
+    2026-08-19 밤 1.10 -> 1.15 로 올렸다가 08-20 에 되돌렸는데(e405aee),
+    여기에 11.28 이 박혀 있어 상한만 옛 마찰에 남아 있었다.
+    """
+    src = (PKG / "scripts" / "global_traj_sim" / "build_map.py").read_text(
+        encoding="utf-8")
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "MU_PROFILE"
+                for t in node.targets):
+            return float(ast.literal_eval(node.value))
+    raise AssertionError("build_map.py 에서 MU_PROFILE 을 못 읽었다")
+
+
+def _local_trajectory_source():
+    return (PKG / "src" / "local_trajectory_node.cpp").read_text(encoding="utf-8")
+
+
+def test_dyn_lat_budget_never_below_static():
+    """동적 예산은 정적 예산 이상이어야 하고, 코드가 그것을 강제해야 한다."""
+    src = _spliner_source()
+    # 0 = 비활성(정적과 동일). 켤 거면 반드시 정적 이상 — 낮으면 '동적만 더
+    # 보수적'이 되어 이 분리의 목적과 반대가 된다.
+    assert re.search(
+        r"dyn_path_lat_acc_max_ > 0\.0 &&\s*"
+        r"dyn_path_lat_acc_max_ < path_lat_acc_max_", src, re.S), (
+        "dyn_path_lat_acc_max 가 정적 예산보다 낮아도 통과하게 됐다"
+    )
+    for env_name in ("real_car", "sim_real_car", "sim"):
+        flat = _env_profile_flat(PKG, env_name)
+        dyn = flat.get("spliner_node.spliner/dyn_path_lat_acc_max")
+        static = flat.get("spliner_node.spliner/path_lat_acc_max")
+        if dyn is None or not dyn:
+            continue
+        assert dyn >= static, f"{env_name}: 동적 예산({dyn}) < 정적 예산({static})"
+        # 상한은 레이스라인을 실제로 만든 마찰이다. 그 위는 계획이 스스로
+        # 만든 궤적보다 공격적으로 달리겠다는 뜻이라 근거가 없다.
+        mu_profile = _generator_mu_profile()
+        limit = mu_profile * 9.81
+        assert dyn <= limit + 1e-9, (
+            f"{env_name}: 동적 예산({dyn})이 build_map.py "
+            f"MU_PROFILE({mu_profile} -> {limit:.2f})을 넘는다 — "
+            "레이스라인 생성 마찰이 상한이다"
+        )
+
+
+def test_lat_budget_is_reset_every_cycle():
+    """예산이 사이클을 넘어 새면 정적 경로가 동적 예산으로 계산된다."""
+    src = _spliner_source()
+    # active_speed_scale_ 이 정확히 이 리셋 누락으로 정적에 25% 부스트를
+    # 흘린 전례가 있다 (그 주석이 spliner_node.cpp Run() 에 남아 있다).
+    assert re.search(
+        r"active_lat_budget_\s*=\s*path_lat_acc_max_;", src), (
+        "사이클 시작 리셋(active_lat_budget_ = path_lat_acc_max_)이 없다"
+    )
+    # 대입은 장애물 분기 안에서만, 그리고 반드시 게이트를 거쳐야 한다.
+    unconditional = re.findall(
+        r"active_lat_budget_\s*=\s*dyn_path_lat_acc_max_\s*;", src)
+    assert not unconditional, (
+        "dyn_path_lat_acc_max_ 를 무조건 대입하는 곳이 생겼다: %r" % unconditional
+    )
+
+
+def test_lat_budget_key_is_monotonic_not_is_static():
+    """예산 키는 ever_dynamic(단조)이어야 한다 — is_static 은 프레임마다 뒤집힌다."""
+    src = _spliner_source()
+    # run_0819 실측: is_static 이 1.3초에 5번(3.8 Hz)까지 뒤집힌다(id 45·96).
+    # 그 값을 예산 키로 쓰면 같은 상대에 대해 예산이 오르내려 속도가 진동한다.
+    assert re.search(
+        r"const bool dyn_budget_ok =\s*"
+        r"dyn_path_lat_acc_max_ > 0\.0 &&\s*"
+        r"\(qs_active_ \|\| WasEverDynamic\(closest\.id\)\);", src, re.S), (
+        "예산 게이트가 qs_active_ || WasEverDynamic 이 아니게 바뀌었다"
+    )
+
+
+def test_committed_lat_budget_is_frozen():
+    """커밋 재생은 생성 시점 예산으로 돌아야 한다 (분류가 뒤집혀도)."""
+    src = _spliner_source()
+    # 커밋 재생은 기하 상한만 재사용하고 전방 가속 envelope 는 **현재** 예산으로
+    # 다시 푼다. 그 사이 예산이 바뀌면 같은 기하에서 속도가 점프한다.
+    assert "committed_lat_budget_ = active_lat_budget_;" in src, (
+        "커밋 생성 시 예산 동결이 사라졌다"
+    )
+    assert re.search(
+        r"if \(committed_lat_budget_ > 0\.0\) \{\s*"
+        r"active_lat_budget_ = committed_lat_budget_;", src, re.S), (
+        "커밋 유지 사이클에 동결 예산 복원이 사라졌다"
+    )
+    # 커밋이 끝나면 반드시 풀려야 한다 (다음 커밋이 물려받으면 안 된다).
+    assert src.count("committed_lat_budget_ = -1.0;") >= 2, (
+        "커밋 만료/파기 시 예산 해제가 빠졌다"
+    )
+
+
+def test_speed_profile_reads_active_budget_only():
+    """ApplySpeedProfile / BlendLatAcc 이 정적 예산을 직접 읽으면 분리가 무의미하다."""
+    src = _spliner_source()
+    # 곡률 캡 · 마찰원 종그립 차감 · reachable 성립성 · BlendLatAcc 네 곳이
+    # 모두 active_lat_budget_ 를 읽어야 한다.
+    for needle in (
+        "if (active_lat_budget_ > 1e-3) {",
+        "std::sqrt(active_lat_budget_ / k)",
+        "std::clamp(lat / active_lat_budget_, 0.0, 1.0)",
+        "k * simulated_v * simulated_v > active_lat_budget_",
+        "const double budget = active_lat_budget_;",
+    ):
+        assert needle in src, f"예산 소비처가 정적 값으로 되돌아갔다: {needle}"
+    # path_lat_acc_max_ 의 남은 용도는 설정/검증/리셋/게이트뿐이다.
+    # 속도 프로파일 본문에서 다시 읽히면 분리가 깨진 것이다.
+    body = src[src.index("bool SplinerNode::ApplySpeedProfile"):]
+    assert "path_lat_acc_max_" not in body, (
+        "ApplySpeedProfile 본문이 path_lat_acc_max_ 를 직접 읽는다"
+    )
+
+
+def test_quasi_static_opens_tier1_and_arc_but_not_free_spline():
+    """준정적은 회피 시도 게이트와 원호까지만 연다 — 자유 스플라인은 계속 닫는다."""
+    src = _spliner_source()
+    # qs_active_ 가 빠져 있어 준정적이 메인 직선 밖에서 사문화돼 있었다
+    # (run_0819 84.462s 이후 evade=0).
+    assert ("bool try_evade = in_sector || closest.is_static || qs_active_;"
+            in src), (
+        "try_evade 에서 qs_active_ 가 빠졌다 — 준정적이 다시 사문화된다"
+    )
+    # Tier 2(DoSpline)는 자유 최적화라 동적 입력 노이즈에 churn 한다. 계속 정적 전용.
+    assert "if (!evasion_valid && try_evade && closest.is_static) {" in src, (
+        "Tier 2(DoSpline)가 동적/준정적에 열렸다 — churn 근거가 그대로다"
+    )
+    # Tier 2c(원호)는 준정적에 연다. 상대 이동은 CheckPathCollision(motion_s)이 본다.
+    assert "const bool escape_allowed = closest_obs.is_static || qs_active_;" in src, (
+        "원호 백스톱의 준정적 개방이 사라졌다"
+    )
+    # 가시성 면제(정지 워치독)는 정적 전용으로 남아야 한다.
+    assert re.search(
+        r"\(standstill_override_ && closest_obs\.is_static\)", src), (
+        "정지 워치독의 가시성 면제가 동적까지 번졌다 — 유령에 급조향한다"
+    )
+
+
+def test_entry_runway_closing_correction_is_dynamic_only():
+    """진입 활주로 접근속도 보정이 정적에 적용되면 정적 기하가 통째로 바뀐다."""
+    src = _spliner_source()
+    assert re.search(
+        r"if \(closest_obs\.is_static \|\| IsPredictionTube\(closest_obs\)",
+        src), (
+        "활주로 보정의 정적/예측튜브 제외가 사라졌다 (배율은 항상 >= 1 이라 "
+        "정적에 적용되면 회피 가부가 통째로 헐거워진다)"
+    )
+    # 접근속도는 준정적과 같은 노이즈 문턱을 넘을 때만 인정한다 — 작은 closing
+    # 으로 나누면 배율이 발산한다.
+    assert "if (!(closing > qs_min_closing_mps_)) {" in src, (
+        "활주로 보정의 접근속도 문턱이 사라졌다 — 배율이 발산한다"
+    )
+
+
+def test_dyn_speed_floor_only_raises_the_loss_hold_cap():
+    """동적 속도 바닥은 홀드 상한을 올리기만 하고, 상한이 있어야 한다."""
+    spl = _spliner_source()
+    loc = _local_trajectory_source()
+    # 정적은 0 을 보낸다 = 종전 동작. (정적/예측튜브를 건너뛴다.)
+    assert re.search(
+        r"if \(o\.is_static \|\| IsPredictionTube\(o\)\) \{\s*continue;", spl, re.S), (
+        "속도 바닥 발행이 정적을 제외하지 않는다 — 정적 홀드 거동이 바뀐다"
+    )
+    # 수신값은 max 에만 들어가야 한다 (캡을 내리는 데 쓰이면 감속 장치가 된다).
+    assert re.search(
+        r"const double cap = std::max\(\s*"
+        r"\{last_avoidance_head_speed_, avoidance_loss_hold_floor_,\s*"
+        r"last_dyn_speed_floor_\}\);", loc, re.S), (
+        "회피상실 홀드 캡이 세 바닥의 max 가 아니게 바뀌었다"
+    )
+    # 인지가 상대 속도를 크게 잘못 보고해도 홀드가 통째로 무효가 되면 안 된다.
+    assert "avoidance_loss_hold_floor_max_" in loc, (
+        "수신 바닥의 상한이 사라졌다 — 0812 fail-open 이 되살아난다"
+    )
+    local_params = _ros_params(_yaml(PARAMS), "local_trajectory_node")
+    floor = local_params["local_trajectory/avoidance_loss_hold_floor_mps"]
+    assert floor == pytest.approx(1.5), (
+        "상수 바닥이 바뀌었다 — control 의 backstop_min_speed_mps 와 같은 값이다"
+    )

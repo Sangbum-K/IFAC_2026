@@ -16,6 +16,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
@@ -589,6 +590,14 @@ private:
   // (좁은 저속 코너의 회피 성립률을 건드리지 않기 위한 것 — 저속에서는
   //  실측 오차도 작다).
   double TrackingReserve(double speed) const;
+
+  // dist_ahead 앞 지점에 도달했을 때의 속도 [m/s]. 감속 크레딧
+  // (boundary_arrival_decel_mps2_) 이 0 이면 PlanSpeed() 와 같다.
+  double ArrivalSpeed(double dist_ahead) const;
+  // 벽 여유를 **그 지점을 지날 때** 속도로 재는 형태. 근거는 .cpp 주석.
+  // dist_ahead = 0 이면 RequiredBoundaryMargin() 과 완전히 같다.
+  double RequiredBoundaryMarginAt(
+    double requested_margin, double dist_ahead) const;
   double RequiredBoundaryMargin(double requested_margin) const;
   bool WithinTrackBoundary(int gb_idx, double d, double requested_margin) const;
 
@@ -639,6 +648,14 @@ private:
   // 실차에서 문제가 생기면 false로 즉시 되돌릴 수 있게 파라미터로 둔다.
   bool blend_use_spare_grip_{true};    // 전환 거리 상한 [m]
   double path_lat_acc_max_{7.0};    // 오프셋 경로 곡률 -> 속도 상한용 그립 [m/s^2]
+  // ── 동적 장애물 전용 그립 예산 (2026-08-20) ──────────────────────────
+  // path_lat_acc_max_ 는 정적 회피 기하가 그 값에 맞춰 튜닝돼 있어 단독으로
+  // 못 올린다. 그런데 이 값이 레이스라인 생성 마찰(build_map.py MU_PROFILE
+  // 1.15 = 11.28 m/s^2)보다 낮으면 BlendLatAcc 의 마찰원 잔여가 코너에서
+  // 음수가 되어 하한 2.0 에 고착되고, 동적 회피가 "속도캡 2.35 -> 도달불가"
+  // 로 전부 기각된다 (run_0819 헤어핀 A 53% / B 59% 사이클이 하한 고착).
+  // 0 이하면 path_lat_acc_max_ 를 그대로 쓴다 = 종전과 비트 단위로 동일.
+  double dyn_path_lat_acc_max_{0.0};
   // 레이스라인 그립 일관성 캡: 오프셋으로 곡률이 커진 구간에서, 그 지점의
   // 레이스라인이 실제로 쓰던 횡가속(kappa*v^2)을 넘지 않도록 제한한다.
   // inside_speed_scale 같은 고정 배율을 물리 기반으로 대체하는 장치.
@@ -660,6 +677,14 @@ private:
   double boundary_tracking_speed_ref_{3.5};   // [m/s] 이 속도까지는 고정값
   double boundary_tracking_speed_gain_{0.0};  // [s] 초과 속도당 추가 예비
   double boundary_tracking_margin_max_{0.05}; // [m] 예비 상한
+  // 벽 여유를 "그 지점에 도달했을 때" 속도로 재기 위한 감속 크레딧 [m/s^2].
+  // 0 = 예전(현재 속도) 동작과 비트 단위로 동일. 상한은 plant_decel_mps2_ —
+  // 그 위는 브레이크 성능을 실제보다 높게 주장하는 것이라 예비가 얇아진다.
+  double boundary_arrival_decel_mps2_{0.0};
+  // 트레일링 횡 램프를 장애물과도 대조할 것인가. false = 예전 동작(벽만).
+  // 개입 문턱은 **차체 접촉**이고 되감기 목표는 계획 마진이다 — 근거는
+  // BuildTrailing 의 ramp_obstacle_slack 주석 (301/664 사이클).
+  bool trailing_ramp_obstacle_check_{false};
   double collision_sigma_{2.0};
   // 정적 장애물의 시간 성장 불확실성 상한 [s]. 브릿지가 모든 장애물에
   // vs_var/vd_var를 상수(0.25)로 붙이는데, CheckPathCollision/FilterObstacles가
@@ -926,6 +951,11 @@ private:
   // ApplySpeedProfile 이 마지막으로 성공했을 때의 기하 상한. 커밋 시점에
   // 크기가 맞으면 committed_geom_ceiling_ 로 옮긴다.
   mutable std::vector<double> last_geom_ceiling_;
+  /// 커밋 생성 시점의 그립 예산(active_lat_budget_). 커밋 재생은 기하 상한만
+  /// 재사용하고 **전방 가속 envelope 는 현재 예산으로 다시 푼다**. 그 사이
+  /// 정적/동적 분류가 뒤집혀 예산이 바뀌면 같은 기하에서 속도가 점프하므로
+  /// 커밋이 사는 동안 얼려 둔다. 음수 = 미설정(종전 동작).
+  double committed_lat_budget_{-1.0};
   visualization_msgs::msg::MarkerArray committed_mrks_;
   double committed_start_s_{-1.0};
   double committed_until_s_{-1.0};
@@ -946,6 +976,15 @@ private:
   bool committed_tail_truncated_{false};
   // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
   double active_speed_scale_{1.0};
+  // 이번 사이클에 실제로 쓸 그립 예산 [m/s^2]. ApplySpeedProfile(곡률 캡·
+  // 마찰원 종그립·reachable 성립성)과 BlendLatAcc 가 path_lat_acc_max_ 대신
+  // 이 값을 읽는다. Run() 이 매 사이클 path_lat_acc_max_ 로 되돌리고,
+  // 최근접 장애물이 한 번이라도 동적이었으면 dyn_path_lat_acc_max_ 로 올린다.
+  // ⚠️ 리셋을 빠뜨리면 직전 동적 사이클의 예산이 정적 경로/커밋 재생으로
+  //    새는 통로가 된다 — active_speed_scale_ 이 정확히 그 사고를 냈다.
+  double active_lat_budget_{7.0};
+  /// 위 p_dyn_speed_floor_ 로 내보낼 이번 사이클 값. 매 사이클 0 으로 리셋.
+  double dyn_speed_floor_{0.0};
 
   // SP 레인체인지 상태
   bool sp_lane_change_{true};
@@ -1112,6 +1151,12 @@ private:
   // 가므로, control 의 추종 백스톱(조향포화 -> 감속)이 그대로 걸리면 회피와
   // 싸운다. 컨트롤러는 이 신호가 true 인 동안 포화 분기만 건너뛴다.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_escape_active_;
+  /// 동적 상대 속도에서 유도한 속도 바닥 [m/s]. local_trajectory 의
+  /// "회피 경로 상실 홀드"가 절대 상수(1.5)로 캡을 걸다가 **상대보다 느린**
+  /// 속도를 130점 전부에 퍼뜨리는 것을 막는다 (run_0819 86.99~87.44s 실측).
+  /// 전방 lookahead 안 동적 상대의 필터 속도 x dyn_pass_speed_ratio 이고,
+  /// 동적 상대가 없으면 0 (= 종전 동작). 매 사이클 발행한다.
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr p_dyn_speed_floor_;
   rclcpp::TimerBase::SharedPtr t_run_;
 };
 

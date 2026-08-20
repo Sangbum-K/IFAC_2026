@@ -116,6 +116,8 @@ spliner_node:
     spliner/blend_lat_acc_max: 8.83    # 08-12: 5.0 -> 7.85, 08-13: -> 8.83 (MU_PROFILE 0.90)
     spliner/blend_dist_max_m: 8.0
     spliner/path_lat_acc_max: 8.83
+    # 실차와 동일 (근거는 real_car.yaml 같은 키 주석).
+    spliner/dyn_path_lat_acc_max: 10.79
     spliner/path_decel_max: 6.0
     spliner/lane_blend_out_m: 5.0
     spliner/early_switch_kappa_max: 0.10
@@ -128,6 +130,10 @@ spliner_node:
     spliner/boundary_tracking_speed_ref: 3.5
     spliner/boundary_tracking_speed_gain: 0.08
     spliner/boundary_tracking_margin_max: 0.22
+    # ↓ real_car.yaml 과 반드시 같아야 한다 (test_sim_profiles_mirror_real_car).
+    #   근거·득실은 params.yaml / real_car.yaml 주석 참조.
+    spliner/boundary_arrival_decel_mps2: 2.0
+    spliner/trailing_ramp_obstacle_check: true
     # control 의 vehicle/speed_scale 과 반드시 같은 값 (실차·sim 모두 1.0).
     # 예전엔 여기가 base 의 0.30 이었고 control sim.yaml 도 0.30 이라 짝은
     # 맞았지만, 그 짝이 실차(1.0)와 달라 동적 상대 trailing 속도 모델이
