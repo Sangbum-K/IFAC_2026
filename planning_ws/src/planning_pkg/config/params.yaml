@@ -58,7 +58,10 @@ global_trajectory_node:
     # 기존 0821-1.csv는 그대로 보관하며 이 값에서도 계속 로드 가능하다.
     # 2026-08-21: 1.30 -> 1.40. 안정적이었던 0821-6.65보다 한 단계 과한
     # mkcsv 기본값(build_map MU_PROFILE=1.40)과 짝. 기존 저-mu CSV도 허용한다.
-    global_trajectory/validation_mu: 1.40
+    # 2026-08-21: 1.40 -> 1.49. my_track0821-5 실측 정상 11랩 중앙값
+    # 6.55 s에서 6.20 s를 겨냥한 my_track0822-6 실험 CSV를 strict 모드로
+    # 로드하기 위한 상한. 기본 mkcsv(mu1.40)와 기존 CSV도 계속 허용한다.
+    global_trajectory/validation_mu: 1.49
     global_trajectory/validation_wheelbase_m: 0.33
     # 2026-08-11: 0.36 -> 0.3578 (gain 재적합 후 대칭 한계 자체).
     # CSV 의 |kappa| 상한을 tan(이 값)/wheelbase 로 정하므로 낮추면 검증이
