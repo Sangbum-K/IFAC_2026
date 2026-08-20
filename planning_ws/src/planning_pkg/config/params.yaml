@@ -48,10 +48,10 @@ global_trajectory_node:
     # MU_PROFILE 이 0.90 으로 오른 뒤 mu0.90 CSV 로 rc my_track0813 했더니
     # global_trajectory_node 가 다시 abort(exit -6) 했다. 08-08 주석이 예고한
     # 그 실패다. MU(1.00, 물리 타이어 한계)가 아니라 MU_PROFILE을 쓴다.
-    # 2026-08-19: 0.90 -> 0.98 -> 1.10 -> 1.15(같은 날 밤), build_map.py
-    # MU_PROFILE과 짝. 그 상수 주석에 근거(run_0819_150244 실측 + map/m_l1
-    # 재튜닝 후 재스윕)와 위험이 있다.
-    global_trajectory/validation_mu: 1.15
+    # 2026-08-19: 0.90 -> 0.98 -> 1.10 -> 1.15 -> 1.10(되돌림), build_map.py
+    # MU_PROFILE과 짝. 1.15는 실차에서 기각된 map/m_l1=0.35 전용 값이었다 —
+    # 근거와 경위는 그 상수 주석 참조.
+    global_trajectory/validation_mu: 1.10
     global_trajectory/validation_wheelbase_m: 0.33
     # 2026-08-11: 0.36 -> 0.3578 (gain 재적합 후 대칭 한계 자체).
     # CSV 의 |kappa| 상한을 tan(이 값)/wheelbase 로 정하므로 낮추면 검증이
