@@ -143,6 +143,9 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/cls_inherit_dist_m", 0.6);
     this->declare_parameter("spliner/cls_inherit_timeout_sec", 0.5);
     this->declare_parameter("spliner/dyn_trailing_floor_mps", 3.0);
+    // false = 종전 동작(간격과 무관한 절대 바닥). 실차는 real_car.yaml 에서 켠다.
+    this->declare_parameter("spliner/trailing_floor_gap_aware", false);
+    this->declare_parameter("spliner/trailing_floor_contact_dist_m", 0.44);
     this->declare_parameter("spliner/trailing_decel_dyn", 1.5);
     this->declare_parameter("spliner/ever_dynamic_residual_vs", 0.3);
     this->declare_parameter("spliner/ever_dynamic_residual_max_m", 0.20);
@@ -291,6 +294,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/cls_inherit_timeout_sec").as_double();
     dyn_trailing_floor_ =
         this->get_parameter("spliner/dyn_trailing_floor_mps").as_double();
+    trailing_floor_gap_aware_ =
+        this->get_parameter("spliner/trailing_floor_gap_aware").as_bool();
+    trailing_floor_contact_dist_m_ =
+        this->get_parameter("spliner/trailing_floor_contact_dist_m").as_double();
     trailing_decel_dyn_ =
         this->get_parameter("spliner/trailing_decel_dyn").as_double();
     ever_dynamic_residual_vs_ =
@@ -450,6 +457,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         cls_inherit_dist_m_ < 0.0 || cls_inherit_dist_m_ > 5.0 ||
         cls_inherit_timeout_sec_ < 0.0 || cls_inherit_timeout_sec_ > 5.0 ||
         dyn_trailing_floor_ < 0.0 || dyn_trailing_floor_ > 10.0 ||
+        // 접촉 거리는 차 반길이 이상이어야 한다 — 그보다 작으면 "차체가 이미
+        // 닿은 자리"를 여유로 세는 것이라 상한이 물리를 넘는다. 상한은
+        // trailing_gap_m_ (그보다 크면 목표 간격 자체가 접촉 안쪽이 된다).
+        !std::isfinite(trailing_floor_contact_dist_m_) ||
+        trailing_floor_contact_dist_m_ < vehicle_half_length_m_ ||
+        trailing_floor_contact_dist_m_ > trailing_gap_m_ ||
         trailing_decel_dyn_ <= 0.0 || trailing_decel_dyn_ > 20.0 ||
         ever_dynamic_residual_vs_ < 0.0 || ever_dynamic_residual_vs_ > 5.0 ||
         ever_dynamic_residual_max_m_ < 0.0 ||
@@ -529,6 +542,14 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         boundary_arrival_decel_mps2_,
         (!trailing_ramp_obstacle_check_ && boundary_arrival_decel_mps2_ <= 0.0)
             ? "(둘 다 off — 2026-08-19 이전 동작)" : "");
+    // 같은 이유로 트레일링 바닥 상태도 한 줄 찍는다. run_0819/0820 두 접촉이
+    // 모두 "명령이 정확히 바닥값에 붙은 채" 일어났으므로, 바닥이 무엇이었는지
+    // 는 사고 분석의 1순위 입력이다.
+    RCLCPP_INFO(this->get_logger(),
+        "spliner 트레일링 바닥: %.2f m/s, gap_aware=%s (접촉거리 %.2f m)",
+        dyn_trailing_floor_,
+        trailing_floor_gap_aware_ ? "ON" : "off",
+        trailing_floor_contact_dist_m_);
 
     if (ot_speed_scale_ > 1.0) {
         RCLCPP_WARN(this->get_logger(),
@@ -2678,7 +2699,10 @@ bool SplinerNode::TryLaneSwitch(
         // 떨어지더라도 "여기로 가려던 중"이라는 사실은 남긴다. 트레일링이
         // raceline으로 되돌리는 대신 이 목표를 유지하는 근거가 된다
         // (retry_d_target_ 주석 참조).
+        // 충돌로 떨어지면 이 기록을 되돌린다 (hpp RetryTargetSnapshot 주석).
+        const RetryTargetSnapshot retry_snap = SnapshotRetryTarget();
         NoteRetryTarget(d_hold, closest_obs.vd);
+        path_collision_reject_ = false;
         if (BuildLaneSwitch(d_hold, closest_obs, hold_through_s, all_ahead,
                             out_wpnts, out_mrks)) {
             CommitOtSide(side, closest_obs);
@@ -2688,6 +2712,13 @@ bool SplinerNode::TryLaneSwitch(
                 side.c_str(), d_hold, Mod(s_apex, track_len_),
                 out_wpnts.wpnts.size());
             return true;
+        }
+        if (path_collision_reject_) {
+            // 목표 자리에 물체가 있다 — 이쪽으로 쌓는 진행은 접촉을 향한다.
+            // 되돌리지 않으면 트레일링이 이 목표를 이어받아 그대로 간다
+            // (run_0820_173822 25.4~26.0s, 중심간 0.21 m).
+            RestoreRetryTarget(retry_snap);
+            NoteReject("retry_d_dropped_collision");
         }
         out_wpnts.wpnts.clear();
         out_mrks.markers.clear();
@@ -3411,6 +3442,8 @@ bool SplinerNode::BuildLaneSwitch(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 경로가 장애물과 충돌 (blocking s=%.2f)", blocking_s);
         NoteReject("lane_collision");
+        // 호출자(TryLaneSwitch)가 retry_d 를 되돌리는 근거 (hpp 선언부 주석).
+        path_collision_reject_ = true;
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -3434,6 +3467,11 @@ bool SplinerNode::DoSpline(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
     f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
+
+    // 아래 NoteRetryTarget(d_apex) 가 충돌 기각으로 무효가 되면 여기로
+    // 되돌린다 (hpp RetryTargetSnapshot 주석). 이 함수 안에서 retry_d 를
+    // 건드리는 곳은 그 한 곳뿐이라 진입 시점 스냅샷이 곧 "기록 직전" 값이다.
+    const RetryTargetSnapshot retry_snap = SnapshotRetryTarget();
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
 
@@ -3914,6 +3952,11 @@ bool SplinerNode::DoSpline(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "FreeSpline 거부: 경로가 장애물과 충돌 (blocking s=%.2f)", blocking_s);
         NoteReject("spline_collision");
+        // 목표 자리에 물체가 있다 — TryLaneSwitch 와 같은 이유로 되돌린다
+        // (hpp RetryTargetSnapshot 주석).
+        path_collision_reject_ = true;
+        RestoreRetryTarget(retry_snap);
+        NoteReject("retry_d_dropped_collision");
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -4346,9 +4389,50 @@ bool SplinerNode::BuildTrailing(
             // emergency_stop 이고, 그건 위에서 이미 제외돼 있다.
             //
             // 정적에는 이 블록 자체가 실행되지 않는다 (allow_stop = !is_static).
-            const double floor_use = geom_blocked_now
+            double floor_use = geom_blocked_now
                 ? std::max(obs_vs_eff, 0.0)
                 : dyn_trailing_floor_;
+            // ── ③ 바닥에 "지금 간격에서 낼 수 있는 속도" 상한 (2026-08-20) ──
+            // ② 가 덮지 못하는 구멍이 있다. geom_blocked_now 는
+            // lane_geom_floor / spline_geom_floor 기각에서만 서는데, 두 접촉
+            // 백의 **1위 기각 사유는 lane_wall_no_room** 이라 둘 다 서지
+            // 않았다. 그래서 절대 바닥 3.0 이 그대로 살아 있었고, 두 백 모두
+            // 접촉 직전 발행 명령이 **정확히 3.00** 이었다:
+            //   run_0819_211107 89.41s 범퍼여유 0.03 m, 상대 1.7 -> 명령 3.00
+            //   run_0820_173822 25.20s 범퍼여유 0.42 m, 상대 1.0 -> 명령 3.00
+            //
+            // 상대가 갑자기 서면 우리는 trailing_lag_sec_ 뒤부터
+            // trailing_ramp_decel_ 로만 줄일 수 있다. 남은 여유 B 안에 서려면
+            //   F·T + F²/(2a) <= B  =>  F <= -aT + sqrt((aT)² + 2aB)
+            // 이고, 이 상한을 넘는 바닥은 "따라가기"가 아니라 예약된 추돌이다.
+            // 실측: 동적 트레일링 사이클 중 바닥 3.0 이 요구하는 B=3.15 m 를
+            // 만족한 것은 0819 9% / 0820 14% 뿐이었다.
+            //
+            // ⚠️ 바닥에만 씌우는 상한이고 v_target 자체는 건드리지 않는다.
+            //    상대가 이 상한보다 빠르면 아래 max 가 상대 속도를 그대로
+            //    남기므로 **상대가 빠를 때는 종전과 비트 단위로 동일**하다
+            //    (두 백에서 동적 트레일링 중 상대 vs >= 3.0 인 사이클은 0).
+            //    그래서 "빠른 상대 뒤 근접"에는 여전히 간격 되먹임이 없다 —
+            //    알려진 잔여 위험이고, 목표 자체에 상한을 씌우는 것은 빠른
+            //    상대 뒤에서 불필요하게 느려지는 회귀라 여기서는 하지 않는다.
+            if (trailing_floor_gap_aware_) {
+                double gap_ahead = Mod(obs.s_start - cur_s_, track_len_);
+                if (gap_ahead > track_len_ * 0.5) {
+                    // 이미 지나친 상대 — 추돌 대상이 아니므로 상한을 걸지
+                    // 않는다(= 종전 동작). closest 선정이 s_end 기준이라
+                    // 보통 여기 오지 않지만, 나란히 달리는 프레임이 있다.
+                    gap_ahead = lookahead_m_;
+                }
+                const double bumper =
+                    std::max(gap_ahead - trailing_floor_contact_dist_m_, 0.0);
+                const double a_f = std::max(trailing_ramp_decel_, 0.05);
+                const double aT = a_f * std::max(trailing_lag_sec_, 0.0);
+                const double v_gap =
+                    -aT + std::sqrt(aT * aT + 2.0 * a_f * bumper);
+                if (std::isfinite(v_gap)) {
+                    floor_use = std::min(floor_use, std::max(v_gap, 0.0));
+                }
+            }
             v_target_prof_actual =
                 std::max(v_target_prof_actual, floor_use);
         }
@@ -5683,6 +5767,22 @@ void SplinerNode::TraceCycle(
         cur_s_, cur_vs_, cur_d_, id, dist, d_lo, d_hi, is_static, cls_obs,
         try_evade ? 1 : 0, in_sector ? 1 : 0, committed ? 1 : 0,
         outcome, cycle_rejects_.empty() ? "-" : cycle_rejects_.c_str());
+}
+
+SplinerNode::RetryTargetSnapshot SplinerNode::SnapshotRetryTarget() const {
+    RetryTargetSnapshot snap;
+    snap.target = retry_d_target_;
+    snap.vd = retry_d_vd_;
+    snap.stamp = retry_d_stamp_;
+    snap.has = has_retry_d_;
+    return snap;
+}
+
+void SplinerNode::RestoreRetryTarget(const RetryTargetSnapshot &snap) {
+    retry_d_target_ = snap.target;
+    retry_d_vd_ = snap.vd;
+    retry_d_stamp_ = snap.stamp;
+    has_retry_d_ = snap.has;
 }
 
 void SplinerNode::NoteRetryTarget(double d_target, double obs_vd) {

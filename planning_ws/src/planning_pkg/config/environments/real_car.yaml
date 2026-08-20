@@ -510,6 +510,16 @@ spliner_node:
     # 트레일링 횡 램프의 장애물 검사 (params.yaml 주석). 실차 켬.
     # 되돌리려면 이 한 줄을 false 로 — 재빌드 없이 launch 재시작만 하면 된다.
     spliner/trailing_ramp_obstacle_check: true
+    # ── 트레일링 바닥의 간격 기반 상한 (params.yaml 주석) ────────────────
+    # run_0819_211107 / run_0820_173822 두 접촉 모두 "발행 명령이 정확히
+    # 바닥값 3.00 에 붙은 채" 일어났다. 상대는 1.0~1.7 m/s 였다.
+    # 되돌리려면 gap_aware 를 false 로 — 재빌드 없이 launch 재시작이면 된다.
+    spliner/trailing_floor_gap_aware: true
+    # 절대 바닥도 3.0 -> 2.0. gap_aware 가 근접 구간을 덮으므로 이 값이 실제로
+    # 무는 곳은 범퍼여유 1.60 m 이상 구간뿐이고, 거기서 "상대가 갑자기 정지"에
+    # 대한 여유가 3.15 m -> 1.60 m 로 줄어든다. gap_aware 위에서의 추가 비용은
+    # 실측 평균 0.12 m/s (run_0819) / 0.34 m/s (run_0820) 로 작다.
+    spliner/dyn_trailing_floor_mps: 2.0
     # (제거) stop_margin_m / stop_ramp_dist_m: spliner에 없는 파라미터였음 —
     # 정지 거동은 trailing_gap_m / trailing_decel / trailing_engage_dist_m가 담당
     # 실차 컨트롤러는 wpnt 속도를 그대로 사용 -> 반드시 1.0 (sim은 0.5).

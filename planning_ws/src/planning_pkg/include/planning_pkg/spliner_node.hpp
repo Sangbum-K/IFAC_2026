@@ -859,6 +859,16 @@ private:
   // 정적 바닥(trailing_retry_speed 2.5)보다 **높다** — 의도된 것이다.
   // 근거·해제 조건은 BuildTrailing 의 사용처 주석 참조.
   double dyn_trailing_floor_{3.0};
+  // 바닥에 "지금 간격에서 낼 수 있는 속도"라는 상한을 씌운다 (2026-08-20).
+  // false = 종전과 비트 단위로 동일. 근거는 BuildTrailing 의 사용처 주석.
+  bool trailing_floor_gap_aware_{false};
+  // dist(= obs.s_start - cur_s_) 가 이 값이면 차체가 닿는다 [m].
+  // 기하 유도값이 아니라 **실측값**이다 — run_0819_211107 89.51s 접촉 시
+  // dist 0.40 에서 IMU yaw rate 가 -9.9 -> +10.7 로 뒤집혔고 그 뒤 dist 가
+  // 0.38~0.51 에서 바닥을 쳤다(밀착). vehicle_half_length_m_(0.275)와
+  // 다른 이유는 obs.s_start 가 차체 뒷면이 아니라 **LiDAR 클러스터의 근단**
+  // 이기 때문이다. 여기서는 안전 방향(여유를 작게 보는 쪽)으로 실측을 쓴다.
+  double trailing_floor_contact_dist_m_{0.44};
   // 동적 상대용 트레일링 제동 감속도 [m/s²]. 정적은 trailing_decel_(1.0) 유지.
   //
   // v_allow 식(rem >= v·T + (v²-v_target²)/2a)이 이미 "늦게 밟기"를 구현하고
@@ -1137,6 +1147,39 @@ private:
   double retry_d_target_{0.0};
   rclcpp::Time retry_d_stamp_{0, 0, RCL_ROS_TIME};
   bool has_retry_d_{false};
+  // ── 충돌로 기각된 목표는 남기지 않는다 (2026-08-20) ─────────────────────
+  // NoteRetryTarget 은 **경로 검증 전에** 호출된다. 위 주석이 밝힌 대로
+  // "속도/기하로 떨어져도 가려던 방향은 남긴다"가 의도이고 그건 맞다 —
+  // 그쪽 기각은 목표가 옳고 지금 못 갈 뿐이라, 진행을 지켜야 잔량이 줄고
+  // 언젠가 성립한다.
+  //
+  // 그런데 **충돌** 기각은 성격이 다르다. 목표 자리에 물체가 있다는 뜻이라
+  // 그 목표에 도착하는 것이 곧 접촉이고, 그쪽으로 쌓은 진행은 가치가 아니라
+  // 위험이다. run_0820_173822 25.4s 실측:
+  //   · 정적 #22(s 20.65~20.99) 를 오른쪽으로 비키려고 d_hold = -0.52 기록
+  //   · HoldClearsOthers 는 **#22 옆 유지 구간만**(자차 앞 1.37 m 이후) 보므로
+  //     자차 앞 0.7 m 의 동적 #12(d[-0.64,-0.32]) 는 걸리지 않는다
+  //   · BuildLaneSwitch 의 CheckPathCollision 이 #12 와의 충돌로 기각
+  //     (lane_collision) — 그러나 목표는 이미 기록된 뒤였다
+  //   · 트레일링이 그 -0.52 -> -0.60 을 이어받아 25.97s 중심간 0.21 m 접촉
+  // 그 충돌 판정은 상대를 **도착시각만큼 전파**해서 내린 것이고(motion_s/
+  // motion_d), 이 백에서 등속 예측 오차는 약 0.09 m 였다. 즉 "상대가 비켜
+  // 줄 것"은 이미 반영돼 있고, 비켜 주는 경우엔 애초에 기각이 나지 않는다.
+  //
+  // 그래서 기각 사유를 구분해 **충돌일 때만** 직전 값으로 되돌린다. 되돌림은
+  // 초기화(clear)가 아니라 복원이다 — 예전 목표가 아직 유효 창 안이면 그것을
+  // 살려 두는 편이 위 교착 방어에 가깝다.
+  struct RetryTargetSnapshot {
+    double target{0.0};
+    double vd{0.0};
+    rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+    bool has{false};
+  };
+  RetryTargetSnapshot SnapshotRetryTarget() const;
+  void RestoreRetryTarget(const RetryTargetSnapshot &snap);
+  /// 직전 경로 검증이 **충돌**로 떨어졌는가. CheckPathCollision 기각 지점에서만
+  /// 선다(lane_collision / spline_collision). 호출 직전에 반드시 내려 둘 것.
+  bool path_collision_reject_{false};
   static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간 (정적/준정적)
   /// 목표를 기록할 때 대상 장애물의 횡속도 [m/s]. 동적 유지에서 경과 시간만큼
   /// 목표 d 를 따라 옮기는 데 쓴다 (아래 kRetryDHoldDynSec 주석 참조).
