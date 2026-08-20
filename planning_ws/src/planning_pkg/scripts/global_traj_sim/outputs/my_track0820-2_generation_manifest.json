@@ -1,16 +1,16 @@
 {
   "files": [
     {
-      "bytes": 37140,
+      "bytes": 37160,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0820-2_sp_max9.00ms_margin0.08m_mu1.10.csv",
       "role": "sp_0",
-      "sha256": "482aa3786ce5223ae95c13df8eca4bd2dccc90b78245de0222a399b78bb829e8"
+      "sha256": "5d7d04b3acabb8e7f09b1927893ae89b1cfb6fe10318bd0c0bf8f01e2cab1139"
     },
     {
-      "bytes": 37140,
+      "bytes": 37160,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0820-2_sp_max9.00ms_margin0.08m_mu1.10.csv",
       "role": "sp_1",
-      "sha256": "482aa3786ce5223ae95c13df8eca4bd2dccc90b78245de0222a399b78bb829e8"
+      "sha256": "5d7d04b3acabb8e7f09b1927893ae89b1cfb6fe10318bd0c0bf8f01e2cab1139"
     },
     {
       "bytes": 8945,
@@ -25,20 +25,20 @@
       "sha256": "93b0562f40d9e5851433a6642d861641751c9cfd772391e659dce38b17d33472"
     },
     {
-      "bytes": 37454,
+      "bytes": 37469,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0820-2_iqp_max9.00ms_margin0.08m_mu1.10.csv",
       "role": "main_output",
-      "sha256": "eda45f688e12ee534e0bab3f8f8e5ca21b0816c9f7b9e7717e91df034693a301"
+      "sha256": "59b17c62793e338ccfb0a1319334d396b7370d87dd4a2859789f4f888ff898ec"
     },
     {
-      "bytes": 37454,
+      "bytes": 37469,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0820-2_iqp_max9.00ms_margin0.08m_mu1.10.csv",
       "role": "main_runtime",
-      "sha256": "eda45f688e12ee534e0bab3f8f8e5ca21b0816c9f7b9e7717e91df034693a301"
+      "sha256": "59b17c62793e338ccfb0a1319334d396b7370d87dd4a2859789f4f888ff898ec"
     }
   ],
-  "generation_content_sha256": "b15a15b6d5484ec9dafe804a2ba49c3465e13f69885078611cd1014db717472e",
-  "generation_id": "afb10e274f2145999ee4994cdc98adc4",
+  "generation_content_sha256": "240a1d87e06d80a97e5e73695c21fa0e9da6473ab864a56410be46a9bdf9fee0",
+  "generation_id": "b86f3596c88b49a69b36fa5c610aecd6",
   "main": "my_track0820-2_iqp_max9.00ms_margin0.08m_mu1.10.csv",
   "map": "my_track0820-2",
   "schema_version": 1,
@@ -74,35 +74,36 @@
       "python_sim_tracker"
     ],
     "backstop": {
-      "path_error_max_m": 0.2963888289116548,
-      "path_error_steps": 13,
+      "path_error_max_m": 0.34503252440424026,
+      "path_error_steps": 19,
       "path_error_threshold_m": 0.25,
-      "speed_cut_max_mps": 1.0481110781581846,
+      "speed_cut_max_mps": 1.5099656995115567,
       "steer_sat_steps": 8,
       "steer_sat_threshold": 0.85,
-      "total_steps": 312,
-      "triggered_steps": 21
+      "total_steps": 300,
+      "triggered_steps": 27
     },
     "brake_decel_per_amp": 0.14,
+    "closedloop_footprint_slack_m": 0.0,
     "gate_profiles": [
       "cpp_real_car"
     ],
     "gate_target": "real",
     "longitudinal": {
       "accel_limit_min": 2.2,
-      "ax_sign_flips": 10,
-      "ax_sign_flips_before_smoothing": 10,
+      "ax_sign_flips": 11,
+      "ax_sign_flips_before_smoothing": 11,
       "decel_limit_min": 2.2,
       "jerk_limit": 30.0,
-      "jerk_max": 264.91094347541264,
-      "jerk_over_pts": 38,
-      "jerk_p50": 0.3028326945235906,
-      "jerk_p99": 115.46855239496897,
-      "jerk_p99_before_smoothing": 220.83252300267966,
+      "jerk_max": 339.8578819316119,
+      "jerk_over_pts": 49,
+      "jerk_p50": 0.29381964234313507,
+      "jerk_p99": 142.47996757173615,
+      "jerk_p99_before_smoothing": 273.59868430631036,
       "smooth_passes": 2
     },
     "mu_profile": 1.1,
-    "plant_accel_mps2": 3.0,
+    "plant_accel_mps2": 4.5,
     "plant_decel_planned_mps2": 2.38,
     "profile_settings": [
       {
@@ -129,10 +130,10 @@
       "profile": "cpp_real_car",
       "raised_pts": 235,
       "total_pts": 369,
-      "v_drop_max": 0.7145799797532106,
-      "v_mean_after": 5.564589436990181,
-      "v_mean_before": 5.728762251152751,
-      "window_max_m": 1.8170390316872436
+      "v_drop_max": 0.919284124041134,
+      "v_mean_after": 5.6216126119369,
+      "v_mean_before": 5.781559154863015,
+      "window_max_m": 1.8713364471576164
     },
     "velocity_profile_settings": {
       "corner_accel_mps2": 2.2,

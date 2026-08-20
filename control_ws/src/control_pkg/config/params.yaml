@@ -58,7 +58,7 @@ control:
     # 0.35 재적용은 (a) 대응하는 궤적을 함께 배선하고 (b) 저속부터 실차 검증한
     # 뒤에 할 것.
     "map/m_l1": 0.47
-    "map/q_l1": -0.35
+    "map/q_l1": -0.2
     # Unicorn ROS1 adaptive L1:
     #   L1 = m_l1*v + q_l1 - curvature_factor*mean(|kappa[i+10:i+20]|)*v^2
     # 원본 FIESTA1의 0.145는 현 레이스라인 대입 시 중앙값 36%, 상위 10% 70%를

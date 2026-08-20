@@ -52,7 +52,7 @@
     # NOT retire the mechanical finding -- see ~/TUNING_STATUS.md section 11 for
     # the hands-on check and the "three consecutive runs within +-0.005" bar
     # that has to be cleared before calling the neutral fixed.
-    steering_angle_to_servo_offset: 0.3935
+    steering_angle_to_servo_offset: 0.424
     #
     # Derived limits (delta = (servo - offset)/gain, servo clipped to
     # [servo_min, servo_max] below):

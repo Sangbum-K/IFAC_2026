@@ -425,6 +425,16 @@ SP_CURV_W  = 12.0
 CAR_HALF_WIDTH = 0.15    # 실차 전폭 0.30 m의 절반. 라인-벽 여유가 이 미만이면 접촉
 CAR_HALF_LENGTH = 0.275  # 실차 전장 약 0.55 m의 절반
 
+# 폐루프(closed-loop) footprint 게이트에만 걸리는 슬랙 [m]. 기본 0 = 실차 치수
+# 그대로. --closedloop-slack 으로만 올라가며, 라인 자체를 보는 verify_line 이나
+# 코리도/이격 계산에는 절대 반영되지 않는다 — 저기까지 널널해지면 벽을 관통하는
+# CSV가 다시 나간다(2026-07-27 사고).
+#
+# 의미: 시뮬 추종 오차를 판정할 때만 차를 사방 M m 작게 본다. 0.10 이면 반폭이
+# 0.15 -> 0.05 m 로 줄어 실질 접촉 여유를 그만큼 포기하는 것이다. 통과했다는
+# 말은 "슬랙만큼 깎고 나면 안 닿는다"는 뜻이지 실차가 안전하다는 뜻이 아니다.
+CLOSEDLOOP_FOOTPRINT_SLACK_M = 0.0
+
 # --- 폭에 따라 유동적으로 변하는 이격/속도 (SLAM 맵 대응) --------------------
 # SLAM(slam_toolbox)으로 딴 트랙은 구간마다 코리도 폭이 다르다. my_track 실측:
 # 실폭 median 1.2 m, 최소 ~0.9 m, 최대 2.15 m — 2배 넘게 변한다.
@@ -3105,6 +3115,7 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
     """배포 프로파일 폐루프/footprint/합성 타이어 예산을 fail-closed 검사."""
     profile = controller_profile(profile_name)
     msgs = []
+    warns = []   # PASS 를 막지 않는 경고. 마지막에 그대로 출력된다.
     fields = SIM_LOG_FIELDS
     lengths = [len(log.get(key, ())) for key in fields]
     if not lengths or min(lengths) == 0 or len(set(lengths)) != 1:
@@ -3131,14 +3142,29 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
     if len(dt) and (np.any(dt <= 0.0) or not np.isfinite(dt).all()):
         msgs.append(f"{prefix}: [FAIL] 로그 시간이 단조 증가하지 않음")
     pose_xy = np.column_stack([log["x"], log["y"]])
+    slack = max(0.0, float(CLOSEDLOOP_FOOTPRINT_SLACK_M))
+    half_w = max(0.5 * grid.res, CAR_HALF_WIDTH - slack)
+    half_l = max(0.5 * grid.res, CAR_HALF_LENGTH - slack)
+    slack_note = (f" (슬랙 {slack:.3f} m 적용, 반폭 {half_w:.3f} m)"
+                  if slack > 0.0 else "")
     footprint_bad = np.flatnonzero(
-        ~footprint_free(grid, pose_xy, log["theta"]))
+        ~footprint_free(grid, pose_xy, log["theta"],
+                        half_length=half_l, half_width=half_w))
     if len(footprint_bad):
         first = int(footprint_bad[0])
-        msgs.append(f"{prefix}: [FAIL] 폐루프 주행 footprint가 벽 침범 "
+        msgs.append(f"{prefix}: [FAIL] 폐루프 주행 footprint가 벽 침범"
+                    f"{slack_note} "
                     f"({len(footprint_bad)} step, 최초 "
                     f"t={log['t'][first]:.2f}s, "
                     f"xy=({log['x'][first]:.2f},{log['y'][first]:.2f}))")
+    elif slack > 0.0:
+        strict_bad = int(np.count_nonzero(
+            ~footprint_free(grid, pose_xy, log["theta"])))
+        if strict_bad:
+            # PASS 판정은 막지 않지만(그게 슬랙의 목적) 기록은 반드시 남긴다.
+            warns.append(
+                f"{prefix}: [warn] 실차 치수로는 footprint 침범 "
+                f"{strict_bad} step — 슬랙 {slack:.3f} m 로 통과시킨 것이다")
 
     steer_bad = np.flatnonzero(
         np.abs(log["steer"]) > profile["max_steer_rad"] + 1e-6)
@@ -3223,12 +3249,14 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
             f"{prefix}: PASS · {requested_laps}랩 · profile speed scale "
             f"{effective_scale:.4f} (planner {profile['planner_speed_scale']:.4f}"
             f" × control {profile['controller_speed_scale']:.2f}, cap "
-            f"{profile['max_speed_mps']:.2f} m/s) · footprint 충돌 0 · "
+            f"{profile['max_speed_mps']:.2f} m/s) · footprint 충돌 0"
+            f"{slack_note} · "
             f"|lat err|max {np.abs(log['d_err']).max():.3f} m · "
             + (f"{backstop_note} · " if backstop_note else "") +
             f"합성 요구/실제 max {log['combined_demand'].max():.2f}/"
             f"{log['combined_accel'].max():.2f} <= {tire_limit:.2f} m/s²"
             f"{brake_note}")
+    msgs.extend(warns)
     return not any("[FAIL]" in msg for msg in msgs), msgs
 
 
@@ -3601,6 +3629,12 @@ def main():
                     help=f"코너 취급 곡률 경계 [1/m] (기본 "
                          f"{LAT_ERR_KAPPA_HIGH:.2f}). corner_ax_limits() 와 "
                          "공유되므로 A_*_CORNER 적용 범위도 같이 바뀐다.")
+    ap.add_argument("--closedloop-slack", type=float, default=0.0,
+                    metavar="M",
+                    help="폐루프 footprint 게이트에서만 차체를 사방 M m 작게 "
+                         "봐서 널널하게 판정한다 (기본 0 = 실차 치수). "
+                         "라인-벽 여유(verify_line)와 코리도 이격은 그대로. "
+                         "실차 치수로는 닿는 경우 [warn] 로 남는다.")
     ap.add_argument("--mu-profile", type=float, default=None, metavar="MU",
                     help=f"속도 프로파일 계획용 마찰계수 (기본 "
                          f"{MU_PROFILE:.2f}). 곡률 상한 = sqrt(mu*g/|k|). "
@@ -3615,6 +3649,15 @@ def main():
         seal_map(args.map)
         return
     _apply_profile_overrides(args)
+    if args.closedloop_slack:
+        if args.closedloop_slack < 0.0:
+            ap.error("--closedloop-slack 는 0 이상이어야 한다")
+        globals()["CLOSEDLOOP_FOOTPRINT_SLACK_M"] = float(
+            args.closedloop_slack)
+        print(f"[설정] 폐루프 footprint 게이트 슬랙 "
+              f"{args.closedloop_slack:.3f} m — 이 게이트에서만 차체를 "
+              f"반폭 {max(0.0, CAR_HALF_WIDTH - args.closedloop_slack):.3f} m "
+              "로 작게 본다. 라인-벽 여유/코리도 이격은 실차 치수 그대로.")
     m = args.map
     profiles, advisory_profiles = selected_controller_profiles(args.profiles)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -3835,6 +3878,7 @@ def main():
             } for p in profiles + advisory_profiles],
             "raceline_v_max_mps": V_MAX,
             "mu_profile": MU_PROFILE,
+            "closedloop_footprint_slack_m": CLOSEDLOOP_FOOTPRINT_SLACK_M,
             "plant_accel_mps2": A_ACC_MAX,
             "plant_decel_planned_mps2": A_DEC_PLANNED,
             "brake_decel_per_amp": BRAKE_DECEL_PER_AMP,
