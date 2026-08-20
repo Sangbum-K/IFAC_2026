@@ -1,44 +1,44 @@
 {
   "files": [
     {
-      "bytes": 37297,
+      "bytes": 38063,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0819_sp_max9.00ms_margin0.08m_mu1.15.csv",
       "role": "sp_0",
-      "sha256": "0ca7fa4adbcab5c04572acd31819d88a97c7e4b38310df7a9cb9cec35d6c0041"
+      "sha256": "9426426fa523e475cc0c0858cc13233f149df12818350eb16359d5c0a3295486"
     },
     {
-      "bytes": 37297,
+      "bytes": 38063,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0819_sp_max9.00ms_margin0.08m_mu1.15.csv",
       "role": "sp_1",
-      "sha256": "0ca7fa4adbcab5c04572acd31819d88a97c7e4b38310df7a9cb9cec35d6c0041"
+      "sha256": "9426426fa523e475cc0c0858cc13233f149df12818350eb16359d5c0a3295486"
     },
     {
-      "bytes": 9007,
+      "bytes": 9095,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0819_centerline.csv",
       "role": "centerline_output",
-      "sha256": "f5f7ed1e49348408de2f32b822fa31dfd52752657c7ef2b048d907d83de08b46"
+      "sha256": "1f4f09f8844e4c096dbdf995d57e38668c366563bcf696d7734a313cad91bf73"
     },
     {
-      "bytes": 9007,
+      "bytes": 9095,
       "path": "planning_ws/src/planning_pkg/config/centerline/my_track0819_centerline.csv",
       "role": "centerline_runtime",
-      "sha256": "f5f7ed1e49348408de2f32b822fa31dfd52752657c7ef2b048d907d83de08b46"
+      "sha256": "1f4f09f8844e4c096dbdf995d57e38668c366563bcf696d7734a313cad91bf73"
     },
     {
-      "bytes": 37624,
+      "bytes": 38502,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0819_iqp_max9.00ms_margin0.08m_mu1.15.csv",
       "role": "main_output",
-      "sha256": "6c88938a36fdc24a61032119c5b46740cbf0442bad7571982adaee50eb829086"
+      "sha256": "31a9903bcb4dcc070ac5d317bf9d915c9896fe4413411daf15082fa452154a98"
     },
     {
-      "bytes": 37624,
+      "bytes": 38502,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0819_iqp_max9.00ms_margin0.08m_mu1.15.csv",
       "role": "main_runtime",
-      "sha256": "6c88938a36fdc24a61032119c5b46740cbf0442bad7571982adaee50eb829086"
+      "sha256": "31a9903bcb4dcc070ac5d317bf9d915c9896fe4413411daf15082fa452154a98"
     }
   ],
-  "generation_content_sha256": "b924341ca4eb02d6f379c135567ba11c7b6aad16c5cb363838107b4b68435be2",
-  "generation_id": "e48a11d7aa3d44c8ab69f02dd8ccb906",
+  "generation_content_sha256": "16f9744513220d726483365450e6713ffe5d0baee606822355d1898be3a6e150",
+  "generation_id": "d1d211db34c44f7f90d476456d992245",
   "main": "my_track0819_iqp_max9.00ms_margin0.08m_mu1.15.csv",
   "map": "my_track0819",
   "schema_version": 1,
@@ -50,38 +50,38 @@
     "adaptive_safe_dist": {
       "enabled": true,
       "narrow_pts": 0,
-      "safe_max": 0.5500000000000002,
-      "safe_median": 0.5500000000000002,
-      "safe_min": 0.5025000000000001,
-      "total_pts": 74,
-      "width_max": 3.825,
-      "width_median": 2.125,
-      "width_min": 1.6750000000000003
+      "safe_max": 0.55,
+      "safe_median": 0.55,
+      "safe_min": 0.5175,
+      "total_pts": 75,
+      "width_max": 3.85,
+      "width_median": 2.1,
+      "width_min": 1.725
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 91,
-      "corner_pts": 354,
+      "binding_pts": 75,
+      "corner_pts": 358,
       "enabled": true,
-      "limited_pts": 210,
+      "limited_pts": 203,
       "raw_v_min": 5.384615384615384,
       "slope_max": 0.065,
       "slope_min": 0.03,
-      "smoothed_pts": 179,
-      "total_pts": 371,
-      "v_min": 5.769230769230768
+      "smoothed_pts": 185,
+      "total_pts": 379,
+      "v_min": 5.879120879120878
     },
     "advisory_profiles": [
       "python_sim_tracker"
     ],
     "backstop": {
-      "path_error_max_m": 0.41641468336334875,
-      "path_error_steps": 52,
+      "path_error_max_m": 0.5642322155565719,
+      "path_error_steps": 30,
       "path_error_threshold_m": 0.25,
-      "speed_cut_max_mps": 2.215933832331983,
-      "steer_sat_steps": 8,
+      "speed_cut_max_mps": 4.275952189090852,
+      "steer_sat_steps": 11,
       "steer_sat_threshold": 0.85,
-      "total_steps": 306,
-      "triggered_steps": 60
+      "total_steps": 308,
+      "triggered_steps": 41
     },
     "brake_decel_per_amp": 0.14,
     "gate_profiles": [
@@ -90,15 +90,15 @@
     "gate_target": "real",
     "longitudinal": {
       "accel_limit_min": 2.2,
-      "ax_sign_flips": 5,
-      "ax_sign_flips_before_smoothing": 6,
+      "ax_sign_flips": 11,
+      "ax_sign_flips_before_smoothing": 10,
       "decel_limit_min": 2.2,
       "jerk_limit": 30.0,
-      "jerk_max": 323.6620802824985,
-      "jerk_over_pts": 41,
-      "jerk_p50": 0.3117587471148481,
-      "jerk_p99": 156.8426018634412,
-      "jerk_p99_before_smoothing": 261.4012000703758,
+      "jerk_max": 307.25599136422915,
+      "jerk_over_pts": 70,
+      "jerk_p50": 0.27227856494088476,
+      "jerk_p99": 130.80839263428632,
+      "jerk_p99_before_smoothing": 266.89281269764416,
       "smooth_passes": 2
     },
     "mu_profile": 1.15,
@@ -127,12 +127,12 @@
       "enabled": true,
       "lookahead_s": 0.25,
       "profile": "cpp_real_car",
-      "raised_pts": 215,
-      "total_pts": 371,
-      "v_drop_max": 0.7896772814952833,
-      "v_mean_after": 5.839314340567476,
-      "v_mean_before": 5.996608680371046,
-      "window_max_m": 1.9728432352262826
+      "raised_pts": 241,
+      "total_pts": 379,
+      "v_drop_max": 0.8213123490542591,
+      "v_mean_after": 5.815688638059462,
+      "v_mean_before": 5.962519908811707,
+      "window_max_m": 1.964030855416266
     },
     "velocity_profile_settings": {
       "corner_accel_mps2": 2.2,
