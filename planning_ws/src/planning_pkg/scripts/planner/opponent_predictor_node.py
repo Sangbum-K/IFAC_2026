@@ -45,12 +45,19 @@ except ModuleNotFoundError:
 class GP1D:
     """s -> y 1차원 GP 회귀 (RBF 커널). 트랙 s 경계는 데이터 wrap 증강으로 처리."""
 
-    def __init__(self, length_scale, sigma_f, sigma_n, track_len):
+    def __init__(self, length_scale, sigma_f, sigma_n, track_len,
+                 mean_fn=None):
         self.ls = length_scale
         self.sf2 = sigma_f ** 2
         self.sn2 = sigma_n ** 2
         self.L = track_len
         self.x = None
+        # 사전평균 m(s). None 이면 학습 데이터의 상수평균(종전 동작).
+        # 속도 GP 는 여기에 "레이스라인 프로파일 x 상대 페이스 배율"을 넣는다:
+        # 상수평균은 데이터 없는 s 에서 코너 감속/직선 가속을 전혀 모르고
+        # (my_track0821 raceline vx 4.66~7.80, std 0.84 -> 최악 1.68 m/s 오차)
+        # 그 오차가 predict_stats 의 sigma -> 튜브 종방향 팽창으로 직결된다.
+        self.mean_fn = mean_fn
 
     def _wrap_augment(self, x, y):
         # 경계 근처(2*ls) 데이터를 반대편으로 복제해 주기성 근사
@@ -60,35 +67,87 @@ class GP1D:
         return (np.concatenate([x, x[lo] + self.L, x[hi] - self.L]),
                 np.concatenate([y, y[lo], y[hi]]))
 
+    def _prior(self, x):
+        """사전평균 m(x). mean_fn 이 없으면 학습 데이터 상수평균(종전 동작)."""
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        if self.mean_fn is None:
+            return np.full(x.shape, self.y_mean, dtype=float)
+        # _wrap_augment 가 [-2ls, L+2ls] 범위를 만들므로 mean_fn 에는 항상
+        # [0, L) 로 접어서 넘긴다.
+        m = np.asarray(self.mean_fn(x % self.L), dtype=float)
+        return np.broadcast_to(m, x.shape).astype(float)
+
     def fit(self, x, y):
         x, y = self._wrap_augment(np.asarray(x), np.asarray(y))
         if len(x) > 150:                      # 균일 서브샘플로 계산량 제한
             idx = np.linspace(0, len(x) - 1, 150).astype(int)
             x, y = x[idx], y[idx]
         self.x = x
+        # mean_fn 이 있어도 y_mean 은 계산해 둔다 — mean_fn 이 예외를 던지는
+        # 등으로 못 쓰게 되면 상수평균으로 되돌릴 수 있어야 한다.
         self.y_mean = float(np.mean(y))
         d = x[:, None] - x[None, :]
         K = self.sf2 * np.exp(-0.5 * (d / self.ls) ** 2) + self.sn2 * np.eye(len(x))
         self.Lchol = np.linalg.cholesky(K)
+        # GP 는 사전평균으로부터의 **잔차**만 학습한다.
         self.alpha = np.linalg.solve(
-            self.Lchol.T, np.linalg.solve(self.Lchol, y - self.y_mean))
+            self.Lchol.T, np.linalg.solve(self.Lchol, y - self._prior(x)))
 
     def predict(self, xq):
         # 학습 데이터가 wrap 증강돼 있어 [0, L) 질의는 직접 거리로 충분
         xq = np.atleast_1d(np.asarray(xq, dtype=float))
         d = xq[:, None] - self.x[None, :]
         k = self.sf2 * np.exp(-0.5 * (d / self.ls) ** 2)
-        return self.y_mean + k @ self.alpha
+        return self._prior(xq) + k @ self.alpha
 
     def predict_stats(self, xq):
         """Posterior mean and point-wise standard deviation."""
         xq = np.atleast_1d(np.asarray(xq, dtype=float))
         d = xq[:, None] - self.x[None, :]
         k = self.sf2 * np.exp(-0.5 * (d / self.ls) ** 2)
-        mean = self.y_mean + k @ self.alpha
+        mean = self._prior(xq) + k @ self.alpha
         solved = np.linalg.solve(self.Lchol, k.T)
         var = np.maximum(self.sf2 - np.sum(solved * solved, axis=0), self.sn2)
         return mean, np.sqrt(var)
+
+
+class PaceProfile:
+    """GP 학습 전에 쓰는 속도 사전모델: raceline vx(s) * 상대 페이스 배율.
+
+    GP1D 와 같은 (predict / predict_stats) 인터페이스를 갖는다 —
+    _predict_catch 가 둘을 구분하지 않고 쓰도록 하기 위한 것이다.
+    종전에는 GP 가 학습될 때까지(min_samples 40 x sample_min_ds 0.15 = 6.0m
+    주행) 등속 CV 튜브밖에 없었고, 그 사이 코너 감속을 전혀 반영하지 못했다.
+    """
+
+    def __init__(self, raceline_v_arr, scale, sigma):
+        self._v = raceline_v_arr
+        self.scale = float(scale)
+        self.sigma = float(sigma)
+
+    def predict(self, xq):
+        # GP1D 와 같이 스칼라 질의에도 1-D 배열을 돌려준다.
+        return np.atleast_1d(self._v(xq)) * self.scale
+
+    def predict_stats(self, xq):
+        mean = self.predict(xq)
+        return mean, np.full(np.shape(mean), self.sigma, dtype=float)
+
+
+class ConstProfile:
+    """상수 사전모델 (횡방향 d 용). GP1D 와 같은 인터페이스."""
+
+    def __init__(self, value, sigma):
+        self.value = float(value)
+        self.sigma = float(sigma)
+
+    def predict(self, xq):
+        return np.full(np.atleast_1d(np.asarray(xq)).shape, self.value,
+                       dtype=float)
+
+    def predict_stats(self, xq):
+        mean = self.predict(xq)
+        return mean, np.full(np.shape(mean), self.sigma, dtype=float)
 
 
 class OpponentPredictorNode(Node):
@@ -177,7 +236,11 @@ class OpponentPredictorNode(Node):
         }
         invalid = [name for name, value in positive.items()
                    if not math.isfinite(float(value)) or float(value) <= 0.0]
-        if invalid or not 0.0 < self.max_prediction_span_ratio < 0.5 or \
+        # 상한 0.9: 튜브가 트랙 한 바퀴에 가까워지면 s wrap 으로 자기 자신을
+        # 감싸 "어디에도 통로가 없다"가 되므로 1.0 미만으로 묶는다.
+        # (0.5 였을 때 소형 트랙에서 느린 추월이 상시 CAP 되던 것을 완화 —
+        #  params.yaml 의 max_prediction_span_ratio 주석 참조.)
+        if invalid or not 0.0 < self.max_prediction_span_ratio < 0.9 or \
                 not math.isfinite(self.source_future_tolerance) or \
                 self.source_future_tolerance < 0.0:
             raise RuntimeError(f'invalid predictor safety parameters: {invalid}')
@@ -338,9 +401,22 @@ class OpponentPredictorNode(Node):
                 self.gp_ls, sigma_f=0.5, sigma_n=self.gp_sn,
                 track_len=self.track_len)
             gpd.fit(b['S'], b['D'])
-            gpv = GP1D(
-                self.gp_ls, sigma_f=2.0, sigma_n=self.gp_sn_v,
-                track_len=self.track_len)
+            # 속도 GP 는 raceline 프로파일 x 페이스 배율을 사전평균으로 쓰고
+            # **잔차만** 학습한다. 잔차의 진폭은 원신호보다 훨씬 작으므로
+            # sigma_f 도 2.0 -> 0.5 로 내린다 (데이터 없는 s 에서 사후 sigma 가
+            # sigma_f 로 발산하는데, 그 sigma 가 그대로 튜브 종방향 팽창이 된다).
+            pace_scale, _ = self._pace_scale(b)
+            b['pace_scale'] = pace_scale
+            if pace_scale is None:
+                gpv = GP1D(
+                    self.gp_ls, sigma_f=2.0, sigma_n=self.gp_sn_v,
+                    track_len=self.track_len)
+            else:
+                gpv = GP1D(
+                    self.gp_ls, sigma_f=0.5, sigma_n=self.gp_sn_v,
+                    track_len=self.track_len,
+                    mean_fn=lambda sq, k=pace_scale:
+                        self._raceline_v_arr(sq) * k)
             gpv.fit(b['S'], b['V'])
         except (np.linalg.LinAlgError, ValueError) as exc:
             self.get_logger().error(f'GP fit failed for opponent {oid}: {exc}')
@@ -363,6 +439,51 @@ class OpponentPredictorNode(Node):
     # ------------------------------------------------------------ 예측
     def _raceline_v(self, s):
         return float(self.gb[int(s / self.ds) % len(self.gb), 1])
+
+    def _raceline_v_arr(self, s):
+        """_raceline_v 의 벡터판 — GP 사전평균/PaceProfile 이 부른다.
+
+        _predict_catch 는 GP 를 스칼라(gpv.predict(s_o)[0])로도 부르므로
+        GP1D 와 같이 항상 1-D 배열을 돌려줘야 한다.
+        """
+        idx = (np.atleast_1d(np.asarray(s, dtype=float)) /
+               self.ds).astype(int) % len(self.gb)
+        return self.gb[idx, 1].astype(float)
+
+    def _pace_scale(self, b):
+        """상대 페이스 배율 = median(관측 vs / 그 지점 raceline vx).
+
+        자차가 이미 ego_scale 로 쓰는 것과 **같은 모델**을 상대에 적용한다.
+        종전에는 자차만 raceline 프로파일로 적분하고 상대는 상수평균 GP 라
+        비대칭이었다. 배율 하나(1 파라미터)라 관측 몇 점만으로 추정된다.
+        """
+        if self.gb is None or self.ds <= 0.0:
+            return None, 0
+        ratios = []
+        for s_i, v_i in zip(b['S'], b['V']):
+            ref = self._raceline_v(s_i)
+            if ref > 0.5 and math.isfinite(v_i) and v_i > 0.0:
+                ratios.append(v_i / ref)
+        if not ratios:
+            # 데시메이션 버퍼가 아직 비어 있으면 최신 관측 한 점으로라도.
+            ref = self._raceline_v(b['latest_s'])
+            v_i = b['latest_vs']
+            if ref > 0.5 and math.isfinite(v_i) and v_i > 0.0:
+                ratios.append(v_i / ref)
+        if not ratios:
+            return None, 0
+        # clip 범위는 자차 ego_scale 과 같다 — 그 밖의 값은 인지 노이즈로 본다.
+        return float(np.clip(np.median(ratios), 0.2, 1.2)), len(ratios)
+
+    def _pace_model(self, b):
+        """GP 학습 전 속도 사전모델. 만들 수 없으면 None."""
+        scale, n = self._pace_scale(b)
+        if scale is None:
+            return None
+        # 표본이 적을수록 배율 추정이 거칠다 — sigma 를 표본 수로 눌러 준다.
+        # n=1 -> 0.60, n=9 -> 0.20 으로 gp_sigma_n_v 하한에 수렴한다.
+        sigma = max(self.gp_sn_v, 0.6 / math.sqrt(max(n, 1)))
+        return PaceProfile(self._raceline_v_arr, scale, sigma)
 
     def predict_and_publish(self):
         arr = ObstacleArray()
@@ -411,8 +532,23 @@ class OpponentPredictorNode(Node):
                 # 신선도 게이트를 통과한 상대만 텔레메트리에 싣는다.
                 pitwall.log('opp_gap',
                             (b['last_s'] - self.ego_s) % self.track_len)
-                pred = self._predict_catch(oid, b) if oid in self.gp_v \
-                    else self._predict_catch_cv(oid, b)
+                # GP 학습 전에도 사전모델(raceline x 페이스 배율)로 같은
+                # 경로를 탄다 — 종전에는 min_samples(40) x sample_min_ds(0.15)
+                # = 6.0m 를 따라다녀야 첫 fit 이 나왔고, 그 전 구간은 코너
+                # 감속을 모르는 등속 CV 튜브뿐이었다 (랩 1의 첫 조우가 통째로
+                # 그 구간에 들어간다).
+                if oid in self.gp_v:
+                    pred = self._predict_catch(oid, b)
+                else:
+                    pace = self._pace_model(b)
+                    if pace is not None:
+                        d_sigma = math.sqrt(
+                            max(b.get('d_var', 0.0), 0.05 ** 2))
+                        pred = self._predict_catch(
+                            oid, b, gpv=pace,
+                            gpd=ConstProfile(b['latest_d'], d_sigma))
+                    else:
+                        pred = self._predict_catch_cv(oid, b)
                 if pred is not None:
                     arr.obstacles.append(pred)
                     self._make_markers(mrks, oid, pred)
@@ -467,11 +603,27 @@ class OpponentPredictorNode(Node):
         o.d_center = float(d_mean)
         if uncertainty_capped:
             # 모델 불확실성이 허용 longitudinal 표현 폭보다 크면 안전한
-            # 추월 corridor를 증명할 수 없다. 전 차로를 막는 no-pass tube와
-            # 정지 target을 보내 Spliner가 회피 대신 trailing/stop 하게 한다.
+            # 추월 corridor를 증명할 수 없다. 전 차로를 막는 no-pass tube로
+            # Spliner 가 회피 대신 trailing 하게 한다.
             o.d_left = 1.0e3
             o.d_right = -1.0e3
-            o.vs = 0.0
+            # ── 종전 o.vs = 0.0 (정지 target) 을 상대 속도 하한으로 바꾼다.
+            #    (2026-08-21, max_prediction_span_ratio 0.45 -> 0.8 과 한 세트)
+            # 캡이 걸린 튜브는 span 이 곧 max_span 이라 0.8 트랙에서는 랩의
+            # 80% 를 덮는다. 그러면 FilterObstacles 의 ego_inside 가 참이 되고
+            # BuildTrailing 이 "이미 gap 안" 분기로 들어가 **그 자리에서**
+            # v_target = obs.vs 를 명령한다. vs=0 이면 그게 트랙 한가운데
+            # 급정지다.
+            #   오프라인 스윕(my_track0821, 432 시나리오): 봉쇄 튜브 중
+            #   자차가 그 안에 있는 비율이 ratio 0.45 에서 29%(71/242),
+            #   0.8 에서 100%(91/91) — 캡이 커질수록 반드시 이 분기로 간다.
+            # "추월 통로를 증명 못 한다"의 옳은 답은 정지가 아니라 **상대
+            # 속도로 따라가기**다. 통로를 막는 것은 d_left/d_right 가 이미
+            # 하고 있고, 속도까지 0 으로 만들 이유는 없다.
+            # 값은 통과 분기와 **같은** 보수적 하한을 쓴다.
+            o.vs = max(
+                float(v_mean) - self.uncertainty_sigma * max(float(v_sigma), 0.0),
+                0.0)
         else:
             o.d_left = float(d_mean + half + self.uncertainty_sigma * sigma)
             o.d_right = float(d_mean - half - self.uncertainty_sigma * sigma)
@@ -514,8 +666,13 @@ class OpponentPredictorNode(Node):
             b['latest_d'], position_sigma,
             b['latest_vs'], speed_sigma, prediction_time)
 
-    def _predict_catch(self, oid, b):
-        """자차/상대 속도 프로파일 전방 적분 -> 따라잡는 s 구간 계산."""
+    def _predict_catch(self, oid, b, gpv=None, gpd=None):
+        """자차/상대 속도 프로파일 전방 적분 -> 따라잡는 s 구간 계산.
+
+        gpv/gpd 를 넘기면 학습된 GP 대신 그 모델을 쓴다 (GP 학습 전
+        PaceProfile/ConstProfile 사전모델용). 인터페이스가 같으므로 아래
+        본문은 두 경우를 구분하지 않는다.
+        """
         # 관측 두절(상대 제거) 또는 정지(파킹) 상대는 예측하지 않는다 —
         # GP는 과거 주행 속도만 알고 있어 정지 상대에게 유령 충돌구간을 만든다.
         # 정지 상대의 원시 관측은 spliner가 정적 장애물로 재분류해 처리한다.
@@ -526,7 +683,10 @@ class OpponentPredictorNode(Node):
         if len(vr) >= 5 and sum(abs(v) for v in vr) / len(vr) < self.vs_reset:
             return None
         L = self.track_len
-        gpv, gpd = self.gp_v[oid], self.gp_d[oid]
+        if gpv is None:
+            gpv = self.gp_v[oid]
+        if gpd is None:
+            gpd = self.gp_d[oid]
         s_e, s_o = self.ego_s, float(b['latest_s'])
         # 자차 속도 = raceline 프로파일 * 현재 스케일 (컨트롤러 speed_scale 반영)
         ref_v = max(self._raceline_v(s_e), 0.5)

@@ -122,6 +122,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/commit_min_speed_mps", 0.3);
     this->declare_parameter("spliner/commit_release_empty_sec", 1.0);
     this->declare_parameter("spliner/commit_tail_release_lead_m", 3.0);
+    this->declare_parameter("spliner/commit_dyn_release_move_m", 0.0);
     this->declare_parameter("spliner/commit_break_confirm_cycles", 2);
     this->declare_parameter("spliner/creep_escape_speed", 0.6);
     // 원호 이탈 (BuildEscapeArc) — 근거는 spliner_node.hpp 선언부 주석.
@@ -265,6 +266,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/commit_release_empty_sec").as_double();
     commit_tail_release_lead_m_ = this->get_parameter(
         "spliner/commit_tail_release_lead_m").as_double();
+    commit_dyn_release_move_m_ = this->get_parameter(
+        "spliner/commit_dyn_release_move_m").as_double();
     commit_break_confirm_cycles_ = static_cast<int>(this->get_parameter(
         "spliner/commit_break_confirm_cycles").as_int());
     creep_escape_speed_ =
@@ -448,6 +451,16 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         // 절단점이 항상 기동 구간 안으로 들어와 조건이 성립할 수 없다.
         commit_tail_release_lead_m_ < 0.0 ||
         commit_tail_release_lead_m_ > lookahead_m_ ||
+        // 0 = 비활성. 켤 거면 0.6 이상이어야 한다 — run_0820_175059 의
+        // 진짜 정지 트랙 22개에서 s_center 한쪽 방향 최대 튐이 약 0.2 m,
+        // 최대 진폭이 0.396 m 였다. 그보다 낮게 잡으면 가만히 있는 상대를
+        // "지나갔다"로 오판해 매 프레임 커밋을 파기한다(= 커밋 무력화).
+        // 상한은 lookahead — 그보다 멀리 가야 만료된다면 상대는 이미
+        // 계획 범위 밖이라 조건이 성립할 수 없다.
+        commit_dyn_release_move_m_ < 0.0 ||
+        (commit_dyn_release_move_m_ > 0.0 &&
+         commit_dyn_release_move_m_ < 0.6) ||
+        commit_dyn_release_move_m_ > lookahead_m_ ||
         // 1 = 종전 동작(즉시 파기). 상한은 인지 드롭아웃(0812 실측 최대
         // 745 ms)보다 훨씬 짧게 — 확정 지연은 프레임 단위여야 한다.
         commit_break_confirm_cycles_ < 1 || commit_break_confirm_cycles_ > 5 ||
@@ -1067,7 +1080,17 @@ void SplinerNode::Run() {
         // is_static 플래그를 관측 이력(위치 std 투표 + vs_reset)으로 덮어쓴다.
         // 파킹한 상대가 dynamic으로 남으면 예측/섹터게이팅/커밋이 전부
         // 동적 경로를 타서 회피가 무너진다 (파킹 상대 미회피 실측).
-        ClassifyObstacles(obs_copy.obstacles);
+        // ── 같은 인지 프레임을 두 번 세지 않는다 (2026-08-21) ────────────
+        // obs_copy 는 "마지막으로 받은" 메시지라 플래너가 인지보다 빠르면
+        // 같은 프레임이 여러 사이클 재사용된다. 이력/투표는 프레임 단위로만
+        // 갱신한다 (근거·환산표는 hpp kClsWindow 선언부).
+        const bool obs_frame_fresh =
+            !cls_has_stamp_ || obstacles_stamp_ != cls_last_stamp_;
+        if (obs_frame_fresh) {
+            cls_last_stamp_ = obstacles_stamp_;
+            cls_has_stamp_ = true;
+        }
+        ClassifyObstacles(obs_copy.obstacles, obs_frame_fresh);
         // Predictive Spliner: 예측 "따라잡는 시점의 충돌 구간"을 원시 관측과
         // 함께 유지한다 (별도 id). 클러스터링이 상대의 현재 위치~따라잡는
         // 지점을 한 박스로 합쳐 그 전체를 크게 회피하게 된다.
@@ -1178,6 +1201,9 @@ void SplinerNode::Run() {
             used_trailing = evasion_valid;
             committed_until_s_ = -1.0;
             committed_obs_end_s_ = -1.0;
+            committed_obs_id_ = -1;
+            committed_obs_s_ = -1.0;
+            committed_obs_dynamic_ = false;
             committed_lat_budget_ = -1.0;
             lc_active_ = false;
             RCLCPP_ERROR_THROTTLE(this->get_logger(), *get_clock(), 2000,
@@ -1269,6 +1295,79 @@ void SplinerNode::Run() {
             const bool nothing_ahead =
                 commit_release_empty_sec_ > 0.0 && all_ahead_now.empty() &&
                 std::isfinite(empty_for) && empty_for >= commit_release_empty_sec_;
+            // ── 상대가 지나가면 커밋을 놓아 준다 (2026-08-21) ────────────────
+            // 위 만료 축 넷은 전부 "상대가 제자리에 있다"를 전제한다. 움직이는
+            // 상대에는 만료 축이 없어서, 상대가 달아나는 동안 그 자리에 대고
+            // 계획한 감속 경로를 그대로 따라간다 (근거·실측은 hpp
+            // commit_dyn_release_move_m_ 선언부).
+            //
+            // 조회는 **원시 목록**(obs_copy.obstacles)으로 한다. all_ahead_now
+            // 로 하면 상대가 lookahead 밖으로 나갔을 때 목록에서 사라져
+            // "많이 움직였다"가 판정되지 않는다 — 정작 가장 확실한 경우다.
+            // (그 경우 여기서는 못 잡고 nothing_ahead / path_end 가 받는다.)
+            //
+            // 전진만 센다. Mod 로 재고 반 바퀴 미만만 인정하므로, 뒤로 처진
+            // 상대(= 우리가 추월한 상대)가 "거의 한 바퀴 전진"으로 뒤집혀
+            // 만료를 일으키지 않는다.
+            bool target_moved_on = false;
+            double target_moved_m = 0.0;
+            if (commit_dyn_release_move_m_ > 0.0 && committed_obs_dynamic_ &&
+                committed_obs_id_ >= 0 && committed_obs_s_ >= 0.0)
+            {
+                for (const auto &o : obs_copy.obstacles) {
+                    if (o.id != committed_obs_id_) {
+                        continue;
+                    }
+                    // ⚠️ 좌표계를 맞춘다 (2026-08-21 보강).
+                    // 기준점 committed_obs_s_ 는 closest.s_center 인데, closest
+                    // 는 FilterObstacles 출력이라 **PredictObstacleMovement 로
+                    // fixed_pred_time(0.15s)만큼 이미 전파된** 값이다. 그런데
+                    // 여기 obs_copy 는 원시 목록이라 전파 전 좌표다. 그대로
+                    // 빼면 moved 가 매 프레임 vs*0.15 만큼 과소보고되어,
+                    // 실제로는 문턱보다 그만큼 더 가야 만료된다:
+                    //   v_obs 1.57 -> 실질 1.24m (+24%)
+                    //   v_obs 4.70 -> 실질 1.71m (+70%)
+                    // 방향은 보수적(늦게 파기)이라 위험하진 않지만, 레이스
+                    // 속도에서는 규칙이 사실상 반만 걸린다. 같은 전파를 여기서도
+                    // 태워 양쪽을 같은 좌표계로 만든다.
+                    const double moved = Mod(
+                        Mod(PredictObstacleMovement(o).s_center, track_len_) -
+                            committed_obs_s_,
+                        track_len_);
+                    // ── 따라잡는 중이면 놓지 않는다 (2026-08-21 보강) ──────
+                    // 절대 이동량만 보면 문턱의 시간 상수가 **상대 속도에
+                    // 반비례**한다. 1.0 m 를 지나는 데
+                    //   v_obs 1.57 -> 0.64 s   (run_0820 의 저속 조우)
+                    //   v_obs 4.50 -> 0.22 s   (레이스 속도)
+                    // 이고, 준정적 추월 기동은 상대 4.0 m(pass_length 3.5 +
+                    // size 0.5)를 통과하는 데 closing 1.5 에서 2.67 s 걸린다.
+                    // 즉 레이스 속도에서는 커밋이 기동의 8% 만 덮고 사라진다 —
+                    // qs_active_ 가 "정적 회피 기구(커밋)를 동적에 연다"는
+                    // 장치인데 그 커밋이 0.2 초 만에 죽으면 장치가 무력화된다.
+                    //
+                    // 병리 현상의 실제 서명은 "상대가 빠르다"가 아니라
+                    // **"내가 뒤처지고 있다"** 다. run_0820 은 자차 0.89 <
+                    // 상대 1.57 로 간격이 4.4 -> 5.4 m 벌어지는 중이었다.
+                    // 그래서 확실히 따라잡는 중이면 만료를 걸지 않는다.
+                    // 문턱은 QuasiStaticOvertake 와 **같은** qs_min_closing_mps_
+                    // 를 재사용한다 (vs 노이즈 p90 위에 맞춰진 값이라 새 상수를
+                    // 도입하지 않는다). run_0820 은 closing 이 음수라 이 조건이
+                    // 참이 되지 않으므로 그 백의 A/B 결과는 보존된다.
+                    const double v_obs_rel = trailing_vs_filter_
+                        ? ObsVsMean(o.id, o.vs) : o.vs;
+                    const bool closing_in =
+                        std::isfinite(v_obs_rel) && std::isfinite(cur_vs_) &&
+                        (cur_vs_ - v_obs_rel) >= qs_min_closing_mps_;
+                    if (std::isfinite(moved) &&
+                        moved >= commit_dyn_release_move_m_ &&
+                        moved < track_len_ * 0.5 && !closing_in)
+                    {
+                        target_moved_on = true;
+                        target_moved_m = moved;
+                    }
+                    break;
+                }
+            }
             // ── 꼬리 충돌은 커밋 파기 사유가 아니다 (2026-08-18) ──────────────
             // 재검증이 커밋 경로 **전체**를 봤다. 그런데 커밋이 지키는 것은
             // 기동(진입 블렌드 + 대상 장애물 통과)이고, 그 뒤에 붙는
@@ -1404,7 +1503,7 @@ void SplinerNode::Run() {
                 }
             }
             if (pos < span && !new_obs_beyond_commit && !nothing_ahead &&
-                (!collision_confirmed || tail_blocked)) {
+                !target_moved_on && (!collision_confirmed || tail_blocked)) {
                 // 절단은 **확정된** 충돌에만 한다. 한 프레임짜리 유령으로
                 // 커밋을 짧게 만들면 만료가 근거 없이 앞당겨진다.
                 if (tail_blocked && collision_confirmed) {
@@ -1459,16 +1558,22 @@ void SplinerNode::Run() {
                 // 커밋 파기는 드물지만 그대로 정지/급조향으로 이어지므로 반드시
                 // 남긴다 (가설 (c) "성립했다가 깨진다"의 유일한 직접 증거).
                 RCLCPP_WARN(this->get_logger(),
-                    "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu reason=%s",
+                    "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu reason=%s"
+                    " obs_moved=%.2f",
                     pos, span, stable_ahead.size(),
                     new_obs_beyond_commit ? "new_obs_beyond_commit"
                         : nothing_ahead   ? "nothing_ahead"
-                        : (pos < span ? "path_collision" : "path_end"));
+                        : target_moved_on ? "obs_moved_on"
+                        : (pos < span ? "path_collision" : "path_end"),
+                    target_moved_m);
                 if (new_obs_beyond_commit) {
                     NoteReject("commit_released_new_obs");
                 }
                 if (nothing_ahead) {
                     NoteReject("commit_released_nothing_ahead");
+                }
+                if (target_moved_on) {
+                    NoteReject("commit_released_obs_moved");
                 }
                 // 꼬리 절단으로 만료된 경우(= 잘린 끝까지 주행)를 따로 센다.
                 // 이 경로로 만료되는 것이 설계 의도이고, 그 뒤 티어가 다시
@@ -1482,6 +1587,9 @@ void SplinerNode::Run() {
                 commit_collision_run_ = 0;
                 committed_until_s_ = -1.0;
                 committed_obs_end_s_ = -1.0;
+                committed_obs_id_ = -1;
+                committed_obs_s_ = -1.0;
+                committed_obs_dynamic_ = false;
                 committed_lat_budget_ = -1.0;
             }
         }
@@ -1860,6 +1968,13 @@ void SplinerNode::Run() {
                 commit_collision_run_ = 0;
                 // 조기 해제 판정용: 이 커밋이 대상으로 삼은 장애물의 뒷 끝.
                 committed_obs_end_s_ = Mod(closest.s_end, track_len_);
+                // 상대 이동 만료 판정용 기준점 (hpp commit_dyn_release_move_m_).
+                committed_obs_id_ = closest.id;
+                committed_obs_s_ = Mod(closest.s_center, track_len_);
+                committed_obs_dynamic_ =
+                    !IsPredictionTube(closest) &&
+                    (!closest.is_static || qs_active_ ||
+                     WasEverDynamic(closest.id));
             }
         } else if (lc_active_ && !evasion_valid &&
                    sp_lane_change_ && has_sp_) {
@@ -5581,7 +5696,8 @@ bool SplinerNode::BuildSpExit(
 }
 
 void SplinerNode::ClassifyObstacles(
-    std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles) {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles,
+    bool obs_frame_fresh) {
     // unicorn perception/multi_tracking.py의 정적/동적 분류 이식:
     //  1) 위치 std 투표 — 최근 관측의 std_s/std_d가 둘 다 min_std 미만이면
     //     정적 표, 하나라도 max_std 초과면 표 리셋. 정적 표 비율 >= 0.5 → 정적.
@@ -5645,17 +5761,22 @@ void SplinerNode::ClassifyObstacles(
         const double disp_now =
             Mod(obs.s_center - tr.s_ref + track_len_ / 2.0, track_len_) -
             track_len_ / 2.0;
-        tr.s_hist.push_back(disp_now);
-        // 관측된 최대 변위. s_ref 기준 절댓값이라 왕복해도 줄지 않는다.
-        tr.max_disp = std::max(tr.max_disp, std::abs(disp_now));
-        tr.d_hist.push_back(obs.d_center);
-        tr.vs_hist.push_back(obs.vs);
-        if (tr.s_hist.size() > kClsWindow) {
-            tr.s_hist.pop_front();
-            tr.d_hist.pop_front();
-        }
-        if (tr.vs_hist.size() > kClsVsWindow) {
-            tr.vs_hist.pop_front();
+        // 새 인지 프레임일 때만 쌓는다. 아래 분류 결과 적용(obs.is_static /
+        // s_var / vs 등)은 **매 사이클** 그대로 돈다 — 계획은 항상 최신
+        // 관측으로 해야 하고, 중복을 막을 대상은 "몇 번 봤나"뿐이다.
+        if (obs_frame_fresh) {
+            tr.s_hist.push_back(disp_now);
+            // 관측된 최대 변위. s_ref 기준 절댓값이라 왕복해도 줄지 않는다.
+            tr.max_disp = std::max(tr.max_disp, std::abs(disp_now));
+            tr.d_hist.push_back(obs.d_center);
+            tr.vs_hist.push_back(obs.vs);
+            if (tr.s_hist.size() > kClsWindow) {
+                tr.s_hist.pop_front();
+                tr.d_hist.pop_front();
+            }
+            if (tr.vs_hist.size() > kClsVsWindow) {
+                tr.vs_hist.pop_front();
+            }
         }
         if (static_cast<int>(tr.s_hist.size()) <= cls_min_nb_meas_) {
             continue;  // 표본 부족 — perception 플래그 유지
@@ -5671,12 +5792,19 @@ void SplinerNode::ClassifyObstacles(
         };
         double std_s = std_of(tr.s_hist);
         double std_d = std_of(tr.d_hist);
-        if (std_s < cls_min_std_ && std_d < cls_min_std_) {
-            ++tr.static_count;
-        } else if (std_s > cls_max_std_ || std_d > cls_max_std_) {
+        // 투표도 프레임 단위다. 비율(static_count/total_count)만 보면 중복은
+        // 상쇄되지만, 아래 vs_low_run 은 **연속 횟수**라 상쇄되지 않는다 —
+        // 둘을 같은 단위로 두어야 cls_vs_hold 가 뜻대로 동작한다.
+        // (표 리셋은 안전 방향이라 신선도와 무관하게 즉시 적용한다.)
+        if (std_s > cls_max_std_ || std_d > cls_max_std_) {
             tr.static_count = 0;
+        } else if (obs_frame_fresh &&
+                   std_s < cls_min_std_ && std_d < cls_min_std_) {
+            ++tr.static_count;
         }
-        ++tr.total_count;
+        if (obs_frame_fresh) {
+            ++tr.total_count;
+        }
         bool by_vote = tr.static_count >=
             (tr.total_count + 1) / 2;   // 비율 >= 0.5
         double vs_avg = 0.0;
@@ -5685,7 +5813,9 @@ void SplinerNode::ClassifyObstacles(
         // 한 번 내려간 것만으로는 뒤집지 않는다 — cls_vs_hold_ 사이클 연속.
         const bool vs_low =
             tr.vs_hist.size() >= kClsVsWindow && vs_avg < cls_vs_reset_;
-        tr.vs_low_run = vs_low ? tr.vs_low_run + 1 : 0;
+        if (obs_frame_fresh) {
+            tr.vs_low_run = vs_low ? tr.vs_low_run + 1 : 0;
+        }
         bool by_vs = tr.vs_low_run >= cls_vs_hold_;
 
         bool st = by_vote || by_vs;

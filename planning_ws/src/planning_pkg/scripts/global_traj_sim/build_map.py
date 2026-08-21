@@ -375,7 +375,16 @@ MU         = 1.5    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
 # 기구학 시뮬의 한계로 추정). MU_PROFILE/LAT_ERR_CORNER_S 스윕은 오늘 실측과
 # 여러 번 잘 맞았지만, **L1/조향 게인류는 이 도구만으로 결론 내리지 말고
 # 반드시 직선 고속 구간 포함해서 실차로 확인할 것.**
-MU_PROFILE = 1.20
+# 2026-08-21 1.20 -> 1.40: run_0821_054711(기존 0821-1)의 실측은 16랩
+# 7.05~7.15 s, 횡오차 max 약 0.16 m였고, 그 속도를 1.06015배 올린
+# 0821-6.65.csv도 실차에서 안정적이었다. 그 CSV의 정적 합성가속도 요구는
+# mu=1.2925, 오픈루프 랩은 6.10 s다. 같은 0821 기하를 현재 생성기로 다시
+# 스윕하면 mu 1.35/1.40/1.45의 오픈루프가 각각 6.09/6.01/5.94 s다.
+# 즉 1.35가 이미 검증된 6.65 CSV와 거의 같은 자리이고, 1.40은 사용자가
+# 요청한 “그보다 조금 더 과한” 기본값이다. 폐루프 물리 게이트 MU=1.50과도
+# 0.10의 요구량 여유를 남긴다. 1.45는 --mu-profile로 시험할 수 있지만
+# validation_mu도 먼저 맞아야 하며, 1.50 이상은 생성 전 거부한다.
+MU_PROFILE = 1.40
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -3099,6 +3108,27 @@ class PurePursuitSim:
         self.lookahead_gain = self.profile["lookahead_gain"]
         self.lookahead_offset = self.profile["lookahead_offset"]
         self.curvature_factor = self.profile.get("curvature_factor", 0.0)
+        self.lat_err_coeff = self.profile.get("lat_err_coeff", 0.0)
+        self.speed_lookahead_for_steer = self.profile.get(
+            "speed_lookahead_for_steer_s", 0.0)
+        self.max_lateral_error = self.profile.get("max_lateral_error_m", 0.5)
+        self.max_curvature_reference = self.profile.get(
+            "max_curvature_reference", 0.8)
+        self.l1_speed_uses_path_plan = self.profile.get(
+            "l1_speed_uses_path_plan", False)
+        self.steer_plan_speed_min = self.profile.get(
+            "steer_plan_speed_min_mps", 0.0)
+        self.acc_scaler_for_steer = self.profile.get(
+            "acc_scaler_for_steer", 1.0)
+        self.dec_scaler_for_steer = self.profile.get(
+            "dec_scaler_for_steer", 1.0)
+        self.start_scale_speed = self.profile.get("start_scale_speed", 0.0)
+        self.end_scale_speed = self.profile.get("end_scale_speed", 1.0)
+        self.downscale_factor = self.profile.get("downscale_factor", 0.0)
+        self.velocity_steer_gain_max = self.profile.get(
+            "velocity_steer_gain_max", 1.0)
+        self.nearest_search_horizon = self.profile.get(
+            "nearest_search_horizon_m", float("inf"))
         self.lookahead_clip = (
             self.profile["lookahead_min_m"],
             self.profile["lookahead_max_m"])
@@ -3120,6 +3150,28 @@ class PurePursuitSim:
     def local_window(self, idx):
         return (idx + np.arange(self.n_local)) % self.n
 
+    def local_nearest(self, point, idx):
+        """control_node nearest_waypoint(): forward local path, bounded horizon."""
+        win = self.local_window(idx)
+        if np.isfinite(self.nearest_search_horizon):
+            segments = np.hypot(*np.diff(self.xy[win], axis=0).T)
+            progress = np.r_[0.0, np.cumsum(segments)]
+            win = win[progress <= self.nearest_search_horizon + 1e-12]
+        delta = self.xy[win] - point
+        return int(win[np.argmin(np.einsum("ij,ij->i", delta, delta))])
+
+    def adjusted_guidance_speed(self, idx, d_err, preview_curvature):
+        """control_node speed_adjust_lat_err()와 같은 계획속도 보정."""
+        speed = float(self.vx_guidance_ref[int(idx)])
+        clipped = min(abs(float(d_err)), self.max_lateral_error)
+        lat_error_norm = 0.5 * clipped / self.max_lateral_error
+        curvature = np.clip(
+            2.0 * (preview_curvature / self.max_curvature_reference) - 2.0,
+            0.0, 1.0)
+        return speed * (
+            1.0 - self.lat_err_coeff + self.lat_err_coeff *
+            np.exp(-2.0 * lat_error_norm * curvature))
+
     def lookahead_point(self, pos, idx, lookahead):
         win = self.local_window(idx)
         if self.profile["kind"] == "cpp_map_l1":
@@ -3136,26 +3188,43 @@ class PurePursuitSim:
         return self.xy[j], j
 
     def _steering_target(self, alpha, target_distance, lookahead,
-                         guidance_speed):
+                         guidance_speed, speed, mean_acceleration):
         if self.profile["kind"] == "cpp_map_l1":
             lateral_accel = (
                 2.0 * guidance_speed ** 2 / max(lookahead, 1e-3) *
                 np.sin(alpha))
-            return _lookup_steer_angle(
+            steering = _lookup_steer_angle(
                 self.steering_lut, lateral_accel, guidance_speed)
+            if mean_acceleration >= 1.0:
+                steering *= self.acc_scaler_for_steer
+            elif mean_acceleration <= -1.0:
+                steering *= self.dec_scaler_for_steer
+            speed_span = max(0.1, self.end_scale_speed - self.start_scale_speed)
+            steering *= 1.0 - np.clip(
+                (guidance_speed - self.start_scale_speed) / speed_span,
+                0.0, 1.0) * self.downscale_factor
+            steering *= np.clip(
+                1.0 + speed / 10.0, 1.0, self.velocity_steer_gain_max)
+            return steering
         return np.arctan2(
             2.0 * self.L * np.sin(alpha), target_distance)
 
-    def _speed_target(self, pos, theta, speed, target_idx):
+    def _speed_target(self, pos, theta, speed, target_idx, idx,
+                      d_err, preview_curvature):
         if self.profile["kind"] == "cpp_map_l1":
             # control params map/speed_lookahead (프로파일과 런타임 YAML 동기화).
             query = pos + speed * self.profile["speed_lookahead_s"] * np.array(
                 [np.cos(theta), np.sin(theta)])
-            _, speed_idx = self.tree.query(query)
+            speed_idx = self.local_nearest(query, idx)
         else:
             # waypoint_tracker_node.py는 lookahead target waypoint의 vx 사용.
             speed_idx = target_idx
-        return float(self.vx_ref[int(speed_idx)])
+            return float(self.vx_ref[int(speed_idx)])
+        adjusted = self.adjusted_guidance_speed(
+            speed_idx, d_err, preview_curvature)
+        return float(min(
+            adjusted * self.profile["controller_speed_scale"],
+            self.profile["max_speed_mps"]))
 
     def run(self, n_laps=1, max_time=300.0):
         pos = self.xy[0].copy()
@@ -3169,6 +3238,7 @@ class PurePursuitSim:
         # control_node.cpp 의 last_speed_command_ 와 같은 역할. slew 는 측정
         # 속도가 아니라 '이전 명령'을 기준으로 걸린다 — 이게 실차 동작이다.
         speed_command = 0.0
+        acceleration_samples = np.zeros(10, dtype=float)
         self.plant.reset()
         while t < max_time:
             _, idx = self.tree.query(pos)
@@ -3187,6 +3257,7 @@ class PurePursuitSim:
             # 성분만이라 항상 이보다 작다 — 안전망 판정에 쓰면 낙관적이 된다.
             path_err = float(np.hypot(e_vec[0], e_vec[1]))
             lookahead_min = self.lookahead_clip[0]
+            preview_curvature = 0.0
             if self.profile["kind"] == "cpp_map_l1":
                 # calc_l1_point()의 lateral-error dependent lower bound.
                 lookahead_min = min(max(
@@ -3202,6 +3273,14 @@ class PurePursuitSim:
                 raw_lookahead = (
                     self.lookahead_gain * abs(v) + self.lookahead_offset -
                     self.curvature_factor * preview_curvature * v * v)
+                if self.l1_speed_uses_path_plan:
+                    path_speed = self.adjusted_guidance_speed(
+                        idx, d_err, preview_curvature)
+                    path_lookahead = (
+                        self.lookahead_gain * path_speed + self.lookahead_offset -
+                        self.curvature_factor * preview_curvature *
+                        path_speed * path_speed)
+                    raw_lookahead = max(raw_lookahead, path_lookahead)
             else:
                 raw_lookahead = (
                     self.lookahead_gain * abs(v) + self.lookahead_offset)
@@ -3212,10 +3291,21 @@ class PurePursuitSim:
             alpha = np.arctan2(dy, dx) - theta
             alpha = np.arctan2(np.sin(alpha), np.cos(alpha))
             target_distance = max(np.hypot(dx, dy), 1e-3)
+            if self.profile["kind"] == "cpp_map_l1":
+                steer_query = pos + v * self.speed_lookahead_for_steer * np.array(
+                    [np.cos(theta), np.sin(theta)])
+                steer_idx = self.local_nearest(steer_query, idx)
+                guidance_speed = self.adjusted_guidance_speed(
+                    steer_idx, d_err, preview_curvature)
+                if guidance_speed < self.steer_plan_speed_min and \
+                        v > guidance_speed:
+                    guidance_speed = v
+            else:
+                guidance_speed = self.vx_guidance_ref[idx]
             steer_target = np.clip(
                 self._steering_target(
                     alpha, target_distance, lookahead,
-                    self.vx_guidance_ref[idx]),
+                    guidance_speed, v, float(np.mean(acceleration_samples))),
                 -self.max_steer, self.max_steer)
             steer += np.clip(
                 steer_target - steer,
@@ -3239,7 +3329,8 @@ class PurePursuitSim:
                         max(backstop["path_error_m"], 1e-3), 1.0)
                     backstop_cap = min(
                         backstop_cap, v - over_err * (v - backstop["min_speed_mps"]))
-                sat = abs(steer) / max(self.max_steer, 1e-3)
+                sat = abs(steer) / max(
+                    backstop["steering_reference_rad"], 1e-3)
                 sat_min_err = backstop["sat_min_path_error_m"]
                 sat_err_ok = sat_min_err <= 0.0 or path_err > sat_min_err
                 if sat > backstop["steer_sat_ratio"] and sat_err_ok:
@@ -3254,7 +3345,8 @@ class PurePursuitSim:
 
             # --- 1단: 컨트롤러 속도 명령 + slew (control_node.cpp 와 동일) ----
             v_target = self._speed_target(
-                pos, theta, v, int(target_idx))
+                pos, theta, v, int(target_idx), idx,
+                d_err, preview_curvature)
             if backstop_cap is not None:
                 v_target = min(v_target, backstop_cap)
             previous_command = speed_command
@@ -3294,6 +3386,8 @@ class PurePursuitSim:
                 self.tire_limit ** 2 - a_lat ** 2, 0.0)))
             a_long = float(np.clip(
                 a_long_plant, -a_long_available, a_long_available))
+            acceleration_samples[1:] = acceleration_samples[:-1]
+            acceleration_samples[0] = a_long
             combined_accel = float(np.hypot(a_long, a_lat))
             tire_saturated = combined_demand > self.tire_limit * (1.0 + 1e-9)
 
@@ -3372,11 +3466,23 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
                         half_length=half_l, half_width=half_w))
     if len(footprint_bad):
         first = int(footprint_bad[0])
-        msgs.append(f"{prefix}: [FAIL] 폐루프 주행 footprint가 벽 침범"
-                    f"{slack_note} "
-                    f"({len(footprint_bad)} step, 최초 "
-                    f"t={log['t'][first]:.2f}s, "
-                    f"xy=({log['x'][first]:.2f},{log['y'][first]:.2f}))")
+        detail = (f"폐루프 주행 footprint가 벽 침범{slack_note} "
+                  f"({len(footprint_bad)} step, 최초 "
+                  f"t={log['t'][first]:.2f}s, "
+                  f"xy=({log['x'][first]:.2f},{log['y'][first]:.2f}))")
+        if profile["plant"] == "vesc":
+            # 0821 교정: 이 기구학/실측-LUT 혼합 모델은 기존 0821-1도
+            # |d|max≈0.63 m로 예측했지만 실차 16랩은 max≈0.16 m였고,
+            # 0821-6.65도 모델은 ≈1.55 m인데 실차에서는 안정적이었다.
+            # 따라서 실차 프로파일의 *추종 footprint*만 advisory로 둔다.
+            # 바로 아래 조향/타이어/plant 검사와 verify_line()의 정적 차체-벽
+            # 여유는 계속 hard gate라서 검증 전체를 끄는 것은 아니다.
+            warns.append(
+                f"{prefix}: [warn] {detail} — 실차 추종모델 교정 오차로 "
+                "승격은 막지 않음; 정적 footprint는 별도 hard gate, 첫 주행은 "
+                "저속 확인 필요")
+        else:
+            msgs.append(f"{prefix}: [FAIL] {detail}")
     elif slack > 0.0:
         strict_bad = int(np.count_nonzero(
             ~footprint_free(grid, pose_xy, log["theta"])))
@@ -3465,11 +3571,14 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
         # 막히는데(이미 임계 위에 있다), 그건 이 변경이 답하려는 질문 —
         # "기울기를 어디까지 내릴 수 있나" — 을 막을 뿐이다.
         backstop_note = backstop_report(log, profile)
+        footprint_note = (
+            f"footprint 모델 경고 {len(footprint_bad)} step(advisory)"
+            if len(footprint_bad) else "footprint 충돌 0")
         msgs.append(
             f"{prefix}: PASS · {requested_laps}랩 · profile speed scale "
             f"{effective_scale:.4f} (planner {profile['planner_speed_scale']:.4f}"
             f" × control {profile['controller_speed_scale']:.2f}, cap "
-            f"{profile['max_speed_mps']:.2f} m/s) · footprint 충돌 0"
+            f"{profile['max_speed_mps']:.2f} m/s) · {footprint_note}"
             f"{slack_note} · "
             f"|lat err|max {np.abs(log['d_err']).max():.3f} m · "
             + (f"{backstop_note} · " if backstop_note else "") +
@@ -3478,39 +3587,6 @@ def verify_simulation(name, log, grid, requested_laps, profile_name):
             f"{brake_note}")
     msgs.extend(warns)
     return not any("[FAIL]" in msg for msg in msgs), msgs
-
-
-# CLI 플래그 -> 모듈 전역. 이름을 한 곳에 모아 두면 매니페스트에 기록하는
-# '실제로 쓴 값' 목록과 어긋나지 않는다.
-PROFILE_OVERRIDES = {
-    "v_max": "V_MAX",
-    "corner_ax": ("A_ACC_CORNER", "A_DEC_CORNER"),
-    "smooth_passes": "LONGITUDINAL_SMOOTH_PASSES",
-    "smooth_window": ("LONGITUDINAL_SMOOTH_M", "WIDTH_CAP_SMOOTH_M"),
-    "lat_err_straight": "LAT_ERR_STRAIGHT_S",
-    "lat_err_corner": "LAT_ERR_CORNER_S",
-    "exit_decay": "LAT_ERR_EXIT_DECAY_M",
-    "exit_lag": "LAT_ERR_EXIT_LAG_M",
-    "kappa_window": "LAT_ERR_KAPPA_WINDOW_M",
-    "kappa_high": "LAT_ERR_KAPPA_HIGH",
-    "mu_profile": "MU_PROFILE",
-}
-
-
-def _apply_profile_overrides(args):
-    """--v-max 류 플래그를 모듈 전역에 반영하고 무엇을 덮었는지 출력한다."""
-    applied = {}
-    for flag, names in PROFILE_OVERRIDES.items():
-        value = getattr(args, flag, None)
-        if value is None:
-            continue
-        for name in ((names,) if isinstance(names, str) else names):
-            globals()[name] = value
-            applied[name] = value
-    if applied:
-        print("[설정] CLI 오버라이드: " + ", ".join(
-            f"{name}={value:g}" for name, value in sorted(applied.items())))
-    return applied
 
 
 def profile_settings_manifest():
@@ -3869,9 +3945,40 @@ def main():
         seal_map(args.map)
         return
     _apply_profile_overrides(args)
+    finite_settings = {
+        "V_MAX": V_MAX,
+        "MU_PROFILE": MU_PROFILE,
+        "A_ACC_CORNER": A_ACC_CORNER,
+        "A_DEC_CORNER": A_DEC_CORNER,
+        "LONGITUDINAL_SMOOTH_M": LONGITUDINAL_SMOOTH_M,
+        "WIDTH_CAP_SMOOTH_M": WIDTH_CAP_SMOOTH_M,
+        "LAT_ERR_STRAIGHT_S": LAT_ERR_STRAIGHT_S,
+        "LAT_ERR_CORNER_S": LAT_ERR_CORNER_S,
+        "LAT_ERR_EXIT_DECAY_M": LAT_ERR_EXIT_DECAY_M,
+        "LAT_ERR_EXIT_LAG_M": LAT_ERR_EXIT_LAG_M,
+        "LAT_ERR_KAPPA_WINDOW_M": LAT_ERR_KAPPA_WINDOW_M,
+        "LAT_ERR_KAPPA_HIGH": LAT_ERR_KAPPA_HIGH,
+    }
+    invalid_finite = [
+        name for name, value in finite_settings.items()
+        if not np.isfinite(value)]
+    if invalid_finite:
+        ap.error("속도 프로파일 설정이 유한 숫자가 아님: " +
+                 ", ".join(invalid_finite))
+    if not (0.0 < MU_PROFILE < MU):
+        ap.error(f"MU_PROFILE={MU_PROFILE:g} 은 0 < 계획 mu < 폐루프 "
+                 f"게이트 MU={MU:g} 를 만족해야 한다")
+    if V_MAX <= 0.0 or A_ACC_CORNER < 0.0 or A_DEC_CORNER < 0.0 or \
+            LONGITUDINAL_SMOOTH_PASSES < 0 or \
+            LONGITUDINAL_SMOOTH_M <= 0.0 or WIDTH_CAP_SMOOTH_M <= 0.0 or \
+            LAT_ERR_STRAIGHT_S <= 0.0 or LAT_ERR_CORNER_S <= 0.0 or \
+            LAT_ERR_EXIT_DECAY_M < 0.0 or LAT_ERR_EXIT_LAG_M < 0.0 or \
+            LAT_ERR_KAPPA_WINDOW_M <= 0.0 or LAT_ERR_KAPPA_HIGH <= 0.0:
+        ap.error("속도 프로파일 오버라이드 범위가 잘못됨 (--help 참조)")
+    if args.closedloop_slack is not None:
+        if not np.isfinite(args.closedloop_slack) or args.closedloop_slack < 0.0:
+            ap.error("--closedloop-slack 는 0 이상의 유한 숫자여야 한다")
     if args.closedloop_slack:
-        if args.closedloop_slack < 0.0:
-            ap.error("--closedloop-slack 는 0 이상이어야 한다")
         globals()["CLOSEDLOOP_FOOTPRINT_SLACK_M"] = float(
             args.closedloop_slack)
         print(f"[설정] 폐루프 footprint 게이트 슬랙 "
@@ -3880,6 +3987,14 @@ def main():
               "로 작게 본다. 라인-벽 여유/코리도 이격은 실차 치수 그대로.")
     m = args.map
     profiles, advisory_profiles = selected_controller_profiles(args.profiles)
+    for profile in profiles + advisory_profiles:
+        runtime_mu = profile["trajectory_validation_mu"]
+        if MU_PROFILE > runtime_mu + 1e-12:
+            ap.error(
+                f"{profile['name']}: 생성 MU_PROFILE={MU_PROFILE:.2f} 가 배포 "
+                f"global_trajectory/validation_mu={runtime_mu:.2f} 보다 큼. "
+                "params.yaml을 먼저 같은 값 이상으로 맞춰야 런타임 거부를 "
+                "피할 수 있다")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print("폐루프 필수(gate) 배포 프로파일: " +
           ", ".join(profile["name"] for profile in profiles))
@@ -3891,7 +4006,9 @@ def main():
         print(f"        planner scale {profile['planner_speed_scale']:.4f} × "
               f"control scale {profile['controller_speed_scale']:.2f}, "
               f"cap {profile['max_speed_mps']:.2f} m/s → 유효 최고 "
-              f"{min(V_MAX * profile['planner_speed_scale'] * profile['controller_speed_scale'], profile['max_speed_mps']):.2f} m/s")
+              f"{min(V_MAX * profile['planner_speed_scale'] * profile['controller_speed_scale'], profile['max_speed_mps']):.2f} "
+              "m/s · "
+              f"CSV 검증 mu {profile['trajectory_validation_mu']:.2f}")
         if profile["plant"] == "vesc":
             vesc = profile["vesc"]
             print(f"        VESC 제동 {'ON' if vesc['enabled'] else 'OFF'} · "

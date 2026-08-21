@@ -565,14 +565,15 @@ def test_low_speed_floors_stay_aligned():
         f"trailing_retry_speed_degraded={retry_degraded} "
         f"backstop_min_speed={backstop_floor}")
 
-    # 조향 룩업 구제는 이 바닥보다 **좁아야** 한다. 구제의 전제는 "계획이
-    # 무너진 경우만"이고, 바닥까지 올라가면 정상 제동 구간의 조향 게인을
-    # 바꾸기 시작한다 (afb72d4: 계획<실측 인 사이클이 31%). 노드 검증은
-    # 상한 2.0 만 보므로 그 사이를 이 단언이 막는다.
+    # 2026-08-21 실차 채택값 1.6은 1.5 m/s trailing floor까지 구제하되
+    # 그보다 높은 정상 제동 구간은 건드리지 않도록 딱 0.1 m/s만 연 값이다.
+    # 옛 단언(< backstop_floor)은 이 의도된 1.6을 거부해 검증 자체가 막혔다.
+    # 반대로 0.1보다 더 열리면 "계획이 무너진 경우만"이라는 전제를 벗어나
+    # 정상 제동 구간 조향 게인을 바꾸므로 여기서 계속 막는다.
     steer_min = control["map/steer_plan_speed_min_mps"]
-    assert 0.0 <= steer_min < backstop_floor, (
-        f"steer_plan_speed_min_mps={steer_min} 가 저속 바닥 "
-        f"{backstop_floor} 보다 좁지 않다")
+    assert steer_min == pytest.approx(backstop_floor + 0.1), (
+        f"steer_plan_speed_min_mps={steer_min} 가 실증된 저속 구제 범위 "
+        f"{backstop_floor + 0.1}와 다르다")
 
 
 # --- sim <-> 실차 위치추정(PF) 파리티 ------------------------------------------

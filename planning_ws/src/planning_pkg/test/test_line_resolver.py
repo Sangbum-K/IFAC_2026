@@ -80,6 +80,8 @@ def test_generator_constants_come_from_build_map_not_a_copy(resolver):
     assert 'CAR_HALF_WIDTH' in source and 'MU_PROFILE' in source
     assert constants['MU'] > constants['MU_PROFILE'], (
         '물리 mu 가 계획 mu 보다 커야 한다 (게이트가 계획보다 관대해야 함)')
+    assert constants['MU_PROFILE'] == 1.40, (
+        'mkcsv 기본 공격도가 0821-6.65보다 한 단계 높은 실증 스윕값이어야 함')
     assert 0.0 < constants['CAR_HALF_WIDTH'] < 0.5
     assert 0.0 < constants['DS_OUT'] <= 0.5
 

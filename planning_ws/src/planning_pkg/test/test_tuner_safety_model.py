@@ -134,6 +134,72 @@ def test_deployed_yaml_is_the_only_source_of_profile_speeds():
     assert profile['controller_speed_scale'] == control['vehicle/speed_scale']
     assert profile['planner_speed_scale'] == \
         planning['global_trajectory/velocity_scale']
+    assert profile['trajectory_validation_mu'] == \
+        planning['global_trajectory/validation_mu']
+
+
+def test_cpp_profile_includes_every_deployed_map_l1_term():
+    """The safety model must not silently omit a control_node MAP-L1 term."""
+    control, _ = profiles.runtime_params(
+        profiles.CONTROL_PKG_ROOT, 'control', 'real_car')
+    profile = profiles.controller_profile('cpp_real_car')
+    fields = {
+        'lat_err_coeff': 'map/lat_err_coeff',
+        'speed_lookahead_for_steer_s': 'map/speed_lookahead_for_steer',
+        'max_lateral_error_m': 'map/max_lateral_error_m',
+        'max_curvature_reference': 'map/max_curvature_reference',
+        'l1_speed_uses_path_plan': 'map/l1_speed_uses_path_plan',
+        'steer_plan_speed_min_mps': 'map/steer_plan_speed_min_mps',
+        'acc_scaler_for_steer': 'map/acc_scaler_for_steer',
+        'dec_scaler_for_steer': 'map/dec_scaler_for_steer',
+        'start_scale_speed': 'map/start_scale_speed',
+        'end_scale_speed': 'map/end_scale_speed',
+        'downscale_factor': 'map/downscale_factor',
+        'velocity_steer_gain_max': 'map/velocity_steer_gain_max',
+        'nearest_search_horizon_m': 'map/nearest_search_horizon_m',
+    }
+    for profile_field, yaml_key in fields.items():
+        assert profile[profile_field] == control[yaml_key]
+    assert profile['backstop']['steering_reference_rad'] == \
+        control['map/backstop_steering_reference_rad']
+
+
+def test_real_footprint_is_advisory_but_sim_footprint_is_hard():
+    """Only the empirically-miscalibrated VESC tracking footprint is advisory."""
+    model = _load_model()
+
+    class OccupiedGrid:
+        res = 0.05
+
+        @staticmethod
+        def is_free(points):
+            return np.zeros(len(points), dtype=bool)
+
+    log = {
+        field: np.zeros(2, dtype=float)
+        for field in profiles.SIM_LOG_FIELDS
+    }
+    log['t'] = np.array([0.1, 0.2])
+    log.update({
+        'laps': 1,
+        'tire_limit': 1.5 * model.G,
+        'model_version': model.MODEL_VERSION,
+        'profile_signature': model.PROFILE_SIGNATURE,
+    })
+    log['profile_name'] = 'cpp_real_car'
+    ok, messages = model.verify_simulation(
+        'probe', log, OccupiedGrid(), 1, 'cpp_real_car', 1.5)
+    assert ok
+    assert any('[warn]' in message and 'footprint' in message
+               for message in messages)
+    assert not any('[FAIL]' in message for message in messages)
+
+    log['profile_name'] = 'python_sim_tracker'
+    ok, messages = model.verify_simulation(
+        'probe', log, OccupiedGrid(), 1, 'python_sim_tracker', 1.5)
+    assert not ok
+    assert any('[FAIL]' in message and 'footprint' in message
+               for message in messages)
 
 
 def test_vehicle_geometry_drift_between_yaml_and_measured_is_fail_closed(
