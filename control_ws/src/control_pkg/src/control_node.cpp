@@ -350,6 +350,12 @@ public:
     m_l1_ = this->declare_parameter<double>("map/m_l1", 0.47);
     q_l1_ = this->declare_parameter<double>("map/q_l1", -0.2);
     curvature_factor_ = this->declare_parameter<double>("map/curvature_factor", 0.0);
+    corner_curvature_factor_ = this->declare_parameter<double>(
+      "map/corner_curvature_factor", 0.0);
+    corner_curvature_start_ = this->declare_parameter<double>(
+      "map/corner_curvature_start", 0.20);
+    corner_curvature_full_ = this->declare_parameter<double>(
+      "map/corner_curvature_full", 0.32);
     speed_lookahead_ = this->declare_parameter<double>("map/speed_lookahead", 0.25);
     // Keep the ETH speed correction available, but disable it for initial
     // steering validation so planner target speed passes through unchanged.
@@ -486,20 +492,24 @@ public:
       localization_ready_topic.c_str(), localization_ready_timeout_);
     RCLCPP_INFO(
       this->get_logger(),
-      "Unicorn L1 curvature preview: waypoint offsets [10, 20), factor=%.3f",
-      curvature_factor_);
+      "Unicorn L1 curvature: preview offsets [10, 20), base=%.3f, "
+      "corner=%.3f over kappa [%.3f, %.3f]",
+      curvature_factor_, corner_curvature_factor_,
+      corner_curvature_start_, corner_curvature_full_);
   }
 
 private:
   void validate_parameters()
   {
-    const std::array<double, 42> finite_values = {
+    const std::array<double, 45> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       localization_ready_timeout_,
       recovery_command_timeout_, recovery_pair_max_skew_,
       recovery_max_reverse_speed_, recovery_max_forward_override_,
-      t_clip_min_, t_clip_max_, m_l1_, q_l1_, curvature_factor_, speed_lookahead_,
+      t_clip_min_, t_clip_max_, m_l1_, q_l1_, curvature_factor_,
+      corner_curvature_factor_, corner_curvature_start_, corner_curvature_full_,
+      speed_lookahead_,
       lat_err_coeff_, acc_scaler_for_steer_, dec_scaler_for_steer_,
       start_scale_speed_, end_scale_speed_, downscale_factor_,
       speed_lookahead_for_steer_, max_lateral_error_,
@@ -529,6 +539,10 @@ private:
       t_clip_min_ < 0.05 || t_clip_max_ < t_clip_min_ || t_clip_max_ > 20.0 ||
       m_l1_ <= 0.0 || m_l1_ > 5.0 || q_l1_ < -5.0 || q_l1_ > 10.0 ||
       curvature_factor_ < 0.0 || curvature_factor_ > 5.0 ||
+      corner_curvature_factor_ < 0.0 || corner_curvature_factor_ > 5.0 ||
+      corner_curvature_start_ < 0.0 || corner_curvature_start_ > 5.0 ||
+      corner_curvature_full_ <= corner_curvature_start_ ||
+      corner_curvature_full_ > 5.0 ||
       speed_lookahead_ < 0.0 || speed_lookahead_ > 2.0 ||
       speed_lookahead_for_steer_ < 0.0 || speed_lookahead_for_steer_ > 2.0 ||
       lat_err_coeff_ < 0.0 || lat_err_coeff_ > 1.0 ||
@@ -1238,12 +1252,36 @@ private:
       curvature_waypoints_ = 0.0;
     }
 
-    // Unicorn adaptive L1 (normal-driving branch): one final distance, not
-    // competing speed- and curvature-selected target points.
-    //   L1 = m*v + q - curvature_factor*mean(|kappa_preview|)*v^2
-    const auto l1_from = [this](double speed) {
-        return m_l1_ * speed + q_l1_ -
-               curvature_factor_ * curvature_waypoints_ * speed * speed;
+    // 직선/완만한 구간은 기존 preview 식을 그대로 유지한다. 급코너에서는
+    // preview 만 먼저 낮아져 L1 이 코너 출구에서 일찍 길어지는 현상을 막기
+    // 위해 현재/preview 곡률 중 큰 값을 사용한다. smoothstep 게이트는
+    // corner_curvature_start 이하에서 정확히 기존 식, corner_curvature_full
+    // 이상에서 코너 식이 되며 경계에서 L1 기울기가 튀지 않게 한다.
+    //
+    //   normal_gain = curvature_factor * mean(|kappa_preview|)
+    //   corner_gain = corner_curvature_factor * max(|kappa_now|, preview)
+    //   gain = normal_gain + smoothstep(kappa) * (corner_gain - normal_gain)
+    //   L1 = m*v + q - gain*v^2
+    //
+    // max(normal_gain, corner_gain)은 잘못된/보수적인 코너 계수 설정 때문에
+    // 새 식의 L1 이 기존보다 길어지는 것을 막는 fail-safe다.
+    const double curvature_now = std::abs(
+      waypoints[idx_nearest_waypoint_].kappa_radpm);
+    const double corner_curvature = std::max(curvature_now, curvature_waypoints_);
+    const double corner_gate_position = std::clamp(
+      (corner_curvature - corner_curvature_start_) /
+      (corner_curvature_full_ - corner_curvature_start_),
+      0.0, 1.0);
+    const double corner_gate = corner_gate_position * corner_gate_position *
+      (3.0 - 2.0 * corner_gate_position);
+    const double normal_curvature_gain = curvature_factor_ * curvature_waypoints_;
+    const double full_corner_curvature_gain = std::max(
+      normal_curvature_gain, corner_curvature_factor_ * corner_curvature);
+    const double curvature_gain = normal_curvature_gain + corner_gate *
+      (full_corner_curvature_gain - normal_curvature_gain);
+
+    const auto l1_from = [this, curvature_gain](double speed) {
+        return m_l1_ * speed + q_l1_ - curvature_gain * speed * speed;
       };
     double l1_distance = l1_from(speed_now);
 
@@ -1568,6 +1606,9 @@ private:
   double m_l1_{0.47};
   double q_l1_{-0.2};
   double curvature_factor_{0.0};
+  double corner_curvature_factor_{0.0};
+  double corner_curvature_start_{0.20};
+  double corner_curvature_full_{0.32};
   double speed_lookahead_{0.25};
   double lat_err_coeff_{0.0};
   double acc_scaler_for_steer_{1.0};
