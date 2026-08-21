@@ -357,6 +357,23 @@ public:
     corner_curvature_full_ = this->declare_parameter<double>(
       "map/corner_curvature_full", 0.32);
     speed_lookahead_ = this->declare_parameter<double>("map/speed_lookahead", 0.25);
+    // ── 정지 발진 하한 (2026-08-22) ────────────────────────────────────────
+    // speed_lookahead_ 는 거리가 아니라 **초**다 (v 를 곱해 쓴다). 그래서
+    // v=0 이면 조회 지점이 0 m 앞 = 차 발밑이 된다. 플래너의
+    // ApplySpeedProfile 은 경로 머리 속도를 cur_vs_ 에 앵커하므로 정지 중
+    // 회피 경로의 첫 점은 vx=0 이고, 컨트롤러가 그 0 을 읽어 명령 0 을 낸다
+    // -> 차가 안 움직이니 v=0 이 유지된다 -> 스스로를 가두는 고정점.
+    //   run_0822_001734 실측: 정지+PF정상 사이클 2676 개 중 회피 경로가 있는
+    //   1773 개는 87.5 % 가 계획 선두속도 0 (명령 0 이 83.0 %), 회피가 없는
+    //   903 개는 0.7 % / 선두속도 중앙 5.65 m/s. 같은 자리 같은 정지인데
+    //   회피가 켜지면 못 나간다. 6 에피소드 37.0 s (백 195.2 s 의 19.0 %) 를
+    //   전부 사람이 차를 들어 옮겨서 풀었다.
+    // 이 하한은 "경로를 따라 최소 이만큼 앞의 점을 읽는다"이다. 같은 백에서
+    // 0.25 m 앞을 읽으면 계획속도 중앙 1.00 m/s, vx=0 인 사이클 0 % 다.
+    // v x 0.25 초가 이 값을 넘는 순간(= 1.0 m/s 이상) 자연히 무효가 되므로
+    // 정상 주행에는 손을 대지 않는다. 0 이면 종전 동작.
+    speed_lookahead_min_m_ = this->declare_parameter<double>(
+      "map/speed_lookahead_min_m", 0.25);
     // Keep the ETH speed correction available, but disable it for initial
     // steering validation so planner target speed passes through unchanged.
     lat_err_coeff_ = this->declare_parameter<double>("map/lat_err_coeff", 0.0);
@@ -423,6 +440,11 @@ public:
       "Steering limits: left=%.4frad right=%.4frad, backstop reference=%.4frad",
       max_left_steering_angle_, max_right_steering_angle_,
       backstop_steering_reference_angle_);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Speed lookahead: %.2fs + floor %.2fm (floor gated on "
+      "/planner/avoidance/evade_committed; 0 = off)",
+      speed_lookahead_, speed_lookahead_min_m_);
     load_steering_lookup();
 
     const auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
@@ -444,6 +466,10 @@ public:
     escape_active_sub_ = this->create_subscription<std_msgs::msg::Bool>(
       "/planner/escape_active", reliable_qos,
       std::bind(&ControlNode::escape_active_callback, this, std::placeholders::_1));
+    evade_committed_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+      "/planner/avoidance/evade_committed", reliable_qos,
+      std::bind(
+        &ControlNode::evade_committed_callback, this, std::placeholders::_1));
     if (localization_gate_enabled_) {
       const auto localization_qos =
         rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
@@ -501,7 +527,7 @@ public:
 private:
   void validate_parameters()
   {
-    const std::array<double, 45> finite_values = {
+    const std::array<double, 46> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       localization_ready_timeout_,
@@ -509,7 +535,7 @@ private:
       recovery_max_reverse_speed_, recovery_max_forward_override_,
       t_clip_min_, t_clip_max_, m_l1_, q_l1_, curvature_factor_,
       corner_curvature_factor_, corner_curvature_start_, corner_curvature_full_,
-      speed_lookahead_,
+      speed_lookahead_, speed_lookahead_min_m_,
       lat_err_coeff_, acc_scaler_for_steer_, dec_scaler_for_steer_,
       start_scale_speed_, end_scale_speed_, downscale_factor_,
       speed_lookahead_for_steer_, max_lateral_error_,
@@ -544,6 +570,7 @@ private:
       corner_curvature_full_ <= corner_curvature_start_ ||
       corner_curvature_full_ > 5.0 ||
       speed_lookahead_ < 0.0 || speed_lookahead_ > 2.0 ||
+      speed_lookahead_min_m_ < 0.0 || speed_lookahead_min_m_ > 1.0 ||
       speed_lookahead_for_steer_ < 0.0 || speed_lookahead_for_steer_ > 2.0 ||
       lat_err_coeff_ < 0.0 || lat_err_coeff_ > 1.0 ||
       acc_scaler_for_steer_ < 0.0 || acc_scaler_for_steer_ > 5.0 ||
@@ -662,6 +689,20 @@ private:
     std::lock_guard<std::mutex> lock(data_mutex_);
     escape_active_ = msg->data;
     escape_active_stamp_ = this->now();
+  }
+
+  // 플래너가 이번 사이클에 **회피 경로를 채택했다**고 알려 오는 신호
+  // (trailing 폴백은 false). 정지 발진 하한의 게이트다 — 근거는
+  // speed_lookahead_min_m_ 선언부 주석.
+  // trailing 은 "회피 못 해서 따라가며 감속" 상태이므로 발진을 밀어 줄
+  // 이유가 없고, run_0822_001734 에서 간격 0.55 m 미만 노출이 거기에
+  // 몰려 있었다 (전체 1.43 s -> trailing 제외 0.15 s).
+  // stamp 를 같이 저장해 신호가 끊기면 하한이 자동으로 꺼진다 (fail-closed).
+  void evade_committed_callback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    evade_committed_ = msg->data;
+    evade_committed_stamp_ = this->now();
   }
 
   void estop_callback(const std_msgs::msg::Bool::SharedPtr msg)
@@ -808,6 +849,8 @@ private:
     bool estop = false;
     bool escape_active = false;
     rclcpp::Time escape_active_stamp{0, 0, RCL_ROS_TIME};
+    bool evade_committed = false;
+    rclcpp::Time evade_committed_stamp{0, 0, RCL_ROS_TIME};
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
       waypoints = waypoints_;
@@ -835,6 +878,8 @@ private:
       estop = estop_;
       escape_active = escape_active_;
       escape_active_stamp = escape_active_stamp_;
+      evade_committed = evade_committed_;
+      evade_committed_stamp = evade_committed_stamp_;
     }
 
     const auto now = this->now();
@@ -1023,8 +1068,12 @@ private:
     const double lateral_error = lateral_error_result.second;
 
     // LONGITUDINAL CONTROL: same order as MAP_Controller.main_loop().
+    // 회피 채택 상태에서만 정지 발진 하한을 연다 (fail-closed: 신호가
+    // 끊기면 종전 동작). 근거는 speed_lookahead_min_m_ 선언부 주석.
+    const bool evade_committed_now = evade_committed &&
+      (now - evade_committed_stamp).seconds() < kEvadeCommittedTimeoutSec;
     double speed_command = calc_speed_command(
-      position, velocity, waypoints, lat_error_norm);
+      position, velocity, waypoints, lat_error_norm, evade_committed_now);
 
     // LATERAL CONTROL: L1 point -> lateral acceleration -> steering lookup.
     const auto l1_result = calc_l1_point(
@@ -1210,15 +1259,60 @@ private:
     const Point2D & position,
     const Point2D & velocity,
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints,
-    double lat_error_norm) const
+    double lat_error_norm,
+    bool evade_committed) const
   {
     const Point2D lookahead_position{
       position.x + velocity.x * speed_lookahead_,
       position.y + velocity.y * speed_lookahead_};
-    const std::size_t lookahead_index = nearest_waypoint(lookahead_position, waypoints);
+    std::size_t lookahead_index = nearest_waypoint(lookahead_position, waypoints);
+    // ── 정지 발진 하한 ────────────────────────────────────────────────────
+    // v x speed_lookahead_ 는 v=0 에서 0 m 라 차 발밑 점을 읽는다. 회피
+    // 경로의 그 점은 vx=0 이므로 명령 0 -> v=0 이 스스로를 유지한다.
+    // 경로를 따라 최소 speed_lookahead_min_m_ 앞의 점까지 밀어 준다.
+    // 근거·실측은 speed_lookahead_min_m_ 선언부 주석.
+    //
+    // 의도된 정지는 이 하한이 못 깬다: 진짜로 세우는 계획이면 정지점까지
+    // vx=0 이 **연속으로** 깔리므로(trailing_gap 1.5 m = 15 점) 0.25 m 앞을
+    // 읽어도 0 이 나온다. 부산물인 0 은 딱 한 점(0.1 m)뿐이다.
+    // ⚠️ 이 구분은 아직 실차로 확인하지 않았다 — run_0822_001734 에는 계획된
+    //    정지가 한 번도 없다(선두 vx=0 구간이 2 점을 넘은 적 0 회).
+    if (evade_committed && speed_lookahead_min_m_ > 0.0) {
+      lookahead_index = std::max(
+        lookahead_index,
+        advance_along_path(
+          nearest_waypoint(position, waypoints), speed_lookahead_min_m_,
+          waypoints));
+    }
     double speed_command = waypoints[lookahead_index].vx_mps;
     speed_command = speed_adjust_lat_err(speed_command, lat_error_norm);
     return speed_command;
+  }
+
+  /// from_index 에서 경로를 따라 distance [m] 앞의 인덱스. 등간격을 가정하지
+  /// 않고 실제 구간 길이를 누적한다. 경로 끝을 넘으면 마지막 인덱스.
+  std::size_t advance_along_path(
+    std::size_t from_index,
+    double distance,
+    const std::vector<f1tenth_planning_msgs::msg::Wpnt> & waypoints) const
+  {
+    if (waypoints.empty()) {
+      return 0U;
+    }
+    const std::size_t last = waypoints.size() - 1U;
+    if (from_index >= last || !(distance > 0.0)) {
+      return std::min(from_index, last);
+    }
+    double travelled = 0.0;
+    for (std::size_t index = from_index; index < last; ++index) {
+      travelled += std::hypot(
+        waypoints[index + 1U].x_m - waypoints[index].x_m,
+        waypoints[index + 1U].y_m - waypoints[index].y_m);
+      if (travelled >= distance) {
+        return index + 1U;
+      }
+    }
+    return last;
   }
 
   std::pair<Point2D, double> calc_l1_point(
@@ -1610,6 +1704,7 @@ private:
   double corner_curvature_start_{0.20};
   double corner_curvature_full_{0.32};
   double speed_lookahead_{0.25};
+  double speed_lookahead_min_m_{0.25};
   double lat_err_coeff_{0.0};
   double acc_scaler_for_steer_{1.0};
   double dec_scaler_for_steer_{1.0};
@@ -1646,8 +1741,11 @@ private:
   bool estop_{false};
   bool escape_active_{false};
   rclcpp::Time escape_active_stamp_{0, 0, RCL_ROS_TIME};
+  bool evade_committed_{false};
+  rclcpp::Time evade_committed_stamp_{0, 0, RCL_ROS_TIME};
   // 이 시간 넘게 신호가 없으면 원호 중이 아니라고 본다 (플래너 20 Hz).
   static constexpr double kEscapeActiveTimeoutSec{0.30};
+  static constexpr double kEvadeCommittedTimeoutSec{0.30};
   bool has_odom_{false};
   bool has_frenet_odom_{false};
   bool has_recovery_state_{false};
@@ -1686,6 +1784,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr escape_active_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr evade_committed_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr localization_ready_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr recovery_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr recovery_target_speed_sub_;

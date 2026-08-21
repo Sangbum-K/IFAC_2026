@@ -1317,6 +1317,22 @@ private:
   /// 전방 lookahead 안 동적 상대의 필터 속도 x dyn_pass_speed_ratio 이고,
   /// 동적 상대가 없으면 0 (= 종전 동작). 매 사이클 발행한다.
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr p_dyn_speed_floor_;
+  /// 이번 사이클에 **회피 경로를 채택했는가** (trailing 폴백은 제외).
+  /// 컨트롤러의 정지 발진 하한(map/speed_lookahead_min_m) 게이트다.
+  ///
+  /// ApplySpeedProfile 은 경로 머리 속도를 cur_vs_ 에 앵커하므로 정지 중
+  /// 회피 경로의 첫 점은 vx=0 이 된다. 컨트롤러의 속도 lookahead 는
+  /// 거리가 아니라 v x 0.25 초라 v=0 에서 0 m 가 되고, 결국 그 0 을 읽어
+  /// 명령 0 -> v=0 이 스스로를 유지한다 (run_0822_001734 실측: 정지+회피
+  /// 1773 사이클 중 87.5 % 가 계획 선두속도 0, 회피가 없으면 0.7 %).
+  ///
+  /// trailing 은 "회피 못 해서 따라가며 감속" 상태이므로 제외한다. 같은
+  /// 백에서 간격 0.55 m 미만 노출이 1.43 s -> 0.15 s 로 줄고 회복은
+  /// 37.0 s -> 32.9 s (89 %) 만 남는다.
+  ///
+  /// 매 사이클 발행한다 — 구독자가 마지막 true 에 붙어 있지 않게
+  /// (p_escape_active_ 와 같은 fail-closed 처리).
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_evade_committed_;
   rclcpp::TimerBase::SharedPtr t_run_;
 };
 

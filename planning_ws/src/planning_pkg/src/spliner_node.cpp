@@ -617,6 +617,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         "/planner/escape_active", qos_profile);
     p_dyn_speed_floor_ = this->create_publisher<std_msgs::msg::Float32>(
         "/planner/avoidance/speed_floor", qos_profile);
+    p_evade_committed_ = this->create_publisher<std_msgs::msg::Bool>(
+        "/planner/avoidance/evade_committed", qos_profile);
 
     // Timer init
     t_run_ = this->create_wall_timer(
@@ -2058,6 +2060,12 @@ void SplinerNode::Run() {
             std::isfinite(dyn_speed_floor_) ? std::max(dyn_speed_floor_, 0.0)
                                             : 0.0);
         p_dyn_speed_floor_->publish(floor_msg);
+        // 회피 채택 여부. 컨트롤러의 정지 발진 하한 게이트다 — 근거는
+        // spliner_node.hpp 의 p_evade_committed_ 선언부 주석.
+        // trailing 은 "회피 못 해서 따라가며 감속"이므로 false 다.
+        std_msgs::msg::Bool evade_msg;
+        evade_msg.data = evasion_valid && !used_trailing;
+        p_evade_committed_->publish(evade_msg);
     }
 
     if (!evasion_valid) {
