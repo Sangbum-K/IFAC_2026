@@ -17,6 +17,7 @@ from nav_msgs.srv import GetMap
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.serialization import deserialize_message
 
 import rosbag2_py
@@ -148,6 +149,15 @@ class RecordedMapServer(Node):
         self._map_message = map_message
         self._service = self.create_service(
             GetMap, '/map_server/map', self._get_map)
+        map_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._map_publisher = self.create_publisher(
+            OccupancyGrid, '/map', map_qos)
+        self._map_timer = self.create_timer(
+            1.0, lambda: self._map_publisher.publish(self._map_message))
+        self._map_publisher.publish(self._map_message)
         self._static_broadcaster = None
         if base_to_laser_z_m is not None:
             if static_transforms is None:

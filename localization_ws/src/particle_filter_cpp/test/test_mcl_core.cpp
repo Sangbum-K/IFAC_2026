@@ -159,6 +159,88 @@ TEST(QualityTracker, UsesConsecutiveHysteresis)
   EXPECT_EQ(tracker.state(), pf::QualityState::kLost);
 }
 
+TEST(QualityTracker, ForceLostBypassesNormalHysteresis)
+{
+  pf::QualityTracker tracker(0.7, 0.4, 3, 5);
+  tracker.update(0.8);
+  tracker.force_lost();
+  EXPECT_EQ(tracker.state(), pf::QualityState::kLost);
+  EXPECT_EQ(tracker.consecutive_lost(), 3);
+}
+
+TEST(CumulativeInnovationGuard, TripsOnCoherentSmallCorrections)
+{
+  pf::CumulativeInnovationGuard guard(0.6, 0.2, 0.25, 0.18, 0.8);
+  EXPECT_FALSE(guard.update(1000000000LL, {0.0, 0.0, 0.05}, true).tripped);
+  EXPECT_FALSE(guard.update(1070000000LL, {0.0, 0.0, 0.05}, true).tripped);
+  EXPECT_FALSE(guard.update(1140000000LL, {0.0, 0.0, 0.05}, true).tripped);
+  const auto result = guard.update(1210000000LL, {0.0, 0.0, 0.05}, true);
+  EXPECT_TRUE(result.tripped);
+  EXPECT_NEAR(result.accumulated.yaw, 0.20, 1.0e-12);
+  EXPECT_DOUBLE_EQ(result.yaw_coherence, 1.0);
+}
+
+TEST(CumulativeInnovationGuard, IgnoresOscillationAndHealthyScanResetsWindow)
+{
+  pf::CumulativeInnovationGuard guard(0.6, 0.2, 0.25, 0.18, 0.8);
+  EXPECT_FALSE(guard.update(1000000000LL, {0.0, 0.0, 0.10}, true).tripped);
+  EXPECT_FALSE(guard.update(1100000000LL, {0.0, 0.0, -0.10}, true).tripped);
+  EXPECT_FALSE(guard.update(1200000000LL, {0.0, 0.0, 0.10}, true).tripped);
+  const auto oscillating = guard.update(1300000000LL, {0.0, 0.0, -0.10}, true);
+  EXPECT_FALSE(oscillating.tripped);
+  EXPECT_NEAR(oscillating.yaw_coherence, 0.0, 1.0e-12);
+
+  const auto healthy = guard.update(1400000000LL, {0.0, 0.0, 0.10}, false);
+  EXPECT_EQ(healthy.sample_count, 0U);
+  const auto restarted = guard.update(1500000000LL, {0.0, 0.0, 0.10}, true);
+  EXPECT_EQ(restarted.sample_count, 1U);
+  EXPECT_FALSE(restarted.tripped);
+}
+
+TEST(BeamSelection, TrackingKeepsTrustedSubsetInsteadOfFallingBack)
+{
+  pf::MclParameters parameters;
+  parameters.particle_count = 2;
+  parameters.map_resolution = 1.0;
+  parameters.max_range_px = 10;
+  parameters.beam_skip_distance_m = 0.1;
+  parameters.beam_skip_min_particle_fraction = 0.3;
+  parameters.beam_skip_max_fraction = 0.3;
+  parameters.random_seed = 809;
+  pf::MclCore core(parameters);
+  pf::Proposal proposal;
+  proposal.particles.resize(2);
+  proposal.prior_weights = {0.5, 0.5};
+  const std::vector<float> observed(6, 1.0F);
+  const std::vector<float> predicted{
+    1.0F, 1.0F, 5.0F, 5.0F, 1.0F, 1.0F,
+    1.0F, 1.0F, 5.0F, 5.0F, 1.0F, 1.0F};
+
+  const auto tracking = core.evaluate_sensor(proposal, observed, predicted, false);
+  ASSERT_TRUE(tracking.valid);
+  EXPECT_TRUE(tracking.beams.excessive_skip);
+  EXPECT_FALSE(tracking.beams.fallback_to_all_beams);
+  EXPECT_EQ(tracking.beams.selected_count, 4U);
+  EXPECT_EQ(tracking.beams.mask, (std::vector<uint8_t>{1U, 1U, 0U, 0U, 1U, 1U}));
+
+  const auto recovery = core.evaluate_sensor(proposal, observed, predicted, true);
+  ASSERT_TRUE(recovery.valid);
+  EXPECT_TRUE(recovery.beams.fallback_to_all_beams);
+  EXPECT_EQ(recovery.beams.selected_count, 6U);
+}
+
+TEST(BeamSelection, MeasuresSelectedAngularSpread)
+{
+  const std::vector<float> angles{-1.0F, -0.5F, 0.0F, 0.5F, 1.0F};
+  EXPECT_NEAR(
+    pf::selected_beam_angle_span(angles, {1U, 0U, 1U, 0U, 1U}),
+    2.0, 1.0e-12);
+  EXPECT_DOUBLE_EQ(
+    pf::selected_beam_angle_span(angles, {0U, 1U, 1U, 0U, 0U}),
+    0.5);
+  EXPECT_DOUBLE_EQ(pf::selected_beam_angle_span(angles, {}), 0.0);
+}
+
 TEST(SlipDetector, ImmediateEntryAndEvidenceBasedRecovery)
 {
   pf::SlipDetector detector(0.15, 0.15, 1.0, 0.5, 2, 2, 2.0);

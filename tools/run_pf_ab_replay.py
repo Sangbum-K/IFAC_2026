@@ -27,6 +27,8 @@ from pf_replay_map_server import load_recorded_static_transforms
 from pf_replay_map_server import storage_id
 
 import rosbag2_py
+from rclpy.serialization import deserialize_message
+from rosidl_runtime_py.utilities import get_message
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -174,6 +176,65 @@ def replay_topics_for_laser_z(base_to_laser_z_m):
         topic for topic in REPLAY_TOPICS
         if not (
             base_to_laser_z_m is not None and topic == '/tf_static'))
+
+
+def replay_topics(base_to_laser_z_m, seed_from_recorded_pf=False):
+    """Drop stale recorded initial poses when replay seeds from PF output."""
+    return tuple(
+        topic for topic in replay_topics_for_laser_z(base_to_laser_z_m)
+        if not (seed_from_recorded_pf and topic == '/initialpose'))
+
+
+def first_recorded_pf_seed(bag_path):
+    """Return the first recorded map-frame base pose and its bag offset."""
+    topic_types = read_topic_types(bag_path)
+    message_name = topic_types.get('/pf/pose/odom')
+    if message_name != 'nav_msgs/msg/Odometry':
+        raise RuntimeError(
+            '--seed-from-recorded-pf requires /pf/pose/odom; found %r'
+            % message_name)
+    message_type = get_message(message_name)
+    metadata = rosbag2_py.Info().read_metadata(
+        str(bag_path), storage_id(bag_path))
+    reader = rosbag2_py.SequentialReader()
+    reader.open(
+        rosbag2_py.StorageOptions(
+            uri=str(bag_path), storage_id=storage_id(bag_path)),
+        rosbag2_py.ConverterOptions('', ''),
+    )
+    while reader.has_next():
+        topic, data, timestamp_ns = reader.read_next()
+        if topic != '/pf/pose/odom':
+            continue
+        message = deserialize_message(data, message_type)
+        orientation = message.pose.pose.orientation
+        return {
+            'start_offset_sec': max(
+                0.0,
+                (timestamp_ns - metadata.starting_time.nanoseconds) / 1e9),
+            'x': float(message.pose.pose.position.x),
+            'y': float(message.pose.pose.position.y),
+            'z': float(orientation.z),
+            'w': float(orientation.w),
+        }
+    raise RuntimeError('/pf/pose/odom contains no messages')
+
+
+def initial_pose_command(seed):
+    """Build one ROS CLI publication for a deterministic replay seed."""
+    message = {
+        'header': {'frame_id': 'map'},
+        'pose': {'pose': {
+            'position': {'x': seed['x'], 'y': seed['y'], 'z': 0.0},
+            'orientation': {
+                'x': 0.0, 'y': 0.0, 'z': seed['z'], 'w': seed['w']},
+        }},
+    }
+    return [
+        'ros2', 'topic', 'pub', '--once', '/initialpose',
+        'geometry_msgs/msg/PoseWithCovarianceStamped',
+        json.dumps(message, separators=(',', ':')),
+    ]
 
 
 def static_transform_manifest(transform):
@@ -868,7 +929,8 @@ def render_summary(rows, max_update_rate_hz, random_seed):
 def build_commands(
         bag_path, result_dir, base_config, profile_config, map_server_tool,
         playback_rate, clock_hz, replay_delay, max_update_rate_hz,
-        random_seed, base_to_laser_z_m=None):
+        random_seed, base_to_laser_z_m=None, start_offset_sec=0.0,
+        seed_from_recorded_pf=False):
     """Build argv lists once so dry-run and execution cannot diverge."""
     map_command = [
         sys.executable,
@@ -907,8 +969,13 @@ def build_commands(
         '--delay', str(replay_delay),
         '--read-ahead-queue-size', '5000',
         '--disable-keyboard-controls',
-        '--topics', *replay_topics_for_laser_z(base_to_laser_z_m),
     ]
+    if start_offset_sec > 0.0:
+        play_command.extend((
+            '--start-offset', ros_double_literal(start_offset_sec)))
+    play_command.extend((
+        '--topics', *replay_topics(
+            base_to_laser_z_m, seed_from_recorded_pf)))
     return map_command, pf_command, record_command, play_command
 
 
@@ -921,6 +988,9 @@ def run_profile(args, common, case, domain_id, session_dir):
     profile_config = common['profiles_dir'] / (profile + '.yaml')
     artifacts = snapshot_runtime_artifacts(
         result_dir, common, profile_config)
+    replay_laser_z_m = (
+        case.effective_base_to_laser_z_m
+        if common['replay_seed'] else case.base_to_laser_z_override_m)
     commands = build_commands(
         common['bag_path'], result_dir,
         artifacts['base_config']['snapshot_path'],
@@ -928,9 +998,13 @@ def run_profile(args, common, case, domain_id, session_dir):
         artifacts['pf_replay_map_server']['snapshot_path'],
         args.playback_rate, args.clock_hz, args.replay_delay_sec,
         args.max_update_rate_hz, args.random_seed,
-        case.base_to_laser_z_override_m)
-    replay_topics = replay_topics_for_laser_z(
-        case.base_to_laser_z_override_m)
+        replay_laser_z_m,
+        common['replay_seed']['start_offset_sec']
+        if common['replay_seed'] else 0.0,
+        common['replay_seed'] is not None)
+    replay_topic_names = replay_topics(
+        replay_laser_z_m,
+        common['replay_seed'] is not None)
     environment = os.environ.copy()
     ros_log_dir = result_dir / 'ros_logs'
     ros_log_dir.mkdir(parents=True, exist_ok=True)
@@ -966,7 +1040,8 @@ def run_profile(args, common, case, domain_id, session_dir):
         'effective_base_to_laser_z_m': (
             case.effective_base_to_laser_z_m),
         'base_to_laser_z_source': case.base_to_laser_z_source,
-        'replay_topics': list(replay_topics),
+        'replay_topics': list(replay_topic_names),
+        'recorded_pf_seed': common['replay_seed'],
         'record_topics': list(RECORD_TOPICS),
         'playback_rate': args.playback_rate,
         'clock_hz': args.clock_hz,
@@ -1018,6 +1093,18 @@ def run_profile(args, common, case, domain_id, session_dir):
             raise RuntimeError(
                 'ros2 bag record exited early; see %s'
                 % (result_dir / 'record.log'))
+
+        if common['replay_seed'] is not None:
+            seed_result = subprocess.run(
+                initial_pose_command(common['replay_seed']),
+                check=False, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, env=environment, timeout=10.0)
+            (result_dir / 'initial_pose.log').write_text(
+                seed_result.stdout, encoding='utf-8')
+            if seed_result.returncode != 0:
+                raise RuntimeError(
+                    'recorded PF seed publication failed; see %s'
+                    % (result_dir / 'initial_pose.log'))
 
         player = start_process(
             'rosbag player', commands[3],
@@ -1101,6 +1188,10 @@ def parse_arguments():
   python3 tools/run_pf_ab_replay.py --profiles variant0_no_ground_no_deskew \\
     --base-to-laser-z-m 0.1100 0.1374
 
+  # Ignore stale latched /initialpose and start from recorded PF output.
+  python3 tools/run_pf_ab_replay.py /path/to/mid-session-bag \
+    --seed-from-recorded-pf
+
 Build/source localization_ws first. Results are written below
 bags/pf_ab_replay by default. Each profile contains bag/, manifest.json,
 process logs, analysis.json, and mode_analysis.json. summary.txt separates
@@ -1146,6 +1237,11 @@ not merely the configured limiter. Production localize.yaml is not modified.
             'common deterministic PF seed for every profile '
             '(default: %(default)s)'),
     )
+    parser.add_argument(
+        '--seed-from-recorded-pf', action='store_true',
+        help=(
+            'ignore recorded /initialpose, publish the first recorded '
+            '/pf/pose/odom as the initial pose, and start playback there'))
     parser.add_argument('--replay-delay-sec', type=float, default=2.0)
     parser.add_argument('--recorder-discovery-sec', type=float, default=2.0)
     parser.add_argument('--post-roll-sec', type=float, default=3.0)
@@ -1200,6 +1296,9 @@ def main():
     bag_path = Path(args.bag).expanduser().resolve()
     output_root = Path(args.output_root).expanduser().resolve()
     validate_bag(bag_path)
+    replay_seed = (
+        first_recorded_pf_seed(bag_path)
+        if args.seed_from_recorded_pf else None)
     recorded_static_transforms = load_recorded_static_transforms(bag_path)
     recorded_base_to_laser = find_direct_static_transform(
         recorded_static_transforms)
@@ -1247,6 +1346,7 @@ def main():
         'input_bag_identity': input_bag_identity,
         'recorded_base_to_laser_transform': (
             recorded_base_to_laser_manifest),
+        'replay_seed': replay_seed,
     }
 
     print('PF A/B replay preflight OK')
@@ -1276,6 +1376,12 @@ def main():
         % (
             args.max_update_rate_hz, PASS_UPDATE_RATE_HZ,
             args.random_seed))
+    if replay_seed is not None:
+        print(
+            '  seed   : recorded PF pose at +%.3fs (%.3f, %.3f)'
+            % (
+                replay_seed['start_offset_sec'], replay_seed['x'],
+                replay_seed['y']))
     print(
         '  source : HEAD %s, dirty=%s, fingerprint=%s'
         % (
@@ -1303,7 +1409,10 @@ def main():
                 snapshot_dir / 'tools' / 'pf_replay_map_server.py',
                 args.playback_rate, args.clock_hz, args.replay_delay_sec,
                 args.max_update_rate_hz, args.random_seed,
-                case.base_to_laser_z_override_m)
+                case.effective_base_to_laser_z_m
+                if replay_seed else case.base_to_laser_z_override_m,
+                replay_seed['start_offset_sec'] if replay_seed else 0.0,
+                replay_seed is not None)
             print('\n[%s] ROS_DOMAIN_ID=%d' % (
                 case.label, args.domain_id + index))
             print(
@@ -1316,6 +1425,8 @@ def main():
             print('  snapshot source profile: %s' % profile_config)
             for command in commands:
                 print('  ' + shell_join(command))
+            if replay_seed is not None:
+                print('  ' + shell_join(initial_pose_command(replay_seed)))
         return 0
 
     session_dir.mkdir(parents=True, exist_ok=False)
@@ -1348,6 +1459,7 @@ def main():
         ],
         'max_update_rate_hz': args.max_update_rate_hz,
         'random_seed': args.random_seed,
+        'recorded_pf_seed': replay_seed,
         'started_utc': datetime.now(timezone.utc).isoformat(),
         'status': 'running',
     }
