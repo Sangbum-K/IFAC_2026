@@ -1,0 +1,13 @@
+image: my_track0821_2.pgm
+mode: trinary
+resolution: 0.050000
+origin: [-3.526243, -3.546619, 0.000000]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25
+
+# 이하 참고용 (map_server 는 읽지 않음)
+size_px: [241, 66]
+size_m: [12.05, 3.30]
+bounds_x_m: [-3.53, 8.52]
+bounds_y_m: [-3.55, -0.25]
