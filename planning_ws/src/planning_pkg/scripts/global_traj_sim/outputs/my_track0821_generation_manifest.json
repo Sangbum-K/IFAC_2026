@@ -1,87 +1,87 @@
 {
   "files": [
     {
-      "bytes": 36380,
-      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0821_sp_max9.00ms_margin0.08m_mu1.10.csv",
+      "bytes": 36037,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0821_sp_max9.00ms_margin0.08m_mu1.40.csv",
       "role": "sp_0",
-      "sha256": "b93024e04d02e368da5e638f2350cc1b7b0279485cf706a5b66ec9737ef4c4d1"
+      "sha256": "5e794a2cbdc69a74ae6cf6ff0ea0da4c20ca99a664aea7a83844d2921d312ec4"
     },
     {
-      "bytes": 36380,
-      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0821_sp_max9.00ms_margin0.08m_mu1.10.csv",
+      "bytes": 36037,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0821_sp_max9.00ms_margin0.08m_mu1.40.csv",
       "role": "sp_1",
-      "sha256": "b93024e04d02e368da5e638f2350cc1b7b0279485cf706a5b66ec9737ef4c4d1"
+      "sha256": "5e794a2cbdc69a74ae6cf6ff0ea0da4c20ca99a664aea7a83844d2921d312ec4"
     },
     {
-      "bytes": 8768,
+      "bytes": 8788,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0821_centerline.csv",
       "role": "centerline_output",
-      "sha256": "b7a892368251b9b09140fd12a9cff63e153295aad2f9f3e2d7a94b9a8faf0747"
+      "sha256": "0f9368b33ba3ea768d1dba8eaa783b1115d91f555bec46eb7458250f8e9a3036"
     },
     {
-      "bytes": 8768,
+      "bytes": 8788,
       "path": "planning_ws/src/planning_pkg/config/centerline/my_track0821_centerline.csv",
       "role": "centerline_runtime",
-      "sha256": "b7a892368251b9b09140fd12a9cff63e153295aad2f9f3e2d7a94b9a8faf0747"
+      "sha256": "0f9368b33ba3ea768d1dba8eaa783b1115d91f555bec46eb7458250f8e9a3036"
     },
     {
-      "bytes": 36692,
-      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0821_iqp_max9.00ms_margin0.08m_mu1.10.csv",
+      "bytes": 36239,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0821_iqp_max9.00ms_margin0.08m_mu1.40.csv",
       "role": "main_output",
-      "sha256": "6a435e67913bc14290bab192ba5d8aed8fcc96eb80f3c24673a80bb65d931338"
+      "sha256": "04e1236d4de6d69fd4bd50e1b1985c93947e33865a20c23809445973ecd79b2e"
     },
     {
-      "bytes": 36692,
-      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0821_iqp_max9.00ms_margin0.08m_mu1.10.csv",
+      "bytes": 36239,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0821_iqp_max9.00ms_margin0.08m_mu1.40.csv",
       "role": "main_runtime",
-      "sha256": "6a435e67913bc14290bab192ba5d8aed8fcc96eb80f3c24673a80bb65d931338"
+      "sha256": "04e1236d4de6d69fd4bd50e1b1985c93947e33865a20c23809445973ecd79b2e"
     }
   ],
-  "generation_content_sha256": "d992adf563a7d7bd7c628f96ac0785b31de13ad001c06824f0f04a5f5bd361b3",
-  "generation_id": "10012950513f47d59fa4e0adffc33220",
-  "main": "my_track0821_iqp_max9.00ms_margin0.08m_mu1.10.csv",
+  "generation_content_sha256": "00b944201ffebf755d246910c0eae1b2bbac2bce54fe00f848b757993631240e",
+  "generation_id": "47782ac635004b4abd2f3b8f32c68396",
+  "main": "my_track0821_iqp_max9.00ms_margin0.08m_mu1.40.csv",
   "map": "my_track0821",
   "schema_version": 1,
-  "sp": "my_track0821_sp_max9.00ms_margin0.08m_mu1.10.csv",
+  "sp": "my_track0821_sp_max9.00ms_margin0.08m_mu1.40.csv",
   "sp_disabled_reason": "",
   "sp_enabled": true,
-  "sp_expected": "my_track0821_sp_max9.00ms_margin0.08m_mu1.10.csv",
+  "sp_expected": "my_track0821_sp_max9.00ms_margin0.08m_mu1.40.csv",
   "validation": {
     "adaptive_safe_dist": {
       "enabled": true,
       "narrow_pts": 0,
-      "safe_max": 0.5500000000000002,
-      "safe_median": 0.55,
-      "safe_min": 0.4650000000000001,
-      "total_pts": 72,
-      "width_max": 3.8500000000000005,
-      "width_median": 2.175,
-      "width_min": 1.55
+      "safe_max": 0.5499999999999999,
+      "safe_median": 0.5499999999999999,
+      "safe_min": 0.49499999999999994,
+      "total_pts": 71,
+      "width_max": 3.725,
+      "width_median": 2.125,
+      "width_min": 1.6500000000000001
     },
     "adaptive_speed_by_width": {
-      "binding_pts": 50,
-      "corner_pts": 346,
+      "binding_pts": 70,
+      "corner_pts": 339,
       "enabled": true,
-      "limited_pts": 150,
-      "raw_v_min": 5.769230769230769,
+      "limited_pts": 153,
+      "raw_v_min": 5.384615384615384,
       "slope_max": 0.065,
       "slope_min": 0.03,
-      "smoothed_pts": 195,
-      "total_pts": 362,
-      "v_min": 6.153846153846154
+      "smoothed_pts": 186,
+      "total_pts": 357,
+      "v_min": 5.824175824175824
     },
     "advisory_profiles": [
       "python_sim_tracker"
     ],
     "backstop": {
-      "path_error_max_m": 0.450659898390418,
-      "path_error_steps": 49,
-      "path_error_threshold_m": 0.25,
-      "speed_cut_max_mps": 2.6865682524853343,
-      "steer_sat_steps": 9,
+      "path_error_max_m": 1.7041538561200753,
+      "path_error_steps": 148,
+      "path_error_threshold_m": 0.3,
+      "speed_cut_max_mps": 3.645302313268161,
+      "steer_sat_steps": 23,
       "steer_sat_threshold": 0.85,
-      "total_steps": 301,
-      "triggered_steps": 58
+      "total_steps": 370,
+      "triggered_steps": 148
     },
     "brake_decel_per_amp": 0.14,
     "closedloop_footprint_slack_m": 0.0,
@@ -91,18 +91,18 @@
     "gate_target": "real",
     "longitudinal": {
       "accel_limit_min": 2.2,
-      "ax_sign_flips": 4,
-      "ax_sign_flips_before_smoothing": 4,
+      "ax_sign_flips": 7,
+      "ax_sign_flips_before_smoothing": 8,
       "decel_limit_min": 2.2,
       "jerk_limit": 30.0,
-      "jerk_max": 127.39726857471128,
-      "jerk_over_pts": 31,
-      "jerk_p50": 0.30646825231629754,
-      "jerk_p99": 93.55744768431191,
-      "jerk_p99_before_smoothing": 189.8151647271054,
+      "jerk_max": 223.79203741049034,
+      "jerk_over_pts": 57,
+      "jerk_p50": 0.3926916595909672,
+      "jerk_p99": 160.77936735917638,
+      "jerk_p99_before_smoothing": 314.9937655884391,
       "smooth_passes": 2
     },
-    "mu_profile": 1.1,
+    "mu_profile": 1.4,
     "plant_accel_mps2": 4.5,
     "plant_decel_planned_mps2": 2.38,
     "profile_settings": [
@@ -128,12 +128,12 @@
       "enabled": true,
       "lookahead_s": 0.25,
       "profile": "cpp_real_car",
-      "raised_pts": 234,
-      "total_pts": 362,
-      "v_drop_max": 0.8700365917984403,
-      "v_mean_after": 5.7050264333219465,
-      "v_mean_before": 5.9339367289351745,
-      "window_max_m": 2.0215513718553453
+      "raised_pts": 238,
+      "total_pts": 357,
+      "v_drop_max": 0.6745539184947624,
+      "v_mean_after": 6.1238232461817335,
+      "v_mean_before": 6.227715114374321,
+      "window_max_m": 1.9733520279811028
     },
     "velocity_profile_settings": {
       "corner_accel_mps2": 2.2,
@@ -144,7 +144,7 @@
       "lat_err_straight_s": 0.03,
       "longitudinal_smooth_m": 0.55,
       "longitudinal_smooth_passes": 2,
-      "mu_profile": 1.1,
+      "mu_profile": 1.4,
       "speed_lookahead_s": 0.25,
       "v_max_mps": 9.0,
       "width_cap_smooth_m": 0.55,

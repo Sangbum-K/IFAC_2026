@@ -134,6 +134,16 @@ spliner_node:
     #   근거·득실은 params.yaml / real_car.yaml 주석 참조.
     spliner/boundary_arrival_decel_mps2: 2.0
     spliner/trailing_ramp_obstacle_check: true
+    # ── 트레일링 바닥의 간격 기반 상한 (params.yaml 주석) ────────────────
+    # run_0819_211107 / run_0820_173822 두 접촉 모두 "발행 명령이 정확히
+    # 바닥값 3.00 에 붙은 채" 일어났다. 상대는 1.0~1.7 m/s 였다.
+    # 되돌리려면 gap_aware 를 false 로 — 재빌드 없이 launch 재시작이면 된다.
+    spliner/trailing_floor_gap_aware: true
+    # 절대 바닥도 3.0 -> 2.0. gap_aware 가 근접 구간을 덮으므로 이 값이 실제로
+    # 무는 곳은 범퍼여유 1.60 m 이상 구간뿐이고, 거기서 "상대가 갑자기 정지"에
+    # 대한 여유가 3.15 m -> 1.60 m 로 줄어든다. gap_aware 위에서의 추가 비용은
+    # 실측 평균 0.12 m/s (run_0819) / 0.34 m/s (run_0820) 로 작다.
+    spliner/dyn_trailing_floor_mps: 2.0
     # control 의 vehicle/speed_scale 과 반드시 같은 값 (실차·sim 모두 1.0).
     # 예전엔 여기가 base 의 0.30 이었고 control sim.yaml 도 0.30 이라 짝은
     # 맞았지만, 그 짝이 실차(1.0)와 달라 동적 상대 trailing 속도 모델이

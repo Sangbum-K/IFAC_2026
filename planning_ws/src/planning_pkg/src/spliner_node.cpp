@@ -122,6 +122,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/commit_min_speed_mps", 0.3);
     this->declare_parameter("spliner/commit_release_empty_sec", 1.0);
     this->declare_parameter("spliner/commit_tail_release_lead_m", 3.0);
+    this->declare_parameter("spliner/commit_dyn_release_move_m", 0.0);
     this->declare_parameter("spliner/commit_break_confirm_cycles", 2);
     this->declare_parameter("spliner/creep_escape_speed", 0.6);
     // 원호 이탈 (BuildEscapeArc) — 근거는 spliner_node.hpp 선언부 주석.
@@ -140,9 +141,13 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/cls_max_std", 0.2);
     this->declare_parameter("spliner/cls_vs_reset", 0.1);
     this->declare_parameter("spliner/cls_vs_hold", 10);
+    this->declare_parameter("spliner/ever_moved_min_disp_m", 0.5);
     this->declare_parameter("spliner/cls_inherit_dist_m", 0.6);
     this->declare_parameter("spliner/cls_inherit_timeout_sec", 0.5);
     this->declare_parameter("spliner/dyn_trailing_floor_mps", 3.0);
+    // false = 종전 동작(간격과 무관한 절대 바닥). 실차는 real_car.yaml 에서 켠다.
+    this->declare_parameter("spliner/trailing_floor_gap_aware", false);
+    this->declare_parameter("spliner/trailing_floor_contact_dist_m", 0.44);
     this->declare_parameter("spliner/trailing_decel_dyn", 1.5);
     this->declare_parameter("spliner/ever_dynamic_residual_vs", 0.3);
     this->declare_parameter("spliner/ever_dynamic_residual_max_m", 0.20);
@@ -261,6 +266,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/commit_release_empty_sec").as_double();
     commit_tail_release_lead_m_ = this->get_parameter(
         "spliner/commit_tail_release_lead_m").as_double();
+    commit_dyn_release_move_m_ = this->get_parameter(
+        "spliner/commit_dyn_release_move_m").as_double();
     commit_break_confirm_cycles_ = static_cast<int>(this->get_parameter(
         "spliner/commit_break_confirm_cycles").as_int());
     creep_escape_speed_ =
@@ -285,12 +292,18 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     cls_vs_reset_ = this->get_parameter("spliner/cls_vs_reset").as_double();
     cls_vs_hold_ =
         static_cast<int>(this->get_parameter("spliner/cls_vs_hold").as_int());
+    ever_moved_min_disp_m_ =
+        this->get_parameter("spliner/ever_moved_min_disp_m").as_double();
     cls_inherit_dist_m_ =
         this->get_parameter("spliner/cls_inherit_dist_m").as_double();
     cls_inherit_timeout_sec_ =
         this->get_parameter("spliner/cls_inherit_timeout_sec").as_double();
     dyn_trailing_floor_ =
         this->get_parameter("spliner/dyn_trailing_floor_mps").as_double();
+    trailing_floor_gap_aware_ =
+        this->get_parameter("spliner/trailing_floor_gap_aware").as_bool();
+    trailing_floor_contact_dist_m_ =
+        this->get_parameter("spliner/trailing_floor_contact_dist_m").as_double();
     trailing_decel_dyn_ =
         this->get_parameter("spliner/trailing_decel_dyn").as_double();
     ever_dynamic_residual_vs_ =
@@ -438,6 +451,16 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         // 절단점이 항상 기동 구간 안으로 들어와 조건이 성립할 수 없다.
         commit_tail_release_lead_m_ < 0.0 ||
         commit_tail_release_lead_m_ > lookahead_m_ ||
+        // 0 = 비활성. 켤 거면 0.6 이상이어야 한다 — run_0820_175059 의
+        // 진짜 정지 트랙 22개에서 s_center 한쪽 방향 최대 튐이 약 0.2 m,
+        // 최대 진폭이 0.396 m 였다. 그보다 낮게 잡으면 가만히 있는 상대를
+        // "지나갔다"로 오판해 매 프레임 커밋을 파기한다(= 커밋 무력화).
+        // 상한은 lookahead — 그보다 멀리 가야 만료된다면 상대는 이미
+        // 계획 범위 밖이라 조건이 성립할 수 없다.
+        commit_dyn_release_move_m_ < 0.0 ||
+        (commit_dyn_release_move_m_ > 0.0 &&
+         commit_dyn_release_move_m_ < 0.6) ||
+        commit_dyn_release_move_m_ > lookahead_m_ ||
         // 1 = 종전 동작(즉시 파기). 상한은 인지 드롭아웃(0812 실측 최대
         // 745 ms)보다 훨씬 짧게 — 확정 지연은 프레임 단위여야 한다.
         commit_break_confirm_cycles_ < 1 || commit_break_confirm_cycles_ > 5 ||
@@ -450,6 +473,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         cls_inherit_dist_m_ < 0.0 || cls_inherit_dist_m_ > 5.0 ||
         cls_inherit_timeout_sec_ < 0.0 || cls_inherit_timeout_sec_ > 5.0 ||
         dyn_trailing_floor_ < 0.0 || dyn_trailing_floor_ > 10.0 ||
+        // 접촉 거리는 차 반길이 이상이어야 한다 — 그보다 작으면 "차체가 이미
+        // 닿은 자리"를 여유로 세는 것이라 상한이 물리를 넘는다. 상한은
+        // trailing_gap_m_ (그보다 크면 목표 간격 자체가 접촉 안쪽이 된다).
+        !std::isfinite(trailing_floor_contact_dist_m_) ||
+        trailing_floor_contact_dist_m_ < vehicle_half_length_m_ ||
+        trailing_floor_contact_dist_m_ > trailing_gap_m_ ||
         trailing_decel_dyn_ <= 0.0 || trailing_decel_dyn_ > 20.0 ||
         ever_dynamic_residual_vs_ < 0.0 || ever_dynamic_residual_vs_ > 5.0 ||
         ever_dynamic_residual_max_m_ < 0.0 ||
@@ -529,6 +558,14 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         boundary_arrival_decel_mps2_,
         (!trailing_ramp_obstacle_check_ && boundary_arrival_decel_mps2_ <= 0.0)
             ? "(둘 다 off — 2026-08-19 이전 동작)" : "");
+    // 같은 이유로 트레일링 바닥 상태도 한 줄 찍는다. run_0819/0820 두 접촉이
+    // 모두 "명령이 정확히 바닥값에 붙은 채" 일어났으므로, 바닥이 무엇이었는지
+    // 는 사고 분석의 1순위 입력이다.
+    RCLCPP_INFO(this->get_logger(),
+        "spliner 트레일링 바닥: %.2f m/s, gap_aware=%s (접촉거리 %.2f m)",
+        dyn_trailing_floor_,
+        trailing_floor_gap_aware_ ? "ON" : "off",
+        trailing_floor_contact_dist_m_);
 
     if (ot_speed_scale_ > 1.0) {
         RCLCPP_WARN(this->get_logger(),
@@ -991,6 +1028,7 @@ void SplinerNode::Run() {
     active_lat_budget_ = path_lat_acc_max_;
     dyn_speed_floor_ = 0.0;
     cycle_rejects_.clear();
+    blocked_both_noted_ = false;   // P0-1 계측 (사이클당 1회)
 
     // ── 정지 워치독 (hpp 선언부 주석) ────────────────────────────────────
     // v=0 에서 나갈 수단을 하나는 남긴다: 정지가 이만큼 이어지면
@@ -1042,7 +1080,17 @@ void SplinerNode::Run() {
         // is_static 플래그를 관측 이력(위치 std 투표 + vs_reset)으로 덮어쓴다.
         // 파킹한 상대가 dynamic으로 남으면 예측/섹터게이팅/커밋이 전부
         // 동적 경로를 타서 회피가 무너진다 (파킹 상대 미회피 실측).
-        ClassifyObstacles(obs_copy.obstacles);
+        // ── 같은 인지 프레임을 두 번 세지 않는다 (2026-08-21) ────────────
+        // obs_copy 는 "마지막으로 받은" 메시지라 플래너가 인지보다 빠르면
+        // 같은 프레임이 여러 사이클 재사용된다. 이력/투표는 프레임 단위로만
+        // 갱신한다 (근거·환산표는 hpp kClsWindow 선언부).
+        const bool obs_frame_fresh =
+            !cls_has_stamp_ || obstacles_stamp_ != cls_last_stamp_;
+        if (obs_frame_fresh) {
+            cls_last_stamp_ = obstacles_stamp_;
+            cls_has_stamp_ = true;
+        }
+        ClassifyObstacles(obs_copy.obstacles, obs_frame_fresh);
         // Predictive Spliner: 예측 "따라잡는 시점의 충돌 구간"을 원시 관측과
         // 함께 유지한다 (별도 id). 클러스터링이 상대의 현재 위치~따라잡는
         // 지점을 한 박스로 합쳐 그 전체를 크게 회피하게 된다.
@@ -1153,6 +1201,9 @@ void SplinerNode::Run() {
             used_trailing = evasion_valid;
             committed_until_s_ = -1.0;
             committed_obs_end_s_ = -1.0;
+            committed_obs_id_ = -1;
+            committed_obs_s_ = -1.0;
+            committed_obs_dynamic_ = false;
             committed_lat_budget_ = -1.0;
             lc_active_ = false;
             RCLCPP_ERROR_THROTTLE(this->get_logger(), *get_clock(), 2000,
@@ -1244,6 +1295,79 @@ void SplinerNode::Run() {
             const bool nothing_ahead =
                 commit_release_empty_sec_ > 0.0 && all_ahead_now.empty() &&
                 std::isfinite(empty_for) && empty_for >= commit_release_empty_sec_;
+            // ── 상대가 지나가면 커밋을 놓아 준다 (2026-08-21) ────────────────
+            // 위 만료 축 넷은 전부 "상대가 제자리에 있다"를 전제한다. 움직이는
+            // 상대에는 만료 축이 없어서, 상대가 달아나는 동안 그 자리에 대고
+            // 계획한 감속 경로를 그대로 따라간다 (근거·실측은 hpp
+            // commit_dyn_release_move_m_ 선언부).
+            //
+            // 조회는 **원시 목록**(obs_copy.obstacles)으로 한다. all_ahead_now
+            // 로 하면 상대가 lookahead 밖으로 나갔을 때 목록에서 사라져
+            // "많이 움직였다"가 판정되지 않는다 — 정작 가장 확실한 경우다.
+            // (그 경우 여기서는 못 잡고 nothing_ahead / path_end 가 받는다.)
+            //
+            // 전진만 센다. Mod 로 재고 반 바퀴 미만만 인정하므로, 뒤로 처진
+            // 상대(= 우리가 추월한 상대)가 "거의 한 바퀴 전진"으로 뒤집혀
+            // 만료를 일으키지 않는다.
+            bool target_moved_on = false;
+            double target_moved_m = 0.0;
+            if (commit_dyn_release_move_m_ > 0.0 && committed_obs_dynamic_ &&
+                committed_obs_id_ >= 0 && committed_obs_s_ >= 0.0)
+            {
+                for (const auto &o : obs_copy.obstacles) {
+                    if (o.id != committed_obs_id_) {
+                        continue;
+                    }
+                    // ⚠️ 좌표계를 맞춘다 (2026-08-21 보강).
+                    // 기준점 committed_obs_s_ 는 closest.s_center 인데, closest
+                    // 는 FilterObstacles 출력이라 **PredictObstacleMovement 로
+                    // fixed_pred_time(0.15s)만큼 이미 전파된** 값이다. 그런데
+                    // 여기 obs_copy 는 원시 목록이라 전파 전 좌표다. 그대로
+                    // 빼면 moved 가 매 프레임 vs*0.15 만큼 과소보고되어,
+                    // 실제로는 문턱보다 그만큼 더 가야 만료된다:
+                    //   v_obs 1.57 -> 실질 1.24m (+24%)
+                    //   v_obs 4.70 -> 실질 1.71m (+70%)
+                    // 방향은 보수적(늦게 파기)이라 위험하진 않지만, 레이스
+                    // 속도에서는 규칙이 사실상 반만 걸린다. 같은 전파를 여기서도
+                    // 태워 양쪽을 같은 좌표계로 만든다.
+                    const double moved = Mod(
+                        Mod(PredictObstacleMovement(o).s_center, track_len_) -
+                            committed_obs_s_,
+                        track_len_);
+                    // ── 따라잡는 중이면 놓지 않는다 (2026-08-21 보강) ──────
+                    // 절대 이동량만 보면 문턱의 시간 상수가 **상대 속도에
+                    // 반비례**한다. 1.0 m 를 지나는 데
+                    //   v_obs 1.57 -> 0.64 s   (run_0820 의 저속 조우)
+                    //   v_obs 4.50 -> 0.22 s   (레이스 속도)
+                    // 이고, 준정적 추월 기동은 상대 4.0 m(pass_length 3.5 +
+                    // size 0.5)를 통과하는 데 closing 1.5 에서 2.67 s 걸린다.
+                    // 즉 레이스 속도에서는 커밋이 기동의 8% 만 덮고 사라진다 —
+                    // qs_active_ 가 "정적 회피 기구(커밋)를 동적에 연다"는
+                    // 장치인데 그 커밋이 0.2 초 만에 죽으면 장치가 무력화된다.
+                    //
+                    // 병리 현상의 실제 서명은 "상대가 빠르다"가 아니라
+                    // **"내가 뒤처지고 있다"** 다. run_0820 은 자차 0.89 <
+                    // 상대 1.57 로 간격이 4.4 -> 5.4 m 벌어지는 중이었다.
+                    // 그래서 확실히 따라잡는 중이면 만료를 걸지 않는다.
+                    // 문턱은 QuasiStaticOvertake 와 **같은** qs_min_closing_mps_
+                    // 를 재사용한다 (vs 노이즈 p90 위에 맞춰진 값이라 새 상수를
+                    // 도입하지 않는다). run_0820 은 closing 이 음수라 이 조건이
+                    // 참이 되지 않으므로 그 백의 A/B 결과는 보존된다.
+                    const double v_obs_rel = trailing_vs_filter_
+                        ? ObsVsMean(o.id, o.vs) : o.vs;
+                    const bool closing_in =
+                        std::isfinite(v_obs_rel) && std::isfinite(cur_vs_) &&
+                        (cur_vs_ - v_obs_rel) >= qs_min_closing_mps_;
+                    if (std::isfinite(moved) &&
+                        moved >= commit_dyn_release_move_m_ &&
+                        moved < track_len_ * 0.5 && !closing_in)
+                    {
+                        target_moved_on = true;
+                        target_moved_m = moved;
+                    }
+                    break;
+                }
+            }
             // ── 꼬리 충돌은 커밋 파기 사유가 아니다 (2026-08-18) ──────────────
             // 재검증이 커밋 경로 **전체**를 봤다. 그런데 커밋이 지키는 것은
             // 기동(진입 블렌드 + 대상 장애물 통과)이고, 그 뒤에 붙는
@@ -1379,7 +1503,7 @@ void SplinerNode::Run() {
                 }
             }
             if (pos < span && !new_obs_beyond_commit && !nothing_ahead &&
-                (!collision_confirmed || tail_blocked)) {
+                !target_moved_on && (!collision_confirmed || tail_blocked)) {
                 // 절단은 **확정된** 충돌에만 한다. 한 프레임짜리 유령으로
                 // 커밋을 짧게 만들면 만료가 근거 없이 앞당겨진다.
                 if (tail_blocked && collision_confirmed) {
@@ -1434,16 +1558,22 @@ void SplinerNode::Run() {
                 // 커밋 파기는 드물지만 그대로 정지/급조향으로 이어지므로 반드시
                 // 남긴다 (가설 (c) "성립했다가 깨진다"의 유일한 직접 증거).
                 RCLCPP_WARN(this->get_logger(),
-                    "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu reason=%s",
+                    "[trace] committed_break pos=%.2f/%.2f stable_obs=%zu reason=%s"
+                    " obs_moved=%.2f",
                     pos, span, stable_ahead.size(),
                     new_obs_beyond_commit ? "new_obs_beyond_commit"
                         : nothing_ahead   ? "nothing_ahead"
-                        : (pos < span ? "path_collision" : "path_end"));
+                        : target_moved_on ? "obs_moved_on"
+                        : (pos < span ? "path_collision" : "path_end"),
+                    target_moved_m);
                 if (new_obs_beyond_commit) {
                     NoteReject("commit_released_new_obs");
                 }
                 if (nothing_ahead) {
                     NoteReject("commit_released_nothing_ahead");
+                }
+                if (target_moved_on) {
+                    NoteReject("commit_released_obs_moved");
                 }
                 // 꼬리 절단으로 만료된 경우(= 잘린 끝까지 주행)를 따로 센다.
                 // 이 경로로 만료되는 것이 설계 의도이고, 그 뒤 티어가 다시
@@ -1457,6 +1587,9 @@ void SplinerNode::Run() {
                 commit_collision_run_ = 0;
                 committed_until_s_ = -1.0;
                 committed_obs_end_s_ = -1.0;
+                committed_obs_id_ = -1;
+                committed_obs_s_ = -1.0;
+                committed_obs_dynamic_ = false;
                 committed_lat_budget_ = -1.0;
             }
         }
@@ -1634,6 +1767,13 @@ void SplinerNode::Run() {
             // **기하 하한으로 거부됐을 때만** 시도한다. 충돌/벽 같은 다른
             // 사유는 원호로도 안 풀리고, 그때 급조향하면 상황만 나빠진다.
             bool used_escape = false;
+            // P0-2: 진입 게이트가 막은 횟수도 센다. "회피가 다 실패했는데
+            // 기하 사유가 아니라서 원호를 아예 시도하지 않은" 사이클이
+            // 얼마나 되는지가 escape 0% 의 후보 원인 중 하나다.
+            if (!evasion_valid && try_evade &&
+                !(lane_switch_geom_infeasible_ || free_spline_geom_infeasible_)) {
+                NoteOutcome("escape_gate_not_geom");
+            }
             if (!evasion_valid && try_evade &&
                 (lane_switch_geom_infeasible_ || free_spline_geom_infeasible_)) {
                 used_escape = BuildEscapeArc(closest, all_ahead,
@@ -1727,7 +1867,24 @@ void SplinerNode::Run() {
                 // 1310 주석이 "반드시 남긴다"고 못박은 방향이기도 하다.
                 // 다시 검토할 조건: **실제로 움직이는 상대차가 있는 백**에서
                 // stop_gate.py 가 0 이 아닌 수를 내면 그때 붙인다.
-                const bool allow_stop = !closest.is_static;
+                // ── 달리다 멈춘 상대에게 정지 권한을 돌려준다 (2026-08-21) ──
+                // 0806 정지 라치 방지(= 정적에는 완전 정지 없음)의 대상은
+                // **콘**, 즉 영구히 서 있는 물체다. 달리다 멈춘 차는 콘이
+                // 아니라 다시 움직이므로 그 뒤에 서는 것은 영구 라치가 될 수
+                // 없다. 지금은 상대가 멈춰 STATIC 으로 뒤집히는 순간
+                // trailing_retry_speed(2.5) 바닥이 깔려 **설 수가 없다**.
+                //
+                // 판단 근거를 분류기(WasEverDynamic)가 아니라 **관측된 변위**
+                // (WasEverMoved)로 둔 이유는 max_disp 주석 참조 — 짧게 흔들린
+                // 콘 3개가 DYNAMIC 으로 각인돼 있었다.
+                //
+                // ⚠️ 이 한 줄만 바꾸면 "잠깐 느려진 상대"를 정지로 오인해 급감속
+                //    한다. ClassifyObstacles 가 정적 트랙의 obs.vs 를 0 으로
+                //    **강제**하기 때문이다. 그래서 BuildTrailing 의 obs_vs_eff
+                //    가 ever_moved 트랙에 대해 관측 창 평균(ObsVsMean)을 쓰도록
+                //    같이 바꿨다 — 둘은 한 묶음이다.
+                const bool allow_stop =
+                    !closest.is_static || WasEverMoved(closest.id);
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks,
@@ -1811,6 +1968,13 @@ void SplinerNode::Run() {
                 commit_collision_run_ = 0;
                 // 조기 해제 판정용: 이 커밋이 대상으로 삼은 장애물의 뒷 끝.
                 committed_obs_end_s_ = Mod(closest.s_end, track_len_);
+                // 상대 이동 만료 판정용 기준점 (hpp commit_dyn_release_move_m_).
+                committed_obs_id_ = closest.id;
+                committed_obs_s_ = Mod(closest.s_center, track_len_);
+                committed_obs_dynamic_ =
+                    !IsPredictionTube(closest) &&
+                    (!closest.is_static || qs_active_ ||
+                     WasEverDynamic(closest.id));
             }
         } else if (lc_active_ && !evasion_valid &&
                    sp_lane_change_ && has_sp_) {
@@ -2071,6 +2235,16 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
                            : std::pair<std::string, double>{"right", apex_right};
     }
     if (!left_clears && !right_clears) {
+        // ── P0-1 계측 (2026-08-21) ────────────────────────────────────────
+        // "양쪽 다 통과 불가" = 트랙이 실제로 막혔다는 유일한 사전 신호인데
+        // 지금은 아무도 소비하지 않는다(아래에서 '덜 막힌 쪽'을 골라 계속
+        // 진행한다). allow_stop 을 is_static 에서 떼어내려면 이 분기의 발화율과
+        // 지속 길이를 먼저 알아야 한다 — tools/bag_analysis_0821/PLAN.md P0-1.
+        // 거동은 바꾸지 않는다. 카운터와 trace 문자열에만 나간다.
+        if (!blocked_both_noted_) {
+            blocked_both_noted_ = true;
+            NoteOutcome("blocked_both_sides");
+        }
         // 둘 다 안 되는 경우에도 |apex| 를 쓰면 안 된다 — 위와 같은 이유로
         // "더 심하게 막힌 쪽"이 이긴다. 여기서 고른 사이드는 last_ot_side_ 로
         // 커밋되어 다음 사이클의 사이드 유지 히스테리시스를 좌우하므로, 지금
@@ -2678,7 +2852,10 @@ bool SplinerNode::TryLaneSwitch(
         // 떨어지더라도 "여기로 가려던 중"이라는 사실은 남긴다. 트레일링이
         // raceline으로 되돌리는 대신 이 목표를 유지하는 근거가 된다
         // (retry_d_target_ 주석 참조).
+        // 충돌로 떨어지면 이 기록을 되돌린다 (hpp RetryTargetSnapshot 주석).
+        const RetryTargetSnapshot retry_snap = SnapshotRetryTarget();
         NoteRetryTarget(d_hold, closest_obs.vd);
+        path_collision_reject_ = false;
         if (BuildLaneSwitch(d_hold, closest_obs, hold_through_s, all_ahead,
                             out_wpnts, out_mrks)) {
             CommitOtSide(side, closest_obs);
@@ -2688,6 +2865,13 @@ bool SplinerNode::TryLaneSwitch(
                 side.c_str(), d_hold, Mod(s_apex, track_len_),
                 out_wpnts.wpnts.size());
             return true;
+        }
+        if (path_collision_reject_) {
+            // 목표 자리에 물체가 있다 — 이쪽으로 쌓는 진행은 접촉을 향한다.
+            // 되돌리지 않으면 트레일링이 이 목표를 이어받아 그대로 간다
+            // (run_0820_173822 25.4~26.0s, 중심간 0.21 m).
+            RestoreRetryTarget(retry_snap);
+            NoteReject("retry_d_dropped_collision");
         }
         out_wpnts.wpnts.clear();
         out_mrks.markers.clear();
@@ -3411,6 +3595,8 @@ bool SplinerNode::BuildLaneSwitch(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "LaneSwitch 거부: 경로가 장애물과 충돌 (blocking s=%.2f)", blocking_s);
         NoteReject("lane_collision");
+        // 호출자(TryLaneSwitch)가 retry_d 를 되돌리는 근거 (hpp 선언부 주석).
+        path_collision_reject_ = true;
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -3434,6 +3620,11 @@ bool SplinerNode::DoSpline(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
     f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
     visualization_msgs::msg::MarkerArray &out_mrks) {
+
+    // 아래 NoteRetryTarget(d_apex) 가 충돌 기각으로 무효가 되면 여기로
+    // 되돌린다 (hpp RetryTargetSnapshot 주석). 이 함수 안에서 retry_d 를
+    // 건드리는 곳은 그 한 곳뿐이라 진입 시점 스냅샷이 곧 "기록 직전" 값이다.
+    const RetryTargetSnapshot retry_snap = SnapshotRetryTarget();
 
     int gb_size = static_cast<int>(gb_wpnts_.size());
 
@@ -3914,6 +4105,11 @@ bool SplinerNode::DoSpline(
         RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
             "FreeSpline 거부: 경로가 장애물과 충돌 (blocking s=%.2f)", blocking_s);
         NoteReject("spline_collision");
+        // 목표 자리에 물체가 있다 — TryLaneSwitch 와 같은 이유로 되돌린다
+        // (hpp RetryTargetSnapshot 주석).
+        path_collision_reject_ = true;
+        RestoreRetryTarget(retry_snap);
+        NoteReject("retry_d_dropped_collision");
         out_wpnts.wpnts.clear();
         return false;
     }
@@ -3950,6 +4146,13 @@ bool SplinerNode::BuildEscapeArc(
     if (!escape_arc_enabled_ || gb_size < 2) {
         return false;
     }
+    // ── P0-2 계측 (2026-08-21) ────────────────────────────────────────────
+    // run_0820_235246 663 s 에서 /planner/escape_active 가 **0%** 였는데
+    // escape_* 기각 카운터는 2400 회 넘게 올라 있다. 그 둘이 같이 성립하려면
+    // "호출은 되는데 매번 초반 게이트에서 죽는다"여야 하는데, 호출 자체가
+    // 몇 번인지 세는 곳이 없어 확인할 수 없었다. 진입 카운터를 둬서
+    // 기각 카운터의 분모를 만든다 — tools/bag_analysis_0821/PLAN.md P0-2.
+    NoteOutcome("escape_attempted");
     // (1) 정적(또는 준정적) + 지금 실제로 보이는 것만.
     //     외삽 유령에 급조향하면 벽으로 간다.
     //     예외: 정지 워치독(hpp 주석)이 선 뒤에는 가시성만 면제한다 —
@@ -4255,8 +4458,20 @@ bool SplinerNode::BuildTrailing(
     // 정적은 ClassifyObstacles 가 이미 obs.vs=0 으로 만들어 두므로 영향이 없다
     // (vs_hist 는 덮어쓰기 **전** 원시값을 담으므로 여기서 태우면 안 된다).
     // 비상정지 합성 장애물(id=INT32_MIN)은 cls_tracks_ 에 없어 fallback 이다.
+    // ── ever_moved 트랙은 정적으로 분류돼도 **관측 속도**를 쓴다 (2026-08-21) ─
+    // ClassifyObstacles 는 정적 트랙의 obs.vs 를 0 으로 강제하는데, vs_hist 에는
+    // 덮어쓰기 **전** 원시값이 남는다. 정지 권한(allow_stop)을 ever_moved 에
+    // 열어 주면서 이 값을 안 바꾸면, 코너에서 잠깐 느려져 STATIC 으로 뒤집힌
+    // 상대를 "정지"로 읽고 목표 0 을 명령한다 — 급감속이다.
+    //   run_0820_235246 실측 (이동 트랙이 STATIC 으로 분류된 443 프레임):
+    //     obs.vs(강제 0)      -> 목표 0.00
+    //     ObsVsMean(창 평균)  -> 목표 p50 +0.42, 그때 실제 상대 p50 +0.64
+    //     실제가 1.5 m/s 이상인데 창 평균이 0.3 미만인 프레임: **0 건**
+    //   즉 창 평균은 정적 분류 중에도 상대 속도를 놓치지 않는다.
+    const bool obs_ever_moved = WasEverMoved(obs.id);
     const double obs_vs_eff =
-        (trailing_vs_filter_ && !emergency_stop && !obs.is_static)
+        (trailing_vs_filter_ && !emergency_stop &&
+         (!obs.is_static || obs_ever_moved))
             ? ObsVsMean(obs.id, obs.vs) : obs.vs;
     // 제동 감속도는 정적/동적이 다르다 (2026-08-19). 정적은 종전 값 그대로라
     // 정적 경로의 프로파일은 비트 단위로 바뀌지 않는다.
@@ -4308,6 +4523,18 @@ bool SplinerNode::BuildTrailing(
     // 감속이다. 정지 목표를 그대로 두면 0을 명령하고, 그 0이 MAP 컨트롤러의
     // 조향까지 0으로 만든다 (control_node.cpp:1057).
     if (!allow_stop) {
+        // ── P0-3 계측 (2026-08-21) ────────────────────────────────────────
+        // 이 바닥이 실제로 목표를 **올린** 횟수를 센다. 그리고 그중
+        // "한 번이라도 동적이었던 트랙"(= 달리다 멈춘 상대차)을 따로 센다 —
+        // 그게 정확히 PLAN.md P1-1 이 겨냥하는 케이스다. allow_stop 은
+        // !is_static 이라, 상대가 멈춰 STATIC 으로 뒤집히는 순간 여기로 떨어져
+        // 정지 권한을 잃는다. 거동은 바꾸지 않는다.
+        if (v_target_prof_actual < trailing_retry_speed_) {
+            NoteOutcome("trailing_retry_clamp_raised");
+            if (!emergency_stop && WasEverDynamic(obs.id)) {
+                NoteOutcome("trailing_stop_denied_ever_dynamic");
+            }
+        }
         v_target_prof_actual = std::max(v_target_prof_actual,
                                         trailing_retry_speed_);
     } else {
@@ -4345,10 +4572,54 @@ bool SplinerNode::BuildTrailing(
             // **상대 속도까지만** 내려간다. 진짜로 서야 하는 경우는
             // emergency_stop 이고, 그건 위에서 이미 제외돼 있다.
             //
-            // 정적에는 이 블록 자체가 실행되지 않는다 (allow_stop = !is_static).
-            const double floor_use = geom_blocked_now
+            // 종전에는 정적에 이 블록이 실행되지 않았다. 2026-08-21 부터
+            // ever_moved(달리다 멈춘) 트랙은 allow_stop 이 열리므로 여기로
+            // 들어온다 — 고정 2.5 대신 간격에 따라 0 까지 수렴하는 이 바닥을
+            // 쓰게 되는 것이 의도다. 처음부터 정적인 콘은 종전 그대로.
+            double floor_use = geom_blocked_now
                 ? std::max(obs_vs_eff, 0.0)
                 : dyn_trailing_floor_;
+            // ── ③ 바닥에 "지금 간격에서 낼 수 있는 속도" 상한 (2026-08-20) ──
+            // ② 가 덮지 못하는 구멍이 있다. geom_blocked_now 는
+            // lane_geom_floor / spline_geom_floor 기각에서만 서는데, 두 접촉
+            // 백의 **1위 기각 사유는 lane_wall_no_room** 이라 둘 다 서지
+            // 않았다. 그래서 절대 바닥 3.0 이 그대로 살아 있었고, 두 백 모두
+            // 접촉 직전 발행 명령이 **정확히 3.00** 이었다:
+            //   run_0819_211107 89.41s 범퍼여유 0.03 m, 상대 1.7 -> 명령 3.00
+            //   run_0820_173822 25.20s 범퍼여유 0.42 m, 상대 1.0 -> 명령 3.00
+            //
+            // 상대가 갑자기 서면 우리는 trailing_lag_sec_ 뒤부터
+            // trailing_ramp_decel_ 로만 줄일 수 있다. 남은 여유 B 안에 서려면
+            //   F·T + F²/(2a) <= B  =>  F <= -aT + sqrt((aT)² + 2aB)
+            // 이고, 이 상한을 넘는 바닥은 "따라가기"가 아니라 예약된 추돌이다.
+            // 실측: 동적 트레일링 사이클 중 바닥 3.0 이 요구하는 B=3.15 m 를
+            // 만족한 것은 0819 9% / 0820 14% 뿐이었다.
+            //
+            // ⚠️ 바닥에만 씌우는 상한이고 v_target 자체는 건드리지 않는다.
+            //    상대가 이 상한보다 빠르면 아래 max 가 상대 속도를 그대로
+            //    남기므로 **상대가 빠를 때는 종전과 비트 단위로 동일**하다
+            //    (두 백에서 동적 트레일링 중 상대 vs >= 3.0 인 사이클은 0).
+            //    그래서 "빠른 상대 뒤 근접"에는 여전히 간격 되먹임이 없다 —
+            //    알려진 잔여 위험이고, 목표 자체에 상한을 씌우는 것은 빠른
+            //    상대 뒤에서 불필요하게 느려지는 회귀라 여기서는 하지 않는다.
+            if (trailing_floor_gap_aware_) {
+                double gap_ahead = Mod(obs.s_start - cur_s_, track_len_);
+                if (gap_ahead > track_len_ * 0.5) {
+                    // 이미 지나친 상대 — 추돌 대상이 아니므로 상한을 걸지
+                    // 않는다(= 종전 동작). closest 선정이 s_end 기준이라
+                    // 보통 여기 오지 않지만, 나란히 달리는 프레임이 있다.
+                    gap_ahead = lookahead_m_;
+                }
+                const double bumper =
+                    std::max(gap_ahead - trailing_floor_contact_dist_m_, 0.0);
+                const double a_f = std::max(trailing_ramp_decel_, 0.05);
+                const double aT = a_f * std::max(trailing_lag_sec_, 0.0);
+                const double v_gap =
+                    -aT + std::sqrt(aT * aT + 2.0 * a_f * bumper);
+                if (std::isfinite(v_gap)) {
+                    floor_use = std::min(floor_use, std::max(v_gap, 0.0));
+                }
+            }
             v_target_prof_actual =
                 std::max(v_target_prof_actual, floor_use);
         }
@@ -4798,8 +5069,24 @@ bool SplinerNode::BuildTrailing(
             // 정지는 그 수렴을 스스로 끊는다는 d809831 의 논리가 여기에도
             // 그대로 적용된다. 동적/비상정지(allow_stop=true)는 종전대로 0.
             // 여기는 "복귀 기하조차 없다" = 가장 나쁜 상태이므로 낮은 바닥.
+            // P0-3: "복귀 기하조차 없다" = 가장 나쁜 상태다. 여기서
+            // !allow_stop 이면 degraded 바닥(1.5)으로 접촉한다. 한 번이라도
+            // 동적이었던 트랙이면 그게 곧 "달리다 멈춘 상대차" 케이스다.
+            if (!allow_stop) {
+                NoteOutcome("trailing_no_return_geom_denied_stop");
+                if (!emergency_stop && WasEverDynamic(obs.id)) {
+                    NoteOutcome("trailing_no_return_ever_dynamic");
+                }
+            }
+            // ever_moved 로 정지 권한이 열린 트랙은 0 이 아니라 **관측 속도**
+            // 까지만 내린다 (위 obs_vs_eff 주석과 같은 근거). 진짜 정지물은
+            // 창 평균도 0 이라 결과가 같고, 잠깐 느려진 상대에는 급감속이
+            // 되지 않는다. 원래부터 동적인 트랙은 종전대로 0.
             v_target_prof_actual =
-                allow_stop ? 0.0 : trailing_retry_speed_degraded_;
+                allow_stop
+                    ? (obs.is_static && obs_ever_moved
+                           ? std::max(obs_vs_eff, 0.0) : 0.0)
+                    : trailing_retry_speed_degraded_;
         }
     }
     out_wpnts.wpnts.reserve(n);
@@ -5409,7 +5696,8 @@ bool SplinerNode::BuildSpExit(
 }
 
 void SplinerNode::ClassifyObstacles(
-    std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles) {
+    std::vector<f1tenth_planning_msgs::msg::Obstacle> &obstacles,
+    bool obs_frame_fresh) {
     // unicorn perception/multi_tracking.py의 정적/동적 분류 이식:
     //  1) 위치 std 투표 — 최근 관측의 std_s/std_d가 둘 다 min_std 미만이면
     //     정적 표, 하나라도 max_std 초과면 표 리셋. 정적 표 비율 >= 0.5 → 정적.
@@ -5470,17 +5758,25 @@ void SplinerNode::ClassifyObstacles(
         if (tr.s_hist.empty()) {
             tr.s_ref = obs.s_center;
         }
-        tr.s_hist.push_back(
+        const double disp_now =
             Mod(obs.s_center - tr.s_ref + track_len_ / 2.0, track_len_) -
-            track_len_ / 2.0);
-        tr.d_hist.push_back(obs.d_center);
-        tr.vs_hist.push_back(obs.vs);
-        if (tr.s_hist.size() > kClsWindow) {
-            tr.s_hist.pop_front();
-            tr.d_hist.pop_front();
-        }
-        if (tr.vs_hist.size() > kClsVsWindow) {
-            tr.vs_hist.pop_front();
+            track_len_ / 2.0;
+        // 새 인지 프레임일 때만 쌓는다. 아래 분류 결과 적용(obs.is_static /
+        // s_var / vs 등)은 **매 사이클** 그대로 돈다 — 계획은 항상 최신
+        // 관측으로 해야 하고, 중복을 막을 대상은 "몇 번 봤나"뿐이다.
+        if (obs_frame_fresh) {
+            tr.s_hist.push_back(disp_now);
+            // 관측된 최대 변위. s_ref 기준 절댓값이라 왕복해도 줄지 않는다.
+            tr.max_disp = std::max(tr.max_disp, std::abs(disp_now));
+            tr.d_hist.push_back(obs.d_center);
+            tr.vs_hist.push_back(obs.vs);
+            if (tr.s_hist.size() > kClsWindow) {
+                tr.s_hist.pop_front();
+                tr.d_hist.pop_front();
+            }
+            if (tr.vs_hist.size() > kClsVsWindow) {
+                tr.vs_hist.pop_front();
+            }
         }
         if (static_cast<int>(tr.s_hist.size()) <= cls_min_nb_meas_) {
             continue;  // 표본 부족 — perception 플래그 유지
@@ -5496,12 +5792,19 @@ void SplinerNode::ClassifyObstacles(
         };
         double std_s = std_of(tr.s_hist);
         double std_d = std_of(tr.d_hist);
-        if (std_s < cls_min_std_ && std_d < cls_min_std_) {
-            ++tr.static_count;
-        } else if (std_s > cls_max_std_ || std_d > cls_max_std_) {
+        // 투표도 프레임 단위다. 비율(static_count/total_count)만 보면 중복은
+        // 상쇄되지만, 아래 vs_low_run 은 **연속 횟수**라 상쇄되지 않는다 —
+        // 둘을 같은 단위로 두어야 cls_vs_hold 가 뜻대로 동작한다.
+        // (표 리셋은 안전 방향이라 신선도와 무관하게 즉시 적용한다.)
+        if (std_s > cls_max_std_ || std_d > cls_max_std_) {
             tr.static_count = 0;
+        } else if (obs_frame_fresh &&
+                   std_s < cls_min_std_ && std_d < cls_min_std_) {
+            ++tr.static_count;
         }
-        ++tr.total_count;
+        if (obs_frame_fresh) {
+            ++tr.total_count;
+        }
         bool by_vote = tr.static_count >=
             (tr.total_count + 1) / 2;   // 비율 >= 0.5
         double vs_avg = 0.0;
@@ -5510,7 +5813,9 @@ void SplinerNode::ClassifyObstacles(
         // 한 번 내려간 것만으로는 뒤집지 않는다 — cls_vs_hold_ 사이클 연속.
         const bool vs_low =
             tr.vs_hist.size() >= kClsVsWindow && vs_avg < cls_vs_reset_;
-        tr.vs_low_run = vs_low ? tr.vs_low_run + 1 : 0;
+        if (obs_frame_fresh) {
+            tr.vs_low_run = vs_low ? tr.vs_low_run + 1 : 0;
+        }
         bool by_vs = tr.vs_low_run >= cls_vs_hold_;
 
         bool st = by_vote || by_vs;
@@ -5683,6 +5988,22 @@ void SplinerNode::TraceCycle(
         cur_s_, cur_vs_, cur_d_, id, dist, d_lo, d_hi, is_static, cls_obs,
         try_evade ? 1 : 0, in_sector ? 1 : 0, committed ? 1 : 0,
         outcome, cycle_rejects_.empty() ? "-" : cycle_rejects_.c_str());
+}
+
+SplinerNode::RetryTargetSnapshot SplinerNode::SnapshotRetryTarget() const {
+    RetryTargetSnapshot snap;
+    snap.target = retry_d_target_;
+    snap.vd = retry_d_vd_;
+    snap.stamp = retry_d_stamp_;
+    snap.has = has_retry_d_;
+    return snap;
+}
+
+void SplinerNode::RestoreRetryTarget(const RetryTargetSnapshot &snap) {
+    retry_d_target_ = snap.target;
+    retry_d_vd_ = snap.vd;
+    retry_d_stamp_ = snap.stamp;
+    has_retry_d_ = snap.has;
 }
 
 void SplinerNode::NoteRetryTarget(double d_target, double obs_vd) {
@@ -5928,6 +6249,15 @@ int SplinerNode::ObsSeen(int32_t id) const {
 bool SplinerNode::WasEverDynamic(int32_t id) const {
     auto it = cls_tracks_.find(id);
     return it != cls_tracks_.end() && it->second.ever_dynamic;
+}
+
+bool SplinerNode::WasEverMoved(int32_t id) const {
+    if (!(ever_moved_min_disp_m_ > 0.0)) {
+        return false;   // 기능 꺼짐 = 종전 동작
+    }
+    auto it = cls_tracks_.find(id);
+    return it != cls_tracks_.end() &&
+           it->second.max_disp >= ever_moved_min_disp_m_;
 }
 
 double SplinerNode::ObsVsMean(int32_t id, double fallback) const {

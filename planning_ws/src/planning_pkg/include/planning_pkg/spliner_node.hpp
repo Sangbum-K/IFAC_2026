@@ -154,6 +154,10 @@ private:
   // 이 id 가 spliner 분류 이력에서 한 번이라도 동적이었나 (ObsClsTrack::ever_dynamic).
   // 모르는 id 면 false — 처음 보는 트랙에 마진을 주지 않는다.
   bool WasEverDynamic(int32_t id) const;
+  // 이 id 가 **실제로** ever_moved_min_disp_m 이상 움직인 것이 관측됐나.
+  // 분류기 판단(WasEverDynamic)이 아니라 관측된 변위다 — 정지 권한처럼
+  // 안전에 직결되는 판단에만 이쪽을 쓴다 (ObsClsTrack::max_disp 주석 참조).
+  bool WasEverMoved(int32_t id) const;
 
   // 관측 창(cls_tracks_.vs_hist, 최대 kClsVsWindow)의 vs 평균.
   // 트랙 이력이 없으면 fallback 을 그대로 돌려준다. BuildTrailing 의 목표
@@ -213,7 +217,11 @@ private:
   // 관측 이력의 위치 std 투표(min_std/max_std) + 정지 재분류(vs_reset)로
   // perception의 is_static 플래그를 덮어쓴다. 파킹한 상대를 동적으로 두면
   // 예측 유령/섹터 게이팅/커밋 비활성이 겹쳐 회피가 무너진다.
-  void ClassifyObstacles(std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles);
+  /// obs_frame_fresh = 이번 사이클의 장애물 배열이 **새 인지 프레임**인가.
+  /// false 면 관측 이력(s_hist/d_hist/vs_hist)과 투표 카운터를 갱신하지 않고
+  /// 분류 결과 적용만 한다 — 근거는 아래 kClsWindow 선언부 주석.
+  void ClassifyObstacles(std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles,
+                         bool obs_frame_fresh);
 
   // 회피 불가 시 폴백: raceline 유지 + 장애물 뒤 trailing_gap에서
   // 장애물 속도까지 감속하는 궤적 (ForzaETH 상태머신 TRAILING 대응)
@@ -859,6 +867,16 @@ private:
   // 정적 바닥(trailing_retry_speed 2.5)보다 **높다** — 의도된 것이다.
   // 근거·해제 조건은 BuildTrailing 의 사용처 주석 참조.
   double dyn_trailing_floor_{3.0};
+  // 바닥에 "지금 간격에서 낼 수 있는 속도"라는 상한을 씌운다 (2026-08-20).
+  // false = 종전과 비트 단위로 동일. 근거는 BuildTrailing 의 사용처 주석.
+  bool trailing_floor_gap_aware_{false};
+  // dist(= obs.s_start - cur_s_) 가 이 값이면 차체가 닿는다 [m].
+  // 기하 유도값이 아니라 **실측값**이다 — run_0819_211107 89.51s 접촉 시
+  // dist 0.40 에서 IMU yaw rate 가 -9.9 -> +10.7 로 뒤집혔고 그 뒤 dist 가
+  // 0.38~0.51 에서 바닥을 쳤다(밀착). vehicle_half_length_m_(0.275)와
+  // 다른 이유는 obs.s_start 가 차체 뒷면이 아니라 **LiDAR 클러스터의 근단**
+  // 이기 때문이다. 여기서는 안전 방향(여유를 작게 보는 쪽)으로 실측을 쓴다.
+  double trailing_floor_contact_dist_m_{0.44};
   // 동적 상대용 트레일링 제동 감속도 [m/s²]. 정적은 trailing_decel_(1.0) 유지.
   //
   // v_allow 식(rem >= v·T + (v²-v_target²)/2a)이 이미 "늦게 밟기"를 구현하고
@@ -875,14 +893,42 @@ private:
   // 1.5 = 동적 트레일링이 실제로 도는 3~5 m/s 대의 p50. 1.0 대비 rem 5 m 에서
   // 허용속도가 3.03 -> 3.57 (레이스라인 4.66 의 65% -> 77%).
   double trailing_decel_dyn_{1.5};
+  // WasEverMoved 문턱 [m]. 0 이면 기능이 꺼진다(= 종전 동작).
+  double ever_moved_min_disp_m_{0.5};
   double ever_dynamic_residual_vs_{0.3};
   // 위 마진의 절대 상한 [m]. eta 가 길면 마진이 무한정 커져 회랑을 먹는다 —
   // 이 트랙 코리도가 0.96~2.42 m 이고 lane_wall_no_room 이 이미 1위 기각
   // 사유(초당 3.8~4.1)라, 상한 없이 켜면 회피가 더 자주 막힌다.
   // 0 이면 이 기능 자체가 꺼진다.
   double ever_dynamic_residual_max_m_{0.20};
-  static constexpr size_t kClsWindow{20};     // 위치 std 계산 관측 창
-  static constexpr size_t kClsVsWindow{10};   // vs 평균 관측 창 (unicorn vs_list 10)
+  // ── 관측 창은 **인지 프레임** 단위다 (2026-08-21) ──────────────────────
+  // 종전에는 ClassifyObstacles 가 Run() 사이클마다 push 했고, obs_copy 는
+  // "마지막으로 받은" 메시지라 새 프레임인지 확인하지 않았다. 플래너 30 Hz /
+  // 인지 15.4 Hz 이므로 **같은 프레임이 평균 1.95 회 이력에 쌓였다**:
+  //   · commit_min_obs 7 은 "7 관측"이 아니라 고유 프레임 3.6 개였다
+  //     (그래서 08-11 의 3->7 승격이 목표한 0.45 s 방어가 실제로는 0.23 s).
+  //   · 더 나쁜 것은 방향이다 — 인지가 느려질수록 중복이 늘어 게이트가
+  //     **느슨해진다**. obs_timeout_sec(0.30) 동안 인지가 끊기면 얼어붙은
+  //     같은 프레임이 9 회 카운트돼 유령 하나가 가만히 있기만 해도 7 을
+  //     채웠다. 근거가 부실할수록 더 쉽게 믿는 구조였다.
+  //   · 같은 스트림을 읽는 opponent_predictor_node 는 source stamp 로
+  //     dedup 한다. 두 노드가 같은 토픽을 다른 규칙으로 세고 있었다.
+  // 이제 새 프레임일 때만 쌓는다(obs_frame_fresh). 그러면 창의 단위가
+  // 프레임이 되므로 **시간 폭이 1.95 배로 늘어난다** — 감지 속도 손해가
+  // 없도록 모든 창/게이트 상수를 같은 비율로 내려 실제 시간을 종전 이하로
+  // 맞췄다 (N 개를 채우는 시간 = (N-1)/rate):
+  //   kClsWindow    20 -> 10   0.633 s -> 0.584 s
+  //   kClsVsWindow  10 ->  5   0.300 s -> 0.260 s
+  //   commit_min_obs / commit_break_min_obs  7 -> 4   0.200 s -> 0.195 s
+  //   cls_min_nb_meas  5 -> 2                0.167 s -> 0.130 s
+  //   cls_vs_hold     10 -> 5                0.300 s -> 0.260 s
+  // 즉 이 변경은 **어느 게이트도 느리게 만들지 않는다**. 고치는 것은
+  // 드롭아웃 시 카운트 부풀리기와 rate 역전 두 가지다.
+  // ⚠️ 상수가 이제 프레임을 세므로, 어떤 게이트를 실제로 더 엄격하게 하고
+  //    싶으면 (예: 08-11 이 목표한 0.45 s 유령 방어 = commit_break_min_obs 7)
+  //    그 값만 올리면 되고 그때는 숫자가 뜻대로 동작한다.
+  static constexpr size_t kClsWindow{10};     // 위치 std 계산 관측 창 [프레임]
+  static constexpr size_t kClsVsWindow{5};    // vs 평균 관측 창 [프레임]
   struct ObsClsTrack {
     std::deque<double> s_hist;   // s_ref 기준 unwrap된 s 관측
     std::deque<double> d_hist;
@@ -890,7 +936,8 @@ private:
     double s_ref{0.0};
     int static_count{0};
     int total_count{0};
-    // vs 평균이 cls_vs_reset 아래로 **연속** 유지된 사이클 수 (아래 cls_vs_hold).
+    // vs 평균이 cls_vs_reset 아래로 **연속** 유지된 인지 프레임 수
+    // (아래 cls_vs_hold). 2026-08-21 이전에는 Run() 사이클 수였다.
     int vs_low_run{0};
     bool has_flag{false};        // 분류 확정 여부 (미확정이면 perception 플래그 유지)
     bool static_flag{false};
@@ -901,6 +948,14 @@ private:
     // (PredictObstacleMovement). is_static=true 는 모션 전파를 완전히 끄는데,
     // 그러면 상대가 재출발해도 실제 침범 전까지 아무 신호가 없다.
     bool ever_dynamic{false};
+    // ── 관측된 최대 종방향 변위 [m] (2026-08-21) ──────────────────────────
+    // ever_dynamic 은 **분류기**의 판단이라 짧게 흔들린 콘도 각인된다.
+    // run_0820_235246 실측: DYNAMIC 으로 각인된 39 트랙 중 3개(id 1405/1406/
+    // 1407, 관측 15~17)가 실제로는 0.13~0.21 m 밖에 안 움직인 콘이었다.
+    // 정지 권한(allow_stop)처럼 안전에 직결되는 판단에는 분류기 대신 **실제로
+    // 움직였다는 증거**를 쓴다. 진짜 상대의 이동은 p50 8.36 m 라 문턱
+    // ever_moved_min_disp_m(0.5)가 둘을 깨끗이 가른다.
+    double max_disp{0.0};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
   std::map<int32_t, ObsClsTrack> cls_tracks_;
@@ -936,6 +991,34 @@ private:
   /// 차 반길이) 라 속도·진폭이 커지면 자동으로 늘어난다.
   /// 0 이면 꼬리 절단 비활성(종전 동작).
   double commit_tail_release_lead_m_{4.0};
+  /// ── 움직이는 상대에 대한 커밋 만료 (2026-08-21) ────────────────────────
+  /// 커밋을 만든 상대가 생성 시점보다 이만큼 s 로 **앞으로** 가면 만료시킨다
+  /// [m]. 0 = 비활성(종전 동작).
+  ///
+  /// 기존 만료 축은 넷(경로 끝 도달 / 커밋 밖 새 장애물 / 전방 공백 /
+  /// 확정 충돌)뿐인데, 전부 **상대가 제자리에 있다**는 전제 위에 있다.
+  /// 정적 장애물에는 맞지만 움직이는 상대에는 만료 축이 아예 없었다:
+  ///   run_0820_175059 12.05~15.79s — 상대 #15 가 s 29.7 -> 35.4 (5.7m) 로
+  ///   달아나는 동안 커밋 경로는 12.05초 좌표에 못 박힌 채 **3.73초 / 약
+  ///   112 사이클 재계획 0회**. 그 경로의 hold 오프셋은 d=-0.17 로 자기
+  ///   요구 간격(0.27)에도 못 미쳤고, 속도는 s=27.2 에서 0.41 m/s 였다.
+  ///   그 사이 자차 0.89 m/s < 상대 1.57 m/s 라 간격이 4.4 -> 5.4m 로
+  ///   벌어졌다(= 추격 중인데 더 느림).
+  /// 깨지지 않은 이유가 자기충족이다: CheckPathCollision 은 동적 상대를
+  /// 도착시각만큼 전파하는데, 그 도착시각(약 4초)을 그렇게 늦게 만든 것이
+  /// 바로 얼어붙은 속도 구덩이다 — 느려서 안 부딪히고, 안 부딪히니 안 깨지고,
+  /// 안 깨지니 계속 느리다.
+  ///
+  /// 같은 백 재생으로 이 규칙을 대입하면: 움직이는 상대 상대 동결 6.60초 중
+  /// 3.92초(59%) 단축, 문제의 3.73초는 12.65초에 파기되어 **0.60초**가 된다.
+  /// 그리고 선택적이다 — 짧고 정상적인 동결(0.30~0.43초)은 0~0.05초만
+  /// 줄어든다. 시간 상한으로 잘랐으면 그쪽까지 같이 잘렸다.
+  ///
+  /// ⚠️ 문턱을 0.6 아래로 내리지 말 것 (생성자가 강제한다). 같은 백에서
+  ///    **진짜로 정지한 콘 22개**의 s_center 흔들림이 std 0.009~0.127 m,
+  ///    최대 진폭 0.396 m (#90, 320프레임), 한쪽 방향 최대 약 0.2 m 였다.
+  ///    1.0 은 그 5배이고, 0.4 근처부터는 장수 정적 트랙이 오탐에 걸린다.
+  double commit_dyn_release_move_m_{0.0};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
@@ -982,6 +1065,23 @@ private:
   /// 구별하는 데 쓴다 — 기동 중에 커밋을 풀면 raceline 전속 경로로
   /// 순간 전환돼 반대편 벽을 친다(커밋 도입 근거와 같은 실측).
   double committed_obs_end_s_{-1.0};
+  /// 커밋을 만든 장애물의 id 와 그 시점의 s_center.
+  /// commit_dyn_release_move_m_ 만료 판정에만 쓴다. -1 = 미설정.
+  /// ⚠️ ClusterObstacles 는 병합 박스에 min(id) 를 준다 — 클러스터 구성이
+  ///    바뀌면 id 도 바뀔 수 있다. 그때 아래 조회는 **못 찾고 끝나며**
+  ///    만료가 걸리지 않는다(= 종전 동작). 즉 이 불안정성은 "놓친다"로만
+  ///    나타나고 "잘못 파기한다"로는 나타나지 않는다.
+  int32_t committed_obs_id_{-1};
+  double committed_obs_s_{-1.0};
+  /// 이 커밋의 대상이 움직이는 상대였나. 정적 대상이면 false 이고 만료 판정을
+  /// 통째로 건너뛴다 — 정적 회피 경로가 비트 단위로 종전과 같아야 한다.
+  /// (정적은 vs=0 이라 조건에 걸릴 수도 없지만, 계산 자체를 건너뛴다.)
+  /// 키를 is_static 하나로 두지 않는 이유는 dyn_path_lat_acc_max_ 쪽과 같다 —
+  /// is_static 은 실측으로 1.3초에 5번까지 뒤집힌다. 단조 플래그
+  /// WasEverDynamic 을 OR 로 함께 본다. 예측 튜브는 제외한다: 튜브의 s 는
+  /// **자차 속도**로 다시 계산되는 값이라, 우리가 느려진 것만으로 튜브가
+  /// 움직여 커밋이 엉뚱한 이유로 풀린다.
+  bool committed_obs_dynamic_{false};
   /// 커밋 파기 확정에 필요한 연속 충돌 사이클 수. 1 이면 종전 동작
   /// (한 번 걸리면 즉시 파기). 차체 접촉(contact_slack <= 0)은 이 값과
   /// 무관하게 항상 즉시 파기하므로, 이 지연이 적용되는 것은 "분산 여유만
@@ -1051,6 +1151,10 @@ private:
   // State
   f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
   rclcpp::Time obstacles_stamp_{0, 0, RCL_ROS_TIME};
+  /// 관측 이력에 마지막으로 반영한 인지 프레임의 stamp.
+  /// 같은 stamp 면 ClassifyObstacles 가 이력을 쌓지 않는다 (kClsWindow 주석).
+  rclcpp::Time cls_last_stamp_{0, 0, RCL_ROS_TIME};
+  bool cls_has_stamp_{false};
   f1tenth_planning_msgs::msg::ObstacleArray predicted_obstacles_;
   rclcpp::Time predicted_stamp_{0, 0, RCL_ROS_TIME};
   std::vector<f1tenth_planning_msgs::msg::Wpnt> gb_wpnts_;
@@ -1099,6 +1203,11 @@ private:
   // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
   // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
   mutable std::string cycle_rejects_;
+  // ── P0 계측 (2026-08-21, 거동 변경 없음) ──────────────────────────────
+  // MoreSpace 의 "양쪽 다 통과 불가" 분기를 사이클당 한 번만 센다. MoreSpace 는
+  // 한 사이클에 두 곳(TryLaneSwitch / DoSpline)에서 불리므로 그냥 세면 두 배가
+  // 된다. Run() 시작에서 내린다.
+  mutable bool blocked_both_noted_{false};
   // ApplySpeedProfile 이 곡률 한계로 경로를 버렸을 때 **어느 점**이 걸렸는지.
   // 거부 로그는 호출자(TryLaneSwitch/DoSpline/...)에 있는데 사유가 "기하곡률>
   // 조향한계 또는 감속 불가"로 뭉뚱그려져 있어, 머리 곡률 수정이 실제로
@@ -1137,6 +1246,39 @@ private:
   double retry_d_target_{0.0};
   rclcpp::Time retry_d_stamp_{0, 0, RCL_ROS_TIME};
   bool has_retry_d_{false};
+  // ── 충돌로 기각된 목표는 남기지 않는다 (2026-08-20) ─────────────────────
+  // NoteRetryTarget 은 **경로 검증 전에** 호출된다. 위 주석이 밝힌 대로
+  // "속도/기하로 떨어져도 가려던 방향은 남긴다"가 의도이고 그건 맞다 —
+  // 그쪽 기각은 목표가 옳고 지금 못 갈 뿐이라, 진행을 지켜야 잔량이 줄고
+  // 언젠가 성립한다.
+  //
+  // 그런데 **충돌** 기각은 성격이 다르다. 목표 자리에 물체가 있다는 뜻이라
+  // 그 목표에 도착하는 것이 곧 접촉이고, 그쪽으로 쌓은 진행은 가치가 아니라
+  // 위험이다. run_0820_173822 25.4s 실측:
+  //   · 정적 #22(s 20.65~20.99) 를 오른쪽으로 비키려고 d_hold = -0.52 기록
+  //   · HoldClearsOthers 는 **#22 옆 유지 구간만**(자차 앞 1.37 m 이후) 보므로
+  //     자차 앞 0.7 m 의 동적 #12(d[-0.64,-0.32]) 는 걸리지 않는다
+  //   · BuildLaneSwitch 의 CheckPathCollision 이 #12 와의 충돌로 기각
+  //     (lane_collision) — 그러나 목표는 이미 기록된 뒤였다
+  //   · 트레일링이 그 -0.52 -> -0.60 을 이어받아 25.97s 중심간 0.21 m 접촉
+  // 그 충돌 판정은 상대를 **도착시각만큼 전파**해서 내린 것이고(motion_s/
+  // motion_d), 이 백에서 등속 예측 오차는 약 0.09 m 였다. 즉 "상대가 비켜
+  // 줄 것"은 이미 반영돼 있고, 비켜 주는 경우엔 애초에 기각이 나지 않는다.
+  //
+  // 그래서 기각 사유를 구분해 **충돌일 때만** 직전 값으로 되돌린다. 되돌림은
+  // 초기화(clear)가 아니라 복원이다 — 예전 목표가 아직 유효 창 안이면 그것을
+  // 살려 두는 편이 위 교착 방어에 가깝다.
+  struct RetryTargetSnapshot {
+    double target{0.0};
+    double vd{0.0};
+    rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+    bool has{false};
+  };
+  RetryTargetSnapshot SnapshotRetryTarget() const;
+  void RestoreRetryTarget(const RetryTargetSnapshot &snap);
+  /// 직전 경로 검증이 **충돌**로 떨어졌는가. CheckPathCollision 기각 지점에서만
+  /// 선다(lane_collision / spline_collision). 호출 직전에 반드시 내려 둘 것.
+  bool path_collision_reject_{false};
   static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간 (정적/준정적)
   /// 목표를 기록할 때 대상 장애물의 횡속도 [m/s]. 동적 유지에서 경과 시간만큼
   /// 목표 d 를 따라 옮기는 데 쓴다 (아래 kRetryDHoldDynSec 주석 참조).

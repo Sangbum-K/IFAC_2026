@@ -770,8 +770,10 @@ def test_dynamic_only_trailing_relaxations_are_gated():
     #    상대 속도 아래로 내려가는 것은 어떤 안전도 사지 못한다 — 같은 속도면
     #    간격이 유지되고, 더 느리면 벌어지기만 할 뿐 상황은 바뀌지 않는다.
     #    그래서 절대 바닥(3.0)은 포기하되 상대 속도까지만 내려간다.
+    #    (2026-08-20 ③: floor_use 는 뒤에서 간격 상한에 다시 눌리므로 const 가
+    #     아니다. 이 검사는 **초기 대입**만 본다.)
     assert re.search(
-        r"const double floor_use = geom_blocked_now\s*\?\s*"
+        r"double floor_use = geom_blocked_now\s*\?\s*"
         r"std::max\(obs_vs_eff, 0\.0\)\s*:\s*dyn_trailing_floor_;",
         src, re.S), (
         "geom_blocked 시 바닥이 '상대 속도까지 하향'이 아니게 바뀌었다 — "
@@ -785,6 +787,103 @@ def test_dynamic_only_trailing_relaxations_are_gated():
             ": trailing_decel_dyn_") in src, (
         "decel_eff 분기가 사라졌다 — 정적 제동 프로파일이 같이 바뀐다"
     )
+
+
+def test_retry_target_dropped_only_on_collision():
+    """충돌로 기각된 회피 목표는 retry_d 에 남지 않는다 (2026-08-20).
+
+    NoteRetryTarget 은 경로 검증 **전에** 호출된다. 속도/기하 기각에서 목표를
+    남기는 것은 의도된 설계(잔량이 줄어야 언젠가 성립 — run_0809_231809)지만,
+    충돌 기각은 목표 자리에 물체가 있다는 뜻이라 그쪽 진행은 접촉을 향한다.
+    run_0820_173822 25.4s: d_hold=-0.52 가 lane_collision 으로 기각됐는데도
+    남아서, 트레일링이 그것을 이어받아 25.97s 중심간 0.21 m 접촉.
+    """
+    src = _spliner_source()
+    # ① 충돌 기각 지점에서만 플래그가 선다. 다른 기각(속도/기하/벽)으로
+    #    번지면 교착 방어가 통째로 사라진다.
+    flag_sites = re.findall(r"path_collision_reject_\s*=\s*true;", src)
+    assert len(flag_sites) == 2, (
+        "path_collision_reject_ 를 세우는 곳이 2 곳(lane_collision / "
+        f"spline_collision)이 아니다: {len(flag_sites)} 곳"
+    )
+    for reject in ("lane_collision", "spline_collision"):
+        assert re.search(
+            r'NoteReject\("%s"\);\s*(?://[^\n]*\n\s*)*'
+            r"path_collision_reject_\s*=\s*true;" % reject, src), (
+            f"{reject} 직후에 path_collision_reject_ 가 서지 않는다"
+        )
+    # ② 되돌림은 초기화가 아니라 **복원**이어야 한다. has_retry_d_ = false 로
+    #    지우면 아직 유효 창 안인 예전 목표까지 날아가 교착 방어가 약해진다.
+    assert "RestoreRetryTarget(retry_snap)" in src, (
+        "충돌 기각 시 retry_d 복원이 없다"
+    )
+    assert not re.search(
+        r"has_retry_d_\s*=\s*false;", src), (
+        "retry_d 를 통째로 지우는 곳이 생겼다 — 복원(Restore)이어야 한다"
+    )
+    # ③ 스냅샷은 반드시 NoteRetryTarget **앞에서** 떠야 한다.
+    m = re.search(
+        r"const RetryTargetSnapshot retry_snap = SnapshotRetryTarget\(\);\s*\n"
+        r"\s*NoteRetryTarget\(d_hold, closest_obs\.vd\);", src)
+    assert m, "TryLaneSwitch 의 스냅샷이 NoteRetryTarget 앞에 있지 않다"
+    # ④ 속도/기하 기각은 **종전대로** 목표를 남겨야 한다 (교착 방어).
+    for keep in ("lane_speed_profile", "lane_geom_floor", "lane_wall_no_room"):
+        assert not re.search(
+            r'NoteReject\("%s"\);\s*(?://[^\n]*\n\s*)*'
+            r"path_collision_reject_" % keep, src), (
+            f"{keep} 가 retry_d 를 버리게 됐다 — run_0809_231809 교착이 돌아온다"
+        )
+
+
+def test_trailing_floor_gap_aware_contract():
+    """트레일링 바닥의 간격 상한 (2026-08-20).
+
+    run_0819_211107 / run_0820_173822 두 접촉 모두 발행 명령이 정확히 바닥값
+    3.00 에 붙은 채 일어났다 (상대 1.0~1.7 m/s). geom_blocked 하향은
+    lane_geom_floor 기각에서만 서는데 두 백의 1위 기각 사유는
+    lane_wall_no_room 이라 둘 다 서지 않았다.
+    """
+    src = _spliner_source()
+    # ① 기본값은 종전 동작이어야 한다 (파라미터 하나로 되돌릴 수 있을 것).
+    params = _ros_params(_yaml(PARAMS), "spliner_node")
+    assert params["spliner/trailing_floor_gap_aware"] is False, (
+        "base 기본값이 켜져 있다 — 되돌리기 계약이 깨진다"
+    )
+    # ② 상한은 **바닥에만** 걸린다. v_target_prof_actual 자체에 min 을 걸면
+    #    빠른 상대 뒤에서 불필요하게 느려지는 회귀가 된다.
+    assert re.search(
+        r"floor_use = std::min\(floor_use, std::max\(v_gap, 0\.0\)\);", src), (
+        "간격 상한이 floor_use 가 아닌 곳에 걸렸다"
+    )
+    assert not re.search(
+        r"v_target_prof_actual\s*=\s*std::min\([^;]*v_gap", src), (
+        "v_target 자체에 간격 상한이 걸렸다 — 상대가 빠를 때 회귀한다"
+    )
+    # ③ 제동 물리는 트레일링 램프와 같은 상수를 써야 한다. 다른 값을 쓰면
+    #    "설 수 있다"고 계산해 놓고 실제로는 못 서는 상태가 된다.
+    assert "trailing_ramp_decel_" in src and "trailing_lag_sec_" in src
+    assert re.search(
+        r"const double a_f = std::max\(trailing_ramp_decel_, 0\.05\);", src), (
+        "간격 상한이 trailing_ramp_decel_ 이외의 감속도를 쓴다"
+    )
+    # ④ 접촉 거리는 차 반길이 이상 / 목표 간격 이하로 검증돼야 한다.
+    assert re.search(
+        r"trailing_floor_contact_dist_m_ < vehicle_half_length_m_", src) and \
+        re.search(r"trailing_floor_contact_dist_m_ > trailing_gap_m_", src), (
+        "접촉 거리 검증이 없다"
+    )
+    # ⑤ 실차/시뮬 오버레이에서 켜져 있고 절대 바닥이 함께 내려가 있어야 한다.
+    for env_name in ("real_car", "sim_real_car", "sim"):
+        flat = _env_profile_flat(PKG, env_name)
+        assert flat.get(
+            "spliner_node.spliner/trailing_floor_gap_aware") is True, (
+            f"{env_name}: 간격 상한이 꺼져 있다"
+        )
+        floor = flat.get("spliner_node.spliner/dyn_trailing_floor_mps")
+        assert floor is not None and floor <= 2.0 + 1e-9, (
+            f"{env_name}: 절대 바닥이 2.0 을 넘는다 (현재 {floor}) — 상대가 "
+            "급정지했을 때 필요한 범퍼여유가 1.60 m 를 넘어간다"
+        )
 
 
 def test_static_trailing_floor_is_not_lowered_by_dynamic_floor():
@@ -991,4 +1090,50 @@ def test_dyn_speed_floor_only_raises_the_loss_hold_cap():
     floor = local_params["local_trajectory/avoidance_loss_hold_floor_mps"]
     assert floor == pytest.approx(1.5), (
         "상수 바닥이 바뀌었다 — control 의 backstop_min_speed_mps 와 같은 값이다"
+    )
+
+
+def test_ever_moved_stop_authority_is_paired_with_measured_speed():
+    """정지 권한을 ever_moved 에 열어 주면 목표 속도도 관측값을 써야 한다.
+
+    ClassifyObstacles 가 정적 트랙의 obs.vs 를 0 으로 **강제**하므로, allow_stop
+    만 열고 obs_vs_eff 를 그대로 두면 코너에서 잠깐 느려져 STATIC 으로 뒤집힌
+    상대를 "정지"로 읽고 목표 0 을 명령한다 = 급감속. 둘은 한 묶음이다.
+    """
+    src = _spliner_source()
+    # (1) 정지 권한은 분류기(ever_dynamic)가 아니라 관측 변위(ever_moved)로 연다.
+    assert re.search(
+        r"const bool allow_stop =\s*"
+        r"!closest\.is_static \|\| WasEverMoved\(closest\.id\);", src, re.S), (
+        "allow_stop 이 WasEverMoved 를 쓰지 않는다 — 멈춘 상대 뒤에서 못 선다"
+    )
+    # 정지 권한에 분류기 판단(WasEverDynamic)을 쓰면 짧게 흔들린 콘까지
+    # 정지 권한을 얻는다 (run_0820_235246: 39 트랙 중 3개가 그런 콘).
+    # ⚠️ WasEverDynamic 자체는 그립 예산 키(1593줄)로 정당하게 쓰인다 —
+    #    금지하는 것은 **allow_stop 문장에서** 쓰는 것뿐이다.
+    assert "allow_stop =\n                    !closest.is_static || WasEverDynamic" \
+        not in src, (
+        "정지 권한이 관측 변위가 아니라 분류기 판단으로 열린다"
+    )
+    # (2) 그 짝: ever_moved 트랙은 obs.vs(=0 강제) 대신 관측 창 평균을 쓴다.
+    assert re.search(
+        r"const double obs_vs_eff =\s*"
+        r"\(trailing_vs_filter_ && !emergency_stop &&\s*"
+        r"\(!obs\.is_static \|\| obs_ever_moved\)\)\s*"
+        r"\? ObsVsMean\(obs\.id, obs\.vs\) : obs\.vs;", src, re.S), (
+        "ever_moved 트랙이 강제된 obs.vs=0 을 목표로 쓴다 — 잠깐 느려진 상대에 "
+        "급감속한다 (allow_stop 변경과 반드시 같이 가야 한다)"
+    )
+    # (3) 복귀 기하가 없는 최악 분기도 같은 규약을 따른다.
+    assert re.search(
+        r"allow_stop\s*\?\s*\(obs\.is_static && obs_ever_moved\s*"
+        r"\?\s*std::max\(obs_vs_eff, 0\.0\) : 0\.0\)", src, re.S), (
+        "복귀 기하 없음 분기가 ever_moved 트랙에 0 을 그대로 명령한다"
+    )
+    # (4) 문턱은 콘(실측 0.13~0.21 m)과 상대(p50 8.36 m) 사이에 있어야 한다.
+    params = _ros_params(_yaml(PARAMS), "spliner_node")
+    thr = params["spliner/ever_moved_min_disp_m"]
+    assert 0.25 <= thr <= 2.0, (
+        f"ever_moved_min_disp_m={thr} 가 콘 오분류(0.21 m)와 실제 상대 이동 "
+        f"사이를 못 가른다"
     )
