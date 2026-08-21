@@ -1090,3 +1090,49 @@ def test_dyn_speed_floor_only_raises_the_loss_hold_cap():
     assert floor == pytest.approx(1.5), (
         "상수 바닥이 바뀌었다 — control 의 backstop_min_speed_mps 와 같은 값이다"
     )
+
+
+def test_ever_moved_stop_authority_is_paired_with_measured_speed():
+    """정지 권한을 ever_moved 에 열어 주면 목표 속도도 관측값을 써야 한다.
+
+    ClassifyObstacles 가 정적 트랙의 obs.vs 를 0 으로 **강제**하므로, allow_stop
+    만 열고 obs_vs_eff 를 그대로 두면 코너에서 잠깐 느려져 STATIC 으로 뒤집힌
+    상대를 "정지"로 읽고 목표 0 을 명령한다 = 급감속. 둘은 한 묶음이다.
+    """
+    src = _spliner_source()
+    # (1) 정지 권한은 분류기(ever_dynamic)가 아니라 관측 변위(ever_moved)로 연다.
+    assert re.search(
+        r"const bool allow_stop =\s*"
+        r"!closest\.is_static \|\| WasEverMoved\(closest\.id\);", src, re.S), (
+        "allow_stop 이 WasEverMoved 를 쓰지 않는다 — 멈춘 상대 뒤에서 못 선다"
+    )
+    # 정지 권한에 분류기 판단(WasEverDynamic)을 쓰면 짧게 흔들린 콘까지
+    # 정지 권한을 얻는다 (run_0820_235246: 39 트랙 중 3개가 그런 콘).
+    # ⚠️ WasEverDynamic 자체는 그립 예산 키(1593줄)로 정당하게 쓰인다 —
+    #    금지하는 것은 **allow_stop 문장에서** 쓰는 것뿐이다.
+    assert "allow_stop =\n                    !closest.is_static || WasEverDynamic" \
+        not in src, (
+        "정지 권한이 관측 변위가 아니라 분류기 판단으로 열린다"
+    )
+    # (2) 그 짝: ever_moved 트랙은 obs.vs(=0 강제) 대신 관측 창 평균을 쓴다.
+    assert re.search(
+        r"const double obs_vs_eff =\s*"
+        r"\(trailing_vs_filter_ && !emergency_stop &&\s*"
+        r"\(!obs\.is_static \|\| obs_ever_moved\)\)\s*"
+        r"\? ObsVsMean\(obs\.id, obs\.vs\) : obs\.vs;", src, re.S), (
+        "ever_moved 트랙이 강제된 obs.vs=0 을 목표로 쓴다 — 잠깐 느려진 상대에 "
+        "급감속한다 (allow_stop 변경과 반드시 같이 가야 한다)"
+    )
+    # (3) 복귀 기하가 없는 최악 분기도 같은 규약을 따른다.
+    assert re.search(
+        r"allow_stop\s*\?\s*\(obs\.is_static && obs_ever_moved\s*"
+        r"\?\s*std::max\(obs_vs_eff, 0\.0\) : 0\.0\)", src, re.S), (
+        "복귀 기하 없음 분기가 ever_moved 트랙에 0 을 그대로 명령한다"
+    )
+    # (4) 문턱은 콘(실측 0.13~0.21 m)과 상대(p50 8.36 m) 사이에 있어야 한다.
+    params = _ros_params(_yaml(PARAMS), "spliner_node")
+    thr = params["spliner/ever_moved_min_disp_m"]
+    assert 0.25 <= thr <= 2.0, (
+        f"ever_moved_min_disp_m={thr} 가 콘 오분류(0.21 m)와 실제 상대 이동 "
+        f"사이를 못 가른다"
+    )

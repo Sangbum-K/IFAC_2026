@@ -154,6 +154,10 @@ private:
   // 이 id 가 spliner 분류 이력에서 한 번이라도 동적이었나 (ObsClsTrack::ever_dynamic).
   // 모르는 id 면 false — 처음 보는 트랙에 마진을 주지 않는다.
   bool WasEverDynamic(int32_t id) const;
+  // 이 id 가 **실제로** ever_moved_min_disp_m 이상 움직인 것이 관측됐나.
+  // 분류기 판단(WasEverDynamic)이 아니라 관측된 변위다 — 정지 권한처럼
+  // 안전에 직결되는 판단에만 이쪽을 쓴다 (ObsClsTrack::max_disp 주석 참조).
+  bool WasEverMoved(int32_t id) const;
 
   // 관측 창(cls_tracks_.vs_hist, 최대 kClsVsWindow)의 vs 평균.
   // 트랙 이력이 없으면 fallback 을 그대로 돌려준다. BuildTrailing 의 목표
@@ -885,6 +889,8 @@ private:
   // 1.5 = 동적 트레일링이 실제로 도는 3~5 m/s 대의 p50. 1.0 대비 rem 5 m 에서
   // 허용속도가 3.03 -> 3.57 (레이스라인 4.66 의 65% -> 77%).
   double trailing_decel_dyn_{1.5};
+  // WasEverMoved 문턱 [m]. 0 이면 기능이 꺼진다(= 종전 동작).
+  double ever_moved_min_disp_m_{0.5};
   double ever_dynamic_residual_vs_{0.3};
   // 위 마진의 절대 상한 [m]. eta 가 길면 마진이 무한정 커져 회랑을 먹는다 —
   // 이 트랙 코리도가 0.96~2.42 m 이고 lane_wall_no_room 이 이미 1위 기각
@@ -911,6 +917,14 @@ private:
     // (PredictObstacleMovement). is_static=true 는 모션 전파를 완전히 끄는데,
     // 그러면 상대가 재출발해도 실제 침범 전까지 아무 신호가 없다.
     bool ever_dynamic{false};
+    // ── 관측된 최대 종방향 변위 [m] (2026-08-21) ──────────────────────────
+    // ever_dynamic 은 **분류기**의 판단이라 짧게 흔들린 콘도 각인된다.
+    // run_0820_235246 실측: DYNAMIC 으로 각인된 39 트랙 중 3개(id 1405/1406/
+    // 1407, 관측 15~17)가 실제로는 0.13~0.21 m 밖에 안 움직인 콘이었다.
+    // 정지 권한(allow_stop)처럼 안전에 직결되는 판단에는 분류기 대신 **실제로
+    // 움직였다는 증거**를 쓴다. 진짜 상대의 이동은 p50 8.36 m 라 문턱
+    // ever_moved_min_disp_m(0.5)가 둘을 깨끗이 가른다.
+    double max_disp{0.0};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
   std::map<int32_t, ObsClsTrack> cls_tracks_;
@@ -1109,6 +1123,11 @@ private:
   // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
   // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
   mutable std::string cycle_rejects_;
+  // ── P0 계측 (2026-08-21, 거동 변경 없음) ──────────────────────────────
+  // MoreSpace 의 "양쪽 다 통과 불가" 분기를 사이클당 한 번만 센다. MoreSpace 는
+  // 한 사이클에 두 곳(TryLaneSwitch / DoSpline)에서 불리므로 그냥 세면 두 배가
+  // 된다. Run() 시작에서 내린다.
+  mutable bool blocked_both_noted_{false};
   // ApplySpeedProfile 이 곡률 한계로 경로를 버렸을 때 **어느 점**이 걸렸는지.
   // 거부 로그는 호출자(TryLaneSwitch/DoSpline/...)에 있는데 사유가 "기하곡률>
   // 조향한계 또는 감속 불가"로 뭉뚱그려져 있어, 머리 곡률 수정이 실제로

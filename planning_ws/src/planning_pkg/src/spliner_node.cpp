@@ -140,6 +140,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/cls_max_std", 0.2);
     this->declare_parameter("spliner/cls_vs_reset", 0.1);
     this->declare_parameter("spliner/cls_vs_hold", 10);
+    this->declare_parameter("spliner/ever_moved_min_disp_m", 0.5);
     this->declare_parameter("spliner/cls_inherit_dist_m", 0.6);
     this->declare_parameter("spliner/cls_inherit_timeout_sec", 0.5);
     this->declare_parameter("spliner/dyn_trailing_floor_mps", 3.0);
@@ -288,6 +289,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     cls_vs_reset_ = this->get_parameter("spliner/cls_vs_reset").as_double();
     cls_vs_hold_ =
         static_cast<int>(this->get_parameter("spliner/cls_vs_hold").as_int());
+    ever_moved_min_disp_m_ =
+        this->get_parameter("spliner/ever_moved_min_disp_m").as_double();
     cls_inherit_dist_m_ =
         this->get_parameter("spliner/cls_inherit_dist_m").as_double();
     cls_inherit_timeout_sec_ =
@@ -1012,6 +1015,7 @@ void SplinerNode::Run() {
     active_lat_budget_ = path_lat_acc_max_;
     dyn_speed_floor_ = 0.0;
     cycle_rejects_.clear();
+    blocked_both_noted_ = false;   // P0-1 계측 (사이클당 1회)
 
     // ── 정지 워치독 (hpp 선언부 주석) ────────────────────────────────────
     // v=0 에서 나갈 수단을 하나는 남긴다: 정지가 이만큼 이어지면
@@ -1655,6 +1659,13 @@ void SplinerNode::Run() {
             // **기하 하한으로 거부됐을 때만** 시도한다. 충돌/벽 같은 다른
             // 사유는 원호로도 안 풀리고, 그때 급조향하면 상황만 나빠진다.
             bool used_escape = false;
+            // P0-2: 진입 게이트가 막은 횟수도 센다. "회피가 다 실패했는데
+            // 기하 사유가 아니라서 원호를 아예 시도하지 않은" 사이클이
+            // 얼마나 되는지가 escape 0% 의 후보 원인 중 하나다.
+            if (!evasion_valid && try_evade &&
+                !(lane_switch_geom_infeasible_ || free_spline_geom_infeasible_)) {
+                NoteOutcome("escape_gate_not_geom");
+            }
             if (!evasion_valid && try_evade &&
                 (lane_switch_geom_infeasible_ || free_spline_geom_infeasible_)) {
                 used_escape = BuildEscapeArc(closest, all_ahead,
@@ -1748,7 +1759,24 @@ void SplinerNode::Run() {
                 // 1310 주석이 "반드시 남긴다"고 못박은 방향이기도 하다.
                 // 다시 검토할 조건: **실제로 움직이는 상대차가 있는 백**에서
                 // stop_gate.py 가 0 이 아닌 수를 내면 그때 붙인다.
-                const bool allow_stop = !closest.is_static;
+                // ── 달리다 멈춘 상대에게 정지 권한을 돌려준다 (2026-08-21) ──
+                // 0806 정지 라치 방지(= 정적에는 완전 정지 없음)의 대상은
+                // **콘**, 즉 영구히 서 있는 물체다. 달리다 멈춘 차는 콘이
+                // 아니라 다시 움직이므로 그 뒤에 서는 것은 영구 라치가 될 수
+                // 없다. 지금은 상대가 멈춰 STATIC 으로 뒤집히는 순간
+                // trailing_retry_speed(2.5) 바닥이 깔려 **설 수가 없다**.
+                //
+                // 판단 근거를 분류기(WasEverDynamic)가 아니라 **관측된 변위**
+                // (WasEverMoved)로 둔 이유는 max_disp 주석 참조 — 짧게 흔들린
+                // 콘 3개가 DYNAMIC 으로 각인돼 있었다.
+                //
+                // ⚠️ 이 한 줄만 바꾸면 "잠깐 느려진 상대"를 정지로 오인해 급감속
+                //    한다. ClassifyObstacles 가 정적 트랙의 obs.vs 를 0 으로
+                //    **강제**하기 때문이다. 그래서 BuildTrailing 의 obs_vs_eff
+                //    가 ever_moved 트랙에 대해 관측 창 평균(ObsVsMean)을 쓰도록
+                //    같이 바꿨다 — 둘은 한 묶음이다.
+                const bool allow_stop =
+                    !closest.is_static || WasEverMoved(closest.id);
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks,
@@ -2092,6 +2120,16 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
                            : std::pair<std::string, double>{"right", apex_right};
     }
     if (!left_clears && !right_clears) {
+        // ── P0-1 계측 (2026-08-21) ────────────────────────────────────────
+        // "양쪽 다 통과 불가" = 트랙이 실제로 막혔다는 유일한 사전 신호인데
+        // 지금은 아무도 소비하지 않는다(아래에서 '덜 막힌 쪽'을 골라 계속
+        // 진행한다). allow_stop 을 is_static 에서 떼어내려면 이 분기의 발화율과
+        // 지속 길이를 먼저 알아야 한다 — tools/bag_analysis_0821/PLAN.md P0-1.
+        // 거동은 바꾸지 않는다. 카운터와 trace 문자열에만 나간다.
+        if (!blocked_both_noted_) {
+            blocked_both_noted_ = true;
+            NoteOutcome("blocked_both_sides");
+        }
         // 둘 다 안 되는 경우에도 |apex| 를 쓰면 안 된다 — 위와 같은 이유로
         // "더 심하게 막힌 쪽"이 이긴다. 여기서 고른 사이드는 last_ot_side_ 로
         // 커밋되어 다음 사이클의 사이드 유지 히스테리시스를 좌우하므로, 지금
@@ -3993,6 +4031,13 @@ bool SplinerNode::BuildEscapeArc(
     if (!escape_arc_enabled_ || gb_size < 2) {
         return false;
     }
+    // ── P0-2 계측 (2026-08-21) ────────────────────────────────────────────
+    // run_0820_235246 663 s 에서 /planner/escape_active 가 **0%** 였는데
+    // escape_* 기각 카운터는 2400 회 넘게 올라 있다. 그 둘이 같이 성립하려면
+    // "호출은 되는데 매번 초반 게이트에서 죽는다"여야 하는데, 호출 자체가
+    // 몇 번인지 세는 곳이 없어 확인할 수 없었다. 진입 카운터를 둬서
+    // 기각 카운터의 분모를 만든다 — tools/bag_analysis_0821/PLAN.md P0-2.
+    NoteOutcome("escape_attempted");
     // (1) 정적(또는 준정적) + 지금 실제로 보이는 것만.
     //     외삽 유령에 급조향하면 벽으로 간다.
     //     예외: 정지 워치독(hpp 주석)이 선 뒤에는 가시성만 면제한다 —
@@ -4298,8 +4343,20 @@ bool SplinerNode::BuildTrailing(
     // 정적은 ClassifyObstacles 가 이미 obs.vs=0 으로 만들어 두므로 영향이 없다
     // (vs_hist 는 덮어쓰기 **전** 원시값을 담으므로 여기서 태우면 안 된다).
     // 비상정지 합성 장애물(id=INT32_MIN)은 cls_tracks_ 에 없어 fallback 이다.
+    // ── ever_moved 트랙은 정적으로 분류돼도 **관측 속도**를 쓴다 (2026-08-21) ─
+    // ClassifyObstacles 는 정적 트랙의 obs.vs 를 0 으로 강제하는데, vs_hist 에는
+    // 덮어쓰기 **전** 원시값이 남는다. 정지 권한(allow_stop)을 ever_moved 에
+    // 열어 주면서 이 값을 안 바꾸면, 코너에서 잠깐 느려져 STATIC 으로 뒤집힌
+    // 상대를 "정지"로 읽고 목표 0 을 명령한다 — 급감속이다.
+    //   run_0820_235246 실측 (이동 트랙이 STATIC 으로 분류된 443 프레임):
+    //     obs.vs(강제 0)      -> 목표 0.00
+    //     ObsVsMean(창 평균)  -> 목표 p50 +0.42, 그때 실제 상대 p50 +0.64
+    //     실제가 1.5 m/s 이상인데 창 평균이 0.3 미만인 프레임: **0 건**
+    //   즉 창 평균은 정적 분류 중에도 상대 속도를 놓치지 않는다.
+    const bool obs_ever_moved = WasEverMoved(obs.id);
     const double obs_vs_eff =
-        (trailing_vs_filter_ && !emergency_stop && !obs.is_static)
+        (trailing_vs_filter_ && !emergency_stop &&
+         (!obs.is_static || obs_ever_moved))
             ? ObsVsMean(obs.id, obs.vs) : obs.vs;
     // 제동 감속도는 정적/동적이 다르다 (2026-08-19). 정적은 종전 값 그대로라
     // 정적 경로의 프로파일은 비트 단위로 바뀌지 않는다.
@@ -4351,6 +4408,18 @@ bool SplinerNode::BuildTrailing(
     // 감속이다. 정지 목표를 그대로 두면 0을 명령하고, 그 0이 MAP 컨트롤러의
     // 조향까지 0으로 만든다 (control_node.cpp:1057).
     if (!allow_stop) {
+        // ── P0-3 계측 (2026-08-21) ────────────────────────────────────────
+        // 이 바닥이 실제로 목표를 **올린** 횟수를 센다. 그리고 그중
+        // "한 번이라도 동적이었던 트랙"(= 달리다 멈춘 상대차)을 따로 센다 —
+        // 그게 정확히 PLAN.md P1-1 이 겨냥하는 케이스다. allow_stop 은
+        // !is_static 이라, 상대가 멈춰 STATIC 으로 뒤집히는 순간 여기로 떨어져
+        // 정지 권한을 잃는다. 거동은 바꾸지 않는다.
+        if (v_target_prof_actual < trailing_retry_speed_) {
+            NoteOutcome("trailing_retry_clamp_raised");
+            if (!emergency_stop && WasEverDynamic(obs.id)) {
+                NoteOutcome("trailing_stop_denied_ever_dynamic");
+            }
+        }
         v_target_prof_actual = std::max(v_target_prof_actual,
                                         trailing_retry_speed_);
     } else {
@@ -4388,7 +4457,10 @@ bool SplinerNode::BuildTrailing(
             // **상대 속도까지만** 내려간다. 진짜로 서야 하는 경우는
             // emergency_stop 이고, 그건 위에서 이미 제외돼 있다.
             //
-            // 정적에는 이 블록 자체가 실행되지 않는다 (allow_stop = !is_static).
+            // 종전에는 정적에 이 블록이 실행되지 않았다. 2026-08-21 부터
+            // ever_moved(달리다 멈춘) 트랙은 allow_stop 이 열리므로 여기로
+            // 들어온다 — 고정 2.5 대신 간격에 따라 0 까지 수렴하는 이 바닥을
+            // 쓰게 되는 것이 의도다. 처음부터 정적인 콘은 종전 그대로.
             double floor_use = geom_blocked_now
                 ? std::max(obs_vs_eff, 0.0)
                 : dyn_trailing_floor_;
@@ -4882,8 +4954,24 @@ bool SplinerNode::BuildTrailing(
             // 정지는 그 수렴을 스스로 끊는다는 d809831 의 논리가 여기에도
             // 그대로 적용된다. 동적/비상정지(allow_stop=true)는 종전대로 0.
             // 여기는 "복귀 기하조차 없다" = 가장 나쁜 상태이므로 낮은 바닥.
+            // P0-3: "복귀 기하조차 없다" = 가장 나쁜 상태다. 여기서
+            // !allow_stop 이면 degraded 바닥(1.5)으로 접촉한다. 한 번이라도
+            // 동적이었던 트랙이면 그게 곧 "달리다 멈춘 상대차" 케이스다.
+            if (!allow_stop) {
+                NoteOutcome("trailing_no_return_geom_denied_stop");
+                if (!emergency_stop && WasEverDynamic(obs.id)) {
+                    NoteOutcome("trailing_no_return_ever_dynamic");
+                }
+            }
+            // ever_moved 로 정지 권한이 열린 트랙은 0 이 아니라 **관측 속도**
+            // 까지만 내린다 (위 obs_vs_eff 주석과 같은 근거). 진짜 정지물은
+            // 창 평균도 0 이라 결과가 같고, 잠깐 느려진 상대에는 급감속이
+            // 되지 않는다. 원래부터 동적인 트랙은 종전대로 0.
             v_target_prof_actual =
-                allow_stop ? 0.0 : trailing_retry_speed_degraded_;
+                allow_stop
+                    ? (obs.is_static && obs_ever_moved
+                           ? std::max(obs_vs_eff, 0.0) : 0.0)
+                    : trailing_retry_speed_degraded_;
         }
     }
     out_wpnts.wpnts.reserve(n);
@@ -5554,9 +5642,12 @@ void SplinerNode::ClassifyObstacles(
         if (tr.s_hist.empty()) {
             tr.s_ref = obs.s_center;
         }
-        tr.s_hist.push_back(
+        const double disp_now =
             Mod(obs.s_center - tr.s_ref + track_len_ / 2.0, track_len_) -
-            track_len_ / 2.0);
+            track_len_ / 2.0;
+        tr.s_hist.push_back(disp_now);
+        // 관측된 최대 변위. s_ref 기준 절댓값이라 왕복해도 줄지 않는다.
+        tr.max_disp = std::max(tr.max_disp, std::abs(disp_now));
         tr.d_hist.push_back(obs.d_center);
         tr.vs_hist.push_back(obs.vs);
         if (tr.s_hist.size() > kClsWindow) {
@@ -6028,6 +6119,15 @@ int SplinerNode::ObsSeen(int32_t id) const {
 bool SplinerNode::WasEverDynamic(int32_t id) const {
     auto it = cls_tracks_.find(id);
     return it != cls_tracks_.end() && it->second.ever_dynamic;
+}
+
+bool SplinerNode::WasEverMoved(int32_t id) const {
+    if (!(ever_moved_min_disp_m_ > 0.0)) {
+        return false;   // 기능 꺼짐 = 종전 동작
+    }
+    auto it = cls_tracks_.find(id);
+    return it != cls_tracks_.end() &&
+           it->second.max_disp >= ever_moved_min_disp_m_;
 }
 
 double SplinerNode::ObsVsMean(int32_t id, double fallback) const {
