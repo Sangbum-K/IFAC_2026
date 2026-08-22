@@ -4518,6 +4518,59 @@ bool SplinerNode::BuildTrailing(
         }
         return worst;
     };
+    // ── 후보가 "양옆이 막힌 주머니" 안인가 (2026-08-22, run_0822_144702) ────
+    // ramp_obstacle_slack 은 **가장 가까운 한 면**까지의 거리만 잰다. 그래서
+    // 차체가 절대 못 들어가는 틈의 정중앙이 "여유가 가장 큰 후보"로 뽑힐 수
+    // 있다 — t=23.32 에서 정확히 그랬다 (두 박스 사이 4 cm 틈, 여유 -0.160 m
+    // 인데 그 값이 후보 중 최대였다).
+    // 이 함수는 램프 위 각 점에서 **위/아래 양쪽 모두** 장애물이 있는 경우의
+    // 통로 폭을 재서 가장 좁은 값을 돌려준다. 양쪽이 다 막힌 적이 없으면
+    // +inf 다 (= 판단하지 않음).
+    //
+    // ⚠️ 박스 **안**에 있는 점은 폭 계산에서 뺀다. 그건 주머니가 아니라 접촉이고,
+    //    그 경우 "여유가 큰 후보로 옮긴다"는 run_0819_180345 실측(유지하면
+    //    차체 접촉 120 -> 232, 옮기면 105)이 그대로 유효하다. 이 가드는 그
+    //    경로를 건드리지 않고 **주머니만** 걸러낸다.
+    auto ramp_pocket_width = [&](double goal, double len, double back) {
+        double narrowest = std::numeric_limits<double>::infinity();
+        if (check_obs == nullptr) {
+            return narrowest;
+        }
+        for (int i = 0; i < n; ++i) {
+            const double dist = i * wpnt_dist_;
+            const double d = d_profile(dist, goal, len, back);
+            double above = std::numeric_limits<double>::infinity();
+            double below = -std::numeric_limits<double>::infinity();
+            bool in_box = false;
+            for (const auto &o : *check_obs) {
+                if (!std::isfinite(o.s_start) || !std::isfinite(o.s_end) ||
+                    !std::isfinite(o.d_left) || !std::isfinite(o.d_right)) {
+                    continue;
+                }
+                const double lo_s = Mod(o.s_start - cur_s_, track_len_) -
+                                    vehicle_half_length_m_;
+                const double hi_s = lo_s +
+                                    Mod(o.s_end - o.s_start, track_len_) +
+                                    2.0 * vehicle_half_length_m_;
+                if (lo_s > planned_span || dist < lo_s || dist > hi_s) {
+                    continue;
+                }
+                if (o.d_right > d) {
+                    above = std::min(above, o.d_right);
+                } else if (o.d_left < d) {
+                    below = std::max(below, o.d_left);
+                } else {
+                    in_box = true;
+                    break;
+                }
+            }
+            if (in_box || !std::isfinite(above) || !std::isfinite(below)) {
+                continue;
+            }
+            narrowest = std::min(narrowest, above - below);
+        }
+        return narrowest;
+    };
     // 벽 **과** 장애물을 모두 통과해야 성립이다. 어느 쪽이 물었는지는 로그에
     // 반드시 남긴다 — ramp_ok 의 bind_* 가 도입된 이유가 정확히 "어느 점이
     // 물었는지가 로그에 없어서 인과를 재구성으로만 세울 수 있었다" 였고,
@@ -4673,6 +4726,13 @@ bool SplinerNode::BuildTrailing(
                     const double len = ramp_len_for(cand);
                     if (!ramp_ok(cand, len)) {
                         continue;       // 벽 불변식은 그대로 지킨다
+                    }
+                    // 차체가 못 들어가는 주머니는 여유가 아무리 "덜 나빠도"
+                    // 후보가 아니다 — 선언부 ramp_pocket_width 주석 참조.
+                    if (ramp_pocket_width(cand, len, back_len_for(cand)) <
+                        2.0 * vehicle_half_width_m_) {
+                        NoteReject("trailing_cand_in_pocket");
+                        continue;
                     }
                     const double slack =
                         ramp_obstacle_slack(cand, len, back_len_for(cand), false);
@@ -5604,6 +5664,74 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
                     merged_any = true;
                 }
             }
+        }
+    }
+    // ── 지나갈 수 없는 사이 통로를 메운다 (2026-08-22, run_0822_144702) ─────
+    // 위 병합은 "합치면 트랙이 막힌다"(MergeBlocksTrack)면 취소된다. 그 근거
+    // (0808 run_185049 의 벽유령+실물)는 여전히 유효하지만, **취소의 부작용**
+    // 까지 정당화하지는 않는다: 두 박스가 따로 남으면 그 사이의 틈이 통로로
+    // 살아 있고, 하류에서 실제로 그리로 경로가 나갔다.
+    //   run_0822_144702 t=23.17 "클러스터 병합 보류 (id 18+19)" ->
+    //   t=23.32 트레일링 사다리가 두 박스 사이 **4 cm** 틈을 조준
+    //   (d -0.12 -> -0.42, 차체 여유 -0.160 m) -> t≈24.2 접촉.
+    //   같은 백 실측: 발행 경로가 0.64 m 미만 사이통로를 지난 프레임 28 개가
+    //   **전부** 이 사고 구간(23.5~24.8 s)이고 92 초 주행 중 다른 곳은 0 이다.
+    //   그 28 개는 100 % 가 **s 구간이 겹치는** 쌍이었다.
+    // 그래서 병합은 그대로 취소하되(바깥으로 도는 해를 살린다), 사이 틈만
+    // 양쪽 박스를 중앙까지 늘려 막는다. 박스를 새로 만들지 않으므로 id/관측
+    // 이력/커밋 판정 등 하류 계약이 하나도 바뀌지 않는다.
+    //
+    // 적용 조건을 **s 겹침**으로 좁힌 이유: s 가 떨어진 쌍은 대각선 통과가
+    // 실재하고(위 run_0806_234734 주석), 그 판정은 이미 BlendSpeedCap 이
+    // 한다. 여기서 s 겹침만 다루면 그 경로를 건드리지 않는다.
+    for (size_t i = 0; i < obs.size(); ++i) {
+        for (size_t j = i + 1; j < obs.size(); ++j) {
+            auto &a = obs[i];
+            auto &b = obs[j];
+            if (!std::isfinite(a.s_start) || !std::isfinite(a.s_end) ||
+                !std::isfinite(b.s_start) || !std::isfinite(b.s_end) ||
+                !std::isfinite(a.d_left) || !std::isfinite(a.d_right) ||
+                !std::isfinite(b.d_left) || !std::isfinite(b.d_right)) {
+                continue;
+            }
+            const double ai = Mod(a.s_start - ref, track_len_);
+            const double bi = ai + Mod(a.s_end - a.s_start, track_len_);
+            const double aj = Mod(b.s_start - ref, track_len_);
+            const double bj = aj + Mod(b.s_end - b.s_start, track_len_);
+            if (std::max(ai, aj) - std::min(bi, bj) > 0.0) {
+                continue;      // s 가 안 겹친다 — 대각 통과 여지를 남긴다
+            }
+            // corridor_top 은 "왼쪽 박스의 아래 끝", corridor_bot 은
+            // "오른쪽 박스의 위 끝"이다 (d_left > d_right 규약).
+            const double corridor_top = std::max(a.d_right, b.d_right);
+            const double corridor_bot = std::min(a.d_left, b.d_left);
+            const double width = corridor_top - corridor_bot;
+            if (!(width > 0.0)) {
+                continue;      // d 가 이미 겹친다 — 사이에 구멍이 없다
+            }
+            // 통과 가능 조건은 "경로 중심이 양쪽 요구 간격을 동시에 만족"이라
+            // 필요 폭은 두 요구치의 **합**이다 (MergeBlocksTrack 이 쓰는
+            // max() 는 한쪽 벽까지의 거리를 재는 식이라 여기엔 안 맞는다).
+            const double need = RequiredObstacleClearance(a) +
+                                RequiredObstacleClearance(b);
+            if (width >= need) {
+                continue;      // 진짜 지나갈 수 있다 — 손대지 않는다
+            }
+            const double mid = 0.5 * (corridor_top + corridor_bot);
+            if (a.d_right > b.d_right) {
+                a.d_right = mid;   // a 가 왼쪽 박스
+                b.d_left = mid;
+            } else {
+                b.d_right = mid;   // b 가 왼쪽 박스
+                a.d_left = mid;
+            }
+            a.d_center = 0.5 * (a.d_left + a.d_right);
+            b.d_center = 0.5 * (b.d_left + b.d_right);
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(), 2000,
+                "사이 통로 봉쇄: id %d+%d 사이 %.2f m < 필요 %.2f m — "
+                "두 박스를 d=%.2f 까지 늘림",
+                a.id, b.id, width, need, mid);
+            NoteOutcome("corridor_gap_sealed");
         }
     }
     return obs;

@@ -30,7 +30,8 @@ rosbag_*/
 
 # 백 재생 A/B 산출물 (pkl·로그·db3, 재생성 가능)
 tools/bag_analysis_0818/out/
-# 추출기 산출물. d*.pkl 은 개당 80~120MB 로 GitHub 100MB 한도를 넘는다 —
+# 추출기 산출물. d*.pkl 은 개당 80~360MB 로 GitHub 100MB 한도를 넘는다 —
 # extract.py / relog.py 로 언제든 다시 만든다.
 tools/bag_analysis_*/*.pkl
-tools/bag_analysis_*/ex*.log
+tools/bag_analysis_*/*.npy
+tools/bag_analysis_*/*.log
