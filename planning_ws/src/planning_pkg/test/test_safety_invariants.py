@@ -609,7 +609,9 @@ def test_static_cylinder_model_cannot_understate_extent():
             f"{env_name}: 고정값이 대역 밖이면 적용 여부가 값 자체와 모순된다")
         # 최대 피해량. 0.15 여유는 차 반폭이고, 그 이상을 잃으면 벽까지의
         # 가짜 통로가 차폭에 근접한다.
-        assert hi - radius <= 0.15, (
+        # 0.44 - 0.29 는 이진 부동소수점에서 0.15000000000000002가 된다.
+        # 안전 한계는 0.15 m 그대로 두고 계산 표현 오차만 허용한다.
+        assert hi - radius <= 0.15 + 1e-12, (
             f"{env_name}: 최대 extent 손실 {hi - radius:.3f}m 가 너무 크다")
         # detector 가 벽으로 거르는 크기를 넘어서까지 "콘"이라고 우기면 안 된다.
         max_cluster = perception["max_cluster_radius_m"]

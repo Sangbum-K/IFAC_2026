@@ -67,12 +67,12 @@ perception_obstacle_bridge_node:
     bridge/dynamic_static_shadow_wall_max_m: 0.60
     bridge/force_low_confidence_dynamic_static: false
     # 정적 장애물 고정 원통 — 근거는 real_car.yaml 같은 블록.
-    # 0.25 -> 0.30 / 대역 [0.05,0.25] -> [0.02,0.44] (2026-08-22, 세 프로파일
+    # 0.25 -> 0.30 -> 0.29 / 대역 [0.05,0.25] -> [0.02,0.44] (세 프로파일
     # 동시). run_0822_192752 스캔 원 적합으로 물체 실반경이 0.289 로 확인됐고
     # (0.25 는 매 프레임 4 cm 작게 보던 값), 원시 반경 분포가 옛 대역 밖이라
     # 고정이 13~41% 프레임에만 걸렸다. 실차와 같은 값을 유지해야 심 A/B 가
     # 실차 거동을 예측한다.
-    bridge/static_cylinder_radius_m: 0.30
+    bridge/static_cylinder_radius_m: 0.29
     bridge/static_cylinder_band_m: [0.02, 0.44]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map

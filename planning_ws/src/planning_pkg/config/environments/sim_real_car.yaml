@@ -90,13 +90,13 @@ perception_obstacle_bridge_node:
     # ⚠️ 시뮬 합성 장애물은 virtual_obstacle_node 가 각도 구간에 일정 거리를
     #    쓰므로 radius 가 거의 안 흔들린다. 즉 **심에서는 이 변경의 효과가
     #    거의 안 보인다** — 검증은 실차 백 재생으로 할 것.
-    # 0.25 -> 0.30 / 대역 [0.05,0.25] -> [0.02,0.44] (2026-08-22, 세 프로파일
+    # 0.25 -> 0.30 -> 0.29 / 대역 [0.05,0.25] -> [0.02,0.44] (세 프로파일
     # 동시) — 근거는 real_car.yaml 같은 블록 (run_0822_192752 스캔 원 적합:
     # 물체 실반경 0.289, 원시 반경 p90 0.41 로 옛 대역 밖).
     # 위 ⚠️ 그대로: 심에서는 radius 흔들림이 없으니 **대역 확대의 효과는 심에서
     # 안 보이고**, 고정값 5 cm 상향의 효과만 보인다 (회피 목표 오프셋이 양쪽
-    # 5 cm 씩 바깥으로). 대역 쪽 검증은 반드시 실차 백 재생으로 할 것.
-    bridge/static_cylinder_radius_m: 0.30
+    # 4 cm 씩 바깥으로). 대역 쪽 검증은 반드시 실차 백 재생으로 할 것.
+    bridge/static_cylinder_radius_m: 0.29
     bridge/static_cylinder_band_m: [0.02, 0.44]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
