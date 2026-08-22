@@ -43,6 +43,15 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     // 남기고 노드를 띄운다 — 사람이 직감으로 손댄 <맵>_tuned_ 라인을 실차에서
     // 시험하기 위한 것이다. 형식 검사는 어느 모드에서도 통과해야 한다.
     this->declare_parameter("global_trajectory/validation_mode", "strict");
+    // ── 조향 능력 표 (2026-08-23) ────────────────────────────────────────
+    // control 이 쓰는 조향 LUT 을 뒤집어 얻은 "그 속도에서 최대 조향으로 낼 수
+    // 있는 횡가속". 근거·되돌리는 법은 steer_grip_model.hpp 머리주석.
+    // 빈 배열 = 비활성 = 종전 동작(CSV vx 를 그대로 발행).
+    this->declare_parameter(
+        "global_trajectory/steer_lat_acc_speed_brk", std::vector<double>{});
+    this->declare_parameter(
+        "global_trajectory/steer_lat_acc_max_at", std::vector<double>{});
+    this->declare_parameter("global_trajectory/steer_lat_acc_margin", 1.0);
 
     trajectory_csv_file_ = this->get_parameter("global_trajectory/trajectory_csv_file").as_string();
     overtaking_csv_file_ = this->get_parameter("global_trajectory/overtaking_csv_file").as_string();
@@ -122,9 +131,25 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
             "========================================================================");
     }
 
+    if (!steer_grip_.Set(
+            this->get_parameter("global_trajectory/steer_lat_acc_speed_brk")
+                .as_double_array(),
+            this->get_parameter("global_trajectory/steer_lat_acc_max_at")
+                .as_double_array(),
+            this->get_parameter("global_trajectory/steer_lat_acc_margin")
+                .as_double())) {
+        throw std::runtime_error(
+            "global_trajectory/steer_lat_acc_* 표가 유효하지 않습니다 "
+            "(길이 불일치 / 속도 비단조 / 비양수 / margin 범위 밖)");
+    }
+    RCLCPP_INFO(
+        this->get_logger(), "steering-capability speed cap: %s",
+        steer_grip_.enabled() ? "ON" : "off (표 비어 있음 — 종전 동작)");
+
     // Load global trajectory from CSV
     if (LoadTrajectoryFromCSV(
             trajectory_csv_file_, global_trajectory_, main_generation_id_)) {
+        BuildSteerSpeedCap(global_trajectory_, global_steer_cap_);
         RCLCPP_INFO(this->get_logger(), "Successfully loaded %zu waypoints from CSV", global_trajectory_.size());
     } else {
         throw std::runtime_error(
@@ -140,6 +165,7 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
             !main_generation_id_.empty() &&
             main_generation_id_ == overtaking_generation_id_ &&
             ValidateTrajectoryPair(global_trajectory_, overtaking_trajectory_)) {
+            BuildSteerSpeedCap(overtaking_trajectory_, overtaking_steer_cap_);
             RCLCPP_INFO(this->get_logger(), "Loaded overtaking (SP) line: %zu waypoints (%s)",
                         overtaking_trajectory_.size(), overtaking_csv_file_.c_str());
         } else {
@@ -151,6 +177,7 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
                 overtaking_csv_file_.c_str(), main_generation_id_.c_str(),
                 overtaking_generation_id_.c_str());
             overtaking_trajectory_.clear();
+            overtaking_steer_cap_.clear();
             overtaking_generation_id_.clear();
         }
     }
@@ -533,10 +560,114 @@ bool GlobalTrajectoryNode::ValidateTrajectoryPair(
     return true;
 }
 
+void GlobalTrajectoryNode::BuildSteerSpeedCap(
+    const std::vector<std::vector<double>>& trajectory,
+    std::vector<double>& out_cap) const {
+    out_cap.clear();
+    if (!steer_grip_.enabled() || trajectory.size() < 2) {
+        return;                     // 비활성 — BuildWpntArray 가 CSV 를 그대로 쓴다
+    }
+    const size_t n = trajectory.size();
+    const double kappa_limit =
+        std::tan(validation_max_steer_rad_) /
+        std::max(validation_wheelbase_m_, 1e-6);
+
+    // (1) 점별 정적 상한. "그 곡률을 실제로 낼 수 있는 최대 속도".
+    // ⚠️ 곡률이 **기하 한계 자체**를 넘는 점은 캡하지 않는다. 그런 점은 어떤
+    //    속도로도 못 도는 것이라 감속이 답이 아니고, SpeedCapForKappa 가
+    //    0 을 돌려주므로 그대로 쓰면 발행 속도가 0 이 되어 차가 선다.
+    //    그건 ValidateTrajectory 가 잡아야 할 CSV 문제다 (strict 모드는 이미
+    //    거부하고, advisory 모드는 경고를 남기고 통과시킨다) — 여기서 조용히
+    //    정지 궤적으로 바꿔 버리면 그 경고가 무의미해진다.
+    out_cap.assign(n, std::numeric_limits<double>::infinity());
+    size_t over_geom = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (std::abs(trajectory[i][6]) > kappa_limit) {
+            ++over_geom;
+            continue;                       // 캡 없음 (= 종전 동작)
+        }
+        out_cap[i] =
+            steer_grip_.SpeedCapForKappa(trajectory[i][6], kappa_limit);
+    }
+    if (over_geom > 0) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "조향 능력 속도캡: %zu 점이 기하 한계(|kappa| > %.3f)를 넘어 "
+            "캡을 적용하지 않았다 — 감속으로 살릴 수 없는 구간이다",
+            over_geom, kappa_limit);
+    }
+
+    // (2) 가감속 연속성. 캡은 점별로 계단이 지므로 그대로 쓰면 차가 도달할 수
+    //     없는 프로파일이 된다. 전/후진 패스로 이어 붙이되, **가감속 한계는
+    //     이 CSV 가 이미 요구하고 있던 값**을 쓴다 — 새 물리 가정을 들이지
+    //     않기 위해서다 (원본 프로파일이 쓰던 것보다 더 세게 밟지 않는다).
+    double a_acc = 0.0, a_dec = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        a_acc = std::max(a_acc, trajectory[i][8]);
+        a_dec = std::max(a_dec, -trajectory[i][8]);
+    }
+    a_acc = std::max(a_acc, 0.5);
+    a_dec = std::max(a_dec, 0.5);
+    // 닫힌 회로라 한 바퀴로는 시작점이 수렴하지 않는다 — 두 바퀴 돈다.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t k = 1; k <= n; ++k) {          // 전진(가속 한계)
+            const size_t i = k % n, p = (k - 1) % n;
+            const double ds = std::abs(trajectory[i][0] - trajectory[p][0]);
+            if (!(ds > 1e-6) || ds > 1.0) {
+                continue;                          // s wrap 구간은 건너뛴다
+            }
+            out_cap[i] = std::min(
+                out_cap[i],
+                std::sqrt(out_cap[p] * out_cap[p] + 2.0 * a_acc * ds));
+        }
+        for (size_t k = n; k >= 1; --k) {          // 후진(제동 한계)
+            const size_t i = (k - 1) % n, nx = k % n;
+            const double ds = std::abs(trajectory[nx][0] - trajectory[i][0]);
+            if (!(ds > 1e-6) || ds > 1.0) {
+                continue;
+            }
+            out_cap[i] = std::min(
+                out_cap[i],
+                std::sqrt(out_cap[nx] * out_cap[nx] + 2.0 * a_dec * ds));
+        }
+    }
+    // 보고: 이 캡이 실제로 몇 %를 깎는지 로그로 남긴다 (튜닝 근거).
+    size_t cut = 0;
+    double worst_ratio = 1.0;
+    size_t worst_row = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (out_cap[i] < trajectory[i][7] - 1e-6) {
+            ++cut;
+            const double ratio = out_cap[i] / std::max(trajectory[i][7], 1e-6);
+            if (ratio < worst_ratio) {
+                worst_ratio = ratio;
+                worst_row = i;
+            }
+        }
+    }
+    RCLCPP_INFO(
+        this->get_logger(),
+        "조향 능력 속도캡: %zu/%zu 점 감속 (%.1f%%), 최악 s=%.2f "
+        "kappa=%.2f  %.2f -> %.2f m/s",
+        cut, n, 100.0 * static_cast<double>(cut) / static_cast<double>(n),
+        trajectory[worst_row][0], trajectory[worst_row][6],
+        trajectory[worst_row][7], out_cap[worst_row]);
+}
+
 f1tenth_planning_msgs::msg::WpntArray GlobalTrajectoryNode::BuildWpntArray(
     const std::vector<std::vector<double>>& trajectory) const {
     f1tenth_planning_msgs::msg::WpntArray waypoint_array;
     waypoint_array.header.frame_id = "map";
+
+    // 이 라인에 대응하는 조향 캡 (없으면 캡 없음 = 종전 동작).
+    const std::vector<double>* cap = nullptr;
+    if (global_steer_cap_.size() == trajectory.size() &&
+        &trajectory == &global_trajectory_) {
+        cap = &global_steer_cap_;
+    } else if (overtaking_steer_cap_.size() == trajectory.size() &&
+               &trajectory == &overtaking_trajectory_) {
+        cap = &overtaking_steer_cap_;
+    }
 
     for (size_t i = 0; i < trajectory.size(); ++i) {
         const auto& row = trajectory[i];
@@ -558,8 +689,29 @@ f1tenth_planning_msgs::msg::WpntArray GlobalTrajectoryNode::BuildWpntArray(
         waypoint.vx_mps = row[7] * velocity_scale_;  // vx_mps
         // Spatial speed scaling requires acceleration to scale by q^2.
         waypoint.ax_mps2 = row[8] * velocity_scale_ * velocity_scale_;
+        // 조향 능력 캡 (2026-08-23). velocity_scale_ 이 이미 낮으면 캡이 안
+        // 걸리므로 저속 시험 프로파일의 거동은 그대로다.
+        if (cap != nullptr && (*cap)[i] < waypoint.vx_mps) {
+            waypoint.vx_mps = (*cap)[i];
+        }
 
         waypoint_array.wpnts.push_back(waypoint);
+    }
+    // ax 는 "이 속도 프로파일의 공간 미분"이라는 규약이다 (ValidateTrajectory
+    // 가 CSV 에 대해 강제하는 것과 같은 식). 캡으로 vx 를 건드렸으면 여기서
+    // 다시 맞춰야 하류(컨트롤러 속도 룩어헤드, recovery)가 어긋나지 않는다.
+    const size_t n = waypoint_array.wpnts.size();
+    if (cap != nullptr && n >= 2) {
+        for (size_t i = 0; i < n; ++i) {
+            const size_t j = (i + 1) % n;
+            const double ds = trajectory[j][0] - trajectory[i][0];
+            if (!(ds > 1e-6)) {
+                continue;              // 마지막→처음 wrap 은 원본 ax 유지
+            }
+            const double v0 = waypoint_array.wpnts[i].vx_mps;
+            const double v1 = waypoint_array.wpnts[j].vx_mps;
+            waypoint_array.wpnts[i].ax_mps2 = (v1 * v1 - v0 * v0) / (2.0 * ds);
+        }
     }
     return waypoint_array;
 }

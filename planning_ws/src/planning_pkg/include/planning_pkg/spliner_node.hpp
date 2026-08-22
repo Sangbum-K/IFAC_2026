@@ -20,6 +20,8 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
+#include "planning_pkg/steer_grip_model.hpp"
+
 #include "f1tenth_planning_msgs/msg/obstacle.hpp"
 #include "f1tenth_planning_msgs/msg/obstacle_array.hpp"
 #include "f1tenth_planning_msgs/msg/wpnt.hpp"
@@ -42,8 +44,17 @@ private:
   std::vector<f1tenth_planning_msgs::msg::Obstacle> FilterObstacles(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
   // 반환: {side("left"/"right"), d_apex}
+  // 사이드 선택. MoreSpaceRaw 가 이번 프레임 관측만으로 고르고, MoreSpace 가
+  // 그 위에 **의도 히스테리시스**를 얹는다 (intent_side_ 멤버 주석 참조).
+  // 히스테리시스 문턱이 0 이면 둘은 완전히 같다 = 종전 동작.
+  std::pair<std::string, double> MoreSpaceRaw(
+    const f1tenth_planning_msgs::msg::Obstacle & obs) const;
   std::pair<std::string, double> MoreSpace(
     const f1tenth_planning_msgs::msg::Obstacle & obs) const;
+  // 이번 사이클에 고른 사이드를 "의도"로 남긴다. BuildLaneSwitch 성공과
+  // 무관하게 매 사이클 찍힌다 — 그것이 last_ot_side_ 와의 차이다.
+  void NoteSideIntent(const std::string & side,
+                      const f1tenth_planning_msgs::msg::Obstacle & obs);
   // 해당 사이드의 apex d 계산: 목표는 장애물 가장자리 + evasion_dist지만,
   // corridor(장애물-벽)가 좁으면 여유를 장애물/벽 양쪽에 균등 배분한
   // 지점으로 축소 (벽에 최대한 붙이는 방식은 추적오차로 벽 접촉)
@@ -339,8 +350,10 @@ private:
   // 트랙 곡률과 기동 곡률이 실제로 **더해지는** 경우(코너 안쪽 회피, 그리고
   // 어떤 블렌드든 복귀하는 후반부)에는 지점별 결과가 스칼라 식과 같아진다 —
   // 즉 이 경로는 더 느슨해지지 않는다. 0807 run_164216 회귀는 유지된다.
+  // speed >= 0 이면 그 속도의 조향 능력으로, 음수면 PlanSpeed() 로 판정한다.
   double BlendGeomFloor(double amplitude, double kappa_track = 0.0,
-                        bool one_sided = false, double s_from = -1.0) const;
+                        bool one_sided = false, double s_from = -1.0,
+                        double speed = -1.0) const;
 
   // 길이 L 의 블렌드가 조향 한계 안에 들어오는가 — 지점별·부호 유지 검사.
   //   |kappa_track(s) + d''(s)/geom_floor_margin_| <= kappa_steer_max
@@ -349,14 +362,27 @@ private:
   // 상쇄 크레딧은 (1-geom_floor_kappa_ratio_)*kappa_steer_max 로 제한한다 —
   // 레이스라인 kappa 는 d=0 기준이고 자차는 추종 오차만큼 벗어나 있으므로
   // "코너가 대신 돌아준다"를 무한정 믿지 않는다.
+  // speed >= 0 이면 그 속도에서의 조향 능력(SteerKappaMaxAt)으로 판정한다.
+  // 음수면 PlanSpeed() 를 쓴다.
   bool BlendGeomFeasible(double amplitude, double blend_len, double s_from,
-                         bool one_sided) const;
+                         bool one_sided, double speed = -1.0) const;
 
-  // 계획이 달성 가능하다고 보는 최대 곡률 [1/m].
-  //   steer_kappa_scale_ * tan(|delta_max|) / wheelbase
-  // 회피 가부를 결정하는 모든 조향 게이트(BlendGeomFloor / ApplySpeedProfile /
-  // SP 라인 로드 검증)가 이 하나를 쓴다. 게이트마다 식을 따로 쓰면 한 곳만
-  // 완화됐을 때 "여기선 되는데 저기선 안 되는" 모순이 생긴다.
+  // ── 조향 한계는 두 개다 (2026-08-23) ──────────────────────────────────
+  // (1) SteerKappaKinematic() — 순수 기하:
+  //       steer_kappa_scale_ * tan(|delta_max|) / wheelbase   (속도 무관)
+  //     "조향각 자체가 모자라다"는 판정이고, 감속으로 살릴 수 없다.
+  //     경로를 **통째로 버리는** 하드 기각은 전부 이 값을 쓴다 — 그래야
+  //     기존 기각 문턱이 한 톨도 안 움직인다.
+  // (2) SteerKappaMaxAt(v) — 그 속도에서 **실제로** 낼 수 있는 곡률:
+  //       min( (1), 조향 LUT 표의 a_lat(v)/v^2 )
+  //     계획이 "차가 낼 수 있는 것"만 약속하게 하는 값이고, 넘으면 감속으로
+  //     살릴 수 있다. 회피 기동의 기하 게이트(BlendGeomFeasible/Floor/
+  //     SpeedCap)와 속도 프로파일 캡이 이 값을 쓴다.
+  //     표가 비어 있으면 (2) == (1) 이라 종전과 완전히 동일하다.
+  //     근거·표·되돌리는 법: steer_grip_model.hpp 머리주석.
+  double SteerKappaKinematic() const;
+  double SteerKappaMaxAt(double speed) const;
+  // 종전 이름 유지 — PlanSpeed() 기준 (2) 를 돌려준다.
   double SteerKappaMax() const;
 
   // 가용 거리 available 안에서 amplitude만큼 횡이동할 수 있는 최대 속도 [m/s].
@@ -367,6 +393,9 @@ private:
   // s_from >= 0 이면 기하 가부를 "최소 하한 계산 후 비교"가 아니라 **실제로
   // 쓸 길이(= available)에서 지점별로** 판정한다. 블렌드는 available 을 그대로
   // 쓰므로 이쪽이 근사 없이 정확하다.
+  // 2026-08-23: 조향 능력이 속도의 함수가 되면서 이 함수는 **후보 속도에서**
+  // 기하를 판정한다. 지금 속도로 판정하면 "빠를 땐 무조건 0(정지)"이 되는데,
+  // 이 함수의 존재 이유가 바로 그 이진 거부를 없애는 것이었다.
   double BlendSpeedCap(double amplitude, double available,
                        double lat_acc = -1.0, double kappa_track = 0.0,
                        double s_from = -1.0) const;
@@ -1055,6 +1084,17 @@ private:
   // 건드리면 안 되므로(TUNING_STATUS §4, CLAUDE.md), 타이어 그립 향상처럼
   // "같은 조향각으로 더 돈다"를 반영할 때는 이 배율만 올린다.
   double steer_kappa_scale_{1.0};
+  // 속도별 조향 능력 표 (steer_grip_model.hpp). 비어 있으면 종전 동작.
+  planning_pkg::SteerGripModel steer_grip_;
+  // 회피 사이드를 갈아타려면 반대쪽이 이만큼 더 나아야 한다 [m].
+  // 0 이면 히스테리시스 없음 = 종전 동작.
+  double side_switch_hysteresis_m_{0.0};
+  // 트레일링에서 **접촉을 피할 횡 후보가 하나도 없을 때**의 속도 바닥 [m/s].
+  // 음수면 비활성 = 종전 동작(trailing_retry_speed_degraded_ 까지만 내려감).
+  // ⚠️ 0 으로 두지 말 것 — 정적 장애물 앞 완전 정지는 스스로 못 푸는 라치다
+  //    (d809831 "정적 장애물의 정지를 폐지한다"). 목적은 정지가 아니라
+  //    접촉 에너지(v^2) 를 줄이는 것이다: 2.5 -> 0.8 m/s 면 1/10 이 된다.
+  double trailing_contact_floor_mps_{-1.0};
   // BlendGeomFloor 의 smoothstep 근사 여유. 실제 샘플 피크 곡률이 근사식
   // 6A/L² 보다 큰 것을 흡수한다. 1.0에 가까울수록 하한이 짧아진다(= 완화).
   double geom_floor_margin_{0.8};
@@ -1117,6 +1157,23 @@ private:
   // 뒤에는 확실히 풀린다 (4~6 m/s 에서 1.0s = 4~6 m 주행).
   // ⚠️ 미실측 판단값 — 다음 백에서 회피 중 경로생성 공백을 재서 확정할 것.
   static constexpr double kOtSideCommitValidSec{1.0};
+  // ── 회피 **의도** 사이드 잠금 (2026-08-23) ────────────────────────────
+  // last_ot_side_ 는 BuildLaneSwitch 가 **성공했을 때만** 찍힌다. 그런데
+  // run_0823_043254 에서 lane_switch 성공은 574 사이클 중 14 회뿐이었고
+  // (044748 은 1766 중 43), 나머지 전부가 trailing 이었다 — 즉 SideKeepActive
+  // 의 히스테리시스가 정작 필요한 구간에서 **한 번도 켜지지 않았다**.
+  // 그래서 "고른 쪽"을 성공 여부와 무관하게 여기 남기고, 반대쪽이
+  // side_switch_hysteresis_m 이상 더 나을 때만 갈아탄다.
+  //   왜 문턱이 필요한가: 같은 백에서 좌/우 개폐를 가르는 여유 마진은
+  //   중앙 4.3 cm (043254) / 7.9 cm (044748) 인데, 같은 정적 장애물 하나의
+  //   관측 중심이 접근하는 동안 표준편차 3.4~5.6 cm, 범위 14~20 cm 로
+  //   흔들린다. 즉 매 프레임 다시 고르면 판정이 노이즈에 지배된다 —
+  //   실제로 조우 1 건당 개방 사이드가 평균 1.2 회 뒤집혔고, 그 뒤집힘이
+  //   90.7 s / 124.5 s / 133.0 s / 152.0 s 충돌 직전에 전부 있었다.
+  std::string intent_side_{""};
+  double intent_obs_s_{-1.0};
+  rclcpp::Time intent_stamp_{0, 0, RCL_ROS_TIME};
+  bool has_intent_side_{false};
   // 연쇄 회피 그룹 상한. 콘이 줄지어 있어도 hold 가 무한정 늘어나지 않게
   // 막는다 (구간 상한은 별도로 lookahead_m_ 가 잡는다).
   static constexpr size_t kEvasionGroupMax{4};

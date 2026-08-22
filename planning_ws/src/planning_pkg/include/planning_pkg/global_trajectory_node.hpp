@@ -17,6 +17,7 @@
 
 #include "f1tenth_planning_msgs/msg/wpnt.hpp"
 #include "f1tenth_planning_msgs/msg/wpnt_array.hpp"
+#include "planning_pkg/steer_grip_model.hpp"
 
 class GlobalTrajectoryNode : public rclcpp::Node
 {
@@ -44,6 +45,24 @@ private:
   void PublishGlobalWaypoints();
   f1tenth_planning_msgs::msg::WpntArray BuildWpntArray(
     const std::vector<std::vector<double>> & trajectory) const;
+
+  // ── 조향 능력 상한으로 속도 프로파일을 자른다 (2026-08-23) ───────────────
+  // CSV 의 vx 는 마찰원(mu)만 보고 짜여 있어, 실차 조향 LUT 기준으로는 낼 수
+  // 없는 곡률을 요구하는 점이 my_track0823 기준 **48.5 %** 였다. 그 구간에서
+  // 차는 라인을 못 잡고 바깥으로 밀리고(장애물 없는 코너에서 |d| p90 0.63 m),
+  // 밀려난 자리가 곧 정적 장애물 자리라 회피 판정이 통째로 무너진다.
+  //   근거 · 되돌리는 법: steer_grip_model.hpp 머리주석.
+  // 자른 뒤에는 전/후진 패스로 가감속 연속성을 되살리고 ax 를 다시 계산한다 —
+  // 안 하면 ValidateTrajectory 가 이미 통과시킨 ax 규약(v^2 차분)이 깨진다.
+  // 캡 자체는 velocity_scale_ 과 무관하므로 로드 시 1회만 계산한다.
+  void BuildSteerSpeedCap(
+    const std::vector<std::vector<double>> & trajectory,
+    std::vector<double> & out_cap) const;
+
+  // Steering-capability model (empty table = disabled = 종전 동작)
+  planning_pkg::SteerGripModel steer_grip_;
+  std::vector<double> global_steer_cap_;
+  std::vector<double> overtaking_steer_cap_;
 
   // Parameters
   std::string trajectory_csv_file_;

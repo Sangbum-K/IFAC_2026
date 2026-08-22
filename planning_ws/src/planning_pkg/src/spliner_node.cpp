@@ -143,6 +143,17 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/geom_floor_margin", 0.8);
     this->declare_parameter("spliner/geom_floor_kappa_ratio", 0.15);
     this->declare_parameter("spliner/steer_kappa_reject_ratio", 1.0);
+    // 속도별 조향 능력 표 (2026-08-23). 빈 배열 = 비활성 = 종전 동작.
+    // 근거·표·되돌리는 법: include/planning_pkg/steer_grip_model.hpp.
+    this->declare_parameter(
+        "spliner/steer_lat_acc_speed_brk", std::vector<double>{});
+    this->declare_parameter(
+        "spliner/steer_lat_acc_max_at", std::vector<double>{});
+    this->declare_parameter("spliner/steer_lat_acc_margin", 1.0);
+    // 회피 사이드 히스테리시스 [m]. 0 = 없음(종전 동작).
+    this->declare_parameter("spliner/side_switch_hysteresis_m", 0.0);
+    // 접촉 회피 후보가 없을 때의 트레일링 속도 바닥 [m/s]. 음수 = 비활성.
+    this->declare_parameter("spliner/trailing_contact_floor_mps", -1.0);
     // d(s) 스플라인 샘플 간격. 예전엔 선언 없는 하드코딩 상수였고, 0이면
     // DoSpline 의 샘플 루프가 무한이 된다 — 선언하는 이상 범위 검증이 필수다.
     this->declare_parameter("spliner/spline_resolution", 0.1);
@@ -303,6 +314,22 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/geom_floor_kappa_ratio").as_double();
     steer_kappa_reject_ratio_ =
         this->get_parameter("spliner/steer_kappa_reject_ratio").as_double();
+    if (!steer_grip_.Set(
+            this->get_parameter("spliner/steer_lat_acc_speed_brk")
+                .as_double_array(),
+            this->get_parameter("spliner/steer_lat_acc_max_at")
+                .as_double_array(),
+            this->get_parameter("spliner/steer_lat_acc_margin").as_double())) {
+        RCLCPP_FATAL(
+            this->get_logger(),
+            "spliner/steer_lat_acc_* 표가 유효하지 않습니다 "
+            "(길이 불일치 / 속도 비단조 / 비양수 / margin 범위 밖)");
+        throw std::runtime_error("invalid spliner/steer_lat_acc_* table");
+    }
+    side_switch_hysteresis_m_ =
+        this->get_parameter("spliner/side_switch_hysteresis_m").as_double();
+    trailing_contact_floor_mps_ =
+        this->get_parameter("spliner/trailing_contact_floor_mps").as_double();
     spline_resolution_ =
         this->get_parameter("spliner/spline_resolution").as_double();
     ot_sector_min_len_m_ = this->get_parameter("spliner/ot_sector_min_len_m").as_double();
@@ -365,6 +392,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         fixed_pred_time_ < 0.0 || fixed_pred_time_ > 2.0 ||
         outside_spline_scale_ <= 0.0 || outside_spline_scale_ > 5.0 ||
         side_switch_d_tresh_ < 0.0 || side_switch_d_tresh_ > 5.0 ||
+        side_switch_hysteresis_m_ < 0.0 || side_switch_hysteresis_m_ > 1.0 ||
+        trailing_contact_floor_mps_ > trailing_retry_speed_ ||
         obs_timeout_sec_ < 0.05 || obs_timeout_sec_ > 1.0 ||
         trailing_gap_m_ <= 0.0 || trailing_gap_m_ > lookahead_m_ ||
         trailing_decel_ <= 0.0 || trailing_decel_ > 20.0 ||
@@ -1822,7 +1851,7 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::FilterObstacles(
     return close_obs;
 }
 
-std::pair<std::string, double> SplinerNode::MoreSpace(
+std::pair<std::string, double> SplinerNode::MoreSpaceRaw(
     const f1tenth_planning_msgs::msg::Obstacle &obs) const {
     // 트랙 좌/우 빈 공간과 회피에 필요한 최소 공간 비교.
     // 목표 간격은 evasion_dist지만, 벽이 허용하는 만큼 apex를 줄여서라도
@@ -1938,6 +1967,65 @@ std::pair<std::string, double> SplinerNode::MoreSpace(
         return {"left", apex_left};
     }
     return {"right", apex_right};
+}
+
+// ── 회피 사이드 의도 히스테리시스 (2026-08-23) ──────────────────────────────
+// MoreSpaceRaw 는 이번 프레임의 관측만으로 고른다. 그런데 좌/우 개폐를 가르는
+// 여유 마진(run_0823 실측 중앙 4.3 cm / 7.9 cm)이 같은 장애물의 관측 흔들림
+// (중심 표준편차 3.4~5.6 cm, 접근 중 범위 14~20 cm)보다 **작다** — 매 프레임
+// 다시 고르면 사이드가 노이즈로 뒤집힌다. 실제로 조우당 평균 1.2 회 뒤집혔고,
+// 그 뒤집힘이 정적 충돌 4 건 직전에 전부 있었다 (89.7 s 에 좌 -> 우 0.6 m 점프,
+// 90.1 s 에 다시 좌, 90.2 s 에 또 우 — 그 뒤 0.5 초 만에 접촉).
+//
+// 그래서 한 번 고른 쪽을 kOtSideLockSec 동안 붙잡고, 반대쪽이
+// side_switch_hysteresis_m 이상 **실제로 더 나을 때만** 갈아탄다. 비교자는
+// ManeuverWorstMargin(기동 전체의 최악 벽여유) — MoreSpaceRaw 가 "둘 다 막힘"
+// 분기에서 이미 쓰는 것과 같은 척도라 새 기준을 들이지 않는다.
+// 문턱 0 이면 이 함수는 MoreSpaceRaw 그대로다.
+std::pair<std::string, double> SplinerNode::MoreSpace(
+    const f1tenth_planning_msgs::msg::Obstacle &obs) const {
+    const auto fresh = MoreSpaceRaw(obs);
+    if (side_switch_hysteresis_m_ <= 0.0 || !has_intent_side_ ||
+        intent_side_.empty() || intent_side_ == fresh.first ||
+        !(track_len_ > 0.0) || !std::isfinite(obs.s_center)) {
+        return fresh;
+    }
+    // 같은 장애물인가 (id 가 아니라 s 근접 — SideKeepActive 와 같은 규약).
+    double ds = Mod(obs.s_center - intent_obs_s_, track_len_);
+    if (ds > track_len_ / 2.0) {
+        ds -= track_len_;
+    }
+    const double age = (this->now() - intent_stamp_).seconds();
+    if (std::abs(ds) > kOtSideLockDistM || age < 0.0 || age > kOtSideLockSec) {
+        return fresh;               // 다른 장애물이거나 만료 — 새로 고른다
+    }
+    const double apex_held = ApexFor(intent_side_, obs);
+    bool reach_held = true, reach_new = true;
+    const double score_held =
+        ManeuverWorstMargin(apex_held, obs, &reach_held) -
+        (reach_held ? 0.0 : 1.0);
+    const double score_new =
+        ManeuverWorstMargin(fresh.second, obs, &reach_new) -
+        (reach_new ? 0.0 : 1.0);
+    if (score_new > score_held + side_switch_hysteresis_m_) {
+        return fresh;               // 반대쪽이 확실히 낫다 — 갈아탄다
+    }
+    // 로그는 남기지 않는다 — 이 함수는 const 라 throttle 클럭을 못 쓴다.
+    // 카운터로 충분하다: /pitwall/reject_side_intent_held 와 [trace] 의
+    // 거부 목록에 매 사이클 전수로 찍힌다.
+    NoteReject("side_intent_held");
+    return {intent_side_, apex_held};
+}
+
+void SplinerNode::NoteSideIntent(
+    const std::string &side, const f1tenth_planning_msgs::msg::Obstacle &obs) {
+    if (side.empty() || !(track_len_ > 0.0) || !std::isfinite(obs.s_center)) {
+        return;
+    }
+    intent_side_ = side;
+    intent_obs_s_ = Mod(obs.s_center, track_len_);
+    intent_stamp_ = this->now();
+    has_intent_side_ = true;
 }
 
 std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::EvasionGroup(
@@ -2302,6 +2390,11 @@ bool SplinerNode::TryLaneSwitch(
     if (SideKeepActive(closest_obs)) {
         first = last_ot_side_;
     }
+    // 이번 사이클에 **실제로 먼저 시도하는** 쪽을 의도로 남긴다. 경로 생성
+    // 성공 여부와 무관하다 — last_ot_side_(성공 시에만 갱신)가 트레일링
+    // 구간에서 한 번도 안 찍혀 히스테리시스가 죽어 있던 것이 문제였다
+    // (run_0823_043254: lane_switch 성공 14 / 574 사이클).
+    NoteSideIntent(first, closest_obs);
     std::string second = (first == "left") ? "right" : "left";
 
     // ── 회피 중 사이드 전환 금지 (DoSpline과 같은 정책) ────────────────
@@ -3316,6 +3409,8 @@ bool SplinerNode::DoSpline(
             CommitOtSide(more_space, closest_obs);
         }
     }
+    // TryLaneSwitch 와 같은 이유로 의도를 남긴다 (성공 여부와 무관).
+    NoteSideIntent(more_space, closest_obs);
 
     // 스플라인 절점: pre-apex 3점 + apex 구간 + post-apex 3점.
     // apex는 점이 아니라 장애물(클러스터)의 s 구간 [s_front, s_back] — 점
@@ -4493,6 +4588,8 @@ bool SplinerNode::BuildTrailing(
         }
         NoteReject(made_progress ? "trailing_d_goal_shrunk"
                                  : "trailing_d_goal_zeroed");
+        // 접촉을 피할 횡 후보가 하나도 없었는가 (아래 구제 스캔이 세운다).
+        bool contact_unavoidable = false;
         // ── ★ 되감기의 바닥은 "현재 자리"가 아니다 (2026-08-19) ──────────────
         // 위 사다리는 lo=0 = cur_d_ 를 "최악이 여기까지"인 안전 바닥으로 놓고
         // 설계됐다. **벽에 대해서는** 맞다 — 경로는 자차가 이미 나가 있는 쪽으로
@@ -4506,6 +4603,14 @@ bool SplinerNode::BuildTrailing(
         // 후보 중 여유가 가장 큰 쪽**을 고른다. 벽 불변식(ramp_ok)은 그대로
         // 요구하므로 이 구제가 차를 트랙 밖으로 내보내는 일은 없다.
         // 이 스캔은 사다리가 실패하고 진행량이 0 인 사이클에서만 돈다.
+        //
+        // ── 2026-08-23 정정: "여유가 가장 큰 쪽"에 **하한이 없었다** ────────
+        // 위 논리는 후보 중 최선이 안전하다고 암묵적으로 가정했는데, 실측은
+        // 정반대였다 — 이 구제가 실제로 고른 후보가 run_0823_043254 9/9,
+        // run_0823_044748 43/43 로 **100 % 여유 < 0**(중앙 -0.10 / -0.14 m)
+        // 이었다. 즉 "덜 나쁜 접촉"으로 0.58 m 를 건너뛰라고 지시해 왔고,
+        // 90.7 s 충돌이 그 지시를 그대로 따른 결과다. 이제 아래 루프가
+        // 여유 < 0 후보를 후보에서 빼고, 하나도 없으면 옮기지 않는다.
         if (!made_progress && trailing_ramp_obstacle_check_) {
             // 발동 문턱도 최대화 대상도 **차체 여유**다. 계획 마진으로 재면
             // 손댈 이유가 없는 자리에서까지 옮기게 된다.
@@ -4513,6 +4618,23 @@ bool SplinerNode::BuildTrailing(
                 d_goal, d_ramp_len, d_back_len, false);
             if (best_slack < 0.0) {
                 double best_f = 0.0;
+                // 램프가 실제로 쓸 수 있는 종방향 거리 = 가장 가까운 장애물
+                // 앞끝까지. 장애물이 없으면 +inf 라 아래 검사가 항등이 된다.
+                double dist_to_block = std::numeric_limits<double>::infinity();
+                if (check_obs != nullptr) {
+                    for (const auto &o : *check_obs) {
+                        if (!std::isfinite(o.s_start)) {
+                            continue;
+                        }
+                        const double lo_s = Mod(o.s_start - cur_s_, track_len_) -
+                                            vehicle_half_length_m_;
+                        if (lo_s >= 0.0 && lo_s < dist_to_block) {
+                            dist_to_block = lo_s;
+                        }
+                    }
+                }
+                // ★ 접촉하지 않는 후보를 찾는다 (2026-08-23). 종전에는
+                //   "덜 나쁜 쪽"이면 여유가 음수여도 옮겼다 — 아래 루프 주석.
                 // 이분 탐색이 아니라 균등 스캔이다 — 여유는 후보 f 에 대해
                 // 단조가 아니다 (장애물 박스를 가로지르면 양끝이 크고 가운데가
                 // 작다). 단조 가정으로 이분하면 정확히 그 가운데로 수렴한다.
@@ -4530,8 +4652,32 @@ bool SplinerNode::BuildTrailing(
                         NoteReject("trailing_cand_in_pocket");
                         continue;
                     }
+                    // ── ★ 여유가 음수인 후보로는 옮기지 않는다 (2026-08-23) ──
+                    // 이 구제는 "덜 나쁜 쪽"을 고르게 돼 있었는데, 실측에서
+                    // **고른 후보가 100 % 여유 < 0** 이었다 (run_0823_043254
+                    // 9/9, run_0823_044748 43/43, 여유 중앙 -0.10 / -0.14 m).
+                    // 즉 한 번도 안전한 자리를 고른 적이 없고, 043254 에서는
+                    // 9 회 전부 좌우 부호를 뒤집으며 중앙 0.58 m 를 건너뛰라고
+                    // 지시했다 — 90.7 s 충돌이 정확히 그 지시를 따른 결과다
+                    // (89.60 s "d 0.10 -> -0.57, 차체 여유 -0.115 m").
+                    // 어차피 닿을 자리로 0.6 m 를 건너뛰는 것은 "덜 나쁨"이
+                    // 아니라 **횡속도만 얹은 정면충돌**이다. 접촉하지 않는
+                    // 후보가 없으면 옮기지 않고, 아래에서 속도를 더 낮춘다.
                     const double slack =
                         ramp_obstacle_slack(cand, len, back_len_for(cand), false);
+                    if (slack < 0.0) {
+                        continue;
+                    }
+                    // ── 그 횡이동을 남은 거리 안에 실제로 넣을 수 있는가 ──
+                    // ramp_len_for = BlendDist 는 조향 기하 하한을 이미 담고
+                    // 있지만, 그 길이가 **장애물까지 남은 거리보다 길면** 경로는
+                    // 장애물 옆을 지날 때까지 목표에 도달하지 못한다.
+                    //   124.13 s 실측: 1.5 m 남기고 0.45 m 반대편 점프 지시 —
+                    //   4 m/s 에서 필요 최소반경 0.97 m, 실제 가능 1.57 m.
+                    if (len > std::max(dist_to_block, 0.0) + wpnt_dist_) {
+                        NoteReject("trailing_cand_no_room_to_steer");
+                        continue;
+                    }
                     if (slack > best_slack) {
                         best_slack = slack;
                         best_f = f;
@@ -4547,6 +4693,21 @@ bool SplinerNode::BuildTrailing(
                         "이동 (d %.2f -> %.2f, 차체 여유 %.3f m)",
                         held, d_goal, best_slack);
                     NoteReject("trailing_hold_pierces_obstacle");
+                } else {
+                    // ★ 접촉하지 않는 후보가 없다 (2026-08-23).
+                    // 종전에는 이럴 때도 "덜 나쁜 쪽"으로 옮겨 갔고, 그 결과가
+                    // 여유 -0.10 ~ -0.14 m 짜리 반대편 점프였다. 이제는
+                    // 옮기지 않고 **속도를 더 낮춘다** — 이 사이클의 답은
+                    // "어디로 갈까"가 아니라 "얼마나 느리게 닿을까"다.
+                    // 접촉 에너지는 v^2 이므로, 바로 아래에서 바닥이
+                    // trailing_retry_speed_degraded_(1.5) -> 0.8 m/s 로
+                    // 내려가면 3.5 분의 1 이 된다.
+                    contact_unavoidable = true;
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
+                        "Trailing 접촉 회피 후보 없음 (최선 여유 %.3f m) — "
+                        "횡목표 %.2f 유지하고 속도 바닥을 낮춘다",
+                        best_slack, d_goal);
+                    NoteReject("trailing_contact_unavoidable");
                 }
             }
         }
@@ -4566,6 +4727,15 @@ bool SplinerNode::BuildTrailing(
         v_target_prof_actual = std::min(v_target_prof_actual,
                                         std::max(trailing_retry_speed_degraded_,
                                                  v_target_actual));
+        // 접촉을 피할 횡 후보가 아예 없으면 바닥을 한 단계 더 내린다
+        // (trailing_contact_floor_mps < 0 이면 비활성 = 종전 동작).
+        // ⚠️ 0 으로 두지 말 것 — 정적 장애물 앞 완전 정지는 스스로 못 푸는
+        //    라치가 된다(d809831). 그래서 "정지"가 아니라 "기어가기"다.
+        if (contact_unavoidable && trailing_contact_floor_mps_ >= 0.0) {
+            v_target_prof_actual =
+                std::min(v_target_prof_actual,
+                         std::max(trailing_contact_floor_mps_, v_target_actual));
+        }
         // 2026-08-17: 조건이 `d_goal == 0.0 && !ramp_ok(0.0, ...)` 이었다.
         // 이분 탐색의 종점이 cur_d_ 로 바뀌었으므로 (위 주석) 그 리터럴 비교는
         // 더 이상 성립하지 않는다 — 진행량 0 이고 그 자리 유지 기하마저 안 될
@@ -5948,7 +6118,7 @@ bool SplinerNode::WithinTrackBoundary(
     return d_min <= d_max && d >= d_min && d <= d_max;
 }
 
-double SplinerNode::SteerKappaMax() const {
+double SplinerNode::SteerKappaKinematic() const {
     // kinematic 자전거모델의 기하 한계에 실차 보정 배율을 곱한다.
     // 배율 1.0(기본)이면 예전 식과 완전히 동일하다.
     return steer_kappa_scale_ *
@@ -5956,14 +6126,25 @@ double SplinerNode::SteerKappaMax() const {
            std::max(vehicle_wheelbase_m_, 1e-3);
 }
 
+double SplinerNode::SteerKappaMaxAt(double speed) const {
+    // 표가 비어 있으면 기하 한계 그대로 = 종전 동작 (헤더 주석 참조).
+    return steer_grip_.KappaAt(speed, SteerKappaKinematic());
+}
+
+double SplinerNode::SteerKappaMax() const {
+    return SteerKappaMaxAt(PlanSpeed());
+}
+
 bool SplinerNode::BlendGeomFeasible(double amplitude, double blend_len,
-                                    double s_from, bool one_sided) const {
+                                    double s_from, bool one_sided,
+                                    double speed) const {
     const int gb_size = static_cast<int>(gb_wpnts_.size());
     if (gb_size < 1 || !(track_len_ > 0.0) || !(blend_len > 1e-3) ||
         !std::isfinite(blend_len) || !std::isfinite(s_from) || s_from < 0.0) {
         return false;
     }
-    const double kappa_steer_max = SteerKappaMax();
+    const double kappa_steer_max =
+        (speed >= 0.0) ? SteerKappaMaxAt(speed) : SteerKappaMax();
     if (kappa_steer_max <= 1e-3) {
         return false;
     }
@@ -6003,7 +6184,8 @@ bool SplinerNode::BlendGeomFeasible(double amplitude, double blend_len,
 }
 
 double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track,
-                                   bool one_sided, double s_from) const {
+                                   bool one_sided, double s_from,
+                                   double speed) const {
     // 그립 예산은 저속에서 사실상 무한대가 된다(a_lat/v²) — 하지만 조향각
     // 한계라는 순수 기하 제약은 속도와 무관하게 남는다. 피크 기하곡률
     // 6A/L²이 조향 한계를 넘으면 ApplySpeedProfile이 경로를 통째로 거부하고,
@@ -6019,7 +6201,8 @@ double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track,
     if (a < 1e-3) {
         return 0.0;
     }
-    const double kappa_steer_max = SteerKappaMax();
+    const double kappa_steer_max =
+        (speed >= 0.0) ? SteerKappaMaxAt(speed) : SteerKappaMax();
     if (kappa_steer_max <= 1e-3) {
         return 0.0;
     }
@@ -6041,13 +6224,19 @@ double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track,
         // 자른다. 문턱은 ApplySpeedProfile 의 곡률 기각 문턱과 **같은 값**이라,
         // 이 게이트가 다운스트림 검증기보다 엄격해지지는 않는다 — 즉 지금
         // 통과하던 경로를 새로 죽이지 않고, 죽을 경로를 더 일찍 죽인다.
+        // ⚠️ 이 하드 문턱만은 **기하 한계**(속도 무관)로 잰다. 주석대로
+        //    ApplySpeedProfile 의 기각 문턱과 같은 값이어야 하는데, 그쪽은
+        //    "감속으로 못 살리는 것만 버린다"는 규약이라 기하 한계를 쓴다.
+        //    여기에 속도 의존 값을 넣으면 코너 진입 속도만으로 회피를
+        //    통째로 포기하게 된다 (아래 BlendGeomFeasible 이 그 몫을 한다).
         if (std::isfinite(kappa_track) &&
             std::abs(kappa_track) >
-                kappa_steer_max * std::max(steer_kappa_reject_ratio_, 1.0)) {
+                SteerKappaKinematic() *
+                    std::max(steer_kappa_reject_ratio_, 1.0)) {
             return blend_dist_max_m_;
         }
         if (!BlendGeomFeasible(amplitude, blend_dist_max_m_, s_from,
-                               one_sided)) {
+                               one_sided, speed)) {
             // 아무 길이로도 안 되면 스칼라 경로와 같은 sentinel 을 돌려
             // 상위가 "가용보다 큼"으로 읽게 한다.
             return blend_dist_max_m_;
@@ -6055,7 +6244,7 @@ double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track,
         double lo = 0.0, hi = blend_dist_max_m_;
         for (int it = 0; it < 20 && (hi - lo) > 0.02; ++it) {
             const double mid = 0.5 * (lo + hi);
-            if (BlendGeomFeasible(amplitude, mid, s_from, one_sided)) {
+            if (BlendGeomFeasible(amplitude, mid, s_from, one_sided, speed)) {
                 hi = mid;
             } else {
                 lo = mid;
@@ -6199,14 +6388,21 @@ double SplinerNode::BlendDist(
     // L = v*sqrt(6A/a_max). 거리를 상수로 두면 v^2로 커진다.
     const double a = std::abs(amplitude);
     const double v = std::max(std::abs(speed), 0.0);
-    const double a_lat = (lat_acc > 0.0) ? lat_acc : blend_lat_acc_max_;
+    // 2026-08-23: 횡 전환에 쓸 수 있는 그립은 blend_lat_acc_max_(8.83) 가
+    // 아니라 **그 속도에서 조향으로 실제로 낼 수 있는 값**이 상한이다.
+    // 실차 LUT 기준 6 m/s 에서 6.0 m/s^2 라 8.83 은 1.5 배 낙관이었고, 그만큼
+    // 전환 거리를 짧게 잡아 "계획은 그렸는데 못 도는" 경로가 나왔다.
+    // 표가 비어 있으면 LatAccAt 이 +inf 라 이 min 은 항등이다.
+    double a_lat = (lat_acc > 0.0) ? lat_acc : blend_lat_acc_max_;
+    a_lat = std::min(a_lat, steer_grip_.LatAccAt(v));
     if (a < 1e-3 || a_lat < 1e-3) {
         return 0.0;
     }
     double dist = v * std::sqrt(6.0 * a / a_lat);
     // 진폭은 **부호를 살려** 넘긴다 — 지점별 경로가 방향을 봐야 한다.
     // (예전에는 여기서 std::abs 로 눌러 버려 부호가 도달하지 못했다.)
-    dist = std::max(dist, BlendGeomFloor(amplitude, kappa_track, false, s_from));
+    dist = std::max(dist,
+                    BlendGeomFloor(amplitude, kappa_track, false, s_from, v));
     return std::min(dist, blend_dist_max_m_);
 }
 
@@ -6228,22 +6424,61 @@ double SplinerNode::BlendSpeedCap(
     // s 문맥이 있으면 **실제로 쓸 길이(available)** 에서 바로 판정한다 —
     // 블렌드는 available 을 그대로 쓰므로 최소 하한을 따로 구해 비교하는 것보다
     // 정확하다 (하한 계산의 이분법 오차 0.02m 도 타지 않는다).
+    //
+    // ⚠️ 여기서 "감속으로 못 살린다"는 판정은 **기하 한계**로만 내려야 한다
+    //    (2026-08-23). 조향 능력이 속도의 함수가 된 뒤로 SteerKappaMax() 는
+    //    지금 속도의 값이라, 그것으로 기각하면 "빠를 때는 무조건 정지"가
+    //    된다 — 이 함수의 존재 이유를 정면으로 뒤집는다. 속도 의존분은
+    //    아래 cap_steer 가 **더 낮은 성립 속도**로 받아낸다.
     if (s_from >= 0.0 && std::isfinite(s_from) && !gb_wpnts_.empty() &&
         track_len_ > 0.0) {
         // BlendGeomFloor 의 s 문맥 경로와 같은 이유로 kappa_track 을 먼저 본다
         // (hold 구간 오프셋 유지 가부는 available 로 해결되지 않는다).
         if (std::isfinite(kappa_track) &&
             std::abs(kappa_track) >
-                SteerKappaMax() * std::max(steer_kappa_reject_ratio_, 1.0)) {
+                SteerKappaKinematic() *
+                    std::max(steer_kappa_reject_ratio_, 1.0)) {
             return 0.0;
         }
-        if (!BlendGeomFeasible(amplitude, available, s_from, false)) {
-            return 0.0;
+        if (!BlendGeomFeasible(amplitude, available, s_from, false,
+                               /*speed=*/0.0)) {
+            return 0.0;      // 아무리 천천히 가도 기하가 안 된다
         }
-    } else if (available < BlendGeomFloor(amplitude, kappa_track)) {
+    } else if (available <
+               BlendGeomFloor(amplitude, kappa_track, false, -1.0,
+                              /*speed=*/0.0)) {
         return 0.0;
     }
-    return available / std::sqrt(6.0 * a / a_lat);
+    // (1) 그립 기준 상한 — 종전 식.
+    double cap = available / std::sqrt(6.0 * a / a_lat);
+    if (!steer_grip_.enabled()) {
+        return cap;
+    }
+    // (2) 조향 능력 기준 상한 — "그 속도에서 이 기동의 곡률을 실제로 낼 수
+    //     있는가". kappa_max(v) 가 v 에 대해 단조감소이므로 성립집합이
+    //     [0, v*] 구간이고 이분법이 성립한다. 위에서 speed=0 판정을 이미
+    //     통과했으므로 lo=0 은 항상 성립한다.
+    const bool s_ctx = (s_from >= 0.0 && std::isfinite(s_from) &&
+                        !gb_wpnts_.empty() && track_len_ > 0.0);
+    auto steer_ok = [&](double v) {
+        if (s_ctx) {
+            return BlendGeomFeasible(amplitude, available, s_from, false, v);
+        }
+        return available >= BlendGeomFloor(amplitude, kappa_track, false, -1.0, v);
+    };
+    if (!steer_ok(cap)) {
+        double lo = 0.0, hi = cap;
+        for (int it = 0; it < 12 && (hi - lo) > 0.02; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            if (steer_ok(mid)) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        cap = lo;
+    }
+    return cap;
 }
 
 double SplinerNode::BlendLatAcc(double s_from, double s_to) const {
@@ -6534,7 +6769,11 @@ bool SplinerNode::ApplySpeedProfile(
     }
 
     // 횡가속 상한은 실제 차량 속도(cmd scale 적용)에서 계산한다.
-    const double steering_curvature_limit = SteerKappaMax();
+    // ⚠️ 기각 문턱은 **기하 한계**다 (2026-08-23). 여기서 경로를 버리는 것은
+    //    "어떤 속도로도 못 돈다"는 뜻이어야 하고, 속도로 살릴 수 있는 몫은
+    //    아래 조향 능력 속도캡이 감속으로 받는다. 이 줄을 속도 의존값으로
+    //    바꾸면 코너 진입 속도만으로 회피 경로가 통째로 폐기된다.
+    const double steering_curvature_limit = SteerKappaKinematic();
     // ── 단일 샘플 스파이크로 경로 전체를 버리지 않는다 ────────────────────
     // 예전에는 한 점이라도 조향 한계를 1e-3 넘으면 즉시 return false 였다.
     // curvature[]는 자연 3차 스플라인을 wpnt_dist 간격으로 이산 샘플링한
@@ -6590,6 +6829,27 @@ bool SplinerNode::ApplySpeedProfile(
             if (k > 1e-4) {
                 speed[i] = std::min(
                     speed[i], std::sqrt(active_lat_budget_ / k));
+                // ── ★ 조향 능력 속도캡 (2026-08-23) ────────────────────────
+                // active_lat_budget_ 는 **마찰원** 예산이라 "타이어가 버티는
+                // 횡가속"만 본다. 그런데 실차는 그 전에 **조향이 모자라서**
+                // 안 돈다: 실차 LUT 기준 최대 조향으로 낼 수 있는 곡률이
+                // 4 m/s 0.64 / 5 m/s 0.34 / 6 m/s 0.17 이고, 플래닝이 쓰던
+                // 기하 한계 1.13 의 각각 56 / 30 / 15 % 다.
+                // 그 결과 run_0823_043254 의 레이스라인은 344 점 중 167 점
+                // (48.5 %)이 계획 속도에서 낼 수 없는 곡률을 요구했고, 그
+                // 코너에서 차는 장애물이 없을 때조차 |d| p90 0.63 m 로 밀렸다.
+                // 여기서 그 곡률을 낼 수 있는 속도까지 **감속**한다 — 경로를
+                // 버리지 않는 것이 핵심이다 (버리는 것은 위 기하 기각의 몫).
+                // ⚠️ 기하 한계 자체를 넘는 점은 건드리지 않는다. 어떤 속도로도
+                //    못 도는 것이라 SpeedCapForKappa 가 0 을 돌려주는데, 그걸
+                //    쓰면 경로 한가운데에 v=0 이 박혀 정지 라치가 된다. 그런
+                //    점은 위 기각 루프(reject_ratio 밴드)의 소관이다.
+                if (k <= steering_curvature_limit) {
+                    speed[i] = std::min(
+                        speed[i],
+                        steer_grip_.SpeedCapForKappa(
+                            k, steering_curvature_limit));
+                }
             }
             wpnts[i].kappa_radpm = curvature[i];
         }
