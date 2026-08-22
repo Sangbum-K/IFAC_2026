@@ -30,3 +30,8 @@ rosbag_*/
 
 # 백 재생 A/B 산출물 (pkl·로그·db3, 재생성 가능)
 tools/bag_analysis_0818/out/
+
+# 백 분석 산출물 (pkl/npy/로그 — 재생성 가능, 개당 최대 364MB로 GitHub 한도 초과)
+tools/bag_analysis_*/*.pkl
+tools/bag_analysis_*/*.npy
+tools/bag_analysis_*/*.log

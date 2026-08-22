@@ -34,7 +34,6 @@ private:
   void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void CallbackAvoidanceWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
-  void CallbackDynSpeedFloor(const std_msgs::msg::Float32::SharedPtr msg);
   int FindClosestWaypointIndex(
     double s_coordinate,
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & global_waypoints,
@@ -81,7 +80,6 @@ private:
   // spliner 가 보내는 동적 속도 바닥에 걸 상한 [m/s]. 위 상수 바닥의 검증
   // 상한(3.0)과 같은 역할이며, 인지가 상대 속도를 크게 잘못 보고해도
   // 홀드가 통째로 무효가 되지 않게 한다.
-  double avoidance_loss_hold_floor_max_{3.0};
 
   // State
   std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_;
@@ -99,21 +97,13 @@ private:
   double last_avoidance_head_speed_{-1.0};
   std::chrono::steady_clock::time_point last_avoidance_nonempty_time_{};
   bool has_avoidance_head_speed_{false};
-  // spliner /planner/avoidance/speed_floor 의 최신 수신값 (콜백이 쓴다).
-  double dyn_speed_floor_rx_{0.0};
-  // 위 값을 **회피 경로가 아직 살아 있던 시점에** 걸어 둔 것. 홀드는 경로가
-  // 사라진 뒤에 도는데, 그때 상대도 같이 사라져 0 이 흘러오면 바닥이 없어진다.
-  // 그래서 선두 속도(last_avoidance_head_speed_)와 **같은 순간에 같이** 건다.
-  double last_dyn_speed_floor_{0.0};
   std::mutex mutex_global_waypoints_;
   std::mutex mutex_frenet_odom_;
   std::mutex mutex_avoidance_;
-  std::mutex mutex_dyn_speed_floor_;
 
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_avoidance_waypoints_;
-  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr s_dyn_speed_floor_;
   rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_local_waypoints_;
   rclcpp::TimerBase::SharedPtr t_publish_;
 };

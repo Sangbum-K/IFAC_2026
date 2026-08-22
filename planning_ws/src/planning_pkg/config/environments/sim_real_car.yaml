@@ -77,11 +77,11 @@ perception_obstacle_bridge_node:
     # ⚠️ 시뮬 합성 장애물은 virtual_obstacle_node 가 각도 구간에 일정 거리를
     #    쓰므로 radius 가 거의 안 흔들린다. 즉 **심에서는 이 변경의 효과가
     #    거의 안 보인다** — 검증은 실차 백 재생으로 할 것.
-    # 0.15 -> 0.17 (2026-08-18, 세 프로파일 동시). 0.02 는 콘 실치수가 아니라
-    # 의도적으로 얹은 안전 마진이다 — 근거는 real_car.yaml 같은 블록.
-    # 위 ⚠️ 그대로: 심에서는 radius 흔들림이 없으니 이 2 cm 의 효과만 보인다
-    # (회피 목표 오프셋이 양쪽 2 cm 씩 바깥으로).
-    bridge/static_cylinder_radius_m: 0.17
+    # 0.17 -> 0.25 (2026-08-22, 세 프로파일 동시). 실제로 트랙에 놓는 물체
+    # (지름 ~50 cm) 실치수 + 안전 마진 — 근거는 real_car.yaml 같은 블록.
+    # 위 ⚠️ 그대로: 심에서는 radius 흔들림이 없으니 이 8 cm 의 효과만 보인다
+    # (회피 목표 오프셋이 양쪽 8 cm 씩 바깥으로).
+    bridge/static_cylinder_radius_m: 0.25
     bridge/static_cylinder_band_m: [0.05, 0.25]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
@@ -121,12 +121,6 @@ perception_obstacle_bridge_node:
 # --- 이하 real_car.yaml과 완전히 동일 (근거 주석은 real_car.yaml 참조) ---
 spliner_node:
   ros__parameters:
-    # 1.0 -> 1.25 (2026-08-19). **동적/준정적 전용** 이다 — 정적 회피는 항상 1.0
-    # (spliner_node.cpp 의 ot_boost_ok). 상대보다 빨리 지나가려면 속도 우위가
-    # 필요한데 이 값이 1.0 이라 추월 부스트가 사실상 꺼져 있었다.
-    # 물리 캡(sqrt(a_lat/k)·조향 한계)이 그대로 걸려 직선에서만 살아난다.
-    # ⚠️ A/B 필수: a_lat p90 이 포락선(8.76)의 86~105% 로 여유가 없다.
-    spliner/ot_speed_scale: 1.25
     spliner/obstacle_topic: /perception/obstacles_frenet
     # ── 원호 이탈 (2026-08-11, real_car.yaml과 동일) ────────────────────────
     # 965badf 가 real_car.yaml에 추가한 뒤 여기 반영이 빠져 있었다 — 이 다섯
@@ -147,8 +141,6 @@ spliner_node:
     spliner/blend_dist_max_m: 8.0
     # 레이스라인 생성 MU_PROFILE(0.80) x g. real_car.yaml 과 동일 (근거는 그쪽 주석).
     spliner/path_lat_acc_max: 8.83
-    # 실차와 동일 (근거는 real_car.yaml 같은 키 주석). 시뮬 A/B 용.
-    spliner/dyn_path_lat_acc_max: 10.79
     spliner/path_decel_max: 6.0
     spliner/lane_blend_out_m: 5.0
     # 조기 라인 스위치 (real_car.yaml과 동일). 곡률이 이보다 작은 직선 구간에서만
@@ -178,16 +170,6 @@ spliner_node:
     #   근거·득실은 params.yaml / real_car.yaml 주석 참조.
     spliner/boundary_arrival_decel_mps2: 2.0
     spliner/trailing_ramp_obstacle_check: true
-    # ── 트레일링 바닥의 간격 기반 상한 (params.yaml 주석) ────────────────
-    # run_0819_211107 / run_0820_173822 두 접촉 모두 "발행 명령이 정확히
-    # 바닥값 3.00 에 붙은 채" 일어났다. 상대는 1.0~1.7 m/s 였다.
-    # 되돌리려면 gap_aware 를 false 로 — 재빌드 없이 launch 재시작이면 된다.
-    spliner/trailing_floor_gap_aware: true
-    # 절대 바닥도 3.0 -> 2.0. gap_aware 가 근접 구간을 덮으므로 이 값이 실제로
-    # 무는 곳은 범퍼여유 1.60 m 이상 구간뿐이고, 거기서 "상대가 갑자기 정지"에
-    # 대한 여유가 3.15 m -> 1.60 m 로 줄어든다. gap_aware 위에서의 추가 비용은
-    # 실측 평균 0.12 m/s (run_0819) / 0.34 m/s (run_0820) 로 작다.
-    spliner/dyn_trailing_floor_mps: 2.0
     spliner/cmd_speed_scale: 1.0
 
 opponent_predictor_node:

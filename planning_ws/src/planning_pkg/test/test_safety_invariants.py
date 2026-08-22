@@ -61,7 +61,9 @@ def test_default_profile_is_fail_safe():
     # (spliner/use_trailing 삭제: 생성자가 false 를 무조건 true 로 되돌려
     #  스위치로 기능하지 않았다 — trailing 은 이제 항상 켜져 있다.)
     assert "spliner/use_trailing" not in spliner
-    assert spliner["spliner/sp_lane_change"] is False
+    # SP 레인체인지는 2026-08-22 (2/8단계)에 통째로 제거됐다 — 파라미터가
+    # 남아 있으면 declare 되지 않은 키라 기동이 거부된다.
+    assert "spliner/sp_lane_change" not in spliner
     # perception lease. 짧을수록 "빨리 알아챈다"가 아니다 — 초과하면 spliner가
     # fail-safe 정지 궤적(vx=0)을 발행하므로, detector 실측 발행 주기보다
     # 짧으면 정상 스트림에서도 프레임 사이마다 정지가 끼어든다.
@@ -69,7 +71,9 @@ def test_default_profile_is_fail_safe():
     # 상한은 "탐지 실패를 이만큼 안에는 알아챈다"는 안전 계약이므로 유지하되,
     # detector가 목표대로 >=15Hz가 되면 다시 조일 것.
     assert spliner["spliner/obs_timeout_sec"] <= 0.60
-    assert spliner["spliner/ot_speed_scale"] <= 1.0
+    # 추월 속도 배율(ot_speed_scale)은 2026-08-22 (4/8단계)에 제거됐다.
+    # 남아 있으면 declare 되지 않은 키라 기동이 거부된다.
+    assert "spliner/ot_speed_scale" not in spliner
     assert local["local_trajectory/require_avoidance_heartbeat"] is True
     assert local["local_trajectory/avoidance_timeout_sec"] <= 0.25
     assert local["local_trajectory/frenet_odom_source_timeout_sec"] <= 0.25
@@ -726,236 +730,6 @@ def _spliner_source():
     return SPLINER_CPP.read_text(encoding="utf-8")
 
 
-def test_overtake_speed_scale_is_dynamic_only():
-    """추월 속도 배율(ot_speed_scale)이 정적 장애물에 새지 않는다."""
-    src = _spliner_source()
-    # ① 배율은 ot_boost_ok 게이트를 반드시 통과해야 한다.
-    assert "const bool ot_boost_ok = !closest.is_static || qs_active_;" in src, (
-        "ot_boost_ok 게이트가 사라졌다 — 정적 회피에 추월 배율이 걸린다"
-    )
-    assert "(in_sector && ot_boost_ok) ? ot_speed_scale_ : 1.0" in src, (
-        "active_speed_scale_ 대입이 ot_boost_ok 를 안 거친다"
-    )
-    # ② 게이트를 우회하는 무조건 대입이 없어야 한다.
-    unconditional = re.findall(
-        r"active_speed_scale_\s*=\s*ot_speed_scale_\s*;", src)
-    assert not unconditional, (
-        "ot_speed_scale_ 을 무조건 대입하는 곳이 생겼다: %r" % unconditional
-    )
-    # ③ 매 사이클 1.0 으로 내려야 한다. 이 값은 장애물 분기 안에서만 대입되므로,
-    #    리셋이 없으면 장애물이 없는 사이클에 직전 동적 배율이 그대로 남아
-    #    정적 경로/커밋 재생으로 샌다 (qs_active_ 와 같은 이유).
-    assert re.search(r"active_speed_scale_\s*=\s*1\.0\s*;", src), (
-        "사이클 시작 리셋(active_speed_scale_ = 1.0)이 없다"
-    )
-
-
-def test_dynamic_only_trailing_relaxations_are_gated():
-    """동적 전용 트레일링 완화가 정적 분기로 새지 않는다."""
-    src = _spliner_source()
-    # gap 안쪽 ×0.85 감속은 정적에만 남는다 (동적은 감속이 아니라 회피가 답).
-    assert re.search(
-        r"if \(obs\.is_static\) \{\s*\n\s*v_target_actual \*= 0\.85;", src), (
-        "×0.85 가 is_static 게이트 밖으로 나왔다 — 동적에서 붙을수록 뒤로 밀린다"
-    )
-    # 동적 속도 바닥의 해제 계약 (2026-08-20 개정).
-    # ① 비상정지에서는 **완전히** 해제된다 (바닥 자체를 거치지 않는다).
-    assert "!emergency_stop && dyn_trailing_floor_ > 0.0" in src, (
-        "동적 트레일링 바닥의 비상정지 해제가 사라졌다"
-    )
-    # ② geom_blocked 는 '해제'가 아니라 '하향'이다. 종전에는 통로가 없을 때
-    #    바닥을 통째로 풀었는데, 코너에서 회피 통로가 없는 상태가 바로
-    #    geom_blocked 라 **바닥이 필요한 바로 그 순간에 사라졌다**
-    #    (run_0819 84~89s: 발행 명령 최저 0.59 m/s, 앞차는 1.5~1.8).
-    #    상대 속도 아래로 내려가는 것은 어떤 안전도 사지 못한다 — 같은 속도면
-    #    간격이 유지되고, 더 느리면 벌어지기만 할 뿐 상황은 바뀌지 않는다.
-    #    그래서 절대 바닥(3.0)은 포기하되 상대 속도까지만 내려간다.
-    #    (2026-08-20 ③: floor_use 는 뒤에서 간격 상한에 다시 눌리므로 const 가
-    #     아니다. 이 검사는 **초기 대입**만 본다.)
-    assert re.search(
-        r"double floor_use = geom_blocked_now\s*\?\s*"
-        r"std::max\(obs_vs_eff, 0\.0\)\s*:\s*dyn_trailing_floor_;",
-        src, re.S), (
-        "geom_blocked 시 바닥이 '상대 속도까지 하향'이 아니게 바뀌었다 — "
-        "0 으로 풀면 앞차보다 느려져 랩타임만 잃고, 3.0 을 강제하면 접촉한다"
-    )
-    assert "geom_blocked_now" in src, (
-        "geom_blocked 분기 자체가 사라졌다"
-    )
-    # 제동 감속도는 정적/동적이 분리돼 있어야 한다.
-    assert ("(obs.is_static || emergency_stop) ? trailing_decel_ "
-            ": trailing_decel_dyn_") in src, (
-        "decel_eff 분기가 사라졌다 — 정적 제동 프로파일이 같이 바뀐다"
-    )
-
-
-def test_retry_target_dropped_only_on_collision():
-    """충돌로 기각된 회피 목표는 retry_d 에 남지 않는다 (2026-08-20).
-
-    NoteRetryTarget 은 경로 검증 **전에** 호출된다. 속도/기하 기각에서 목표를
-    남기는 것은 의도된 설계(잔량이 줄어야 언젠가 성립 — run_0809_231809)지만,
-    충돌 기각은 목표 자리에 물체가 있다는 뜻이라 그쪽 진행은 접촉을 향한다.
-    run_0820_173822 25.4s: d_hold=-0.52 가 lane_collision 으로 기각됐는데도
-    남아서, 트레일링이 그것을 이어받아 25.97s 중심간 0.21 m 접촉.
-    """
-    src = _spliner_source()
-    # ① 충돌 기각 지점에서만 플래그가 선다. 다른 기각(속도/기하/벽)으로
-    #    번지면 교착 방어가 통째로 사라진다.
-    flag_sites = re.findall(r"path_collision_reject_\s*=\s*true;", src)
-    assert len(flag_sites) == 2, (
-        "path_collision_reject_ 를 세우는 곳이 2 곳(lane_collision / "
-        f"spline_collision)이 아니다: {len(flag_sites)} 곳"
-    )
-    for reject in ("lane_collision", "spline_collision"):
-        assert re.search(
-            r'NoteReject\("%s"\);\s*(?://[^\n]*\n\s*)*'
-            r"path_collision_reject_\s*=\s*true;" % reject, src), (
-            f"{reject} 직후에 path_collision_reject_ 가 서지 않는다"
-        )
-    # ② 되돌림은 초기화가 아니라 **복원**이어야 한다. has_retry_d_ = false 로
-    #    지우면 아직 유효 창 안인 예전 목표까지 날아가 교착 방어가 약해진다.
-    assert "RestoreRetryTarget(retry_snap)" in src, (
-        "충돌 기각 시 retry_d 복원이 없다"
-    )
-    assert not re.search(
-        r"has_retry_d_\s*=\s*false;", src), (
-        "retry_d 를 통째로 지우는 곳이 생겼다 — 복원(Restore)이어야 한다"
-    )
-    # ③ 스냅샷은 반드시 NoteRetryTarget **앞에서** 떠야 한다.
-    m = re.search(
-        r"const RetryTargetSnapshot retry_snap = SnapshotRetryTarget\(\);\s*\n"
-        r"\s*NoteRetryTarget\(d_hold, closest_obs\.vd\);", src)
-    assert m, "TryLaneSwitch 의 스냅샷이 NoteRetryTarget 앞에 있지 않다"
-    # ④ 속도/기하 기각은 **종전대로** 목표를 남겨야 한다 (교착 방어).
-    for keep in ("lane_speed_profile", "lane_geom_floor", "lane_wall_no_room"):
-        assert not re.search(
-            r'NoteReject\("%s"\);\s*(?://[^\n]*\n\s*)*'
-            r"path_collision_reject_" % keep, src), (
-            f"{keep} 가 retry_d 를 버리게 됐다 — run_0809_231809 교착이 돌아온다"
-        )
-
-
-def test_trailing_floor_gap_aware_contract():
-    """트레일링 바닥의 간격 상한 (2026-08-20).
-
-    run_0819_211107 / run_0820_173822 두 접촉 모두 발행 명령이 정확히 바닥값
-    3.00 에 붙은 채 일어났다 (상대 1.0~1.7 m/s). geom_blocked 하향은
-    lane_geom_floor 기각에서만 서는데 두 백의 1위 기각 사유는
-    lane_wall_no_room 이라 둘 다 서지 않았다.
-    """
-    src = _spliner_source()
-    # ① 기본값은 종전 동작이어야 한다 (파라미터 하나로 되돌릴 수 있을 것).
-    params = _ros_params(_yaml(PARAMS), "spliner_node")
-    assert params["spliner/trailing_floor_gap_aware"] is False, (
-        "base 기본값이 켜져 있다 — 되돌리기 계약이 깨진다"
-    )
-    # ② 상한은 **바닥에만** 걸린다. v_target_prof_actual 자체에 min 을 걸면
-    #    빠른 상대 뒤에서 불필요하게 느려지는 회귀가 된다.
-    assert re.search(
-        r"floor_use = std::min\(floor_use, std::max\(v_gap, 0\.0\)\);", src), (
-        "간격 상한이 floor_use 가 아닌 곳에 걸렸다"
-    )
-    assert not re.search(
-        r"v_target_prof_actual\s*=\s*std::min\([^;]*v_gap", src), (
-        "v_target 자체에 간격 상한이 걸렸다 — 상대가 빠를 때 회귀한다"
-    )
-    # ③ 제동 물리는 트레일링 램프와 같은 상수를 써야 한다. 다른 값을 쓰면
-    #    "설 수 있다"고 계산해 놓고 실제로는 못 서는 상태가 된다.
-    assert "trailing_ramp_decel_" in src and "trailing_lag_sec_" in src
-    assert re.search(
-        r"const double a_f = std::max\(trailing_ramp_decel_, 0\.05\);", src), (
-        "간격 상한이 trailing_ramp_decel_ 이외의 감속도를 쓴다"
-    )
-    # ④ 접촉 거리는 차 반길이 이상 / 목표 간격 이하로 검증돼야 한다.
-    assert re.search(
-        r"trailing_floor_contact_dist_m_ < vehicle_half_length_m_", src) and \
-        re.search(r"trailing_floor_contact_dist_m_ > trailing_gap_m_", src), (
-        "접촉 거리 검증이 없다"
-    )
-    # ⑤ 실차/시뮬 오버레이에서 켜져 있고 절대 바닥이 함께 내려가 있어야 한다.
-    for env_name in ("real_car", "sim_real_car", "sim"):
-        flat = _env_profile_flat(PKG, env_name)
-        assert flat.get(
-            "spliner_node.spliner/trailing_floor_gap_aware") is True, (
-            f"{env_name}: 간격 상한이 꺼져 있다"
-        )
-        floor = flat.get("spliner_node.spliner/dyn_trailing_floor_mps")
-        assert floor is not None and floor <= 2.0 + 1e-9, (
-            f"{env_name}: 절대 바닥이 2.0 을 넘는다 (현재 {floor}) — 상대가 "
-            "급정지했을 때 필요한 범퍼여유가 1.60 m 를 넘어간다"
-        )
-
-
-def test_static_trailing_floor_is_not_lowered_by_dynamic_floor():
-    """동적 바닥(3.0)이 정적 바닥(trailing_retry_speed)을 대체하지 않는다."""
-    params = _ros_params(_yaml(PARAMS), "spliner_node")
-    static_floor = params["spliner/trailing_retry_speed"]
-    dyn_floor = params["spliner/dyn_trailing_floor_mps"]
-    # 정적 바닥은 오래 검증된 값이라 동적 수정이 건드리면 안 된다.
-    assert static_floor == pytest.approx(2.5), (
-        "정적 트레일링 바닥이 바뀌었다 — run_0818 회귀 감시 지표(발행속도 p50 "
-        "2.50~2.52)의 기준값이다"
-    )
-    # 동적 바닥은 별개 파라미터로 존재해야 한다 (정적 값 재사용 금지).
-    assert dyn_floor > 0.0
-
-
-# ── 동적 전용 그립 예산 분리 (2026-08-20) ────────────────────────────────────
-# 이 묶음이 지키는 계약은 하나다: **정적 회피는 종전과 비트 단위로 같아야 한다.**
-# path_lat_acc_max(8.83)는 정적 회피 기하가 오래 맞춰 온 값이고, 레이스라인은
-# build_map.py 의 MU_PROFILE 로 생성된다. 그 격차 때문에 코너에서 마찰원
-# 잔여가 0이 되어 BlendLatAcc이 하한 2.0에 고착되고 동적 회피가 전부 기각되는데
-# (run_0819 헤어핀 A 53% / B 59%), 정적을 같이 올릴 수는 없어 예산을 분리했다.
-
-def _generator_mu_profile():
-    """build_map.py 의 MU_PROFILE 을 AST 로 읽는다.
-
-    숫자를 베껴 적지 않는 이유는 실제로 어긋난 적이 있기 때문이다 —
-    2026-08-19 밤 1.10 -> 1.15 로 올렸다가 08-20 에 되돌렸는데(e405aee),
-    여기에 11.28 이 박혀 있어 상한만 옛 마찰에 남아 있었다.
-    """
-    src = (PKG / "scripts" / "global_traj_sim" / "build_map.py").read_text(
-        encoding="utf-8")
-    for node in ast.parse(src).body:
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "MU_PROFILE"
-                for t in node.targets):
-            return float(ast.literal_eval(node.value))
-    raise AssertionError("build_map.py 에서 MU_PROFILE 을 못 읽었다")
-
-
-def _local_trajectory_source():
-    return (PKG / "src" / "local_trajectory_node.cpp").read_text(encoding="utf-8")
-
-
-def test_dyn_lat_budget_never_below_static():
-    """동적 예산은 정적 예산 이상이어야 하고, 코드가 그것을 강제해야 한다."""
-    src = _spliner_source()
-    # 0 = 비활성(정적과 동일). 켤 거면 반드시 정적 이상 — 낮으면 '동적만 더
-    # 보수적'이 되어 이 분리의 목적과 반대가 된다.
-    assert re.search(
-        r"dyn_path_lat_acc_max_ > 0\.0 &&\s*"
-        r"dyn_path_lat_acc_max_ < path_lat_acc_max_", src, re.S), (
-        "dyn_path_lat_acc_max 가 정적 예산보다 낮아도 통과하게 됐다"
-    )
-    for env_name in ("real_car", "sim_real_car", "sim"):
-        flat = _env_profile_flat(PKG, env_name)
-        dyn = flat.get("spliner_node.spliner/dyn_path_lat_acc_max")
-        static = flat.get("spliner_node.spliner/path_lat_acc_max")
-        if dyn is None or not dyn:
-            continue
-        assert dyn >= static, f"{env_name}: 동적 예산({dyn}) < 정적 예산({static})"
-        # 상한은 레이스라인을 실제로 만든 마찰이다. 그 위는 계획이 스스로
-        # 만든 궤적보다 공격적으로 달리겠다는 뜻이라 근거가 없다.
-        mu_profile = _generator_mu_profile()
-        limit = mu_profile * 9.81
-        assert dyn <= limit + 1e-9, (
-            f"{env_name}: 동적 예산({dyn})이 build_map.py "
-            f"MU_PROFILE({mu_profile} -> {limit:.2f})을 넘는다 — "
-            "레이스라인 생성 마찰이 상한이다"
-        )
-
-
 def test_lat_budget_is_reset_every_cycle():
     """예산이 사이클을 넘어 새면 정적 경로가 동적 예산으로 계산된다."""
     src = _spliner_source()
@@ -970,19 +744,6 @@ def test_lat_budget_is_reset_every_cycle():
         r"active_lat_budget_\s*=\s*dyn_path_lat_acc_max_\s*;", src)
     assert not unconditional, (
         "dyn_path_lat_acc_max_ 를 무조건 대입하는 곳이 생겼다: %r" % unconditional
-    )
-
-
-def test_lat_budget_key_is_monotonic_not_is_static():
-    """예산 키는 ever_dynamic(단조)이어야 한다 — is_static 은 프레임마다 뒤집힌다."""
-    src = _spliner_source()
-    # run_0819 실측: is_static 이 1.3초에 5번(3.8 Hz)까지 뒤집힌다(id 45·96).
-    # 그 값을 예산 키로 쓰면 같은 상대에 대해 예산이 오르내려 속도가 진동한다.
-    assert re.search(
-        r"const bool dyn_budget_ok =\s*"
-        r"dyn_path_lat_acc_max_ > 0\.0 &&\s*"
-        r"\(qs_active_ \|\| WasEverDynamic\(closest\.id\)\);", src, re.S), (
-        "예산 게이트가 qs_active_ || WasEverDynamic 이 아니게 바뀌었다"
     )
 
 
@@ -1026,71 +787,211 @@ def test_speed_profile_reads_active_budget_only():
     )
 
 
-def test_quasi_static_opens_tier1_and_arc_but_not_free_spline():
-    """준정적은 회피 시도 게이트와 원호까지만 연다 — 자유 스플라인은 계속 닫는다."""
-    src = _spliner_source()
-    # qs_active_ 가 빠져 있어 준정적이 메인 직선 밖에서 사문화돼 있었다
-    # (run_0819 84.462s 이후 evade=0).
-    assert ("bool try_evade = in_sector || closest.is_static || qs_active_;"
-            in src), (
-        "try_evade 에서 qs_active_ 가 빠졌다 — 준정적이 다시 사문화된다"
-    )
-    # Tier 2(DoSpline)는 자유 최적화라 동적 입력 노이즈에 churn 한다. 계속 정적 전용.
-    assert "if (!evasion_valid && try_evade && closest.is_static) {" in src, (
-        "Tier 2(DoSpline)가 동적/준정적에 열렸다 — churn 근거가 그대로다"
-    )
-    # Tier 2c(원호)는 준정적에 연다. 상대 이동은 CheckPathCollision(motion_s)이 본다.
-    assert "const bool escape_allowed = closest_obs.is_static || qs_active_;" in src, (
-        "원호 백스톱의 준정적 개방이 사라졌다"
-    )
-    # 가시성 면제(정지 워치독)는 정적 전용으로 남아야 한다.
-    assert re.search(
-        r"\(standstill_override_ && closest_obs\.is_static\)", src), (
-        "정지 워치독의 가시성 면제가 동적까지 번졌다 — 유령에 급조향한다"
-    )
+def test_entry_runway_has_no_closing_correction():
+    """진입 활주로 접근속도 보정이 남아 있으면 안 된다.
 
-
-def test_entry_runway_closing_correction_is_dynamic_only():
-    """진입 활주로 접근속도 보정이 정적에 적용되면 정적 기하가 통째로 바뀐다."""
+    2026-08-22 (3/8단계): 이 티어는 정적 전용이 됐으므로 "상대가 다가오며
+    활주로가 줄어든다"는 상황 자체가 없다. 보정 배율은 항상 >= 1 이라
+    정적에 적용되면 회피 가부가 통째로 헐거워진다.
+    """
     src = _spliner_source()
     assert re.search(
-        r"if \(closest_obs\.is_static \|\| IsPredictionTube\(closest_obs\)",
-        src), (
-        "활주로 보정의 정적/예측튜브 제외가 사라졌다 (배율은 항상 >= 1 이라 "
-        "정적에 적용되면 회피 가부가 통째로 헐거워진다)"
+        r"const double entry_avail =\s*"
+        r"std::max\(dist_front - vehicle_half_length_m_, 0\.0\);", src), (
+        "entry_avail 이 단순 기하값이 아니다 — 접근속도 보정이 되살아났다"
     )
-    # 접근속도는 준정적과 같은 노이즈 문턱을 넘을 때만 인정한다 — 작은 closing
-    # 으로 나누면 배율이 발산한다.
-    assert "if (!(closing > qs_min_closing_mps_)) {" in src, (
-        "활주로 보정의 접근속도 문턱이 사라졌다 — 배율이 발산한다"
+    assert "qs_min_closing_mps_" not in src, (
+        "준정적 추월 잔재(qs_min_closing_mps_)가 남아 있다"
     )
 
 
-def test_dyn_speed_floor_only_raises_the_loss_hold_cap():
-    """동적 속도 바닥은 홀드 상한을 올리기만 하고, 상한이 있어야 한다."""
-    spl = _spliner_source()
-    loc = _local_trajectory_source()
-    # 정적은 0 을 보낸다 = 종전 동작. (정적/예측튜브를 건너뛴다.)
+def test_dynamic_obstacles_never_enter_the_evasion_tiers():
+    """동적 상대는 회피(횡) 티어에 들어가지 않는다 — 2026-08-22 재작성의 핵심 계약.
+
+    새 계약: 회피는 정적 전용, 동적은 종방향 추종(+7단계 직선 추월)만.
+    이 게이트가 풀리면 폐기한 동적 회피가 뒷문으로 되살아난다.
+    """
+    src = _spliner_source()
+    # ① 회피 시도 게이트가 정적 전용이다.
+    assert "bool try_evade = closest.is_static;" in src, (
+        "try_evade 가 정적 전용이 아니다 — 동적이 회피 티어로 들어간다"
+    )
+    # ② 폐기한 동적 기구가 되살아나지 않았다.
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+    for gone in ("BuildSpLaneChange", "BuildSpExit", "QuasiStaticOvertake",
+                 "IsPredictionTube", "PredictObstacleMovement",
+                 "dyn_path_lat_acc_max_", "dyn_trailing_floor_",
+                 "trailing_decel_dyn_", "dyn_pass_speed_ratio_",
+                 "dyn_speed_floor_", "ot_speed_scale_"):
+        assert gone not in code, f"폐기한 동적 기구가 되살아났다: {gone}"
+    # ③ 커밋은 정적 전용이다 (동적에 커밋을 걸면 상대가 움직여도 얼어붙는다).
     assert re.search(
-        r"if \(o\.is_static \|\| IsPredictionTube\(o\)\) \{\s*continue;", spl, re.S), (
-        "속도 바닥 발행이 정적을 제외하지 않는다 — 정적 홀드 거동이 바뀐다"
+        r"const bool commit_candidate =\s*"
+        r"evasion_valid && !used_trailing &&\s*"
+        r"closest\.is_static &&", src), (
+        "커밋 승격이 정적 전용이 아니다"
     )
-    # 수신값은 max 에만 들어가야 한다 (캡을 내리는 데 쓰이면 감속 장치가 된다).
-    assert re.search(
-        r"const double cap = std::max\(\s*"
-        r"\{last_avoidance_head_speed_, avoidance_loss_hold_floor_,\s*"
-        r"last_dyn_speed_floor_\}\);", loc, re.S), (
-        "회피상실 홀드 캡이 세 바닥의 max 가 아니게 바뀌었다"
+
+
+def test_follow_cap_is_longitudinal_only():
+    """동적 추종은 **속도만** 정한다 — 회피 경로의 횡을 건드리면 안 된다.
+
+    "정적 회피가 최우선"이 코드 구조로 성립하는 근거가 이것이다. 캡이
+    d_m 을 만지기 시작하면 회피 경로가 추종에 끌려간다.
+    """
+    src = _spliner_source()
+    blk = src[src.index("동적 상대 종방향 추종 (2026-08-22, 6/8단계)"):]
+    blk = blk[:blk.index("pitwall::Log(\"follow_active\"")]
+    assert "w.vx_mps = cap_w;" in blk, "추종 캡이 vx_mps 를 누르지 않는다"
+    for lateral in ("d_m", "d_left", "d_right", "x_m", "y_m"):
+        assert f"w.{lateral}" not in blk, (
+            f"추종 캡이 횡/위치 필드({lateral})를 건드린다 — 회피 우선이 깨진다"
+        )
+    # 회피 경로가 있으면 새로 만들지 않고 캡만 씌운다.
+    assert "if (evasion_valid) {" in blk, (
+        "회피 경로가 있을 때와 없을 때를 구분하지 않는다"
     )
-    # 인지가 상대 속도를 크게 잘못 보고해도 홀드가 통째로 무효가 되면 안 된다.
-    assert "avoidance_loss_hold_floor_max_" in loc, (
-        "수신 바닥의 상한이 사라졌다 — 0812 fail-open 이 되살아난다"
+
+
+def test_follow_cap_has_both_terms_and_a_physical_engage():
+    """추종 캡의 비례항·안전항·개입 게이트가 전부 살아 있어야 한다."""
+    src = _spliner_source()
+    fn = src[src.index("double SplinerNode::OpponentFollowCap("):]
+    fn = fn[:fn.index("\ndouble SplinerNode::ObsVsMean(")]
+    # 개입 게이트: 목표 간격 + Δv²/(2a) + v·T
+    assert "dyn_follow_gap_m_ + dv * dv / (2.0 * a) + v_ego * t_react" in fn, (
+        "개입 거리가 속도차 의존이 아니다 — 급접근에서 제동 거리가 없다"
     )
-    local_params = _ros_params(_yaml(PARAMS), "local_trajectory_node")
-    floor = local_params["local_trajectory/avoidance_loss_hold_floor_mps"]
-    assert floor == pytest.approx(1.5), (
-        "상수 바닥이 바뀌었다 — control 의 backstop_min_speed_mps 와 같은 값이다"
+    # 비례항
+    assert "v_opp + dyn_follow_kp_ * (gap - dyn_follow_gap_m_)" in fn, (
+        "비례 추종항이 없다 — 간격이 목표로 수렴하지 않는다"
     )
+    # 안전항: 반응지연 주행분을 뺀 room 으로 sqrt(v_opp^2 + 2a·room)
+    assert "gap - dyn_follow_gap_min_m_ - v_ego * t_react" in fn, (
+        "안전항의 room 에서 반응지연 주행분을 빼지 않는다"
+    )
+    assert "std::sqrt(v_opp * v_opp + 2.0 * a * room)" in fn, "안전항이 없다"
+    # 반응지연은 인지-계획 + 구동계 둘 다여야 한다.
+    assert "planning_delay_sec_" in fn and "trailing_lag_sec_" in fn, (
+        "반응지연이 한쪽만 반영됐다"
+    )
+
+
+def test_follow_gap_params_are_physical():
+    """추종 간격 파라미터가 실측 접촉 거리와 lookahead 사이에 있어야 한다."""
+    spliner = _ros_params(_yaml(PARAMS), "spliner_node")
+    gap = spliner["spliner/dyn_follow_gap_m"]
+    gap_min = spliner["spliner/dyn_follow_gap_min_m"]
+    kp = spliner["spliner/dyn_follow_kp"]
+    # 0.44 = run_0819_211107 89.51s 실측 접촉 거리 (obs.s_start - cur_s_).
+    assert gap_min > 0.44, (
+        f"안전 하한 {gap_min} 이 실측 접촉 거리 0.44 이하다 — 닿고 나서 막는다"
+    )
+    assert gap > gap_min, "목표 간격이 안전 하한보다 작다"
+    assert gap <= spliner["spliner/lookahead_m"], "목표 간격이 lookahead 밖이다"
+    assert 0.0 < kp <= 5.0
+
+
+def test_straight_overtake_keeps_all_five_gates():
+    """유일한 추월 기동의 발화 조건 5개가 전부 남아 있어야 한다."""
+    src = _spliner_source()
+    fn = src[src.index("bool SplinerNode::TryStraightOvertake("):]
+    fn = fn[:fn.index("\nbool SplinerNode::BuildTrailing(")]
+    # ② 직선 + 활주로
+    assert "StraightEndAhead(cur_s_)" in fn, "직선 판정이 없다"
+    assert 'NoteReject("ot_no_runway")' in fn, "활주로 검사가 없다"
+    # ③ 직선 안 정적 장애물 0개
+    assert 'NoteReject("ot_static_in_straight")' in fn, (
+        "직선에 정적 장애물이 있어도 추월을 시도한다 — 회피 우선이 깨진다"
+    )
+    # ④ 간격 상한
+    assert "gap > ot_max_gap_m_" in fn, "간격 상한 게이트가 없다"
+    # ⑤ 벽/상대 여유
+    assert "RequiredObstacleClearance(opp)" in fn, "상대 요구 간격을 안 본다"
+    assert "MinWallInSpan(" in fn, "기동 구간 벽 여유를 안 본다"
+    # 최종 검증 3종은 반드시 남아야 한다.
+    for guard in ("WithinTrackBoundary(", "ApplySpeedProfile(",
+                  "CheckPathCollision("):
+        assert guard in fn, f"추월 경로 검증이 빠졌다: {guard}"
+    # 횡이동은 상대 옆에 닿기 전에 끝나야 한다.
+    assert "blend_in > must_finish_by" in fn, (
+        "상대 옆에서 횡이동이 끝나는 기하를 막지 않는다"
+    )
+
+
+def test_overtake_suspends_the_follow_cap():
+    """추월 중에는 추종 캡을 걸지 않는다 — 상대 속도에 묶이면 못 지나간다."""
+    src = _spliner_source()
+    assert "if (engaged && !ot_now) {" in src, (
+        "추월 중에도 추종 캡이 걸린다 — 레이트 브레이크가 성립하지 않는다"
+    )
+    # 추월은 추종 중에만, 그리고 정적 회피 경로가 없을 때만 연다.
+    assert "if (engaged && !evasion_valid &&" in src, (
+        "추월이 추종/회피 우선 게이트를 안 거친다"
+    )
+    # 상승엣지 플래그는 매 사이클 갱신돼야 한다 (굳으면 다음 조우를 놓친다).
+    assert "ot_active_ = ot_now;" in src, "ot_active_ 가 매 사이클 갱신되지 않는다"
+
+
+def test_dospline_ego_anchor_survives_passing_the_apex():
+    """DoSpline 의 ego 기준점이 apex 를 지나는 순간 한 바퀴 뒤로 감기면 안 된다.
+
+    Mod 는 [0, len) 이므로 `s_apex - Mod(s_apex - cur_s_, L)` 은 **항상
+    <= s_apex** 다. 자차가 apex 를 조금이라도 지나면 결과가 track_len 만큼
+    음수로 감기고, 그러면
+      · "이미 장애물 구간 내부" 거부  (>= s_front && <= s_back)
+      · ego 재앵커                    (> knot_s.front())
+    두 가드가 **둘 다 조용히 건너뛰어져** 경로가 자차 뒤(apex-4 m)에서
+    시작하고, entry_avail_pre 가 한 바퀴만큼 부풀어 속도 캡도 안 걸린다.
+    run_0822_000933 t=30.06 실측: 자차 s=5.71 인데 발행 경로가 s=1.65 에서
+    시작, 그 지점 계획 d=+0.11 vs 자차 d=-0.40 (오차 0.51 m).
+    """
+    src = _spliner_source()
+    # 주석은 옛 식을 근거로 인용하므로 코드 줄만 본다.
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.strip().startswith("//"))
+    assert "s_apex - Mod(s_apex - cur_s_, track_len_)" not in code, (
+        "DoSpline 의 ego 기준점이 다시 한 바퀴 감기는 식으로 돌아갔다"
+    )
+    # 부호 있는 최단 차이 형태여야 한다 — 두 곳(cur_unwrapped_pre / cur_unwrapped).
+    n = len(re.findall(
+        r"s_apex \+\s*\(Mod\(cur_s_ - s_apex \+ track_len_ / 2\.0, track_len_\)\s*-\s*"
+        r"track_len_ / 2\.0\)\s*;", src, re.S))
+    assert n == 2, f"부호 있는 최단 차이 형태가 2곳이 아니다: {n}곳"
+
+
+def test_commit_breaks_when_ego_leaves_the_committed_path():
+    """커밋 해제가 자차 횡이탈을 본다.
+
+    해제 사유가 경로/장애물만 보면, 못 타는 경로를 경로 끝까지 재생한다.
+    run_0822_000933 t=30.06~31.56: 경로오차 0.51 -> 1.01 m 로 벌어지는 1.5 초
+    동안 committed_hold 유지, 속도 1.9 -> 0.00, 결국 장애물 소멸로만 풀림.
+    """
+    src = _spliner_source()
+    assert "!lat_deviated &&" in src, "커밋 유지 조건에 횡이탈이 들어가 있지 않다"
+    assert re.search(r"commit_lat_dev_run_ >= commit_break_lat_dev_cycles_", src), (
+        "횡이탈이 연속 사이클 요구 없이 즉시 파기한다 — 단발 노이즈로 커밋이 깨진다"
+    )
+    assert 'NoteReject("commit_released_lat_deviation")' in src, "해제 사유가 계측되지 않는다"
+    # 경로가 자차 s 를 안 덮으면 판정하지 않아야 한다 (그건 path_end 몫).
+    assert "best <= 0.5" in src, "커밋 꼬리를 지난 경우를 이탈로 오판한다"
+
+
+def test_commit_lat_dev_params_separate_normal_from_failure():
+    """이탈 문턱이 정상 회피 오차 위, 사고 구간 중앙 아래에 있어야 한다."""
+    spliner = _ros_params(_yaml(PARAMS), "spliner_node")
+    thr = spliner["spliner/commit_break_lat_dev_m"]
+    cyc = spliner["spliner/commit_break_lat_dev_cycles"]
+    # run_0822_000933 실측: 정상 회피 p99 0.188 / max 0.532,
+    #                        사고 구간 p50 0.331 / max 1.006.
+    assert 0.20 <= thr <= 0.55, (
+        f"문턱 {thr} 이 정상 회피 p99(0.188)와 사고 구간 p50(0.331) 사이를 "
+        "벗어났다 — 오발화하거나 사고를 못 잡는다"
+    )
+    # 0.60 이상은 세 사건 중 하나(t=56)를 아예 못 잡는다.
+    assert thr < 0.60, "문턱이 0.60 이상이면 사건 일부를 놓친다"
+    assert 2 <= cyc <= 10, "연속 요구가 단발 노이즈를 못 거르거나 너무 늦다"
 
 
 def test_ever_moved_stop_authority_is_paired_with_measured_speed():

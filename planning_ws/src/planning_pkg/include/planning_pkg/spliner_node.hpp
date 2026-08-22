@@ -34,7 +34,6 @@ public:
 
 private:
   void CallbackObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg);
-  void CallbackPredictedObstacles(const f1tenth_planning_msgs::msg::ObstacleArray::SharedPtr msg);
   void CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void Run();
@@ -42,8 +41,6 @@ private:
   // ForzaETH spliner 핵심 로직
   std::vector<f1tenth_planning_msgs::msg::Obstacle> FilterObstacles(
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles) const;
-  f1tenth_planning_msgs::msg::Obstacle PredictObstacleMovement(
-    f1tenth_planning_msgs::msg::Obstacle obs) const;
   // 반환: {side("left"/"right"), d_apex}
   std::pair<std::string, double> MoreSpace(
     const f1tenth_planning_msgs::msg::Obstacle & obs) const;
@@ -147,17 +144,42 @@ private:
   // 비교하므로 조회를 한 곳에 둔다 — 예전에는 같은 lookup 이 세 번 복사돼
   // 있었다. cls_tracks_ 는 클러스터 **전** 원시 id 로 채워지는데
   // ClusterObstacles 가 병합 시 min(a.id, b.id) 를 남기므로 이 조회는
-  // 유효하다. 예측 튜브는 예약 ID 대역이라 여기 없다 — 호출부가
-  // IsPredictionTube 로 먼저 걸러야 한다 (StableObstacles 참조).
   int ObsSeen(int32_t id) const;
 
   // 이 id 가 spliner 분류 이력에서 한 번이라도 동적이었나 (ObsClsTrack::ever_dynamic).
   // 모르는 id 면 false — 처음 보는 트랙에 마진을 주지 않는다.
   bool WasEverDynamic(int32_t id) const;
-  // 이 id 가 **실제로** ever_moved_min_disp_m 이상 움직인 것이 관측됐나.
+
+  // 이 id 가 **실제로** ever_moved_min_disp_m_ 이상 움직인 것이 관측됐나.
   // 분류기 판단(WasEverDynamic)이 아니라 관측된 변위다 — 정지 권한처럼
   // 안전에 직결되는 판단에만 이쪽을 쓴다 (ObsClsTrack::max_disp 주석 참조).
   bool WasEverMoved(int32_t id) const;
+
+  // ── 동적 상대 종방향 추종 (2026-08-22, 5~6/8단계) ─────────────────────
+  // 상대 뒤 dyn_follow_gap_m_ 를 유지하기 위한 **속도 상한** [m/s].
+  // 무한대를 돌려주면 "개입하지 않는다" = 상대를 무시하고 레이스라인 속도로
+  // 간다. 이 함수는 **종방향만** 정한다 — 횡(회피)은 정적 파이프라인 몫이고,
+  // 그래서 "회피가 최우선, 추종은 속도만"이 구조적으로 성립한다.
+  //
+  // 개입 시점이 왜 gap 그 자체가 아닌가:
+  //   목표 간격에서만 반응하면 접근속도 Δv 를 지울 거리가 없다. 실차
+  //   plant_decel 2.38 기준 Δv=3 m/s 를 지우는 데만 1.89 m 가 필요한데
+  //   목표 간격은 1.5 m 다. 그래서 개입 조건을
+  //     gap <= gap_target + Δv²/(2a) + v·T
+  //   로 둔다. 정속 추종(Δv≈0)에서는 거의 gap_target 에서 열리므로 "1.5 m
+  //   밖은 신경 쓰지 않는다"는 계약이 그대로 지켜지고, 급접근일 때만 미리
+  //   열린다.
+  //
+  // 반환값의 두 항:
+  //   (1) 비례 추종  v_opp + kp·(gap - gap_target)  — 멀면 가속, 가까우면 감속
+  //   (2) 안전 상한  sqrt(v_opp² + 2a·room)         — 상대가 지금 밟아도
+  //       gap_min 안쪽으로 들어가지 않는 속도. room 에서 반응지연 주행분을
+  //       먼저 뺀다 (BuildTrailing 의 reachable_v 와 같은 형태).
+  // 둘 중 작은 쪽을 쓴다. (2)가 상대 급정거에 대한 **1 사이클(33 ms) 반응**
+  // 이다 — 분류기가 STATIC 으로 뒤집는 데는 최소 0.67 s 가 걸리므로 그보다
+  // 20배 빠르고, 그 뒤에 정적 파이프라인이 정지/우회를 맡는다.
+  double OpponentFollowCap(
+    const f1tenth_planning_msgs::msg::Obstacle & opp) const;
 
   // 관측 창(cls_tracks_.vs_hist, 최대 kClsVsWindow)의 vs 평균.
   // 트랙 이력이 없으면 fallback 을 그대로 돌려준다. BuildTrailing 의 목표
@@ -165,15 +187,6 @@ private:
   // ⚠️ vs_hist 는 ClassifyObstacles 가 **정적 덮어쓰기 전** 원시 vs 를 쌓는다.
   //    정적 장애물은 그 뒤 obs.vs=0 이 되므로 이 함수를 태우지 말 것.
   double ObsVsMean(int32_t id, double fallback) const;
-
-  // 준정적 추월 판정 — "확실히 따라잡고 있는 동적 상대".
-  // 참이면 정적 전용이던 기구(경로 커밋 / retry_d 유지)를 열어 준다.
-  // ⚠️ 운동 모델은 바꾸지 않는다. is_static 은 그대로 false 이므로
-  //    PredictObstacleMovement 의 등속 전파와 CheckPathCollision 의
-  //    motion_s/motion_d 가 전부 살아 있다 — 이것이 "정적으로 취급"과
-  //    결정적으로 다른 점이고, 복귀 지점 접촉(실측 0.01 m)을 막는 이유다.
-  bool QuasiStaticOvertake(
-    const f1tenth_planning_msgs::msg::Obstacle & obs) const;
 
   // 커밋된 정적 회피 경로를 **무효화할 자격이 있는** 장애물만 남긴다.
   // 관측 이력(cls_tracks_)이 commit_break_min_obs_ 이상인 트랙만 통과시킨다.
@@ -217,11 +230,7 @@ private:
   // 관측 이력의 위치 std 투표(min_std/max_std) + 정지 재분류(vs_reset)로
   // perception의 is_static 플래그를 덮어쓴다. 파킹한 상대를 동적으로 두면
   // 예측 유령/섹터 게이팅/커밋 비활성이 겹쳐 회피가 무너진다.
-  /// obs_frame_fresh = 이번 사이클의 장애물 배열이 **새 인지 프레임**인가.
-  /// false 면 관측 이력(s_hist/d_hist/vs_hist)과 투표 카운터를 갱신하지 않고
-  /// 분류 결과 적용만 한다 — 근거는 아래 kClsWindow 선언부 주석.
-  void ClassifyObstacles(std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles,
-                         bool obs_frame_fresh);
+  void ClassifyObstacles(std::vector<f1tenth_planning_msgs::msg::Obstacle> & obstacles);
 
   // 회피 불가 시 폴백: raceline 유지 + 장애물 뒤 trailing_gap에서
   // 장애물 속도까지 감속하는 궤적 (ForzaETH 상태머신 TRAILING 대응)
@@ -274,38 +283,34 @@ private:
   // 바짝 붙고 직선에서 속도 차로 제치는 것이 정석.
   void ComputeOtSectors();
   bool InOtSector(double s) const;
+  // 자차가 직선(추월 섹터) 안이면 **그 섹터의 끝 s** 를 돌려준다. 밖이면 -1.
+  // 직선 추월의 활주로 길이와 "코너 진입 지점"이 둘 다 이 값에서 나온다.
+  double StraightEndAhead(double s) const;
+  // [s_from, s_from+span) 구간의 **부호 있는** 곡률 평균으로 코너 안쪽을 정한다.
+  // 좌선회(kappa>0)의 안쪽은 왼쪽(d>0) — OffsetKappa 와 같은 부호 규약이다.
+  // 곡률이 문턱보다 작으면(직선) 빈 문자열 = 선호 없음.
+  std::string CornerInsideSide(double s_from, double span) const;
   void PublishSectorMarkers();
 
-  // SP(최단거리) 추월 라인 레인체인지: 동적 상대 추월 시 IQP 오프셋
-  // 스플라인 대신 SP 라인으로 갈아타 통과 구간을 지나고 복귀한다 —
-  // 코너 진입 인사이드 찌르기 등 레이싱다운 추월 기하가 나온다.
-  void CallbackSpWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
-  void BuildSpMapping();   // SP 라인을 IQP frenet (d_sp(s), vx_sp(s))로 변환
-  bool BuildSpLaneChange(
-    const f1tenth_planning_msgs::msg::Obstacle & closest_obs,
+  // ── 직선 인코스 추월 (2026-08-22, 7/8단계) ────────────────────────────
+  // **이 스택의 유일한 추월 기동이다.** 폐기한 SP 레인체인지/준정적 추월과
+  // 달리 발화 조건이 좁고 고정돼 있다:
+  //   ① 지금 상대를 추종 중이다 (간격이 개입 거리 안).
+  //   ② 자차가 직선 섹터 안이고, 코너 진입까지 남은 활주로가 기동에 충분하다.
+  //   ③ 그 직선 구간에 **정적 장애물이 하나도 없다** (있으면 회피가 우선).
+  //   ④ 상대가 너무 멀지 않다 (ot_max_gap_m 이내) — 멀면 얻을 게 없다.
+  //   ⑤ 인코스 오프셋이 벽 여유와 상대 요구 간격을 동시에 만족한다.
+  // 속도는 **캡을 걸지 않는다** — 그것이 "레이트 브레이크"다. 코너 진입에서
+  // 오프셋 곡률이 커지는 만큼 ApplySpeedProfile 이 물리적으로 눌러 준다.
+  //
+  // 실패하면 false 를 돌려주고 호출부가 추종으로 되돌아간다. 커밋은 걸지
+  // 않는다 — 상대가 움직이므로 얼리면 안 되고, 되돌아갈 때의 횡 급전환은
+  // BuildTrailing 의 d 램프(현재 d -> 목표)가 흡수한다.
+  bool TryStraightOvertake(
+    const f1tenth_planning_msgs::msg::Obstacle & opp,
     const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
     f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
     visualization_msgs::msg::MarkerArray & out_mrks);
-  // 추월 마무리: 상대가 아직 옆이면(opp_beside) 간격이 벌어질 때까지,
-  // 코너 안이면 코너 출구까지 SP 인코스를 유지한 뒤 raceline(아웃코스)으로
-  // 복귀. v_floor(wpnt 단위)는 나란히 달리는 동안의 추월 페이스 하한.
-  //
-  // false 반환에는 **두 가지 서로 다른 뜻**이 있다:
-  //   out_completed == true  : 복귀까지 끝났다 (정상 종료).
-  //   out_completed == false : 이번 사이클 경로를 만들지 못했다 (기하/충돌/
-  //                            속도 거부). 호출부는 재시도해야 하며, 여기서
-  //                            lc_active_ 를 내리면 추월 도중 빈 경로가
-  //                            발행되어 전속 raceline 으로 튄다.
-  bool BuildSpExit(
-    bool opp_beside, double v_floor,
-    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
-    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks,
-    bool * out_completed = nullptr);
-  // s_from부터 raceline 복귀 블렌드 창(blend_len)이 코너(|kappa| >
-  // ot_max_kappa)와 겹치지 않게 되는 최소 추가 SP 유지 거리 (최대 25m).
-  // "인코스 진입 - 아웃코스 탈출"의 복귀 지연을 담당한다
-  double SpHoldExtension(double s_from, double blend_len) const;
 
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
@@ -387,8 +392,8 @@ private:
 
   // 경로 웨이포인트의 **기하부**를 채운다 (vx_mps 는 호출부 몫).
   // 2026-08-13 이전에는 이 11개 대입이 5곳에 복제돼 있었다
-  // (BuildLaneSwitch / DoSpline / BuildEscapeArc / BuildSpLaneChange /
-  //  BuildSpExit). 다섯 벌 모두 완전히 동일했지만, 복제라는 사실 때문에
+  // (BuildLaneSwitch / DoSpline / BuildEscapeArc 및 지금은 제거된 SP 빌더
+  //  둘). 다섯 벌 모두 완전히 동일했지만, 복제라는 사실 때문에
   //  d_left/d_right 부호 규약을 한 곳만 고치면 조용히 어긋날 수 있었다.
   // vx_mps 는 사이트마다 규칙이 실제로 다르므로(추월 페이스 하한, 그립 캡,
   // sp 라인 속도 등) 일부러 여기서 정하지 않는다 — 그 차이는 복제 표류가
@@ -479,7 +484,7 @@ private:
   // 한계였으면 "곡률 idx=i/n(p%) k=... >한계 ...", 아니면 "도달불가(감속)".
   std::string SpeedRejectDetail() const;
   // 회피 목표(d_hold/d_apex)를 "재시도 중 유지할 값"으로 기록한다.
-  void NoteRetryTarget(double d_target, double obs_vd = 0.0);
+  void NoteRetryTarget(double d_target);
   void PublishRejectCounts();
   /// 커밋 경로를 release_s 에서 잘라 낸다 (꼬리가 blocking_s 의 장애물과
   /// 충돌할 때). 웨이포인트·기하 상한·마커를 함께 줄이고 committed_until_s_
@@ -663,7 +668,6 @@ private:
   double spline_resolution_{0.1};
   double side_switch_d_tresh_{0.25};
   double obs_timeout_sec_{0.5};
-  bool use_prediction_{true};   // Predictive Spliner: 예측 장애물이 원시 관측을 대체
   double trailing_gap_m_{2.5};
   double trailing_decel_{2.5};
   double cmd_speed_scale_{1.0};
@@ -674,14 +678,6 @@ private:
   // 실차에서 문제가 생기면 false로 즉시 되돌릴 수 있게 파라미터로 둔다.
   bool blend_use_spare_grip_{true};    // 전환 거리 상한 [m]
   double path_lat_acc_max_{7.0};    // 오프셋 경로 곡률 -> 속도 상한용 그립 [m/s^2]
-  // ── 동적 장애물 전용 그립 예산 (2026-08-20) ──────────────────────────
-  // path_lat_acc_max_ 는 정적 회피 기하가 그 값에 맞춰 튜닝돼 있어 단독으로
-  // 못 올린다. 그런데 이 값이 레이스라인 생성 마찰(build_map.py MU_PROFILE
-  // 1.15 = 11.28 m/s^2)보다 낮으면 BlendLatAcc 의 마찰원 잔여가 코너에서
-  // 음수가 되어 하한 2.0 에 고착되고, 동적 회피가 "속도캡 2.35 -> 도달불가"
-  // 로 전부 기각된다 (run_0819 헤어핀 A 53% / B 59% 사이클이 하한 고착).
-  // 0 이하면 path_lat_acc_max_ 를 그대로 쓴다 = 종전과 비트 단위로 동일.
-  double dyn_path_lat_acc_max_{0.0};
   // 레이스라인 그립 일관성 캡: 오프셋으로 곡률이 커진 구간에서, 그 지점의
   // 레이스라인이 실제로 쓰던 횡가속(kappa*v^2)을 넘지 않도록 제한한다.
   // inside_speed_scale 같은 고정 배율을 물리 기반으로 대체하는 장치.
@@ -734,6 +730,8 @@ private:
   // 회피 기하 계획에 쓰는 최소 속도 [m/s] — PlanSpeed() 참조
   double plan_speed_floor_{1.5};
   bool trailing_active_{false};
+  // 동적 상대 추종 캡이 걸려 있는가 (pitwall 상승엣지용).
+  bool follow_active_{false};
   // "정적 장애물 정지" 이벤트 상승엣지용 (Tier3 정적/동적 분리)
   bool static_stop_active_{false};
   // 이 속도 이하에서만 크리프 탈출(진입 블렌드가 hold 구간까지 연장)을
@@ -807,6 +805,21 @@ private:
   // 벽 여유(RequiredBoundaryMargin)의 추적오차 항은 2026-08-16 부터 속도
   // 의존이다 — TrackingReserve() 주석에 실측 근거가 있다.
   double trailing_engage_dist_m_{8.0};    // trailing 감속을 시작하는 정지점 앞 거리 [m]
+  // ── 동적 상대 추종 (2026-08-22) ─────────────────────────────────────────
+  // 유지 목표 간격 [m]. obs.s_start - cur_s_ 기준이다 — 실차 접촉이 이 값
+  // 0.44 에서 관측됐으므로(run_0819_211107 89.51s) 1.5 는 실제 차체 여유
+  // 약 1.06 m 에 해당한다.
+  // ⚠️ 이 간격은 상대의 **급정거**를 완전히 막지 못한다. 반응지연 0.4 s
+  //    (인지 65 ms + 계획 33 ms + trailing_lag 0.3) 와 제동 2.38 기준
+  //    무접촉 필요 간격은 3 m/s 에서 1.59 m, 5 m/s 에서 3.09 m 다.
+  //    1.5 m 는 2.9 m/s 이하에서만 완전 방어이고 그 위에서는 접촉 속도를
+  //    낮추는 역할이다 — 직선 추월 창(7.9 m)을 죽이지 않기 위한 의도된
+  //    트레이드다. 근본 방어는 위 안전항 + 정적 파이프라인 핸드오프다.
+  double dyn_follow_gap_m_{1.5};
+  // 안전항이 절대 침범하지 않는 간격 [m]. 실측 접촉 거리 0.44 위에 둔다.
+  double dyn_follow_gap_min_m_{0.6};
+  // 비례 추종 이득 [1/s]. 간격 오차 1 m 당 속도 명령 차이.
+  double dyn_follow_kp_{1.0};
   // 속도 명령 -> 실제 감속 사이의 구동계 지연 [s]. 정지 프로파일이
   // v²/(2a)만 보면 이 지연 동안 굴러간 거리만큼 정지점을 넘는다
   // (rosbag_0806 실측: trailing_gap 1.5m 대비 0.24~0.68m에 정지).
@@ -828,7 +841,6 @@ private:
   // ApexFor의 목표 간격을 검증기 요구치보다 이만큼 더 준다 [m].
   // 동률(목표 == 충돌박스 경계)이면 수 mm 오차로 매 사이클 자기 거부한다.
   double apex_clearance_eps_m_{0.05};
-  double dyn_pass_speed_ratio_{1.4};     // 동적 상대 추월 중 최소 속도 = 상대 x 이 배율
 
   // 정적/동적 분류 파라미터 (unicorn opponent_tracker_params.yaml 기본값)
   int cls_min_nb_meas_{5};       // 분류 시작 최소 관측 수
@@ -854,81 +866,11 @@ private:
   // 0 이면 기능 off. 정적 트랙은 대상이 아니다(콘끼리 이력이 새는 것 방지).
   double cls_inherit_dist_m_{0.6};
   double cls_inherit_timeout_sec_{0.5};
-  // ── 멈춘 상대의 잔여 모션 마진 ────────────────────────────────────────
-  // 한 번 동적이었다가 정적으로 되돌아간 트랙은 재출발할 수 있다. is_static
-  // 이 서면 PredictObstacleMovement 가 그대로 반환하고 FilterObstacles 의
-  // lateral_motion 도 0 이 되어 **미래 위치를 아예 안 본다**.
-  // 예측이 아니라 **마진**이다 — 완전한 재출발(0 -> 2 m/s)은 어떤 상수로도
-  // 못 덮는다. "정지로 판정한 근거가 |vs| < 문턱뿐"이라는 사실을 반영해
-  // 그 문턱 수준의 이동 가능성만 남긴다.
-  // 0.3 = run_0818 두 백에서 map 변위 0.20m 미만인 '진짜 정지' 트랙의
-  // |vs| p90 (0.320 / 0.328). 그 이상은 정지가 아니라고 봐도 된다.
-  // 동적 트레일링 속도 바닥 [m/s]. 0 이면 종전대로 바닥 없음(정지까지 허용).
-  // 정적 바닥(trailing_retry_speed 2.5)보다 **높다** — 의도된 것이다.
-  // 근거·해제 조건은 BuildTrailing 의 사용처 주석 참조.
-  double dyn_trailing_floor_{3.0};
-  // 바닥에 "지금 간격에서 낼 수 있는 속도"라는 상한을 씌운다 (2026-08-20).
-  // false = 종전과 비트 단위로 동일. 근거는 BuildTrailing 의 사용처 주석.
-  bool trailing_floor_gap_aware_{false};
-  // dist(= obs.s_start - cur_s_) 가 이 값이면 차체가 닿는다 [m].
-  // 기하 유도값이 아니라 **실측값**이다 — run_0819_211107 89.51s 접촉 시
-  // dist 0.40 에서 IMU yaw rate 가 -9.9 -> +10.7 로 뒤집혔고 그 뒤 dist 가
-  // 0.38~0.51 에서 바닥을 쳤다(밀착). vehicle_half_length_m_(0.275)와
-  // 다른 이유는 obs.s_start 가 차체 뒷면이 아니라 **LiDAR 클러스터의 근단**
-  // 이기 때문이다. 여기서는 안전 방향(여유를 작게 보는 쪽)으로 실측을 쓴다.
-  double trailing_floor_contact_dist_m_{0.44};
-  // 동적 상대용 트레일링 제동 감속도 [m/s²]. 정적은 trailing_decel_(1.0) 유지.
-  //
-  // v_allow 식(rem >= v·T + (v²-v_target²)/2a)이 이미 "늦게 밟기"를 구현하고
-  // 있다 — engage 밖에서는 캡이 아예 없고, 안에서만 이 곡선이 걸린다. 그래서
-  // 2단계 계약을 따로 만들 필요가 없었고, 바꿔야 할 것은 a 하나였다.
-  //
-  // ⚠️ 2.5 는 쓰지 말 것. run_0806 주석의 경고가 맞다 — run_0818 두 백에서
-  // **감속 요구 구간만** 골라 속도대별 실측 감속을 보면
-  //     v 0.5~1.5 : p50 0.81  p90 1.10
-  //     v 2.5~3.5 : p50 1.33~1.52  p90 2.03~2.11
-  //     v 3.5~5.0 : p50 1.55       p90 2.17~2.58
-  // 로 **속도 의존**이고, 2.5 는 어느 구간에서도 p90 이상이라 프로파일이
-  // 감속을 너무 늦게 시작해 정지점을 오버슛한다.
-  // 1.5 = 동적 트레일링이 실제로 도는 3~5 m/s 대의 p50. 1.0 대비 rem 5 m 에서
-  // 허용속도가 3.03 -> 3.57 (레이스라인 4.66 의 65% -> 77%).
-  double trailing_decel_dyn_{1.5};
-  // WasEverMoved 문턱 [m]. 0 이면 기능이 꺼진다(= 종전 동작).
+  // WasEverMoved 문턱 [m]. 0 이면 기능이 꺼진다(= 정지 권한이 is_static 하나로
+  // 결정되던 종전 동작). 실측 근거는 ObsClsTrack::max_disp 주석.
   double ever_moved_min_disp_m_{0.5};
-  double ever_dynamic_residual_vs_{0.3};
-  // 위 마진의 절대 상한 [m]. eta 가 길면 마진이 무한정 커져 회랑을 먹는다 —
-  // 이 트랙 코리도가 0.96~2.42 m 이고 lane_wall_no_room 이 이미 1위 기각
-  // 사유(초당 3.8~4.1)라, 상한 없이 켜면 회피가 더 자주 막힌다.
-  // 0 이면 이 기능 자체가 꺼진다.
-  double ever_dynamic_residual_max_m_{0.20};
-  // ── 관측 창은 **인지 프레임** 단위다 (2026-08-21) ──────────────────────
-  // 종전에는 ClassifyObstacles 가 Run() 사이클마다 push 했고, obs_copy 는
-  // "마지막으로 받은" 메시지라 새 프레임인지 확인하지 않았다. 플래너 30 Hz /
-  // 인지 15.4 Hz 이므로 **같은 프레임이 평균 1.95 회 이력에 쌓였다**:
-  //   · commit_min_obs 7 은 "7 관측"이 아니라 고유 프레임 3.6 개였다
-  //     (그래서 08-11 의 3->7 승격이 목표한 0.45 s 방어가 실제로는 0.23 s).
-  //   · 더 나쁜 것은 방향이다 — 인지가 느려질수록 중복이 늘어 게이트가
-  //     **느슨해진다**. obs_timeout_sec(0.30) 동안 인지가 끊기면 얼어붙은
-  //     같은 프레임이 9 회 카운트돼 유령 하나가 가만히 있기만 해도 7 을
-  //     채웠다. 근거가 부실할수록 더 쉽게 믿는 구조였다.
-  //   · 같은 스트림을 읽는 opponent_predictor_node 는 source stamp 로
-  //     dedup 한다. 두 노드가 같은 토픽을 다른 규칙으로 세고 있었다.
-  // 이제 새 프레임일 때만 쌓는다(obs_frame_fresh). 그러면 창의 단위가
-  // 프레임이 되므로 **시간 폭이 1.95 배로 늘어난다** — 감지 속도 손해가
-  // 없도록 모든 창/게이트 상수를 같은 비율로 내려 실제 시간을 종전 이하로
-  // 맞췄다 (N 개를 채우는 시간 = (N-1)/rate):
-  //   kClsWindow    20 -> 10   0.633 s -> 0.584 s
-  //   kClsVsWindow  10 ->  5   0.300 s -> 0.260 s
-  //   commit_min_obs / commit_break_min_obs  7 -> 4   0.200 s -> 0.195 s
-  //   cls_min_nb_meas  5 -> 2                0.167 s -> 0.130 s
-  //   cls_vs_hold     10 -> 5                0.300 s -> 0.260 s
-  // 즉 이 변경은 **어느 게이트도 느리게 만들지 않는다**. 고치는 것은
-  // 드롭아웃 시 카운트 부풀리기와 rate 역전 두 가지다.
-  // ⚠️ 상수가 이제 프레임을 세므로, 어떤 게이트를 실제로 더 엄격하게 하고
-  //    싶으면 (예: 08-11 이 목표한 0.45 s 유령 방어 = commit_break_min_obs 7)
-  //    그 값만 올리면 되고 그때는 숫자가 뜻대로 동작한다.
-  static constexpr size_t kClsWindow{10};     // 위치 std 계산 관측 창 [프레임]
-  static constexpr size_t kClsVsWindow{5};    // vs 평균 관측 창 [프레임]
+  static constexpr size_t kClsWindow{20};     // 위치 std 계산 관측 창
+  static constexpr size_t kClsVsWindow{10};   // vs 평균 관측 창 (unicorn vs_list 10)
   struct ObsClsTrack {
     std::deque<double> s_hist;   // s_ref 기준 unwrap된 s 관측
     std::deque<double> d_hist;
@@ -936,25 +878,20 @@ private:
     double s_ref{0.0};
     int static_count{0};
     int total_count{0};
-    // vs 평균이 cls_vs_reset 아래로 **연속** 유지된 인지 프레임 수
-    // (아래 cls_vs_hold). 2026-08-21 이전에는 Run() 사이클 수였다.
+    // vs 평균이 cls_vs_reset 아래로 **연속** 유지된 사이클 수 (아래 cls_vs_hold).
     int vs_low_run{0};
     bool has_flag{false};        // 분류 확정 여부 (미확정이면 perception 플래그 유지)
     bool static_flag{false};
     // 이 트랙이 한 번이라도 동적으로 분류된 적이 있나.
     // perception 의 Track::ever_dynamic 과 같은 개념인데, 그 필드는 메시지에
     // 실려 오지 않으므로 spliner 가 자기 분류 이력으로 따로 기억한다.
-    // 쓰임: 정적으로 되돌아간 '멈춘 상대'에게도 최소한의 모션 마진을 남긴다
-    // (PredictObstacleMovement). is_static=true 는 모션 전파를 완전히 끄는데,
-    // 그러면 상대가 재출발해도 실제 침범 전까지 아무 신호가 없다.
+    // 쓰임: 분류가 뒤집혀도 흔들리지 않는 단조 키가 필요한 곳.
     bool ever_dynamic{false};
-    // ── 관측된 최대 종방향 변위 [m] (2026-08-21) ──────────────────────────
-    // ever_dynamic 은 **분류기**의 판단이라 짧게 흔들린 콘도 각인된다.
-    // run_0820_235246 실측: DYNAMIC 으로 각인된 39 트랙 중 3개(id 1405/1406/
-    // 1407, 관측 15~17)가 실제로는 0.13~0.21 m 밖에 안 움직인 콘이었다.
-    // 정지 권한(allow_stop)처럼 안전에 직결되는 판단에는 분류기 대신 **실제로
-    // 움직였다는 증거**를 쓴다. 진짜 상대의 이동은 p50 8.36 m 라 문턱
-    // ever_moved_min_disp_m(0.5)가 둘을 깨끗이 가른다.
+    // 관측된 **최대 변위** [m] (s_ref 기준 절댓값이라 왕복해도 줄지 않는다).
+    // ever_dynamic 과 목적이 다르다: 저쪽은 분류기의 판단이고 이쪽은 원시
+    // 관측이다. 짧게 흔들린 콘이 DYNAMIC 으로 각인되는 일이 실제로 있었으므로
+    // (실차 콘 max_disp 최대 0.244 m / 시뮬 0.422 m, 문턱 0.5), 정지 권한처럼
+    // 안전에 직결되는 판단은 분류 결과가 아니라 이 값으로 건다.
     double max_disp{0.0};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
@@ -991,37 +928,23 @@ private:
   /// 차 반길이) 라 속도·진폭이 커지면 자동으로 늘어난다.
   /// 0 이면 꼬리 절단 비활성(종전 동작).
   double commit_tail_release_lead_m_{4.0};
-  /// ── 움직이는 상대에 대한 커밋 만료 (2026-08-21) ────────────────────────
-  /// 커밋을 만든 상대가 생성 시점보다 이만큼 s 로 **앞으로** 가면 만료시킨다
-  /// [m]. 0 = 비활성(종전 동작).
-  ///
-  /// 기존 만료 축은 넷(경로 끝 도달 / 커밋 밖 새 장애물 / 전방 공백 /
-  /// 확정 충돌)뿐인데, 전부 **상대가 제자리에 있다**는 전제 위에 있다.
-  /// 정적 장애물에는 맞지만 움직이는 상대에는 만료 축이 아예 없었다:
-  ///   run_0820_175059 12.05~15.79s — 상대 #15 가 s 29.7 -> 35.4 (5.7m) 로
-  ///   달아나는 동안 커밋 경로는 12.05초 좌표에 못 박힌 채 **3.73초 / 약
-  ///   112 사이클 재계획 0회**. 그 경로의 hold 오프셋은 d=-0.17 로 자기
-  ///   요구 간격(0.27)에도 못 미쳤고, 속도는 s=27.2 에서 0.41 m/s 였다.
-  ///   그 사이 자차 0.89 m/s < 상대 1.57 m/s 라 간격이 4.4 -> 5.4m 로
-  ///   벌어졌다(= 추격 중인데 더 느림).
-  /// 깨지지 않은 이유가 자기충족이다: CheckPathCollision 은 동적 상대를
-  /// 도착시각만큼 전파하는데, 그 도착시각(약 4초)을 그렇게 늦게 만든 것이
-  /// 바로 얼어붙은 속도 구덩이다 — 느려서 안 부딪히고, 안 부딪히니 안 깨지고,
-  /// 안 깨지니 계속 느리다.
-  ///
-  /// 같은 백 재생으로 이 규칙을 대입하면: 움직이는 상대 상대 동결 6.60초 중
-  /// 3.92초(59%) 단축, 문제의 3.73초는 12.65초에 파기되어 **0.60초**가 된다.
-  /// 그리고 선택적이다 — 짧고 정상적인 동결(0.30~0.43초)은 0~0.05초만
-  /// 줄어든다. 시간 상한으로 잘랐으면 그쪽까지 같이 잘렸다.
-  ///
-  /// ⚠️ 문턱을 0.6 아래로 내리지 말 것 (생성자가 강제한다). 같은 백에서
-  ///    **진짜로 정지한 콘 22개**의 s_center 흔들림이 std 0.009~0.127 m,
-  ///    최대 진폭 0.396 m (#90, 320프레임), 한쪽 방향 최대 약 0.2 m 였다.
-  ///    1.0 은 그 5배이고, 0.4 근처부터는 장수 정적 트랙이 오탐에 걸린다.
-  double commit_dyn_release_move_m_{0.0};
 
   // 추월 섹터 파라미터
   bool sector_gating_{true};
+  // ── 직선 인코스 추월 파라미터 ──────────────────────────────────────────
+  bool ot_overtake_enabled_{true};
+  // 인코스 사이드. my_track0821 은 유일한 직선(s 28.0 -> 0.2, 7.9 m) 다음이
+  // 좌코너(직후 4 m 평균 kappa +0.283)이고, 그 직선에서 좌측 여유(1.07~1.22)가
+  // 우측(0.47~0.55)보다 넓다 — 인코스와 넓은 쪽이 일치한다.
+  // "auto" 면 CornerInsideSide 가 매 사이클 판정하고, "left"/"right" 면
+  // 고정하되 판정과 어긋나면 경고만 남긴다(맵이 바뀐 것을 조용히 놓치지 않게).
+  std::string ot_side_{"left"};
+  // 이보다 멀면 시도하지 않는다 [m] — 추종 중(개입 거리 안)이 전제다.
+  double ot_max_gap_m_{2.5};
+  // 코너 안쪽 판정에 요구하는 최소 |평균 곡률| [1/m].
+  double ot_inside_min_kappa_{0.15};
+  // 추월 기동이 진행 중인가 (상승엣지 이벤트 + 추종 캡 보류용).
+  bool ot_active_{false};
   double ot_min_clearance_{0.95};
   double ot_max_kappa_{0.1};         // 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m)
   double ot_sector_min_len_m_{8.0};
@@ -1029,15 +952,6 @@ private:
   // 2026-08-10 이전에는 생성자 검증이 1.0 초과를 거부해서, 헤더/파라미터
   // 주석이 약속한 "섹터 내 공격 모드"가 원리적으로 성립할 수 없었다
   // (배포 yaml 3개 모두 1.0 = 항등). 이제 허용하되 기본값은 1.0 유지.
-  double ot_speed_scale_{1.0};
-  // ── 준정적 추월 ────────────────────────────────────────────────────────
-  bool qs_overtake_enabled_{true};
-  double qs_min_closing_mps_{0.6};
-  // 이번 사이클의 최근접 장애물이 준정적인가. Run() 이 매 사이클 갱신하고
-  // TryLaneSwitch / BuildTrailing / 커밋 승격이 읽는다. 사이클 안에서만
-  // 유효한 값이므로 사이클 진입 시 반드시 false 로 초기화할 것.
-  bool qs_active_{false};
-  bool qs_active_prev_{false};   // pitwall 이벤트 상승엣지용
   std::vector<double> ot_sectors_param_;                 // 수동 지정 (flat s0,s1,...)
   std::vector<std::pair<double, double>> ot_sectors_;    // [s_start, s_end] (wrap 허용)
   // "직전 사이클에 회피를 시도했는가"의 상승엣지 래치.
@@ -1065,55 +979,33 @@ private:
   /// 구별하는 데 쓴다 — 기동 중에 커밋을 풀면 raceline 전속 경로로
   /// 순간 전환돼 반대편 벽을 친다(커밋 도입 근거와 같은 실측).
   double committed_obs_end_s_{-1.0};
-  /// 커밋을 만든 장애물의 id 와 그 시점의 s_center.
-  /// commit_dyn_release_move_m_ 만료 판정에만 쓴다. -1 = 미설정.
-  /// ⚠️ ClusterObstacles 는 병합 박스에 min(id) 를 준다 — 클러스터 구성이
-  ///    바뀌면 id 도 바뀔 수 있다. 그때 아래 조회는 **못 찾고 끝나며**
-  ///    만료가 걸리지 않는다(= 종전 동작). 즉 이 불안정성은 "놓친다"로만
-  ///    나타나고 "잘못 파기한다"로는 나타나지 않는다.
-  int32_t committed_obs_id_{-1};
-  double committed_obs_s_{-1.0};
-  /// 이 커밋의 대상이 움직이는 상대였나. 정적 대상이면 false 이고 만료 판정을
-  /// 통째로 건너뛴다 — 정적 회피 경로가 비트 단위로 종전과 같아야 한다.
-  /// (정적은 vs=0 이라 조건에 걸릴 수도 없지만, 계산 자체를 건너뛴다.)
-  /// 키를 is_static 하나로 두지 않는 이유는 dyn_path_lat_acc_max_ 쪽과 같다 —
-  /// is_static 은 실측으로 1.3초에 5번까지 뒤집힌다. 단조 플래그
-  /// WasEverDynamic 을 OR 로 함께 본다. 예측 튜브는 제외한다: 튜브의 s 는
-  /// **자차 속도**로 다시 계산되는 값이라, 우리가 느려진 것만으로 튜브가
-  /// 움직여 커밋이 엉뚱한 이유로 풀린다.
-  bool committed_obs_dynamic_{false};
   /// 커밋 파기 확정에 필요한 연속 충돌 사이클 수. 1 이면 종전 동작
   /// (한 번 걸리면 즉시 파기). 차체 접촉(contact_slack <= 0)은 이 값과
   /// 무관하게 항상 즉시 파기하므로, 이 지연이 적용되는 것은 "분산 여유만
   /// 갉아먹은" 얕은 충돌뿐이다.
   int commit_break_confirm_cycles_{2};
+  /// 커밋 경로에서 자차가 이만큼 벗어나면 파기한다 [m]. 0 이면 기능 off
+  /// (= 종전 동작: 경로/장애물만 보고 자차 이탈은 안 본다).
+  /// 0.40 = run_0822_000933 실측으로 정상 회피(p99 0.188 / max 0.532)와
+  /// 사고 구간(p50 0.331 / max 1.006)을 가르는 값. 정상 구간 발화 1 사이클.
+  double commit_break_lat_dev_m_{0.40};
+  /// 위 이탈이 이만큼 **연속**돼야 파기한다. 3 = 30 Hz 기준 0.1 s.
+  /// 정상 구간의 단발 1 사이클을 걸러내는 것이 목적이다.
+  int commit_break_lat_dev_cycles_{3};
+  /// 현재 커밋에서 횡이탈이 연속으로 관측된 사이클 수.
+  int commit_lat_dev_run_{0};
   /// 현재 커밋에서 충돌이 연속으로 관측된 사이클 수 (위 판정용).
   int commit_collision_run_{0};
   /// 이 커밋이 꼬리 충돌로 한 번이라도 잘렸는가. 만료 사유를 구분하는 데만
   /// 쓴다 (path_end vs 꼬리 절단에 의한 계획적 만료).
   bool committed_tail_truncated_{false};
-  // DoSpline이 이번 사이클에 쓸 값 (섹터 안: 공격 모드 / 밖: 기본값)
-  double active_speed_scale_{1.0};
   // 이번 사이클에 실제로 쓸 그립 예산 [m/s^2]. ApplySpeedProfile(곡률 캡·
   // 마찰원 종그립·reachable 성립성)과 BlendLatAcc 가 path_lat_acc_max_ 대신
-  // 이 값을 읽는다. Run() 이 매 사이클 path_lat_acc_max_ 로 되돌리고,
-  // 최근접 장애물이 한 번이라도 동적이었으면 dyn_path_lat_acc_max_ 로 올린다.
-  // ⚠️ 리셋을 빠뜨리면 직전 동적 사이클의 예산이 정적 경로/커밋 재생으로
-  //    새는 통로가 된다 — active_speed_scale_ 이 정확히 그 사고를 냈다.
+  // 이 값을 읽는다. Run() 이 매 사이클 path_lat_acc_max_ 로 되돌린다.
+  // (2026-08-22: 동적 전용 상향 분기는 제거됐다 — 회피가 정적 전용이 되어
+  //  나눌 대상이 없다. 예산 자체의 상향은 9단계에서 한 값으로 한다.)
   double active_lat_budget_{7.0};
-  /// 위 p_dyn_speed_floor_ 로 내보낼 이번 사이클 값. 매 사이클 0 으로 리셋.
-  double dyn_speed_floor_{0.0};
 
-  // SP 레인체인지 상태
-  bool sp_lane_change_{true};
-  // 추월 완료 판정: 상대 앞머리가 ego 뒤로 이 간격만큼 벌어져야 복귀 [m]
-  double lc_pass_clear_m_{4.0};
-  std::vector<f1tenth_planning_msgs::msg::Wpnt> sp_raw_;   // SP 라인 원본 (자체 s 좌표)
-  std::vector<double> sp_d_;    // gb 인덱스별 SP 라인의 IQP frenet 횡 오프셋
-  std::vector<double> sp_vx_;   // gb 인덱스별 SP 라인 속도
-  bool has_sp_{false};          // 매핑 완료 여부
-  bool sp_mapping_attempted_{false};
-  double sp_mapping_max_residual_m_{0.5};
   double vehicle_wheelbase_m_{0.33};
   double vehicle_max_steering_rad_{0.3578};
   double vehicle_max_steering_rate_radps_{2.0};
@@ -1141,26 +1033,15 @@ private:
   // BuildEscapeArc 의 기울기 완화 구간(원호 0.4D + ease 0.6D, 두 구간 피크가
   // 모두 5A/D²)이 들어가면서 없어졌고, 배포 yaml 4개 어디에도 스위치가 없어
   // 완화가 켜진 적이 한 번도 없다 — 즉 reject_ratio 쪽은 읽힌 적조차 없다.
-  bool lc_active_{false};
-  // BuildSpExit 이 연속으로 경로 생성에 실패한 횟수. 일시적 거부는 재시도로
-  // 버티되(빈 경로 발행 = 전속 raceline 복귀를 막는다), 계속 실패하면
-  // lc_active_ 를 내려 SP 상태에 영구히 갇히지 않게 한다.
-  int sp_exit_fail_count_{0};
-  static constexpr int kSpExitMaxFail{10};   // 20Hz 기준 0.5초
 
   // State
   f1tenth_planning_msgs::msg::ObstacleArray obstacles_;
   rclcpp::Time obstacles_stamp_{0, 0, RCL_ROS_TIME};
-  /// 관측 이력에 마지막으로 반영한 인지 프레임의 stamp.
-  /// 같은 stamp 면 ClassifyObstacles 가 이력을 쌓지 않는다 (kClsWindow 주석).
-  rclcpp::Time cls_last_stamp_{0, 0, RCL_ROS_TIME};
-  bool cls_has_stamp_{false};
-  f1tenth_planning_msgs::msg::ObstacleArray predicted_obstacles_;
-  rclcpp::Time predicted_stamp_{0, 0, RCL_ROS_TIME};
   std::vector<f1tenth_planning_msgs::msg::Wpnt> gb_wpnts_;
-  // 파생 캐시(ot_sectors_, sp_d_, sp_vx_)가 어느 레이아웃으로 만들어졌는지.
-  // sp_d_/sp_vx_ 는 **gb 인덱스로 직접 첨자**되므로 gb_wpnts_ 가 다른 크기로
-  // 재발행되면 out-of-bounds 다. 레이아웃이 바뀌면 파생물을 전부 무효화한다.
+  // 파생 캐시(ot_sectors_)가 어느 레이아웃으로 만들어졌는지. gb_wpnts_ 가
+  // 다른 크기로 재발행되면 섹터가 옛 s 좌표를 가리킨 채 남으므로, 레이아웃이
+  // 바뀌면 파생물을 무효화한다. (gb 인덱스로 직접 첨자되던 SP 캐시는
+  // 2026-08-22 에 제거됐다 — 그쪽은 out-of-bounds 위험까지 있었다.)
   size_t gb_layout_size_{0};
   double gb_layout_len_{0.0};
   double gb_vmax_{0.0};
@@ -1203,11 +1084,6 @@ private:
   // 이번 사이클에 쌓인 거부 사유(발생 순서, 쉼표 구분). TraceCycle이 소비하고
   // Run() 시작에서 비운다. NoteReject가 const 경로에서도 불리므로 mutable.
   mutable std::string cycle_rejects_;
-  // ── P0 계측 (2026-08-21, 거동 변경 없음) ──────────────────────────────
-  // MoreSpace 의 "양쪽 다 통과 불가" 분기를 사이클당 한 번만 센다. MoreSpace 는
-  // 한 사이클에 두 곳(TryLaneSwitch / DoSpline)에서 불리므로 그냥 세면 두 배가
-  // 된다. Run() 시작에서 내린다.
-  mutable bool blocked_both_noted_{false};
   // ApplySpeedProfile 이 곡률 한계로 경로를 버렸을 때 **어느 점**이 걸렸는지.
   // 거부 로그는 호출자(TryLaneSwitch/DoSpline/...)에 있는데 사유가 "기하곡률>
   // 조향한계 또는 감속 불가"로 뭉뚱그려져 있어, 머리 곡률 수정이 실제로
@@ -1246,64 +1122,13 @@ private:
   double retry_d_target_{0.0};
   rclcpp::Time retry_d_stamp_{0, 0, RCL_ROS_TIME};
   bool has_retry_d_{false};
-  // ── 충돌로 기각된 목표는 남기지 않는다 (2026-08-20) ─────────────────────
-  // NoteRetryTarget 은 **경로 검증 전에** 호출된다. 위 주석이 밝힌 대로
-  // "속도/기하로 떨어져도 가려던 방향은 남긴다"가 의도이고 그건 맞다 —
-  // 그쪽 기각은 목표가 옳고 지금 못 갈 뿐이라, 진행을 지켜야 잔량이 줄고
-  // 언젠가 성립한다.
-  //
-  // 그런데 **충돌** 기각은 성격이 다르다. 목표 자리에 물체가 있다는 뜻이라
-  // 그 목표에 도착하는 것이 곧 접촉이고, 그쪽으로 쌓은 진행은 가치가 아니라
-  // 위험이다. run_0820_173822 25.4s 실측:
-  //   · 정적 #22(s 20.65~20.99) 를 오른쪽으로 비키려고 d_hold = -0.52 기록
-  //   · HoldClearsOthers 는 **#22 옆 유지 구간만**(자차 앞 1.37 m 이후) 보므로
-  //     자차 앞 0.7 m 의 동적 #12(d[-0.64,-0.32]) 는 걸리지 않는다
-  //   · BuildLaneSwitch 의 CheckPathCollision 이 #12 와의 충돌로 기각
-  //     (lane_collision) — 그러나 목표는 이미 기록된 뒤였다
-  //   · 트레일링이 그 -0.52 -> -0.60 을 이어받아 25.97s 중심간 0.21 m 접촉
-  // 그 충돌 판정은 상대를 **도착시각만큼 전파**해서 내린 것이고(motion_s/
-  // motion_d), 이 백에서 등속 예측 오차는 약 0.09 m 였다. 즉 "상대가 비켜
-  // 줄 것"은 이미 반영돼 있고, 비켜 주는 경우엔 애초에 기각이 나지 않는다.
-  //
-  // 그래서 기각 사유를 구분해 **충돌일 때만** 직전 값으로 되돌린다. 되돌림은
-  // 초기화(clear)가 아니라 복원이다 — 예전 목표가 아직 유효 창 안이면 그것을
-  // 살려 두는 편이 위 교착 방어에 가깝다.
-  struct RetryTargetSnapshot {
-    double target{0.0};
-    double vd{0.0};
-    rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
-    bool has{false};
-  };
-  RetryTargetSnapshot SnapshotRetryTarget() const;
-  void RestoreRetryTarget(const RetryTargetSnapshot &snap);
-  /// 직전 경로 검증이 **충돌**로 떨어졌는가. CheckPathCollision 기각 지점에서만
-  /// 선다(lane_collision / spline_collision). 호출 직전에 반드시 내려 둘 것.
-  bool path_collision_reject_{false};
   static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간 (정적/준정적)
-  /// 목표를 기록할 때 대상 장애물의 횡속도 [m/s]. 동적 유지에서 경과 시간만큼
-  /// 목표 d 를 따라 옮기는 데 쓴다 (아래 kRetryDHoldDynSec 주석 참조).
-  double retry_d_vd_{0.0};
-  /// 동적 상대에 대한 목표 유효 시간 [s]. 정적보다 **짧게** 잡는다.
-  ///
-  /// 2026-08-18 에 이 유지를 정적/준정적으로 좁힌 근거는 "움직이는 상대에
-  /// 최대 0.7 초 전 목표 d 를 붙잡으면 상대 2 m/s 에서 1.4 m 어긋난 자리를
-  /// 겨눈다" 였고, 미뤄 둔 설계 질문은 "상대가 움직이는 동안 목표 d 를 어떻게
-  /// 갱신할 것인가" 였다. 답:
-  ///   · 목표는 **횡(d)** 이고, 상대의 종방향 이동은 d 를 바꾸지 않는다.
-  ///     그래서 어긋남을 만드는 것은 vs 가 아니라 **vd** 뿐이다.
-  ///   · 그러면 vd·age 만큼 목표를 따라 옮기면 된다 (아래 d_goal 계산).
-  ///   · 그래도 vd 추정 오차가 age 에 비례해 쌓이므로 창 자체를 짧게 둔다.
-  /// run_0818 두 백 실측 |vd| 는 p90 0.30 m/s 수준이라, 0.30 s 창이면 보정
-  /// 후 잔여 오차가 0.09 m — 차 반폭(0.15)보다 작다.
-  static constexpr double kRetryDHoldDynSec{0.30};
   std::mutex mutex_obstacles_;
   std::mutex mutex_gb_wpnts_;
 
   rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_obstacles_;
-  rclcpp::Subscription<f1tenth_planning_msgs::msg::ObstacleArray>::SharedPtr s_predicted_obstacles_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
-  rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_sp_waypoints_;
   rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_evasion_wpnts_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_markers_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr p_sector_markers_;
@@ -1311,12 +1136,56 @@ private:
   // 가므로, control 의 추종 백스톱(조향포화 -> 감속)이 그대로 걸리면 회피와
   // 싸운다. 컨트롤러는 이 신호가 true 인 동안 포화 분기만 건너뛴다.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_escape_active_;
-  /// 동적 상대 속도에서 유도한 속도 바닥 [m/s]. local_trajectory 의
-  /// "회피 경로 상실 홀드"가 절대 상수(1.5)로 캡을 걸다가 **상대보다 느린**
-  /// 속도를 130점 전부에 퍼뜨리는 것을 막는다 (run_0819 86.99~87.44s 실측).
-  /// 전방 lookahead 안 동적 상대의 필터 속도 x dyn_pass_speed_ratio 이고,
-  /// 동적 상대가 없으면 0 (= 종전 동작). 매 사이클 발행한다.
-  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr p_dyn_speed_floor_;
+  /// 이번 사이클에 **차를 세워 둘 의도가 없는가**. 컨트롤러의 정지 발진
+  /// 하한(map/speed_lookahead_min_m) 게이트다.
+  ///   evasion_valid && (!used_trailing || allow_stop 이 false 인 트레일링)
+  ///
+  /// ApplySpeedProfile 은 경로 머리 속도를 cur_vs_ 에 앵커하므로 정지 중
+  /// 회피 경로의 첫 점은 vx=0 이 된다. 컨트롤러의 속도 lookahead 는
+  /// 거리가 아니라 v x 0.25 초라 v=0 에서 0 m 가 되고, 결국 그 0 을 읽어
+  /// 명령 0 -> v=0 이 스스로를 유지한다 (run_0822_001734 실측: 정지+회피
+  /// 1773 사이클 중 87.5 % 가 계획 선두속도 0, 회피가 없으면 0.7 %).
+  ///
+  /// 처음에는 trailing 을 통째로 제외했다("회피 못 해서 따라가며 감속"
+  /// 이므로). 그 판이 실차에서 정확히 반대로 작동했다 — run_0822_143207 /
+  /// _144702 의 정지 교착 4 에피소드(19.1 / 49.4 / 72.8 / 50.5 s, 두 백
+  /// 375.9 s 의 51 %) 는 **전부** trailing 사이클이라 게이트가 닫혀 있었다:
+  ///   명령 0 이 99.7~99.8 %, 계획 선두속도 중앙 0.00,
+  ///   evade_committed=true 는 0.5~3.3 % 뿐.
+  /// 네 에피소드 모두 사람이 차를 옮겨서 풀었다.
+  ///
+  /// 갈라야 하는 것은 "trailing 인가"가 아니라 **"세울 의도인가"**다. 그
+  /// 판단은 플래너가 이미 allow_stop 으로 내리고 있다:
+  ///   allow_stop=false (처음부터 정적인 콘) -> BuildTrailing 이 목표속도에
+  ///     trailing_retry_speed_ 바닥을 깐다. 즉 "감속하되 서지는 않는다"가
+  ///     플래너의 명시된 의도인데, ApplySpeedProfile 의 0 앵커가 그 의도를
+  ///     매 사이클 0 으로 덮어써서 영구 교착이 된다. 위 4 에피소드의
+  ///     정지 사이클 중 88.7 % / 99.7 % 가 이 상태였다
+  ///     (trailing_retry_clamp_raised 가 그 사이클에서만 오른다).
+  ///   allow_stop=true (동적 상대, 달리다 멈춘 상대, 비상정지 합성 장애물)
+  ///     -> 진짜 정지 계획이므로 종전대로 게이트를 닫는다.
+  ///
+  /// 두 백 오프라인 재검증 (정지 사이클 2439 / 1314):
+  ///   게이트 열림 4.0 % -> 88.9 %,  2.7 % -> 99.7 %
+  ///   명령 0    94.8 % -> 12.0 %,  97.0 % ->  0.5 %
+  ///   명령 중앙  0.00 -> 1.25 m/s,  0.00 -> 1.39 m/s
+  ///
+  /// ⚠️ 남는 노출 — 새로 발진하는 사이클을 **차체 횡중첩**으로 걸러 세면:
+  ///   144702 는 1274 사이클 전부가 장애물 옆에 이미 비켜 서 있었다
+  ///     (정면 노출 0). 나가는 것이 유일하게 옳은 동작이다.
+  ///   143207 은 71.8 % 가 정면이지만 간격 중앙 3.42 m 이고, 발진속도
+  ///     1.27 m/s 의 정지거리(0.78 m) 안쪽은 1.3 %, 0.30 m 안쪽은 0.6 %.
+  ///   (게이트만 보고 세면 각각 20.1 % / 41.5 % 로 나오는데, 그 대부분은
+  ///    옆으로 비켜 선 장애물이다 — 이 수를 쓰지 말 것.)
+  /// 이 거래를 받는 근거는 (a) 정적 장애물에 완전 정지를 주지 않는 것이
+  /// 이미 확정된 설계이고(0806 정지 라치 방지), (b) 대안이 사람이 차를
+  /// 들어 옮기는 것뿐이기 때문이다. 실차에서 콘 접촉이 관측되면 여기가
+  /// 아니라 BuildTrailing 의 바닥(trailing_retry_speed_)을 손볼 것 —
+  /// 게이트를 다시 닫으면 교착이 그대로 돌아온다.
+  ///
+  /// 매 사이클 발행한다 — 구독자가 마지막 true 에 붙어 있지 않게
+  /// (p_escape_active_ 와 같은 fail-closed 처리).
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_evade_committed_;
   rclcpp::TimerBase::SharedPtr t_run_;
 };
 
