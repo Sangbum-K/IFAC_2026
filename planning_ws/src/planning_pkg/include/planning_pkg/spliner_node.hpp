@@ -464,6 +464,11 @@ private:
     const f1tenth_planning_msgs::msg::Obstacle & b,
     double s_start, double s_end) const;
 
+  /// ClusterObstacles 가 이번 사이클에 모은 봉쇄 근거(corridor_block_evidence_)
+  /// 로 정지 권한 래치를 갱신하고 /planner/corridor_blocked 로 낸다.
+  /// 계획 사이클마다 ClusterObstacles **직후** 정확히 1회 호출한다.
+  void UpdateCorridorBlockLatch();
+
   // 회피 거부 사유 누적 카운터. 거부 로그는 전부 THROTTLE(2000ms)인데 루프는
   // 30Hz라 최대 1/60만 남는다 — 0808 run_185049 분석에서 "left가 왜 실패했나"가
   // 대부분 지워져 있었다. 카운터는 전수를 세고 /pitwall/reject_<사유>로 낸다.
@@ -869,6 +874,38 @@ private:
   // WasEverMoved 문턱 [m]. 0 이면 기능이 꺼진다(= 정지 권한이 is_static 하나로
   // 결정되던 종전 동작). 실측 근거는 ObsClsTrack::max_disp 주석.
   double ever_moved_min_disp_m_{0.5};
+  // ── 회랑 봉쇄 정지 권한 (2026-08-22, run_0822_000310) ──────────────────
+  // MergeBlocksTrack 의 "합치면 통과 가능한 d 가 하나도 없다" 판정은 지금까지
+  // **병합 취소 사유로만** 쓰이고 버려졌다. run_0822_000310 t=112.3~113.9 에서
+  // 그 판정이 99회(사실상 매 사이클) 떴는데도 자차는 BuildTrailing 의 바닥
+  // (trailing_retry_speed 2.5 -> degraded 1.5)에 걸려 잔해 쪽으로 계속 굴러갔다.
+  //
+  // 이 래치는 그 판정을 **정지 권한** 하나로만 승격한다. 비상정지가 아니고
+  // 횡 목표(d_goal)도 건드리지 않는다 — allow_stop 은 원래 속도 결정이다
+  // (BuildTrailing 의 d_goal 주석 참조). 그래서 오검출의 대가가 "필요 이상
+  // 감속"이지 "이유 없는 급정지"가 아니다. [[planning-full-block-estop-0821]]
+  // 이 계산한 랩당 0.83회 오정지는 **정지 트리거**로 쓸 때의 값이다.
+  bool corridor_block_stop_enabled_{true};
+  // 근거 구간이 시작될 때 이 속도 이상이어야 래치가 무장한다. 트레일링으로
+  // 이미 기어가는 중이면 바닥을 풀어 줄 이유가 없다 — run_0822_000310 의
+  // 오발화 버스트 2건(t≈36-38, 88-90)이 전부 헤어핀에서 상대를 <=2.5 m/s 로
+  // 정상 추종하던 구간이었고, 사고 버스트만 3.4 m/s 였다.
+  double corridor_block_stop_min_speed_{3.0};
+  // 단발 유령 제거용 디바운스. 6프레임(30Hz 기준 0.2s)보다 짧게 잡되
+  // 1프레임은 반드시 거른다.
+  double corridor_block_stop_hold_sec_{0.15};
+  // 근거가 이만큼 끊기면 래치를 푼다. 속도 게이트와 달리 **해제에는 속도
+  // 조건이 없다** — 래치가 걸려 차가 느려지면 속도 게이트가 스스로 래치를
+  // 풀어 바닥이 되살아나는 자기모순이 생긴다.
+  double corridor_block_stop_release_sec_{0.5};
+  // 이번 사이클에 "구성원 전원이 한 번도 안 움직인" 봉쇄 병합이 있었나.
+  // ClusterObstacles 가 세우고 UpdateCorridorBlockLatch 가 소비한다.
+  bool corridor_block_evidence_{false};
+  bool corridor_block_run_valid_{false};   // 연속 근거 구간이 진행 중인가
+  bool corridor_block_run_armed_{false};   // 그 구간 시작 시 속도 게이트 통과
+  rclcpp::Time corridor_block_run_since_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time corridor_block_last_evidence_{0, 0, RCL_ROS_TIME};
+  bool corridor_block_latched_{false};
   static constexpr size_t kClsWindow{20};     // 위치 std 계산 관측 창
   static constexpr size_t kClsVsWindow{10};   // vs 평균 관측 창 (unicorn vs_list 10)
   struct ObsClsTrack {
@@ -1136,6 +1173,10 @@ private:
   // 가므로, control 의 추종 백스톱(조향포화 -> 감속)이 그대로 걸리면 회피와
   // 싸운다. 컨트롤러는 이 신호가 true 인 동안 포화 분기만 건너뛴다.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_escape_active_;
+  /// 회랑 봉쇄 래치 상태. 소비처는 없고 관측용이다 — 백에서 발화율(랩당)을
+  /// 재려면 이 토픽 하나만 보면 된다. corridor_block_stop_enabled_ 가
+  /// false 여도 근거 판정은 그대로 돌아 계측이 끊기지 않는다.
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr p_corridor_blocked_;
   /// 이번 사이클에 **차를 세워 둘 의도가 없는가**. 컨트롤러의 정지 발진
   /// 하한(map/speed_lookahead_min_m) 게이트다.
   ///   evasion_valid && (!used_trailing || allow_stop 이 false 인 트레일링)

@@ -1088,3 +1088,74 @@ def test_ever_moved_stop_authority_is_paired_with_measured_speed():
         f"ever_moved_min_disp_m={thr} 가 콘 오분류(0.21 m)와 실제 상대 이동 "
         f"사이를 못 가른다"
     )
+
+
+def test_corridor_block_verdict_reaches_stop_authority():
+    """"합치면 트랙이 막힌다" 판정이 정지 권한까지 도달해야 한다.
+
+    run_0822_000310 t=112.3~113.9: 그 판정이 99회(= 매 사이클) 떴는데도
+    잔해는 새 id·is_static·이동이력 0 이라 allow_stop 이 열리지 않았고,
+    자차는 degraded 1.5 m/s 바닥으로 계속 굴러가 벽까지 갔다. 판정을
+    NoteOutcome 으로만 세고 버리면 그 사고가 그대로 재현된다.
+    """
+    src = _spliner_source()
+    # (1) 판정 지점에서 래치 근거를 세운다.
+    verdict = re.search(
+        r'NoteOutcome\("cluster_merge_blocks_track"\);(.*?)'
+        r"corridor_block_evidence_ = true;", src, re.S)
+    assert verdict, "봉쇄 판정이 래치 근거로 이어지지 않는다 — 판정이 다시 버려진다"
+    # 근거는 **회랑**의 성질이지 트랙 하나의 성질이 아니다. WasEverMoved 를
+    # 걸면 정확히 반대로 동작한다 — run_0822_000310 재생 실측: 사고 버스트는
+    # 93쌍 중 70쌍이 "움직인 구성원"을 가졌고(강체 잔해의 클러스터 재배분),
+    # 오발화 버스트(헤어핀 콘)는 46/46 이 "안 움직임"이었다.
+    verdict_code = re.sub(r"//[^\n]*", "", verdict.group(1))
+    assert "WasEverMoved" not in verdict_code, (
+        "봉쇄 근거에 WasEverMoved 게이트가 걸렸다 — 잔해를 거르고 콘을 통과시킨다"
+    )
+    # (2) 그 래치가 BuildTrailing 의 정지 권한 인자로 실제로 들어가야 한다.
+    #     allow_stop 문장 자체는 건드리지 않는다(위 테스트가 고정한다).
+    assert re.search(
+        r"const bool stop_authority =\s*"
+        r"allow_stop \|\| corridor_block_latched_;.*?"
+        r"BuildTrailing\(closest, evasion_wpnts, mrks,\s*"
+        r"stop_authority, &all_ahead\)", src, re.S), (
+        "래치가 BuildTrailing 의 allow_stop 인자에 연결되지 않았다"
+    )
+    # (3) 속도 게이트는 근거 구간 **시작에서 한 번만** 본다. 매 사이클 보면
+    #     래치로 차가 느려지는 순간 게이트가 스스로 래치를 풀어 바닥이
+    #     되살아난다 (자기모순 -> 결국 들이받는다).
+    assert re.search(
+        r"if \(!corridor_block_run_valid_\) \{.*?"
+        r"corridor_block_run_armed_ =\s*"
+        r"!\(corridor_block_stop_min_speed_ > 0\.0\) \|\|\s*"
+        r"std::abs\(cur_vs_\) >= corridor_block_stop_min_speed_;", src, re.S), (
+        "속도 게이트가 근거 구간 시작이 아니라 매 사이클 평가된다"
+    )
+    # (4) 해제 조건에 속도가 끼면 (3)과 같은 자기모순이 된다.
+    release = re.search(
+        r"if \(corridor_block_latched_\) \{(.*?)\n        \}", src, re.S)
+    assert release, "래치 해제 분기를 찾지 못했다"
+    assert "cur_vs_" not in release.group(1), (
+        "래치 해제가 속도를 본다 — 래치가 스스로를 푼다"
+    )
+    # (5) 문턱들.
+    params = _ros_params(_yaml(PARAMS), "spliner_node")
+    hold = params["spliner/corridor_block_stop_hold_sec"]
+    rel = params["spliner/corridor_block_stop_release_sec"]
+    vmin = params["spliner/corridor_block_stop_min_speed"]
+    # 1프레임(30Hz=0.033s) 유령은 거르고, 물리 예산(봉쇄 확정 -> 정지
+    # 데드라인 0.14~0.4s) 안에서 끝나야 한다.
+    assert 0.05 <= hold <= 0.30, f"hold={hold} 가 유령/물리 예산 사이를 못 잡는다"
+    assert rel >= hold, "해제가 hold 보다 짧으면 래치가 채터링한다"
+    # 트레일링으로 이미 기어가는 중(<=2.5 m/s, 오발화 버스트 실측)이면
+    # 바닥을 풀어 줄 이유가 없다. 레이스라인 최저속(4.6 m/s) 위로 올리면
+    # 사고 버스트(3.4 m/s)를 놓친다.
+    # trailing_retry_speed 아래에서는 바닥이 구속이 아니라 래치가 바꿀 것이
+    # 없다(노드도 거부한다). 위로는 사고 버스트 시작 3.29 m/s 를 넘기면 안 된다.
+    assert params["spliner/trailing_retry_speed"] <= vmin <= 3.2, (
+        f"corridor_block_stop_min_speed={vmin} 가 오발화 버스트(v_max 2.02)와 "
+        f"사고 버스트(v_start 3.29) 사이를 못 가른다"
+    )
+    assert params["spliner/corridor_block_stop_enabled"] is True, (
+        "회랑 봉쇄 정지 권한이 꺼져 있다 — run_0822_000310 사고가 재현된다"
+    )

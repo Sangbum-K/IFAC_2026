@@ -124,6 +124,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/cls_inherit_dist_m", 0.6);
     this->declare_parameter("spliner/cls_inherit_timeout_sec", 0.5);
     this->declare_parameter("spliner/ever_moved_min_disp_m", 0.5);
+    this->declare_parameter("spliner/corridor_block_stop_enabled", true);
+    this->declare_parameter("spliner/corridor_block_stop_min_speed", 3.0);
+    this->declare_parameter("spliner/corridor_block_stop_hold_sec", 0.15);
+    this->declare_parameter("spliner/corridor_block_stop_release_sec", 0.5);
     this->declare_parameter("spliner/sector_gating", true);
     this->declare_parameter("spliner/ot_min_clearance", 0.95);
     this->declare_parameter("spliner/ot_max_kappa", 0.1);
@@ -273,6 +277,14 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/cls_inherit_timeout_sec").as_double();
     ever_moved_min_disp_m_ =
         this->get_parameter("spliner/ever_moved_min_disp_m").as_double();
+    corridor_block_stop_enabled_ =
+        this->get_parameter("spliner/corridor_block_stop_enabled").as_bool();
+    corridor_block_stop_min_speed_ = this->get_parameter(
+        "spliner/corridor_block_stop_min_speed").as_double();
+    corridor_block_stop_hold_sec_ = this->get_parameter(
+        "spliner/corridor_block_stop_hold_sec").as_double();
+    corridor_block_stop_release_sec_ = this->get_parameter(
+        "spliner/corridor_block_stop_release_sec").as_double();
     sector_gating_ = this->get_parameter("spliner/sector_gating").as_bool();
     ot_min_clearance_ = this->get_parameter("spliner/ot_min_clearance").as_double();
     ot_max_kappa_ = this->get_parameter("spliner/ot_max_kappa").as_double();
@@ -338,6 +350,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         // 그대로 vx 로 흘러간다 (BuildTrailing 은 ApplySpeedProfile 의
         // 반환값을 쓰지 않아 그쪽 isfinite 검사가 발행을 막지 못한다).
         trailing_retry_speed_degraded_, early_switch_kappa_max_,
+        // 래치 타이머가 NaN 이면 (now - since) 비교가 전부 false 라 래치가
+        // **영원히 안 걸린다** = 이 기능이 조용히 죽는다.
+        corridor_block_stop_min_speed_, corridor_block_stop_hold_sec_,
+        corridor_block_stop_release_sec_,
         spline_resolution_,
         // 준정적 추월 접근속도 문턱. NaN 이면 아래 비교가 전부 false 가 되어
         // "모든 동적 상대가 준정적"이 되고, 커밋/retry_d 가 근거 없이 열린다.
@@ -425,6 +441,21 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         cls_inherit_dist_m_ < 0.0 || cls_inherit_dist_m_ > 5.0 ||
         cls_inherit_timeout_sec_ < 0.0 || cls_inherit_timeout_sec_ > 5.0 ||
         ever_moved_min_disp_m_ < 0.0 || ever_moved_min_disp_m_ > 10.0 ||
+        // 0 = 속도 게이트 없음(모든 속도에서 무장). 상한은 레이스라인 최고속.
+        corridor_block_stop_min_speed_ < 0.0 ||
+        corridor_block_stop_min_speed_ > 10.0 ||
+        // 게이트가 트레일링 바닥보다 낮으면 무장해도 바꿀 것이 없다 — 그
+        // 아래에서는 바닥이 애초에 구속이 아니다. 오발화만 늘린다.
+        (corridor_block_stop_enabled_ &&
+         corridor_block_stop_min_speed_ > 0.0 &&
+         corridor_block_stop_min_speed_ < trailing_retry_speed_) ||
+        // hold 0 은 1프레임 유령까지 래치한다. 상한은 물리 예산(0.14~0.4s,
+        // [[planning-full-block-estop-0821]]) 밖으로 못 나가게.
+        corridor_block_stop_hold_sec_ <= 0.0 ||
+        corridor_block_stop_hold_sec_ > 0.5 ||
+        // 해제가 hold 보다 짧으면 래치가 채터링한다.
+        corridor_block_stop_release_sec_ < corridor_block_stop_hold_sec_ ||
+        corridor_block_stop_release_sec_ > 5.0 ||
         ot_min_clearance_ <= 0.0 || ot_min_clearance_ > 10.0 ||
         ot_max_kappa_ <= 0.0 || ot_max_kappa_ > 5.0 ||
         lane_blend_out_m_ <= 0.0 || lane_blend_out_m_ > lookahead_m_ ||
@@ -529,6 +560,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         rclcpp::QoS(rclcpp::KeepLast(1)).transient_local());
     p_escape_active_ = this->create_publisher<std_msgs::msg::Bool>(
         "/planner/escape_active", qos_profile);
+    p_corridor_blocked_ = this->create_publisher<std_msgs::msg::Bool>(
+        "/planner/corridor_blocked", qos_profile);
     p_evade_committed_ = this->create_publisher<std_msgs::msg::Bool>(
         "/planner/avoidance/evade_committed", qos_profile);
 
@@ -854,8 +887,13 @@ void SplinerNode::Run() {
     {
         std::lock_guard<std::mutex> lock(mutex_gb_wpnts_);
         // 붙어 있는 장애물들을 먼저 하나의 박스로 병합 — 이후의 최근접 선택,
-        // 회피, 경로 검증이 모두 클러스터 단위로 일관되게 동작한다
+        // 회피, 경로 검증이 모두 클러스터 단위로 일관되게 동작한다.
+        // 이 안에서 "합치면 트랙이 막힌다" 판정이 나오면 봉쇄 근거가 선다.
+        corridor_block_evidence_ = false;
         obs_copy.obstacles = ClusterObstacles(obs_copy.obstacles);
+        // perception stale/malformed 사이클은 obstacles 가 비어 근거가 안 서고,
+        // 해제 타이머가 정상적으로 래치를 푼다 — 별도 처리가 필요 없다.
+        UpdateCorridorBlockLatch();
         auto all_ahead_now = ObstaclesInLookahead(obs_copy.obstacles);
 
         // 커밋 해제 판정용 타이머. 관측수/가시성 게이트를 거치지 않은 **원시**
@@ -1508,19 +1546,31 @@ void SplinerNode::Run() {
                 //    같이 바꿨다 — 둘은 한 묶음이다.
                 const bool allow_stop =
                     !closest.is_static || WasEverMoved(closest.id);
+                // ── 회랑 봉쇄 래치의 승격 (2026-08-22) ──────────────────────
+                // allow_stop 문장 자체는 손대지 않는다 — 그 계약("정지 권한은
+                // 관측 변위로 연다")은 그대로 두고, 회랑이 실제로 막혔다는
+                // **독립 근거**를 OR 로 얹는다. 잔해는 새 id·is_static·이동
+                // 이력 0 이라 위 두 항으로는 영원히 열리지 않는다
+                // (run_0822_000310: 그래서 degraded 1.5 로 들이받았다).
+                const bool stop_authority =
+                    allow_stop || corridor_block_latched_;
                 evasion_wpnts.wpnts.clear();
                 mrks.markers.clear();
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks,
-                                              allow_stop, &all_ahead);
+                                              stop_authority, &all_ahead);
                 used_trailing = evasion_valid;
-                trailing_no_stop = used_trailing && !allow_stop;
+                trailing_no_stop = used_trailing && !stop_authority;
                 if (used_trailing && closest.is_static &&
                     !static_stop_active_) {
-                    // 정적은 이제 어느 쪽이든 정지가 아니라 감속이다
-                    // (allow_stop = !is_static). 문구를 거동에 맞춘다.
-                    pitwall::Event(geom_blocked
-                        ? "정적 장애물 감속 (회피 기하 불성립 — 횡이동 유지)"
-                        : "정적 장애물 감속 (회피 일시 실패 — 재시도)");
+                    // 정적은 기본적으로 정지가 아니라 감속이다
+                    // (allow_stop = !is_static). 회랑 봉쇄 래치가 걸린
+                    // 사이클만 예외로 정지까지 간다 — 문구를 거동에 맞춘다.
+                    pitwall::Event(
+                        corridor_block_latched_
+                            ? "회랑 봉쇄 — 정적 장애물 앞 정지"
+                        : geom_blocked
+                            ? "정적 장애물 감속 (회피 기하 불성립 — 횡이동 유지)"
+                            : "정적 장애물 감속 (회피 일시 실패 — 재시도)");
                 }
                 static_stop_now = used_trailing && closest.is_static;
             }
@@ -5126,6 +5176,61 @@ bool SplinerNode::MergeBlocksTrack(
     return left_gap < min_space && right_gap < min_space;
 }
 
+void SplinerNode::UpdateCorridorBlockLatch() {
+    const auto now = this->now();
+    const bool evidence = corridor_block_evidence_;
+
+    if (evidence) {
+        if (!corridor_block_run_valid_) {
+            // 근거 구간의 시작. 무장 여부를 **여기서 한 번** 고정한다.
+            // 매 사이클 속도를 다시 보면, 래치가 걸려 차가 느려지는 순간
+            // 게이트가 스스로 래치를 풀어 바닥이 되살아난다(자기모순).
+            corridor_block_run_valid_ = true;
+            corridor_block_run_since_ = now;
+            corridor_block_run_armed_ =
+                !(corridor_block_stop_min_speed_ > 0.0) ||
+                std::abs(cur_vs_) >= corridor_block_stop_min_speed_;
+        }
+        corridor_block_last_evidence_ = now;
+        if (corridor_block_stop_enabled_ && corridor_block_run_armed_ &&
+            !corridor_block_latched_ &&
+            (now - corridor_block_run_since_).seconds() >=
+                corridor_block_stop_hold_sec_) {
+            corridor_block_latched_ = true;
+            NoteOutcome("corridor_block_stop_latched");
+            RCLCPP_WARN(this->get_logger(),
+                "회랑 봉쇄 래치: 정지 권한 개방 (s=%.2f, v=%.2f m/s, "
+                "hold %.2fs) — 트레일링 속도 바닥을 푼다",
+                cur_s_, cur_vs_, corridor_block_stop_hold_sec_);
+            pitwall::Event("회랑 봉쇄 — 정지 권한 개방");
+        }
+    } else {
+        corridor_block_run_valid_ = false;
+        if (corridor_block_latched_) {
+            // 해제에는 속도 조건을 걸지 않는다 (위 무장 주석과 같은 이유).
+            // last_evidence_ 가 0 인 경우는 래치가 걸린 적이 없다는 뜻이라
+            // 여기에 도달하지 않는다.
+            if ((now - corridor_block_last_evidence_).seconds() >=
+                corridor_block_stop_release_sec_) {
+                corridor_block_latched_ = false;
+                RCLCPP_INFO(this->get_logger(),
+                    "회랑 봉쇄 래치 해제: 근거 %.2fs 부재 (s=%.2f)",
+                    corridor_block_stop_release_sec_, cur_s_);
+                pitwall::Event("회랑 봉쇄 해제");
+            }
+        }
+    }
+
+    // 계측용. corridor_block_stop_enabled_ 가 false 여도 근거 판정과 이
+    // 발행은 그대로 돌아간다 — 백에서 발화율만 재고 거동은 종전으로 두는
+    // 관측 모드가 성립해야 문턱을 옮길 근거를 모을 수 있다.
+    if (p_corridor_blocked_) {
+        std_msgs::msg::Bool msg;
+        msg.data = corridor_block_latched_;
+        p_corridor_blocked_->publish(msg);
+    }
+}
+
 std::string SplinerNode::SpeedRejectDetail() const {
     if (speed_reject_idx_ < 0) {
         return "도달불가(감속)";
@@ -5364,6 +5469,20 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
                             std::min(obs[i].d_right, obs[j].d_right),
                             std::max(obs[i].d_left, obs[j].d_left));
                         NoteOutcome("cluster_merge_blocks_track");
+                        // ── 봉쇄 근거 (2026-08-22) ─────────────────────────
+                        // 병합은 여전히 취소한다(위 0808 근거는 유효하다).
+                        // 다만 그 판정을 버리지 않고 정지 권한 래치에 넘긴다.
+                        //
+                        // ⚠️ 여기에 WasEverMoved 게이트를 걸면 안 된다. 처음에
+                        // "구성원 전원이 한 번도 안 움직였을 때만 근거"로 짰다가
+                        // run_0822_000310 재생에서 기능이 통째로 죽었다:
+                        // 잔해는 강체 하나인데 클러스터 분할이 매 프레임 조각을
+                        // 재배분해 중심이 1~2 m 미끄러진다 — 사고 버스트의
+                        // **93쌍 중 70쌍**이 "움직인 구성원"을 갖고 있었고,
+                        // 정작 오발화 버스트(헤어핀 콘)는 46/46 이 전부
+                        // "안 움직임"이었다. 게이트가 정확히 반대로 걸린다.
+                        // 근거는 **회랑**의 성질이지 트랙 하나의 성질이 아니다.
+                        corridor_block_evidence_ = true;
                         mergeable = false;
                     }
                 }
