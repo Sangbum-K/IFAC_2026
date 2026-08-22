@@ -392,6 +392,34 @@ SIM_REAL_CAR_PACKAGES = {
 }
 
 
+def test_oversized_clusters_are_discarded_in_deployment_profiles():
+    """벽 판정 원본은 조각으로 되살리지 않는다는 인지-플래너 계약.
+
+    분할 뒤에는 원본의 반경/provenance가 사라져 브릿지와 spliner가 벽 fringe를
+    정상 장애물로 구별할 수 없다. 따라서 실차 및 실차 대응 sim에서는 반드시
+    원본 단위로 폐기해야 한다.
+    """
+    perception_pkg = WORKSPACE / "perception_ws" / "src" / "perception_pkg"
+    detector_src = (perception_pkg / "src" / "obstacle_detector_node.cpp").read_text(
+        encoding="utf-8")
+    assert re.search(
+        r'declare_parameter<bool>\(\s*"cluster_split_enabled"\s*,\s*false\s*\)',
+        detector_src), "cluster_split_enabled 기본값은 fail-safe false여야 한다"
+    assert re.search(
+        r'bool\s+cluster_split_enabled_\s*\{false\}', detector_src), (
+        "멤버 초기값도 fail-safe false여야 한다")
+
+    base = _ros_params(_yaml(perception_pkg / "config" / "params.yaml"),
+                       "obstacle_detector_node")
+    assert base["cluster_split_enabled"] is False
+    for env_name in ("real_car", "sim_real_car", "sim", "race_map"):
+        env = _env_profile_flat(perception_pkg, env_name)
+        enabled = env.get("obstacle_detector_node.cluster_split_enabled",
+                          base["cluster_split_enabled"])
+        assert enabled is False, (
+            f"{env_name}: 초대형 클러스터를 분할하면 벽 fringe가 플래너로 새어 나간다")
+
+
 def _env_profile_flat(pkg_root, env_name):
     """environments/<env>.yaml 을 '<노드>.<파라미터>' 평면 dict으로."""
     document = _yaml(Path(pkg_root) / "config" / "environments" /
@@ -489,6 +517,28 @@ def test_static_cylinder_model_cannot_understate_extent():
         assert open_space >= radius, (
             f"{env_name}: open_space {open_space} 가 고정 반지름 {radius} 미만 "
             "— 표면이 벽에 닿는 클러스터까지 고정하게 된다")
+
+
+def test_visible_static_wall_relaxation_stays_inside_detector_guard():
+    """08-22 완화는 raw detector의 point-level wall guard 밖으로 안 나간다."""
+    for env_name in ("real_car", "sim_real_car", "sim", "race_map"):
+        perception = _ros_params(
+            _yaml(WORKSPACE / "perception_ws" / "src" / "perception_pkg" /
+                  "config" / "environments" / f"{env_name}.yaml"),
+            "obstacle_detector_node",
+        )
+        bridge = _ros_params(
+            _yaml(PKG / "config" / "environments" / f"{env_name}.yaml"),
+            "perception_obstacle_bridge_node",
+        )
+        base = bridge["bridge/wall_dist_min_m"]
+        slack = bridge["bridge/visible_static_wall_slack_m"]
+        hold = bridge["bridge/visible_static_hold_sec"]
+
+        assert 0.0 < slack <= base
+        assert base - slack >= perception["wall_dist_min_m"], (
+            f"{env_name}: bridge relaxation falls below detector map guard")
+        assert 0.0 < hold <= min(1.0, bridge["bridge/track_forget_sec"])
 
 
 def test_bridge_reads_only_fields_that_exist_on_perception_obstacle():

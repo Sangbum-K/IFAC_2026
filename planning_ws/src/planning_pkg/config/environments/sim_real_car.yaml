@@ -73,6 +73,9 @@ perception_obstacle_bridge_node:
     # 묶인다(제거율 표는 real_car.yaml 같은 블록). 0.15면 유령 제거율 0%라
     # sim만 "브릿지 필터가 없는" 상태로 회피를 검증하게 된다.
     bridge/wall_dist_min_m: 0.30
+    # real_car.yaml과 동일: 작은 visible static 후보만 0.30 -> 0.25m.
+    bridge/visible_static_wall_slack_m: 0.05
+    bridge/visible_static_hold_sec: 0.75
     # 정적 장애물 고정 원통 — 근거는 real_car.yaml 같은 블록.
     # ⚠️ 시뮬 합성 장애물은 virtual_obstacle_node 가 각도 구간에 일정 거리를
     #    쓰므로 radius 가 거의 안 흔들린다. 즉 **심에서는 이 변경의 효과가

@@ -137,8 +137,10 @@ public:
     double ok_fraction, double lost_fraction, int bad_to_lost,
     int good_to_recover);
   bool update(double inlier_fraction);
+  void force_lost();
   void reset();
   QualityState state() const;
+  double ok_fraction() const;
   int consecutive_good() const;
   int consecutive_lost() const;
 
@@ -150,6 +152,42 @@ private:
   QualityState state_{QualityState::kStartup};
   int consecutive_good_{0};
   int consecutive_lost_{0};
+};
+
+struct InnovationGuardUpdate
+{
+  bool tripped{false};
+  Pose2d accumulated{};
+  double span_sec{0.0};
+  double translation_coherence{0.0};
+  double yaw_coherence{0.0};
+  std::size_t sample_count{0};
+};
+
+class CumulativeInnovationGuard
+{
+public:
+  CumulativeInnovationGuard(
+    double window_sec, double minimum_span_sec,
+    double maximum_translation_m, double maximum_yaw_rad,
+    double minimum_coherence);
+  InnovationGuardUpdate update(
+    int64_t stamp_ns, const Pose2d & correction, bool suspicious);
+  void reset();
+
+private:
+  struct Sample
+  {
+    int64_t stamp_ns{0};
+    Pose2d correction{};
+  };
+
+  int64_t window_ns_;
+  int64_t minimum_span_ns_;
+  double maximum_translation_m_;
+  double maximum_yaw_rad_;
+  double minimum_coherence_;
+  std::deque<Sample> samples_;
 };
 
 class ReadinessTracker
@@ -233,10 +271,16 @@ struct BeamSelection
 {
   std::vector<uint8_t> mask;
   double skipped_fraction{0.0};
+  bool excessive_skip{false};
   bool fallback_to_all_beams{false};
+  std::size_t selected_count{0};
+  double selected_angle_span_rad{0.0};
   double best_particle_inlier_fraction{0.0};
   double weighted_inlier_fraction{0.0};
 };
+
+double selected_beam_angle_span(
+  const std::vector<float> & angles, const std::vector<uint8_t> & mask);
 
 struct MclParameters
 {
@@ -290,6 +334,7 @@ public:
     const Proposal & proposal,
     const std::vector<float> & observed_ranges,
     const std::vector<float> & predicted_ranges,
+    bool allow_beam_skip_fallback = true,
     const std::vector<uint8_t> & required_beam_mask = {}) const;
   void accept(Proposal proposal, std::vector<double> posterior_weights);
   void restore_motion_only(

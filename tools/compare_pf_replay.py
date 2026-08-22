@@ -47,6 +47,9 @@ MCL_PATTERN = re.compile(
     r'ESS-prior/post (?P<ess_prior>[\d.]+)/(?P<ess_post>[\d.]+), '
     r'scan-fit (?P<scan_fit>-?[\d.]+), beam-skip '
     r'(?P<beam_skip>-?[\d.]+)%, beam-fallback (?P<beam_fallback>\d+), '
+    r'(?:beam-selected/span (?P<beam_selected>\d+)/(?P<beam_span>[\d.]+)deg, '
+    r'beam-fail-closed (?P<beam_fail_closed>[01]) trips '
+    r'(?P<beam_fail_closed_trips>\d+), )?'
     r'quality (?P<quality>[A-Z]+)(?: good/bad \d+/\d+, '
     r'ready/initialpose(?:-received/accepted)? \d+/\d+(?:/\d+)?)?, '
     r'resampled/lost-updates/lost-transitions '
@@ -614,6 +617,18 @@ def replay_diagnostics(log_records):
                     'scan_fit': float(values['scan_fit']),
                     'beam_skip': float(values['beam_skip']),
                     'beam_fallback': int(values['beam_fallback']),
+                    'beam_selected': (
+                        int(values['beam_selected'])
+                        if values['beam_selected'] is not None else None),
+                    'beam_span': (
+                        float(values['beam_span'])
+                        if values['beam_span'] is not None else None),
+                    'beam_fail_closed': (
+                        int(values['beam_fail_closed'])
+                        if values['beam_fail_closed'] is not None else None),
+                    'beam_fail_closed_trips': (
+                        int(values['beam_fail_closed_trips'])
+                        if values['beam_fail_closed_trips'] is not None else None),
                     'quality': values['quality'],
                     'resampled': int(values['resampled']),
                     'lost_updates': int(values['lost_updates']),

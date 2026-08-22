@@ -42,6 +42,11 @@ from sensor_msgs.msg import LaserScan
 
 from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 from f1tenth_perception_msgs.msg import ObstacleArray as PerceptionObstacleArray
+from obstacle_bridge_policy import (
+    StaticHoldBook,
+    static_hold_ids_for_dynamic_source,
+    visible_static_wall_distance_minimum,
+)
 
 try:
     from scipy.ndimage import distance_transform_edt
@@ -339,6 +344,12 @@ class PerceptionObstacleBridgeNode(Node):
         self.declare_parameter('bridge/use_map_filter', False)
         self.declare_parameter('bridge/map_topic', '/map')
         self.declare_parameter('bridge/wall_dist_min_m', 0.20)
+        # A narrow exception for a measured, small, static object. Keep the
+        # full map guard for wall ghosts, dynamic objects, and coasting tracks.
+        self.declare_parameter('bridge/visible_static_wall_slack_m', 0.0)
+        # Last measured static output may bridge a short detector/filter gap.
+        # The held copy is always published as is_visible=false.
+        self.declare_parameter('bridge/visible_static_hold_sec', 0.0)
         self.declare_parameter('bridge/map_timeout_sec', 5.0)
         self.declare_parameter('bridge/map_filter_required', True)
 
@@ -389,6 +400,10 @@ class PerceptionObstacleBridgeNode(Node):
             p('bridge/projection_reacquire_distance_m').value)
         self.use_map_filter = bool(p('bridge/use_map_filter').value)
         self.wall_dist_min = float(p('bridge/wall_dist_min_m').value)
+        self.visible_static_wall_slack = float(
+            p('bridge/visible_static_wall_slack_m').value)
+        self.visible_static_hold_sec = float(
+            p('bridge/visible_static_hold_sec').value)
         self.map_timeout = float(p('bridge/map_timeout_sec').value)
         self.map_filter_required = bool(
             p('bridge/map_filter_required').value)
@@ -431,6 +446,7 @@ class PerceptionObstacleBridgeNode(Node):
             self.forget_sec, self.tf_timeout, self.tf_max_age,
             self.max_source_age, self.source_future_tolerance,
             self.projection_reacquire_distance, self.wall_dist_min,
+            self.visible_static_wall_slack, self.visible_static_hold_sec,
             self.map_timeout,
         )
         if (not all(math.isfinite(value) for value in finite_values)
@@ -456,6 +472,12 @@ class PerceptionObstacleBridgeNode(Node):
                 or not 4 <= self.projection_window <= 10000
                 or not 0.1 <= self.projection_reacquire_distance <= 20.0
                 or not 0.0 <= self.wall_dist_min <= 2.0
+                # Never relax farther than the full EDT guard, and keep a
+                # source-loss lease short enough that it cannot become memory.
+                or not 0.0 <= self.visible_static_wall_slack
+                <= self.wall_dist_min
+                or not 0.0 <= self.visible_static_hold_sec
+                <= min(1.0, self.forget_sec)
                 or not 0.1 <= self.map_timeout <= 60.0
                 # 기억 파라미터. 비활성이어도 검증한다 — 켜는 시점에 값이
                 # 이상하면 그때는 이미 주행 중이다.
@@ -493,6 +515,7 @@ class PerceptionObstacleBridgeNode(Node):
         self.wpnts = None        # [N, 6]: s, x, y, psi, d_right, d_left
         self.track_length = 0.0
         self.tracks = {}         # id -> {'t', 'arrival_t', 's', 'd', 'vs', 'vd', 'wi'}
+        self.static_holds = StaticHoldBook(self.visible_static_hold_sec)
         # detector id -> {'to': 기존 트랙 id, 'dup': 연속 중복 프레임 수}.
         # 매 프레임 게이트를 다시 확인해서, 그 물체가 실제로 갈라져 나가면
         # (게이트 밖) 매핑을 끊는다.
@@ -1229,6 +1252,33 @@ class PerceptionObstacleBridgeNode(Node):
         s = (self.wpnts[i, 0] + u_k * ds) % self.track_length
         return s, d, i, right, left
 
+    @staticmethod
+    def copy_obstacle(source):
+        """Make an independent planning obstacle snapshot for a short lease."""
+        copied = Obstacle()
+        copied.id = int(source.id)
+        copied.position.x = float(source.position.x)
+        copied.position.y = float(source.position.y)
+        copied.position.z = float(source.position.z)
+        copied.s_center = float(source.s_center)
+        copied.d_center = float(source.d_center)
+        copied.s_start = float(source.s_start)
+        copied.s_end = float(source.s_end)
+        copied.d_right = float(source.d_right)
+        copied.d_left = float(source.d_left)
+        copied.vs = float(source.vs)
+        copied.vd = float(source.vd)
+        copied.s_var = float(source.s_var)
+        copied.d_var = float(source.d_var)
+        copied.vs_var = float(source.vs_var)
+        copied.vd_var = float(source.vd_var)
+        copied.size = float(source.size)
+        copied.theta = float(source.theta)
+        copied.is_static = bool(source.is_static)
+        copied.is_visible = bool(source.is_visible)
+        copied.curr_lap = int(source.curr_lap)
+        return copied
+
     def cb_obs(self, msg: PerceptionObstacleArray):
         if self.wpnts is None or self.track_length <= 0.0:
             return
@@ -1392,6 +1442,14 @@ class PerceptionObstacleBridgeNode(Node):
             # 조이면 짧게 가려진 **실물**을 지우게 되고, 그건 같은 사고의 반대
             # 방향이다. 그쪽은 footprint-corridor overlap 이 담당한다.
             measured = bool(src.is_visible)
+            if src.is_dynamic:
+                # Capture the reassociated track before resolve_track_id()
+                # removes that mapping for dynamics. Otherwise source id=100
+                # can publish dynamically while its old static track id=42
+                # remains as a second, held obstacle in this same frame.
+                entry = self.reassoc.get(int(src.id))
+                self.static_holds.forget(*static_hold_ids_for_dynamic_source(
+                    src.id, entry['to'] if entry is not None else None))
             if src.confidence < self.min_confidence:
                 if not (self.visible_bypasses_confidence and measured):
                     continue
@@ -1403,6 +1461,7 @@ class PerceptionObstacleBridgeNode(Node):
             x, y = src.position.x, src.position.y
             if tf is not None:
                 x, y = cos_y * x - sin_y * y + tx, sin_y * x + cos_y * y + ty
+            raw_half = max(float(src.radius), 0.05)
 
             # 맵 벽거리 필터: frenet d는 코너에서 실제 벽거리와 어긋나
             # 벽 위 유령이 아래 회랑 검사를 통과한다 — 맵 EDT로 실거리 판정.
@@ -1433,7 +1492,10 @@ class PerceptionObstacleBridgeNode(Node):
                 wall_dist = self.wall_distance(x, y)
                 if wall_dist is None:
                     continue        # 격자 밖 — 트랙 위일 수 없다
-                if wall_dist < self.wall_dist_min:
+                wall_minimum = visible_static_wall_distance_minimum(
+                    self.wall_dist_min, self.visible_static_wall_slack,
+                    measured, bool(src.is_dynamic), raw_half, self.cyl_hi)
+                if wall_dist < wall_minimum:
                     # centroid 기준으로 판정한다. 예전 조건
                     # (wall_dist + raw_half < wall_dist_min)은 raw_half가
                     # wall_dist_min보다 크면 중심이 벽 픽셀 위(거리 0)여도
@@ -1443,6 +1505,16 @@ class PerceptionObstacleBridgeNode(Node):
                     # 물리적 분리는 명확하다: 유령 중심은 벽 위(실측 p50 0.000m),
                     # 진짜 차량(0.30m 폭)은 벽에 붙어도 중심이 >=0.15m 떨어진다.
                     continue
+                if (wall_minimum < self.wall_dist_min
+                        and wall_dist < self.wall_dist_min):
+                    # run_0822_hth의 세 백에서 raw가 있는데 Frenet 배열이 빈
+                    # 527개 정적 후보 중 521개가 바로 이 0.25~0.30m 밴드였다.
+                    # 전체 guard를 낮추지 않고, detector의 point-level 0.25m
+                    # 기준을 통과한 작은 실측 정적 후보만 여기서 살린다.
+                    self.get_logger().info(
+                        f'visible static map slack: id={src.id} '
+                        f'wall={wall_dist:.2f}m cutoff={wall_minimum:.2f}m',
+                        throttle_duration_sec=5.0)
 
             prev = self.tracks.get(src.id)
             if prev is None:
@@ -1492,7 +1564,6 @@ class PerceptionObstacleBridgeNode(Node):
                     throttle_duration_sec=2.0)
                 track_id = int(src.id)
             prev = self.tracks.get(track_id)
-            raw_half = max(float(src.radius), 0.05)
             # 실제 extent를 줄여 보고하면 큰 장애물의 끝을 통과 가능한 것으로
             # 오판한다. 큰 wall cluster도 보수적으로 전부 유지해 정지시키며,
             # 유령 제거는 map filter가 담당한다.
@@ -1715,12 +1786,29 @@ class PerceptionObstacleBridgeNode(Node):
             # 하드코딩돼 있어 coasting 외삽이 측정과 구분되지 않았다.
             obs.is_visible = bool(src.is_visible)
             out.obstacles.append(obs)
+            if measured and not src.is_dynamic:
+                self.static_holds.remember(
+                    track_id, arrival_sec, self.copy_obstacle(obs))
+            elif src.is_dynamic:
+                # A track that has become dynamic must never revive its old
+                # static snapshot after the current live observation ends.
+                self.static_holds.forget(track_id)
 
             live_entries.append((s, d, bool(src.is_dynamic)))
             if self.memory_enabled and self.ego_s is not None:
                 self.memory_observe(
                     s, d, half, self._ds_signed(s, self.ego_s),
                     bool(src.is_dynamic), measured)
+
+        # 최신 실측 정적 장애물만 짧게 이어 준다. 이 값은 측정이 아니므로
+        # is_visible=false이고, 동적 객체를 동결하지 않으며 라이브가 항상 이긴다.
+        for _, held in self.static_holds.missing(arrival_sec, seen_ids):
+            held_obs = self.copy_obstacle(held)
+            held_obs.is_visible = False
+            held_obs.vs = 0.0
+            held_obs.vd = 0.0
+            out.obstacles.append(held_obs)
+            live_entries.append((held_obs.s_center, held_obs.d_center, False))
 
         # 랩 기억 주입 — 실측 뒤에 붙인다 (라이브가 항상 우선).
         self.memory_inject(out, live_entries, arrival_sec)

@@ -80,6 +80,8 @@ def _load_replay_command_builder():
         'laser_z_label',
         'build_replay_cases',
         'replay_topics_for_laser_z',
+        'replay_topics',
+        'initial_pose_command',
         'build_commands',
         'merge_driving_mode_analysis',
         'metric_summary',
@@ -171,6 +173,44 @@ def test_replay_commands_are_humble_safe_and_preserve_double_override():
     assert 'random_seed:=809' in pf_command
     assert '--disable-keyboard-controls' not in record_command
     assert '--disable-keyboard-controls' in play_command
+
+
+def test_recorded_pf_seed_skips_stale_initialpose_and_starts_at_seed():
+    """Mid-session bags must not replay historical latched initial poses."""
+    helpers = _load_replay_command_builder()
+    commands = helpers['build_commands'](
+        Path('/input_bag'), Path('/result'), Path('/base.yaml'),
+        Path('/profile.yaml'), Path('/map_server.py'),
+        1.0, 100.0, 2.0, 20.0, 809, 0.126, 3.47, True)
+    play_command = commands[3]
+
+    assert '/initialpose' not in play_command
+    assert '/tf_static' not in play_command
+    assert play_command[play_command.index('--start-offset') + 1] == '3.47'
+
+
+def test_production_profile_preserves_20hz_guard_durations():
+    """Update-count gates retain their validated duration after 15->20 Hz."""
+    config = Path(__file__).parents[1] / 'config' / 'localize.yaml'
+    with config.open(encoding='utf-8') as stream:
+        profile = yaml.safe_load(stream)['particle_filter']['ros__parameters']
+
+    assert profile['max_update_rate_hz'] == 20.0
+    assert profile['quality_bad_updates_to_lost'] == 4
+    assert profile['quality_good_updates_to_recover'] == 7
+    assert profile['lost_recovery_stationary_updates'] == 20
+    assert profile['slip_enter_updates'] == 3
+    assert profile['slip_recover_updates'] == 7
+    assert profile['max_consecutive_jump_rejects'] == 13
+    assert profile['lost_recovery_close_range_m'] == 0.60
+    assert profile['lost_recovery_max_close_fraction'] == 0.40
+    assert profile['tracking_min_beams'] == 12
+    assert profile['tracking_min_angle_span_rad'] == 1.57
+    source = (Path(__file__).parents[1] / 'src' /
+              'particle_filter_node.cpp').read_text(encoding='utf-8')
+    assert 'scan.close_fraction <= lost_recovery_max_close_fraction_' in source
+    assert '!innovation_fail_closed_ && !beam_fail_closed_' in source
+    assert 'last_innovation_guard_.sample_count > 0U' in source
 
 
 def test_replay_always_executes_native_cpp_runtime():

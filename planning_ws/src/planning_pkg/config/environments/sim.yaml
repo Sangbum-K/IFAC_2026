@@ -54,6 +54,9 @@ perception_obstacle_bridge_node:
     # (launch 인자가 env yaml보다 나중에 적용된다).
     bridge/use_map_filter: true
     bridge/wall_dist_min_m: 0.30
+    # real_car.yaml과 동일: 작은 visible static 후보만 0.30 -> 0.25m.
+    bridge/visible_static_wall_slack_m: 0.05
+    bridge/visible_static_hold_sec: 0.75
     # 정적 장애물 고정 원통 — 근거는 real_car.yaml 같은 블록.
     # 0.17 -> 0.25 (2026-08-22, 세 프로파일 동시). 실제로 트랙에 놓는 물체
     # (지름 ~50 cm) 실치수 + 안전 마진이다. 실차와 같은 값을 유지해야 심 A/B 가

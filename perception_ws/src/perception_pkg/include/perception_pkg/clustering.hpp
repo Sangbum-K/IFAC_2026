@@ -35,7 +35,7 @@ namespace perception_pkg
 ///     그중 82%가 반경<0.10m), 짝을 잃은 쪽은 0.80s 코스팅으로 계속 발행된다
 ///     -> 발행 인스턴스의 21.5%가 0.45m 안에 짝을 가진 중복이었다
 /// 1.0 이면 같은 2.4m 에서 문턱이 0.053 -> 0.107m 가 된다. 과병합 상한은
-/// max_cluster_radius_m(실차 0.35)가 따로 지키므로 벽 덩어리는 여전히 잘린다.
+/// max_cluster_radius_m가 따로 지키므로 벽 덩어리는 기본적으로 통째로 폐기된다.
 ///
 /// ⚠️ 이 값을 되돌리려면 real_car.yaml 의 min_cluster_size 근거 주석("SAFETY_FACTOR
 ///    0.5 의 과분할이 겹치므로")도 같이 다시 볼 것 — 그 8 은 과분할 전제 위의 값이다.
@@ -66,7 +66,7 @@ std::vector<Cluster> adaptive_cluster_points(
   int min_cluster_size);
 
 
-/// 반경 게이트를 넘긴 클러스터를 **버리는 대신** 최대 간격에서 쪼갠다.
+/// 반경 게이트를 넘긴 클러스터를 최대 간격에서 쪼갠다 (실험용 opt-in).
 ///
 /// 근거: run_0818 두 백에서 `max_cluster_radius_m 0.35` 거부가 초당 0.30~0.32회
 /// 로 꾸준했는데, F1TENTH 상대차 반경이 0.31 이라 **경계선**이다. 벽 fringe 와
@@ -79,6 +79,10 @@ std::vector<Cluster> adaptive_cluster_points(
 /// 호출자가 원본을 지우는 종전 동작으로 돌아가면 된다.
 ///
 /// max_depth 로 재귀를 제한한다(벽처럼 정말 큰 덩어리에서 무한 분할 방지).
+///
+/// 프로덕션 노드는 원본이 초대형이라는 정보가 조각에서 사라지는 문제 때문에
+/// 기본적으로 이 함수를 호출하지 않는다. `cluster_split_enabled=true`인 오프라인
+/// A/B에서만 사용한다.
 std::vector<Cluster> split_oversized_cluster(
   const Cluster & cluster, double max_radius, std::size_t min_points,
   int max_depth = 4);

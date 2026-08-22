@@ -151,6 +151,14 @@ perception_obstacle_bridge_node:
     #    (perception real_car.yaml max_view_ahead_m 주석의 s19.4~20.2 참조)라
     #    맵을 다시 뜬 뒤 재평가할 것.
     bridge/wall_dist_min_m: 0.30
+    # 2026-08-22 run_0822_hth 3백: raw가 있는데 Frenet 배열이 빈 visible static
+    # 후보 527개 중 521개가 EDT 0.25~0.30m에서 삭제됐다. 전역 0.30 guard는
+    # 그대로 두고, detector의 point-level 0.25m guard를 통과한 작은 실측 정적
+    # 후보(radius <= static_cylinder_band 상한)만 0.25m까지 허용한다.
+    bridge/visible_static_wall_slack_m: 0.05
+    # 마지막 실측 정적 장애물만 0.75초 유지한다. 이 출력은 is_visible=false라
+    # 동적 예측/커밋을 만들지 않고, 동적 분류가 들어오면 즉시 폐기한다.
+    bridge/visible_static_hold_sec: 0.75
     # 정적 장애물 고정 원통 (근거 주석은 perception_obstacle_bridge_node.py
     # 선언부). detector radius 가 매 프레임 재측정되어 같은 콘의 트랙 내
     # 변동폭이 p50 0.14 m 이고, 그게 obs.d_left/d_right 를 ±0.07 m 흔든다 —

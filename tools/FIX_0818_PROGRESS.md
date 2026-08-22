@@ -164,12 +164,16 @@ timeout/future_tol/require_stamp/use_sim_time` 을 함께 찍는다.
 지연은 p50 18ms 로 멀쩡했으므로 다른 조건이 원인. **#12 를 버렸으므로
 예측기 부활은 보류** — 살리면 전폭 튜브 71% 가 같이 돌아온다.
 
-### #14 초대형 클러스터 분할 ✅ 빌드 green
+### #14 초대형 클러스터 분할 ✅ 빌드 green (배포에서는 2026-08-22 비활성화)
+- 후속 실차 로그에서 벽 원본이 최대 16조각으로 통과해 fringe 트랙을 대량
+  생성하는 것이 확인됐다. 원본 provenance 없이 조각만 플래너로 보내면
+  실물과 구별할 수 없으므로, `cluster_split_enabled` 기본값과 모든 배포
+  프로파일을 `false`로 되돌렸다. 이 경로는 오프라인 A/B 전용이다.
 - `clustering.{hpp,cpp}` — `split_oversized_cluster()` 신설.
   각도순 점열을 **최대 간격**에서 나누고 재귀(max_depth 4).
   조각이 `min_cluster_size` 미만이면 버린다 → 파편만 남지 않는다.
   하나도 안 남으면 종전대로 삭제(= 진짜 벽).
-- `obstacle_detector_node.cpp` — erase 대신 분할, `cluster_split_enabled`(true)로 A/B
+- 당시 `obstacle_detector_node.cpp` — erase 대신 분할, `cluster_split_enabled`(true)로 A/B
 - 진단 카운터 `oversize_seen_/recovered_/dropped_` 누적을 로그에 같이 찍는다
   (기존 로그가 THROTTLE 이라 횟수를 셀 수 없었다)
 - ⚠️ 유령 증가 확인 필수 — `wall_dist_min_m` 0.25→0.30 때 덩어리가 쪼개져
@@ -228,8 +232,8 @@ timeout/future_tol/require_stamp/use_sim_time` 을 함께 찍는다.
 **내가 깼던 기존 불변식 2개** (전체 스위트를 돌려서 발견):
 - `params.yaml` 기본은 fail-safe 여야 함 → `ot_speed_scale` 을 base 1.0 으로
   되돌리고 환경 오버레이(real_car/sim/sim_real_car)에서 1.25 를 켰다
-- sim 은 real_car 를 미러링해야 함 → `max_abs_vs_mps 4.0`,
-  `cluster_split_enabled` 를 sim 계열에도 반영
+- 당시 sim 은 real_car 를 미러링해야 함 → `max_abs_vs_mps 4.0`,
+  `cluster_split_enabled` 를 sim 계열에도 반영 (2026-08-22에 false로 롤백)
 
 **분리 불변식 테스트 3개 신설** (`test_safety_invariants.py`, 소스 검사 방식):
 `test_overtake_speed_scale_is_dynamic_only` /
