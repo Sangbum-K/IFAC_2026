@@ -1,0 +1,58 @@
+{
+  "files": [
+    {
+      "bytes": 8447,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0822_4_centerline.csv",
+      "role": "centerline_output",
+      "sha256": "8ac407db8046ac52c7ab64b7010229bcc361a9b0f67e5abea51c8f282bb5f169"
+    },
+    {
+      "bytes": 8447,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_track0822_4_centerline.csv",
+      "role": "centerline_runtime",
+      "sha256": "8ac407db8046ac52c7ab64b7010229bcc361a9b0f67e5abea51c8f282bb5f169"
+    },
+    {
+      "bytes": 36611,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0822_4_iqp_max9.00ms_margin0.08m_mu1.40.csv",
+      "role": "main_output",
+      "sha256": "05f09518baeb63fea6e41abd748a8c0024eda117b85d6a95260b0fa4342e73fd"
+    },
+    {
+      "bytes": 36611,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0822_4_iqp_max9.00ms_margin0.08m_mu1.40.csv",
+      "role": "main_runtime",
+      "sha256": "05f09518baeb63fea6e41abd748a8c0024eda117b85d6a95260b0fa4342e73fd"
+    }
+  ],
+  "generation_content_sha256": "300304c000cff33a45e1a7b44ced8ea688d852dd0264faecfa1f69524fc53779",
+  "generation_id": "47a20bb9d063426191f6371a2bbdedc7",
+  "main": "my_track0822_4_iqp_max9.00ms_margin0.08m_mu1.40.csv",
+  "map": "my_track0822_4",
+  "schema_version": 1,
+  "sp": null,
+  "sp_disabled_reason": "custom late-apex main line",
+  "sp_enabled": false,
+  "sp_expected": "my_track0822_4_sp_max9.00ms_margin0.08m_mu1.40.csv",
+  "validation": {
+    "advisory_profiles": [
+      "python_sim_tracker"
+    ],
+    "backstop": {
+      "path_error_max_m": 0.3746623071379091,
+      "path_error_steps": 18,
+      "path_error_threshold_m": 0.3,
+      "speed_cut_max_mps": 2.326014294385294,
+      "steer_sat_steps": 4,
+      "steer_sat_threshold": 0.85,
+      "total_steps": 376,
+      "triggered_steps": 21
+    },
+    "gate_profiles": [
+      "cpp_real_car"
+    ],
+    "gate_target": "real",
+    "geometry": "straight segments with circular late-apex corners",
+    "mu_profile": 1.4
+  }
+}

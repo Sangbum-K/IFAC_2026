@@ -253,7 +253,16 @@ def launch_setup(context, *args, **kwargs):
                 f'{name}:={value!r} 는 유효하지 않습니다 (true 또는 false)')
         return value == 'true'
 
-    recovery_on = strict_bool('recovery')
+    # recovery: auto(기본) = env != mapping 이면 기동. mapping은 global/local
+    # waypoints가 없어 supervisor가 WAITING에서 0.0만 발행하므로 제외한다.
+    recovery_value = LaunchConfiguration('recovery').perform(context).strip().lower()
+    if recovery_value in ('', 'auto'):
+        recovery_on = env != 'mapping'
+    elif recovery_value in ('true', 'false'):
+        recovery_on = recovery_value == 'true'
+    else:
+        raise RuntimeError(
+            f'recovery:={recovery_value!r} 는 유효하지 않습니다 (auto, true, false)')
 
     nodes = [
         make_node('global_trajectory_node'),
@@ -355,9 +364,11 @@ def generate_launch_description():
                               description='recovery yaw 소스 odom 토픽 '
                                           '(실차 /pf/pose/odom, sim /ego_racecar/odom)'),
         DeclareLaunchArgument('recovery', default_value='false',
-                              description='recovery_supervisor_node 기동 여부. '
-                                          '기본 false — 필요 시 recovery:=true로 opt-in '
-                                          '(control의 lease 기반 safety override와 연결)'),
+                              description='recovery_supervisor_node 기동: auto | true | false. '
+                                          '2026-08-22 주행 요청으로 기본 false(전면 비활성). '
+                                          'auto = env != mapping 이면 기동 '
+                                          '(control의 lease 기반 safety override와 연결) — '
+                                          '되살리려면 recovery:=auto 또는 이 기본값 복원.'),
         DeclareLaunchArgument('predictor', default_value='auto',
                               description='opponent predictor: auto | true | false. '
                                           'auto/false 모두 끔 — spliner 가 예측 '

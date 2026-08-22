@@ -1,0 +1,154 @@
+{
+  "files": [
+    {
+      "bytes": 37189,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0822_sp_max9.00ms_margin0.08m_mu1.40.csv",
+      "role": "sp_0",
+      "sha256": "b864c0b32db3d19ab0e7de6e50eb0c7ed30cbe84b9afd7e367385def33fb69de"
+    },
+    {
+      "bytes": 37189,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0822_sp_max9.00ms_margin0.08m_mu1.40.csv",
+      "role": "sp_1",
+      "sha256": "b864c0b32db3d19ab0e7de6e50eb0c7ed30cbe84b9afd7e367385def33fb69de"
+    },
+    {
+      "bytes": 8862,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0822_centerline.csv",
+      "role": "centerline_output",
+      "sha256": "6c9bedd70807806830aa311f9d04a02d69b610d201ac7c4b4c548872c26b916e"
+    },
+    {
+      "bytes": 8862,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_track0822_centerline.csv",
+      "role": "centerline_runtime",
+      "sha256": "6c9bedd70807806830aa311f9d04a02d69b610d201ac7c4b4c548872c26b916e"
+    },
+    {
+      "bytes": 37608,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0822_iqp_max9.00ms_margin0.08m_mu1.40.csv",
+      "role": "main_output",
+      "sha256": "52438d7e66c0ab73b5f86ac33e2d5da607134a6879edb1e6a2c34dfc4f5fe06b"
+    },
+    {
+      "bytes": 37608,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0822_iqp_max9.00ms_margin0.08m_mu1.40.csv",
+      "role": "main_runtime",
+      "sha256": "52438d7e66c0ab73b5f86ac33e2d5da607134a6879edb1e6a2c34dfc4f5fe06b"
+    }
+  ],
+  "generation_content_sha256": "6c9bc1a02f1b0d0ee764f09f1302930bf4378a7dca4c7235cf1bb5fcf92bf716",
+  "generation_id": "717416c7feab47cdb2e926c03cc311e7",
+  "main": "my_track0822_iqp_max9.00ms_margin0.08m_mu1.40.csv",
+  "map": "my_track0822",
+  "schema_version": 1,
+  "sp": "my_track0822_sp_max9.00ms_margin0.08m_mu1.40.csv",
+  "sp_disabled_reason": "",
+  "sp_enabled": true,
+  "sp_expected": "my_track0822_sp_max9.00ms_margin0.08m_mu1.40.csv",
+  "validation": {
+    "adaptive_safe_dist": {
+      "enabled": true,
+      "narrow_pts": 0,
+      "safe_max": 0.5499999999999999,
+      "safe_median": 0.5499999999999999,
+      "safe_min": 0.5025,
+      "total_pts": 73,
+      "width_max": 3.5,
+      "width_median": 2.1500000000000004,
+      "width_min": 1.675
+    },
+    "adaptive_speed_by_width": {
+      "binding_pts": 51,
+      "corner_pts": 356,
+      "enabled": true,
+      "limited_pts": 141,
+      "raw_v_min": 5.384615384615384,
+      "slope_max": 0.065,
+      "slope_min": 0.03,
+      "smoothed_pts": 176,
+      "total_pts": 370,
+      "v_min": 5.879120879120879
+    },
+    "advisory_profiles": [
+      "python_sim_tracker"
+    ],
+    "backstop": {
+      "path_error_max_m": 1.3774791778948692,
+      "path_error_steps": 291,
+      "path_error_threshold_m": 0.3,
+      "speed_cut_max_mps": 3.744599038720528,
+      "steer_sat_steps": 0,
+      "steer_sat_threshold": 0.85,
+      "total_steps": 487,
+      "triggered_steps": 291
+    },
+    "brake_decel_per_amp": 0.14,
+    "closedloop_footprint_slack_m": 0.0,
+    "gate_profiles": [
+      "cpp_real_car"
+    ],
+    "gate_target": "real",
+    "longitudinal": {
+      "accel_limit_min": 2.2,
+      "ax_sign_flips": 7,
+      "ax_sign_flips_before_smoothing": 7,
+      "decel_limit_min": 2.2,
+      "jerk_limit": 30.0,
+      "jerk_max": 449.30681703764515,
+      "jerk_over_pts": 44,
+      "jerk_p50": 0.3606907075765701,
+      "jerk_p99": 139.0616920179797,
+      "jerk_p99_before_smoothing": 234.07447142699834,
+      "smooth_passes": 2
+    },
+    "mu_profile": 1.4,
+    "plant_accel_mps2": 4.5,
+    "plant_decel_planned_mps2": 2.38,
+    "profile_settings": [
+      {
+        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "controller_speed_scale": 1.0,
+        "max_speed_mps": 9.0,
+        "name": "cpp_real_car",
+        "planner_speed_scale": 0.96,
+        "plant": "vesc"
+      },
+      {
+        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "controller_speed_scale": 0.3,
+        "max_speed_mps": 9.0,
+        "name": "python_sim_tracker",
+        "planner_speed_scale": 0.96,
+        "plant": "ideal"
+      }
+    ],
+    "raceline_v_max_mps": 9.0,
+    "speed_lookahead": {
+      "enabled": true,
+      "lookahead_s": 0.25,
+      "profile": "cpp_real_car",
+      "raised_pts": 254,
+      "total_pts": 370,
+      "v_drop_max": 0.7046984371721265,
+      "v_mean_after": 6.11645228913487,
+      "v_mean_before": 6.272407603242295,
+      "window_max_m": 2.0227451349357923
+    },
+    "velocity_profile_settings": {
+      "corner_accel_mps2": 2.2,
+      "corner_decel_mps2": 2.2,
+      "lat_err_corner_s": 0.065,
+      "lat_err_exit_decay_m": 2.0,
+      "lat_err_kappa_window_m": 10.0,
+      "lat_err_straight_s": 0.03,
+      "longitudinal_smooth_m": 0.55,
+      "longitudinal_smooth_passes": 2,
+      "mu_profile": 1.4,
+      "speed_lookahead_s": 0.25,
+      "v_max_mps": 9.0,
+      "width_cap_smooth_m": 0.55,
+      "width_cap_smooth_max_gain": 1.2
+    }
+  }
+}

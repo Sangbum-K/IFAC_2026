@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
 
@@ -39,11 +40,8 @@ const char *RecoverySupervisorNode::StateName(State s) {
     switch (s) {
         case State::WAITING_FOR_INPUTS: return "WAITING_FOR_INPUTS";
         case State::DRIVING: return "DRIVING";
-        case State::STUCK_DETECTED: return "STUCK_DETECTED";
-        case State::COLLISION_STOP: return "COLLISION_STOP";
         case State::RECOVER_REVERSE: return "RECOVER_REVERSE";
         case State::RECOVER_STOP: return "RECOVER_STOP";
-        case State::RECOVER_ALIGN: return "RECOVER_ALIGN";
         case State::STOP: return "STOP";
     }
     return "UNKNOWN";
@@ -72,23 +70,15 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     this->declare_parameter("recovery/stuck_timeout_sec", 1.0);
     this->declare_parameter("recovery/stuck_min_progress_m", 0.10);
     this->declare_parameter("recovery/min_forward_cmd_mps", 0.2);
-    this->declare_parameter("recovery/boundary_stop_margin_m", 0.15);
-    this->declare_parameter("recovery/boundary_persist_sec", 0.2);
     this->declare_parameter("recovery/vehicle_width_m", 0.30);
     this->declare_parameter("recovery/vehicle_length_m", 0.55);
-    this->declare_parameter("recovery/boundary_reaction_time_sec", 0.20);
-    this->declare_parameter("recovery/boundary_braking_decel_mps2", 4.0);
-    this->declare_parameter("recovery/require_boundary_horizon", true);
-    this->declare_parameter("recovery/rear_check_dist_m", 1.5);
-    this->declare_parameter("recovery/front_check_dist_m", 1.5);
+    this->declare_parameter("recovery/wall_contact_margin_m", 0.05);
     this->declare_parameter("recovery/allow_reverse", false);
-    this->declare_parameter("recovery/rear_coverage_confirmed", false);
     this->declare_parameter("recovery/recovery_reverse_speed_mps", 0.5);
     this->declare_parameter("recovery/recovery_max_reverse_distance_m", 0.5);
     this->declare_parameter("recovery/recovery_timeout_sec", 4.0);
-    this->declare_parameter("recovery/recovery_max_attempts", 2);
-    this->declare_parameter("recovery/align_tolerance_rad", 0.35);
-    this->declare_parameter("recovery/align_speed_mps", 0.5);
+    this->declare_parameter("recovery/recovery_max_attempts", 3);
+    this->declare_parameter("recovery/progress_reset_m", 3.0);
     this->declare_parameter("recovery/odom_timeout_sec", 0.5);
     this->declare_parameter("recovery/perception_timeout_sec", 0.5);
     this->declare_parameter("recovery/local_wpnts_timeout_sec", 0.5);
@@ -103,21 +93,11 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     stuck_timeout_sec_ = this->get_parameter("recovery/stuck_timeout_sec").as_double();
     stuck_min_progress_m_ = this->get_parameter("recovery/stuck_min_progress_m").as_double();
     min_forward_cmd_mps_ = this->get_parameter("recovery/min_forward_cmd_mps").as_double();
-    boundary_stop_margin_m_ = this->get_parameter("recovery/boundary_stop_margin_m").as_double();
-    boundary_persist_sec_ = this->get_parameter("recovery/boundary_persist_sec").as_double();
     vehicle_width_m_ = this->get_parameter("recovery/vehicle_width_m").as_double();
     vehicle_length_m_ = this->get_parameter("recovery/vehicle_length_m").as_double();
-    boundary_reaction_time_sec_ =
-        this->get_parameter("recovery/boundary_reaction_time_sec").as_double();
-    boundary_braking_decel_mps2_ =
-        this->get_parameter("recovery/boundary_braking_decel_mps2").as_double();
-    require_boundary_horizon_ =
-        this->get_parameter("recovery/require_boundary_horizon").as_bool();
-    rear_check_dist_m_ = this->get_parameter("recovery/rear_check_dist_m").as_double();
-    front_check_dist_m_ = this->get_parameter("recovery/front_check_dist_m").as_double();
+    wall_contact_margin_m_ =
+        this->get_parameter("recovery/wall_contact_margin_m").as_double();
     allow_reverse_ = this->get_parameter("recovery/allow_reverse").as_bool();
-    rear_coverage_confirmed_ =
-        this->get_parameter("recovery/rear_coverage_confirmed").as_bool();
     recovery_reverse_speed_mps_ =
         this->get_parameter("recovery/recovery_reverse_speed_mps").as_double();
     recovery_max_reverse_distance_m_ =
@@ -125,8 +105,7 @@ RecoverySupervisorNode::RecoverySupervisorNode(
     recovery_timeout_sec_ = this->get_parameter("recovery/recovery_timeout_sec").as_double();
     recovery_max_attempts_ =
         static_cast<int>(this->get_parameter("recovery/recovery_max_attempts").as_int());
-    align_tolerance_rad_ = this->get_parameter("recovery/align_tolerance_rad").as_double();
-    align_speed_mps_ = this->get_parameter("recovery/align_speed_mps").as_double();
+    progress_reset_m_ = this->get_parameter("recovery/progress_reset_m").as_double();
     odom_timeout_sec_ = this->get_parameter("recovery/odom_timeout_sec").as_double();
     perception_timeout_sec_ =
         this->get_parameter("recovery/perception_timeout_sec").as_double();
@@ -159,21 +138,10 @@ RecoverySupervisorNode::RecoverySupervisorNode(
         stuck_min_progress_m_, 0.0, 10.0, "recovery/stuck_min_progress_m");
     require_range(
         min_forward_cmd_mps_, 0.0, 20.0, "recovery/min_forward_cmd_mps");
-    require_range(
-        boundary_stop_margin_m_, 0.0, 2.0, "recovery/boundary_stop_margin_m");
-    require_range(
-        boundary_persist_sec_, 0.0, 5.0, "recovery/boundary_persist_sec");
     require_range(vehicle_width_m_, 0.05, 5.0, "recovery/vehicle_width_m");
     require_range(vehicle_length_m_, 0.05, 10.0, "recovery/vehicle_length_m");
     require_range(
-        boundary_reaction_time_sec_, 0.0, 5.0,
-        "recovery/boundary_reaction_time_sec");
-    require_range(
-        boundary_braking_decel_mps2_, 0.1, 30.0,
-        "recovery/boundary_braking_decel_mps2");
-    require_range(rear_check_dist_m_, 0.0, 30.0, "recovery/rear_check_dist_m");
-    require_range(
-        front_check_dist_m_, 0.0, 30.0, "recovery/front_check_dist_m");
+        wall_contact_margin_m_, -0.30, 0.30, "recovery/wall_contact_margin_m");
     require_range(
         recovery_reverse_speed_mps_, 0.0, 2.0,
         "recovery/recovery_reverse_speed_mps");
@@ -186,9 +154,12 @@ RecoverySupervisorNode::RecoverySupervisorNode(
         throw std::invalid_argument(
             "recovery/recovery_max_attempts must be in [0, 10]");
     }
-    require_range(
-        align_tolerance_rad_, 0.0, M_PI, "recovery/align_tolerance_rad");
-    require_range(align_speed_mps_, 0.0, 2.0, "recovery/align_speed_mps");
+    // 후진거리의 2배보다 커야 "제자리 왕복"이 진행으로 오인되지 않는다.
+    require_range(progress_reset_m_, 0.5, 50.0, "recovery/progress_reset_m");
+    if (progress_reset_m_ < 2.0 * recovery_max_reverse_distance_m_) {
+        throw std::invalid_argument(
+            "recovery/progress_reset_m must be >= 2 * recovery_max_reverse_distance_m");
+    }
     require_range(odom_timeout_sec_, 0.01, 5.0, "recovery/odom_timeout_sec");
     require_range(
         perception_timeout_sec_, 0.01, 5.0,
@@ -247,11 +218,12 @@ RecoverySupervisorNode::RecoverySupervisorNode(
         [this]() { this->Run(); });
 
     RCLCPP_INFO(this->get_logger(),
-        "RecoverySupervisorNode: stuck_timeout=%.1fs reverse=%s rear_coverage=%s "
-        "reverse_limit=%.2fm/s max %d attempts",
-        stuck_timeout_sec_, allow_reverse_ ? "OPT-IN" : "OFF",
-        rear_coverage_confirmed_ ? "confirmed" : "unknown",
-        recovery_reverse_speed_mps_, recovery_max_attempts_);
+        "RecoverySupervisorNode: stuck_timeout=%.1fs reverse=%s "
+        "reverse_limit=%.2fm/s dist=%.2fm max %d consecutive attempts "
+        "wall_contact<=%.2fm progress_reset=%.1fm",
+        stuck_timeout_sec_, allow_reverse_ ? "ON (wall contact only)" : "OFF",
+        recovery_reverse_speed_mps_, recovery_max_reverse_distance_m_,
+        recovery_max_attempts_, wall_contact_margin_m_, progress_reset_m_);
 }
 
 void RecoverySupervisorNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -267,15 +239,19 @@ void RecoverySupervisorNode::CallbackFrenetOdom(const nav_msgs::msg::Odometry::S
 void RecoverySupervisorNode::CallbackPoseOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
     double yaw = 0.0;
     if (!NormalizedYaw(msg->pose.pose.orientation, &yaw) ||
+        !std::isfinite(msg->pose.pose.position.x) ||
+        !std::isfinite(msg->pose.pose.position.y) ||
         !std::isfinite(msg->twist.twist.linear.x) ||
         !std::isfinite(msg->twist.twist.linear.y)) {
         RCLCPP_ERROR_THROTTLE(
             this->get_logger(), *get_clock(), 1000,
-            "Rejecting pose odometry with invalid orientation or velocity");
+            "Rejecting pose odometry with invalid pose or velocity");
         return;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     cur_yaw_ = yaw;
+    cur_x_ = msg->pose.pose.position.x;
+    cur_y_ = msg->pose.pose.position.y;
     cur_speed_norm_ = std::hypot(
         msg->twist.twist.linear.x, msg->twist.twist.linear.y);
     pose_receipt_stamp_ = this->now();
@@ -405,6 +381,7 @@ bool RecoverySupervisorNode::InputsReady(
     }
 
     if (!std::isfinite(cur_s_) || !std::isfinite(cur_d_) ||
+        !std::isfinite(cur_x_) || !std::isfinite(cur_y_) ||
         !std::isfinite(cur_yaw_) ||
         !std::isfinite(cur_speed_norm_)) {
         return not_ready("odometry contains non-finite values");
@@ -452,132 +429,25 @@ bool RecoverySupervisorNode::IsStuck(double now_sec) {
     return (now_sec - stuck_since_sec_) > stuck_timeout_sec_;
 }
 
-bool RecoverySupervisorNode::IsCurrentBoundaryViolation() const {
-    if (!has_local_ || local_wpnts_.wpnts.empty()) return true;
-    // 첫 local wpnt의 남은 경계 여유를 차량 실제 d와 heading으로 보정하고
-    // point가 아닌 차량 직사각 footprint 전체를 검사한다.
+bool RecoverySupervisorNode::IsFrontalWallContact(
+    double *nose_margin, double *heading_err) const {
+    if (nose_margin != nullptr) *nose_margin = std::numeric_limits<double>::quiet_NaN();
+    if (heading_err != nullptr) *heading_err = std::numeric_limits<double>::quiet_NaN();
+    if (!has_local_ || local_wpnts_.wpnts.empty()) {
+        return false;
+    }
+    // IsCurrentBoundaryViolation과 같은 코리도 기하로, 차 중심 대신 노즈
+    // (전방 half_length 투영)의 횡 오프셋으로 경계 여유를 본다. 진단 전용.
     const auto &w = local_wpnts_.wpnts.front();
-    const double dev = cur_d_ - w.d_m;           // 경로 대비 횡 이탈 (d>0=왼쪽)
-    const double heading_error = WrapToPi(cur_yaw_ - w.psi_rad);
-    const double half_width = 0.5 * vehicle_width_m_;
-    const double half_length = 0.5 * vehicle_length_m_;
-    const double footprint_extent =
-        half_width * std::abs(std::cos(heading_error)) +
-        half_length * std::abs(std::sin(heading_error));
-    const double margin_left = w.d_left - dev;
-    const double margin_right = w.d_right + dev;
-    const double required = footprint_extent + boundary_stop_margin_m_;
-    return !std::isfinite(margin_left) || !std::isfinite(margin_right) ||
-           std::min(margin_left, margin_right) < required;
-}
-
-double RecoverySupervisorNode::StoppingDistance() const {
-    const double speed = std::abs(cur_speed_norm_);
-    return 0.5 * vehicle_length_m_ +
-           speed * boundary_reaction_time_sec_ +
-           speed * speed / (2.0 * boundary_braking_decel_mps2_);
-}
-
-bool RecoverySupervisorNode::IsBoundaryViolation() const {
-    if (IsCurrentBoundaryViolation()) {
-        return true;
-    }
-
-    const double horizon = StoppingDistance();
-    const double tracking_error =
-        std::abs(cur_d_ - local_wpnts_.wpnts.front().d_m);
-    const double required =
-        0.5 * vehicle_width_m_ + boundary_stop_margin_m_ + tracking_error;
-    double covered = 0.0;
-    const auto &wpnts = local_wpnts_.wpnts;
-    for (std::size_t i = 0; i < wpnts.size(); ++i) {
-        if (i > 0) {
-            const double segment = std::hypot(
-                wpnts[i].x_m - wpnts[i - 1].x_m,
-                wpnts[i].y_m - wpnts[i - 1].y_m);
-            if (!std::isfinite(segment)) {
-                return true;
-            }
-            covered += segment;
-        }
-        if (covered > horizon) {
-            return false;
-        }
-        if (std::min(wpnts[i].d_left, wpnts[i].d_right) < required) {
-            return true;
-        }
-    }
-    // 고속에서 제동거리만큼 경계를 확인할 local horizon이 없다면 안전을
-    // 증명할 수 없으므로 fail-closed.
-    return require_boundary_horizon_ && covered + 1e-6 < horizon;
-}
-
-bool RecoverySupervisorNode::IsRearSafe(double now_sec) const {
-    // 현재 perception이 후방을 실제로 커버한다는 명시적 설정과 reverse opt-in이
-    // 둘 다 없으면, 전방 전용 센서의 빈 배열을 "후방 안전"으로 해석하지 않는다.
-    if (!allow_reverse_ || !rear_coverage_confirmed_ || !has_obstacles_ ||
-        !(track_len_ > 0.0)) {
-        return false;
-    }
-    const double receipt_age = now_sec - obstacles_receipt_stamp_.seconds();
-    const double source_age = now_sec - obstacles_source_stamp_.seconds();
-    if (!std::isfinite(receipt_age) ||
-        receipt_age < -source_stamp_future_tolerance_sec_ ||
-        receipt_age > perception_timeout_sec_ ||
-        (require_source_stamps_ &&
-         (!std::isfinite(source_age) ||
-          source_age < -source_stamp_future_tolerance_sec_ ||
-          source_age > perception_timeout_sec_))) {
-        return false;
-    }
-    const double check_dist = rear_check_dist_m_ + 0.5 * vehicle_length_m_;
-    for (const auto &obs : obstacles_.obstacles) {
-        const double behind = std::min({
-            Mod(cur_s_ - obs.s_start, track_len_),
-            Mod(cur_s_ - obs.s_end, track_len_),
-            Mod(cur_s_ - obs.s_center, track_len_)});
-        if (!std::isfinite(behind) || behind < check_dist) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool RecoverySupervisorNode::IsFrontSafe(double now_sec) const {
-    if (!has_obstacles_ || !(track_len_ > 0.0)) {
-        return false;
-    }
-    const double receipt_age = now_sec - obstacles_receipt_stamp_.seconds();
-    const double source_age = now_sec - obstacles_source_stamp_.seconds();
-    if (!std::isfinite(receipt_age) ||
-        receipt_age < -source_stamp_future_tolerance_sec_ ||
-        receipt_age > perception_timeout_sec_ ||
-        (require_source_stamps_ &&
-         (!std::isfinite(source_age) ||
-          source_age < -source_stamp_future_tolerance_sec_ ||
-          source_age > perception_timeout_sec_))) {
-        return false;
-    }
-
-    const double check_dist = std::max(front_check_dist_m_, StoppingDistance());
-    for (const auto &obs : obstacles_.obstacles) {
-        const double ahead = std::min({
-            Mod(obs.s_start - cur_s_, track_len_),
-            Mod(obs.s_end - cur_s_, track_len_),
-            Mod(obs.s_center - cur_s_, track_len_)});
-        if (!std::isfinite(ahead) || ahead < check_dist) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool RecoverySupervisorNode::IsHeadingAligned() const {
-    if (!has_local_ || local_wpnts_.wpnts.empty() || !std::isfinite(cur_yaw_)) {
-        return false;
-    }
-    double path_psi = local_wpnts_.wpnts.front().psi_rad;
-    return std::abs(WrapToPi(cur_yaw_ - path_psi)) < align_tolerance_rad_;
+    const double he = WrapToPi(cur_yaw_ - w.psi_rad);
+    const double nose_dev =
+        (cur_d_ - w.d_m) + 0.5 * vehicle_length_m_ * std::sin(he);
+    const double margin =
+        std::min(w.d_left - nose_dev, w.d_right + nose_dev);
+    if (nose_margin != nullptr) *nose_margin = margin;
+    if (heading_err != nullptr) *heading_err = he;
+    return std::isfinite(margin) && margin <= wall_contact_margin_m_ &&
+           std::abs(he) < M_PI / 2.0;
 }
 
 bool RecoverySupervisorNode::IsStoppedForDwell(double now_sec) {
@@ -592,7 +462,8 @@ bool RecoverySupervisorNode::IsStoppedForDwell(double now_sec) {
     return (now_sec - stopped_since_sec_) >= stopped_dwell_sec_;
 }
 
-void RecoverySupervisorNode::TransitionTo(State next, const std::string &reason) {
+void RecoverySupervisorNode::TransitionTo(
+    State next, const std::string &reason, double now_sec) {
     if (next == state_) return;
     RCLCPP_WARN(this->get_logger(), "[recovery] %s -> %s (%s)",
                 StateName(state_), StateName(next), reason.c_str());
@@ -614,7 +485,7 @@ void RecoverySupervisorNode::Run() {
 
     // 최우선: E-stop은 어떤 상태에서도 래치 STOP.
     if (estop_) {
-        TransitionTo(State::STOP, "E-stop");
+        TransitionTo(State::STOP, "E-stop", now_sec);
     } else if (state_ == State::WAITING_FOR_INPUTS) {
         // 부팅 중 입력 부재를 영구 STOP으로 래치하지 않는다. 대신 입력이 모두
         // 신선하고 실제 차량이 정지한 상태가 dwell 동안 유지될 때까지 0m/s를
@@ -633,109 +504,114 @@ void RecoverySupervisorNode::Run() {
                 (now_sec - ready_since_sec_) >= readiness_dwell_sec_;
             if (ready_dwell && IsStoppedForDwell(now_sec)) {
                 recovery_attempts_ = 0;
+                last_recover_s_ = -1.0;
                 stuck_since_sec_ = -1.0;
-                boundary_since_sec_ = -1.0;
-                TransitionTo(State::DRIVING, "all inputs fresh and vehicle stopped");
+                TransitionTo(
+                    State::DRIVING, "all inputs fresh and vehicle stopped",
+                    now_sec);
             }
         }
     } else if (!inputs_ready && state_ != State::STOP) {
         // 한 번 주행 준비가 된 뒤 source/receipt 중 하나라도 끊기면 자동 재개하지
         // 않는다. 사람이 원인을 해결하고 reset해야 한다.
-        TransitionTo(State::STOP, readiness_reason);
+        TransitionTo(State::STOP, readiness_reason, now_sec);
     }
 
     switch (state_) {
         case State::WAITING_FOR_INPUTS:
             break;
 
-        case State::DRIVING:
-            // 현재 footprint가 이미 임계 경계를 넘으면 debounce 없이 즉시 정지.
-            // 제동거리 앞 경로의 위험은 짧은 persistence로 센서 스파이크를 거른다.
-            if (IsCurrentBoundaryViolation()) {
-                boundary_since_sec_ = -1.0;
-                TransitionTo(State::COLLISION_STOP, "current footprint boundary risk");
-            } else if (IsBoundaryViolation()) {
-                if (boundary_since_sec_ < 0.0) {
-                    boundary_since_sec_ = now_sec;
-                }
-                if ((now_sec - boundary_since_sec_) >= boundary_persist_sec_) {
-                    boundary_since_sec_ = -1.0;
-                    TransitionTo(
-                        State::COLLISION_STOP,
-                        "boundary risk inside speed-dependent stopping horizon");
-                }
-            } else {
-                boundary_since_sec_ = -1.0;
-                if (IsStuck(now_sec)) {
-                    TransitionTo(State::STUCK_DETECTED, "no progress under forward cmd");
+        case State::DRIVING: {
+            // 복구 후 progress_reset_m 이상 정상 전진하면 "같은 지점 연속 실패"
+            // 카운터를 리셋한다 — 시도는 무제한, 래치는 제자리 반복에만.
+            // 후진 중 s 감소는 Mod가 track_len 근처 값이 되므로 < L/2 가 거른다.
+            if (recovery_attempts_ > 0 && last_recover_s_ >= 0.0 &&
+                track_len_ > 0.0) {
+                const double progressed =
+                    Mod(cur_s_ - last_recover_s_, track_len_);
+                if (progressed >= progress_reset_m_ &&
+                    progressed < track_len_ / 2.0) {
+                    RCLCPP_INFO(this->get_logger(),
+                        "[recovery] %.1fm progressed since last recovery — "
+                        "consecutive attempt counter reset", progressed);
+                    recovery_attempts_ = 0;
+                    last_recover_s_ = -1.0;
                 }
             }
-            break;
-
-        case State::COLLISION_STOP:
-            // 속도 명령이 아니라 map odom의 실제 평면 속도 norm이 dwell 동안
-            // 충분히 낮아야 방향 전환 평가를 시작한다.
-            if (IsStoppedForDwell(now_sec)) {
-                TransitionTo(State::STUCK_DETECTED, "stopped, evaluate recovery");
-            }
-            break;
-
-        case State::STUCK_DETECTED:
-            if (!IsStoppedForDwell(now_sec)) {
+            // 발동 조건은 "완전히 박았을 때"뿐이다 (run_0822_191159 근거):
+            //   ① 전진 명령인데 stuck_timeout 동안 무진행  (IsStuck)
+            //   ② 노즈가 코리도 경계에 닿음                (IsFrontalWallContact)
+            //   ③ 실제로 완전히 멈춰 있음                  (IsStoppedForDwell)
+            // 셋을 모두 요구한다. 예전의 경계 예측 정지 경로는
+            // 삭제됐다 — 그 판정은 레이스라인 에이펙스 여유(0.445m)와 부호 없는
+            // 횡오차를 비교해서 정상 주행을 오탐했고, 그때 control이 조향까지
+            // 0으로 꺾어(publish_stop) 코너에서 벽으로 직진하게 만들었다.
+            double nose_margin = 0.0;
+            double heading_err = 0.0;
+            const bool wall_contact =
+                IsFrontalWallContact(&nose_margin, &heading_err);
+            if (!IsStuck(now_sec) || !wall_contact ||
+                !IsStoppedForDwell(now_sec)) {
                 break;
             }
             if (!allow_reverse_) {
-                TransitionTo(State::STOP, "reverse disabled (STOP-only default)");
-            } else if (recovery_attempts_ >= recovery_max_attempts_) {
-                TransitionTo(State::STOP, "max recovery attempts exceeded");
-            } else if (!IsRearSafe(now_sec)) {
-                TransitionTo(State::STOP, "rear not safe/unknown, no reverse");
-            } else if (IsCurrentBoundaryViolation()) {
-                TransitionTo(State::STOP, "insufficient boundary clearance for reverse");
-            } else {
-                recovery_attempts_++;
-                recover_start_sec_ = now_sec;
-                recover_start_s_ = cur_s_;
-                TransitionTo(State::RECOVER_REVERSE, "rear safe, limited reverse");
+                // 운용 킬스위치: 상대차/사람이 있는 세션은 STOP-only로.
+                TransitionTo(
+                    State::STOP, "reverse disabled (STOP-only mode)", now_sec);
+                break;
             }
+            if (recovery_attempts_ >= recovery_max_attempts_) {
+                TransitionTo(
+                    State::STOP,
+                    "consecutive recovery attempts exhausted at same spot",
+                    now_sec);
+                break;
+            }
+            recovery_attempts_++;
+            recover_start_sec_ = now_sec;
+            recover_start_x_ = cur_x_;
+            recover_start_y_ = cur_y_;
+            last_recover_s_ = cur_s_;
+            char reason[176];
+            std::snprintf(reason, sizeof(reason),
+                "rammed into wall (attempt %d/%d, nose_margin=%.2fm "
+                "heading_err=%.2frad)",
+                recovery_attempts_, recovery_max_attempts_,
+                nose_margin, heading_err);
+            TransitionTo(State::RECOVER_REVERSE, reason, now_sec);
             break;
+        }
 
         case State::RECOVER_REVERSE: {
-            double reversed = Mod(recover_start_s_ - cur_s_, track_len_);
-            if (reversed > track_len_ / 2.0) reversed = 0.0;
-            bool timeout = (now_sec - recover_start_sec_) > recovery_timeout_sec_;
-            if (timeout) {
-                TransitionTo(State::STOP, "reverse timeout");
-            } else if (!IsRearSafe(now_sec)) {
-                TransitionTo(State::STOP, "rear became unsafe during reverse");
-            } else if (IsCurrentBoundaryViolation()) {
-                TransitionTo(State::STOP, "boundary became unsafe during reverse");
-            } else if (reversed >= recovery_max_reverse_distance_m_) {
+            // 유클리드 후진거리: 벽에 직각으로 박은 자세는 frenet s가 거의 안
+            // 변해서 s 기반 측정으로는 타임아웃까지 후진해 버린다.
+            const double reversed = std::hypot(
+                cur_x_ - recover_start_x_, cur_y_ - recover_start_y_);
+            if (reversed >= recovery_max_reverse_distance_m_) {
                 stopped_since_sec_ = -1.0;
-                TransitionTo(State::RECOVER_STOP, "reverse distance reached");
+                TransitionTo(
+                    State::RECOVER_STOP, "reverse distance reached", now_sec);
+            } else if ((now_sec - recover_start_sec_) > recovery_timeout_sec_) {
+                // STOP 래치가 아니라 전진 재시도: 뒤벽 등으로 후진이 안 되는
+                // 반복 실패는 DRIVING 의 연속 카운터가 래치한다.
+                stopped_since_sec_ = -1.0;
+                TransitionTo(
+                    State::RECOVER_STOP, "reverse timeout, retry forward",
+                    now_sec);
             }
             break;
         }
 
         case State::RECOVER_STOP:
-            // 음수에서 양수 명령으로 즉시 뒤집지 않는다. 실제 정지 확인 후에만
-            // forward align을 시작한다.
+            // 음수에서 양수 명령으로 즉시 뒤집지 않는다. 실제 정지 확인 후
+            // ALIGN 없이 DRIVING 직행 — 복귀 조향/속도는 정상 체인이 최근접
+            // 포인트에서 잇는다 (control이 후진 중 slew 기준점을 0으로 리셋해
+            // 저속 재출발이 된다). grace는 TransitionTo가 시작한다.
             if (IsStoppedForDwell(now_sec)) {
-                recover_start_sec_ = now_sec;
-                TransitionTo(State::RECOVER_ALIGN, "stopped after reverse");
-            }
-            break;
-
-        case State::RECOVER_ALIGN:
-            if (IsBoundaryViolation()) {
-                TransitionTo(State::STOP, "boundary unsafe during align");
-            } else if (!IsFrontSafe(now_sec)) {
-                TransitionTo(State::STOP, "front unsafe/unknown during align");
-            } else if (IsHeadingAligned()) {
-                stuck_since_sec_ = -1.0;  // stuck 타이머 초기화 후 저속 재출발
-                TransitionTo(State::DRIVING, "heading aligned, resume low speed");
-            } else if ((now_sec - recover_start_sec_) > recovery_timeout_sec_) {
-                TransitionTo(State::STOP, "align timeout");
+                stuck_since_sec_ = -1.0;
+                TransitionTo(
+                    State::DRIVING,
+                    "recovered, resume from nearest raceline point", now_sec);
             }
             break;
 
@@ -750,14 +626,16 @@ void RecoverySupervisorNode::Run() {
             if (reset_requested_ && !estop_) {
                 reset_requested_ = false;
                 recovery_attempts_ = 0;
+                last_recover_s_ = -1.0;
                 stuck_since_sec_ = -1.0;
-                boundary_since_sec_ = -1.0;
                 ready_since_sec_ = -1.0;
                 if (!inputs_ready) {
                     stopped_since_sec_ = -1.0;
-                    TransitionTo(State::WAITING_FOR_INPUTS, "manual reset, inputs not ready");
+                    TransitionTo(
+                        State::WAITING_FOR_INPUTS,
+                        "manual reset, inputs not ready", now_sec);
                 } else if (IsStoppedForDwell(now_sec)) {
-                    TransitionTo(State::DRIVING, "manual reset");
+                    TransitionTo(State::DRIVING, "manual reset", now_sec);
                 } else {
                     // 아직 정지 dwell 이 안 찼다 — reset 을 버리지 않고 유지해
                     // 다음 사이클에 자동으로 전이하게 한다.
@@ -787,10 +665,7 @@ void RecoverySupervisorNode::PublishOutputs() {
         case State::RECOVER_REVERSE:
             v.data = -recovery_reverse_speed_mps_;  // Control이 자체 하드리밋 재적용
             break;
-        case State::RECOVER_ALIGN:
-            v.data = align_speed_mps_;
-            break;
-        default:  // STUCK_DETECTED / COLLISION_STOP / STOP
+        default:  // WAITING_FOR_INPUTS / RECOVER_STOP / STOP
             v.data = 0.0;
             break;
     }

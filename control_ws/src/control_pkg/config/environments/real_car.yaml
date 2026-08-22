@@ -7,7 +7,11 @@ control:
     # Blocks only the autonomy publisher. Joystick and estop remain independent,
     # higher-priority ackermann_mux inputs.
     "localization_gate/enabled": true
+    # 2026-08-22: recovery 전면 비활성 주행 — supervisor를 띄우지 않으므로
+    # require_supervisor는 반드시 false여야 한다(true면 lease가 없어 차가
+    # 출발조차 못 한다). 되살릴 때 둘 다 true로 되돌릴 것.
     "recovery/require_supervisor": false
+    "recovery/allow_reverse": false
     # 2026-08-12 NUC2_hangar -> UNICORN2-hj-0331-faster-more-data.
     # 08-10 타이어 교체 후 4개 폴더/10개 rosbag의 44,496개 유효 표본을
     # 100~120 ms 응답 지연, 실행 servo gain, 런별 yaw-rate 중립을 보정해 채점했다.
@@ -45,7 +49,7 @@ control:
     # 바꾸지 않고 이 값만 올리면 안 된다. RACELINE_V_MAX 도 같이 맞출 것.
     "vehicle/max_speed_mps": 9.0
     "vehicle/speed_scale": 1.0
-    # Offset 0.44: +0.4343 rad maps to servo 0.0681, preserving the previous
-    # left endpoint; -0.3035 rad maps just inside servo_max at servo 0.6999.
-    "vehicle/max_left_steering_angle_rad": 0.4343
-    "vehicle/max_right_steering_angle_rad": 0.3035
+    # Offset 0.424: +0.3800 rad maps to servo 0.0986 with left-side margin;
+    # -0.3220 rad maps just inside servo_max at servo 0.6998.
+    "vehicle/max_left_steering_angle_rad": 0.3800
+    "vehicle/max_right_steering_angle_rad": 0.3220

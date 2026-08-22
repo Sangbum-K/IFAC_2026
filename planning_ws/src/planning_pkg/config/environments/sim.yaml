@@ -11,7 +11,7 @@
 #   env:=sim          pf:=false (gym GT odom) + vehicle:=gym_default
 #                     (mu 1.0489 / a_max 9.51 / s_max 0.4189 — 실차보다 관대)
 #   env:=sim_real_car pf:=true  (진짜 particle_filter) + vehicle:=real_car
-#                     (mu 0.90 / a_max 4.5 / s_max 0.3578 — 실측 물리)
+#                     (mu 0.90 / a_max 4.5 / s_max 0.3220 — 실측 물리)
 # 즉 sim 은 "위치추정·차량물리를 이상화한 빠른 확인", sim_real_car 는 "실차 근사"다.
 # 실차 판정 근거로 쓸 수 있는 건 sim_real_car 쪽뿐이다.
 #
@@ -58,11 +58,13 @@ perception_obstacle_bridge_node:
     bridge/visible_static_wall_slack_m: 0.05
     bridge/visible_static_hold_sec: 0.75
     # 정적 장애물 고정 원통 — 근거는 real_car.yaml 같은 블록.
-    # 0.17 -> 0.25 (2026-08-22, 세 프로파일 동시). 실제로 트랙에 놓는 물체
-    # (지름 ~50 cm) 실치수 + 안전 마진이다. 실차와 같은 값을 유지해야 심 A/B 가
+    # 0.25 -> 0.30 / 대역 [0.05,0.25] -> [0.02,0.44] (2026-08-22, 세 프로파일
+    # 동시). run_0822_192752 스캔 원 적합으로 물체 실반경이 0.289 로 확인됐고
+    # (0.25 는 매 프레임 4 cm 작게 보던 값), 원시 반경 분포가 옛 대역 밖이라
+    # 고정이 13~41% 프레임에만 걸렸다. 실차와 같은 값을 유지해야 심 A/B 가
     # 실차 거동을 예측한다.
-    bridge/static_cylinder_radius_m: 0.25
-    bridge/static_cylinder_band_m: [0.05, 0.25]
+    bridge/static_cylinder_radius_m: 0.30
+    bridge/static_cylinder_band_m: [0.02, 0.44]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
@@ -143,14 +145,8 @@ recovery_supervisor_node:
   ros__parameters:
     recovery/obstacle_topic: /perception/obstacles_frenet
     recovery/stuck_timeout_sec: 1.5
-    recovery/boundary_stop_margin_m: 0.10
-    recovery/boundary_persist_sec: 0.10
-    recovery/rear_check_dist_m: 2.0
-    recovery/allow_reverse: false
-    recovery/rear_coverage_confirmed: false
-    recovery/recovery_reverse_speed_mps: 0.30
-    recovery/recovery_max_reverse_distance_m: 0.4
-    recovery/recovery_max_attempts: 1
-    recovery/align_speed_mps: 0.4
+    # 후진/시도 한도는 base params.yaml 값 사용 (allow_reverse true, 후진 0.5m,
+    # 같은 지점 연속 3회). 2026-08-22: "완전히 박았을 때"만 발동 —
+    # stuck + 노즈 벽 접촉 + 완전 정지 3조건 (run_0822_191159 근거).
     # ⚠️ 배선: pf:=false 라 /pf/pose/odom 이 없다 (frenet odom_mode와 같은 이유).
     recovery/pose_odom_topic: /ego_racecar/odom

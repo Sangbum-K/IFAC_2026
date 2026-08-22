@@ -693,6 +693,15 @@ private:
   double obs_timeout_sec_{0.5};
   double trailing_gap_m_{2.5};
   double trailing_decel_{2.5};
+  // ── 접촉 임박 전용 제동 감속도 (2026-08-22) ────────────────────────────
+  // trailing_decel_ 은 "상대를 따라가는" 곡선이라 올리면 추종이 늦게
+  // 제동한다. 반면 램프가 장애물과 충돌하는 것이 확정된 분기는 정반대로
+  // **차의 실제 제동 능력**을 써야 한다. 두 값을 분리한다.
+  //   run_0822_172617 실측 제동 능력: 0.3s 창 최대 4.19 m/s² (브레이크 7A),
+  //   상시 3.3~3.9 달성. 3.0 은 그 아래로 잡은 값이다.
+  // 이 값이 낮으면 5001줄 주석이 말한 그대로 — 제동 곡선이 정지 곡선이
+  // 아니라 reachable_v 에 눌린 "가속 금지" 캡으로만 동작한다.
+  double trailing_brake_decel_{3.0};
   double cmd_speed_scale_{1.0};
   // 고속 회피 기하/속도 예산 (BlendDist / ApplySpeedProfile)
   double blend_lat_acc_max_{3.0};   // 횡 전환에 배정할 그립 [m/s^2]
@@ -852,6 +861,15 @@ private:
   double trailing_ramp_decel_{2.0};
   // 기하 하한 초과가 **아닌** 사유로 회피가 실패했을 때의 목표 속도 [m/s].
   double trailing_retry_speed_{1.5};
+  // ── 크리프 바닥: 완전 정지를 두지 않는다 (2026-08-22) ──────────────────
+  // 정지 권한이 열려도 목표를 0 이 아니라 이 값으로 둔다. 근거는 운영
+  // 요구다 — 접촉하더라도 스택이 죽지 않고, 장애물만 치우면 스스로 다시
+  // 진행해야 한다. 0 을 명령하면 (a) 래치가 evade_committed 를 닫아
+  // 컨트롤러의 발진 하한(map/speed_lookahead_min_m)까지 닫히는 v=0
+  // 자기유지 고정점에 들어가고, (b) 전 점 vx=0 은 MAP 컨트롤러의 조향을
+  // 죽인다(0807 코스아웃). 낮은 크리프는 두 함정을 모두 피하면서
+  // 접촉 속도를 제동 능력으로 눌러 준다.
+  double trailing_creep_speed_{0.5};
   // 횡 목표가 축소/포기된 트레일링(= 실제로 비켜 가지 못하는 상태)의 속도
   // 바닥. trailing_retry_speed_ 는 "정적 장애물과 접촉할 때의 속도"라
   // 올리면 BlendDist(v에 정비례)가 커져 횡 램프가 안 들어가고, 포기 빈도가
@@ -1062,7 +1080,7 @@ private:
   double active_lat_budget_{7.0};
 
   double vehicle_wheelbase_m_{0.33};
-  double vehicle_max_steering_rad_{0.3578};
+  double vehicle_max_steering_rad_{0.3220};
   double vehicle_max_steering_rate_radps_{2.0};
   // 계획 게이트가 쓰는 "실제로 달성되는 곡률 / kinematic 자전거모델 예측"
   // 비율. 1.0이면 tan(delta_max)/L 그대로 (예전 동작).

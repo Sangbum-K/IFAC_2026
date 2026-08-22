@@ -56,7 +56,7 @@ private:
   double velocity_scale_slew_per_sec_{0.1};
   double validation_mu_{0.75};
   double validation_wheelbase_m_{0.33};
-  double validation_max_steer_rad_{0.3578};
+  double validation_max_steer_rad_{0.3220};
   double validation_tolerance_{0.03};
   double validation_ax_tolerance_{1.0};
   // validation_mode:=advisory 일 때만 true. 형식 검사(NaN/단조/간격/폐루프/ax↔v)는

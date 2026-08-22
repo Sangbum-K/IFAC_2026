@@ -105,14 +105,7 @@ recovery_supervisor_node:
   ros__parameters:
     recovery/obstacle_topic: /perception/obstacles_frenet
     recovery/stuck_timeout_sec: 1.5
-    # 차량 반폭 0.15 + 추가여유 0.10 = center-to-wall 최소 0.25m.
-    recovery/boundary_stop_margin_m: 0.10
-    recovery/boundary_persist_sec: 0.10
-    recovery/rear_check_dist_m: 2.0
-    recovery/allow_reverse: false
-    recovery/rear_coverage_confirmed: false
-    recovery/recovery_reverse_speed_mps: 0.30
-    recovery/recovery_max_reverse_distance_m: 0.4
-    recovery/recovery_max_attempts: 1
-    recovery/align_speed_mps: 0.4
+    # 후진/시도 한도는 base params.yaml 값 사용 (allow_reverse true, 후진 0.5m,
+    # 같은 지점 연속 3회). 2026-08-22: "완전히 박았을 때"만 발동 —
+    # stuck + 노즈 벽 접촉 + 완전 정지 3조건 (run_0822_191159 근거).
     recovery/pose_odom_topic: /pf/pose/odom

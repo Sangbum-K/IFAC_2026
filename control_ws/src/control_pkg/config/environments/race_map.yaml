@@ -3,7 +3,11 @@ control:
     odom_topic: /pf/pose/odom
     ackermann_topic: /ackermann_cmd
     autonomous_on_start: false
+    # 2026-08-22: recovery 전면 비활성 주행 — supervisor를 띄우지 않으므로
+    # require_supervisor는 반드시 false여야 한다(true면 lease가 없어 차가
+    # 출발조차 못 한다). 되살릴 때 둘 다 true로 되돌릴 것.
     "recovery/require_supervisor": false
+    "recovery/allow_reverse": false
     "map/steering_lut_file": "NUC2_hangar_pacejka_lookup_table.csv"
     "vehicle/max_speed_mps": 1.0
     "vehicle/speed_scale": 1.0

@@ -60,11 +60,10 @@ global_trajectory_node:
     # mkcsv 기본값(build_map MU_PROFILE=1.40)과 짝. 기존 저-mu CSV도 허용한다.
     global_trajectory/validation_mu: 1.40
     global_trajectory/validation_wheelbase_m: 0.33
-    # 2026-08-11: 0.36 -> 0.3578 (gain 재적합 후 대칭 한계 자체).
+    # 현재 VESC 보정(-0.8564 / 0.424)의 구속측 배포 한계 0.3220.
     # CSV 의 |kappa| 상한을 tan(이 값)/wheelbase 로 정하므로 낮추면 검증이
-    # 엄격해진다. 현행 my_track0810/0811 은 max|kappa| 0.71~0.92 로 새 한계
-    # 1.133(+3% tol = 1.167) 안에 여유 있게 들어온다 — 재생성 불필요.
-    global_trajectory/validation_max_steer_rad: 0.3578
+    # 엄격해진다. 현재 상한은 tan(0.3220)/0.33 = 1.011 1/m이다.
+    global_trajectory/validation_max_steer_rad: 0.3220
     global_trajectory/validation_tolerance: 0.03
     global_trajectory/validation_ax_tolerance: 1.0
     # strict | advisory. strict 는 위 마찰원/조향 한계 위반을 거부해 노드를 안 띄운다.
@@ -385,6 +384,18 @@ spliner_node:
     # 그 거리에서는 탈출 기동의 조향 기하 하한(1.51m)을 못 채워 영구 정지
     # 라치가 됐다 (run_0806_234734 35초 / 235014 20초 / 234247 7.7초).
     spliner/trailing_decel: 1.0
+    # ── 접촉 임박 전용 제동 감속도 [m/s^2] (2026-08-22) ──────────────────
+    # 위 trailing_decel 은 "상대를 따라가는" 곡선이라 올리면 추종이 늦게
+    # 제동한다. 반면 램프가 장애물과 충돌하는 것이 **확정된** 분기는 차의
+    # 실제 제동 능력을 써야 한다 — 두 값을 분리했다.
+    # run_0822_172617 실측 제동 능력(0.3s 창): 최대 4.19 m/s²(브레이크 7A),
+    # 상시 3.3~3.9. 3.0 은 그 아래로 잡은 값이다.
+    # 근거: spliner_node.cpp 5001줄이 이미 진단해 둔 것 — decel 1.0 에서는
+    # 이 분기의 v_stop 이 정지 곡선이 아니라 reachable_v 에 눌린 "가속 금지"
+    # 캡으로만 동작한다. run_0822_172617 t=167.5 에서 stop_dist 2.03m /
+    # v 4.51 인데 무제동으로 통과해 2.9 m/s 로 관통했다.
+    # 불변식: trailing_decel <= trailing_brake_decel <= 20 (노드가 검증).
+    spliner/trailing_brake_decel: 3.0
     # 속도 명령 -> 실제 감속 시작까지의 구동계 지연 [s]. 정지 조건을
     # rem >= v·T + (v²-v_target²)/(2a) 로 만들어 지연 중 굴러간 거리를 보상한다.
     # 위 실측의 정지 시간(0.67~0.94s)에서 순수 감속분을 뺀 보수치.
@@ -422,6 +433,18 @@ spliner_node:
     # 목표가 깎이면 종전 1.5 로 되돌린다.
     # 불변식: 0 <= degraded <= trailing_retry_speed (노드가 검증한다).
     spliner/trailing_retry_speed_degraded: 1.5
+    # ── 크리프 바닥 [m/s]: 완전 정지 프로파일을 두지 않는다 (2026-08-22) ──
+    # 정지 권한이 열려도(회랑 봉쇄 래치/동적 정지) 목표를 0 이 아니라 이
+    # 값으로 둔다. 운영 요구: 접촉하더라도 스택이 죽지 않고, 장애물만
+    # 치우면 스스로 다시 진행해야 한다.
+    # 0 을 명령하면 두 함정이 동시에 열린다 —
+    #   (a) 래치가 trailing_no_stop 을 닫아 evade_committed 가 내려가고,
+    #       그러면 컨트롤러의 발진 하한(map/speed_lookahead_min_m 0.25)까지
+    #       닫혀 v=0 자기유지 고정점이 된다 (사람이 개입해야 풀린다).
+    #   (b) 전 점 vx=0 은 MAP 컨트롤러의 조향을 죽인다 (0807 코스아웃).
+    # 접촉 속도를 낮추는 일은 이 바닥이 아니라 trailing_brake_decel 이 한다.
+    # 불변식: 0 <= trailing_creep_speed <= trailing_retry_speed (노드 검증).
+    spliner/trailing_creep_speed: 0.5
     # ── 동적 트레일링 목표 속도의 노이즈 제거 (2026-08-18) ────────────────
     # BuildTrailing 의 v_target 은 obs.vs 를 그대로 쓰는데, 그 vs 는 브릿지가
     # id별 (s,d) 유한차분 + LPF(alpha 0.3) 로 만든 값이라 노이즈 바닥이 신호와
@@ -746,22 +769,18 @@ spliner_node:
     spliner/vehicle_wheelbase_m: 0.33
     # ⚠️ 서보 기구 한계의 보수적 내림값. 단일 근거는 hardware vesc.yaml 이고
     #    delta = (servo - offset)/gain 로 유도한다.
-    #    2026-08-10 calib(gain -0.8320 / offset 0.3941, servo 0.05~0.70):
-    #      우 -0.3677 rad(21.07°) <- 대칭 한계, 좌 +0.4136 rad(23.70°)
-    #      대칭 0.357894 -> Rmin 0.882 m, kappa_max = tan/L = 1.133
-    #    2026-08-11: gain 재적합(-0.8320 -> -0.8564)으로 대칭 한계가
-    #    0.3677 -> 0.357894 로 2.7% 줄었다. 옛 값 0.36 은 새 한계를 0.6%
-    #    **넘기므로** 유지할 수 없었다. 0.3578 = 한계를 넘지 않을 만큼만
-    #    (0.03%) 내린 값이고, 여유는 의도적으로 두지 않는다.
+    #    현재 calib(gain -0.8564 / offset 0.424, servo 0.05~0.70):
+    #      우 -0.322279 rad(18.45°) <- 대칭 한계, 좌 +0.436712 rad(25.02°)
+    #      배포값 0.3220 -> Rmin 0.989 m, kappa_max = tan/L = 1.011
     #    ⚠️ 그 결과 TUNING_STATUS §11 의 중립 튐(런 사이 최대 0.036 servo)을
     #    흡수할 마진이 없다. 중립이 우측으로 밀린 런에서는 최대 조향 근처
-    #    명령이 servo_max 에서 잘린다 — 계획은 0.3578 을 쓸 수 있다고 보는데
+    #    명령이 servo_max 에서 잘린다 — 계획은 0.3220 을 쓸 수 있다고 보는데
     #    차는 못 내므로, 헤어핀에서 언더스티어로 나타난다.
     #    "차가 더 잘 돈다"를 반영하려고 여기를 올리는 것은 여전히 안 된다 —
     #    아래 steer_kappa_scale 이 그 용도다.
     #    (deployment_profiles.MAX_STEER · control 좌우 한계 중 작은 값과
     #     셋이 같아야 한다. 어긋나면 resolve 단계에서 죽는다.)
-    spliner/vehicle_max_steering_rad: 0.3578
+    spliner/vehicle_max_steering_rad: 0.3220
     spliner/vehicle_max_steering_rate_radps: 2.0
     # --- 조향 기하 게이트 완화 -----------------------------------------------
     # 회피를 "어떤 속도로도 불가"로 포기시키는 경로는 실질적으로 두 곳이고
@@ -889,40 +908,44 @@ spliner_node:
 # 실행(최종 속도·조향, 후진 하드리밋, E-stop)은 control_node 책임.
 # STOP은 래치 — /planner/recovery/reset (Bool true)로만 해제.
 # sim tracker와 C++ control 모두 state/target을 짧은 paired lease로 소비한다.
+#
+# 2026-08-22 (run_0822_191159 근거로 축소): "완전히 박았을 때"만 발동한다.
+#   stuck(전진 명령인데 무진행) + 노즈 벽 접촉 + 완전 정지 3조건이 모두 성립 →
+#   후진 0.5m → 정지 확인 → DRIVING 직행(복귀는 정상 체인의 최근접 포인트).
+# 경계 예측 정지(COLLISION_STOP)는 삭제됐다 — 레이스라인 에이펙스 여유를
+# 부호 없는 횡오차와 비교해 정상 주행을 오탐했고, 그때 control이 조향까지
+# 0으로 꺾어 코너에서 벽으로 직진시켰다(리커버리가 충돌을 만들었다).
 recovery_supervisor_node:
   ros__parameters:
     # control_node의 lease 기반 safety override와 연결됨. 입력 미준비/stale은 STOP.
-    # 현재 recovery 체인 전체 비활성 (launch recovery:=true opt-in 시에만 기동).
-    recovery/enabled: false
+    # 2026-08-22 부활: 기본 활성. planner_stack launch(recovery:=auto,
+    # mapping 제외 on)가 노드 기동 자체를 결정하고, 이 값은 기동된 노드의
+    # 내부 게이트다. 끄려면 launch recovery:=false.
+    recovery/enabled: true
     recovery/loop_rate_hz: 20.0
     recovery/stuck_timeout_sec: 1.0            # 전진 명령인데 이 시간 무진행 -> stuck
     recovery/stuck_min_progress_m: 0.10        # stuck 판정 최소 s 진행량 [m]
     recovery/min_forward_cmd_mps: 0.2          # 이 이상이 "전진 명령"으로 간주 [m/s]
-    # 차량 half-width(0.15m)에 더하는 추적/위치 여유. 즉 기본 요구
-    # center-to-wall clearance는 최소 0.20m다.
-    recovery/boundary_stop_margin_m: 0.05
-    recovery/boundary_persist_sec: 0.10        # 현재 footprint 위반은 debounce 없이 즉시 정지
+    # "완전히 박았다" 판정 임계 [m]. 노즈(전방 half_length 투영)의 코리도 여유가
+    # 이 값 이하이고 stuck + 완전 정지가 동시에 성립할 때만 후진한다.
+    # run_0822_191159 실측: 진짜 벽 접촉 -0.00 / -0.38m, 오탐 0.31m(코너 감속)과
+    # 0.55m(출발 스톨). 0.05가 둘을 분리한다.
+    recovery/wall_contact_margin_m: 0.05
     recovery/vehicle_width_m: 0.30
     recovery/vehicle_length_m: 0.55
-    recovery/boundary_reaction_time_sec: 0.20
-    # 4.0 -> 2.0: 0806 실측 재계산으로 확정된 배포 상수는 코스팅 A_DEC_MAX 1.4,
-    # 브레이크 크레딧 포함 A_DEC_PLANNED 2.0 이다 (deployment_profiles.py).
-    # 4.0 은 실제의 2배라 제동 horizon 이 절반으로 짧아지는 fail-open 오차였다
-    # (5 m/s: 계산 4.4 m vs 실제 필요 7.5 m). horizon 이 2배가 되므로 recovery 를
-    # 다시 켤 때는 STOP 빈도부터 확인할 것.
-    recovery/boundary_braking_decel_mps2: 2.0
-    recovery/require_boundary_horizon: true
-    recovery/front_check_dist_m: 1.5
-    recovery/rear_check_dist_m: 1.5
-    # 후방 전용 coverage와 reverse 경로가 검증되기 전까지 STOP-only.
-    recovery/allow_reverse: false
-    recovery/rear_coverage_confirmed: false
-    recovery/recovery_reverse_speed_mps: 0.30
-    recovery/recovery_max_reverse_distance_m: 0.5
+    # ⚠ 후방 무확인 후진은 사용자 수용 리스크(2026-08-22 결정): LiDAR가 후방을
+    # 못 보므로 "후방 = 방금 지나온 트랙" 가정에 의존한다. 상대차/사람이 트랙에
+    # 있는 세션에서는 false로 내려 STOP-only 킬스위치로 쓸 것.
+    recovery/allow_reverse: true
+    recovery/recovery_reverse_speed_mps: 0.30  # control cap(max_reverse_speed_mps)과 일치
+    recovery/recovery_max_reverse_distance_m: 0.5  # 유클리드 후진 거리 [m]
     recovery/recovery_timeout_sec: 4.0
-    recovery/recovery_max_attempts: 2
-    recovery/align_tolerance_rad: 0.35         # 재정렬 완료 heading 오차 [rad]
-    recovery/align_speed_mps: 0.5              # 재정렬/재출발 저속 [m/s]
+    # "같은 지점 연속" 실패 한도. progress_reset_m 이상 전진하면 리셋되므로
+    # 랩 전체 누적이 아니다.
+    recovery/recovery_max_attempts: 3
+    # 복구 후 이만큼 s 전진하면 연속 실패 카운터 리셋. 노드가
+    # >= 2 * max_reverse_distance 를 강제한다 (제자리 왕복 오인 방지).
+    recovery/progress_reset_m: 3.0
     recovery/odom_timeout_sec: 0.20            # receipt와 원본 header 둘 다 검사
     # 값 유지. 다만 의미가 바뀌었다: 파이썬 detector 6.6Hz 시절 이 값은
     # 1.02 프레임이라 readiness 게이트가 상시 깜빡였을 것이다
@@ -948,7 +971,7 @@ waypoint_tracker_node:
                                          # lookahead < 코너 R 이어야 함 (was 1.2)
     tracker/max_lookahead_m: 1.2         # S-bend 변곡 오버슛 억제 (was 3.0)
     tracker/wheelbase_m: 0.33
-    tracker/max_steer_rad: 0.3578        # 구속측(우측) 서보 한계 20.51°.
+    tracker/max_steer_rad: 0.3220        # 구속측(우측) 배포 한계 18.45°.
                                          # control 좌우 한계 중 작은 값 및
                                          # deployment_profiles.MAX_STEER와 동일.
     tracker/speed_scale: 0.30            # my_track: 연속 R~1.4m 헤어핀+S-bend라 저속이어야
@@ -965,7 +988,8 @@ waypoint_tracker_node:
     tracker/recovery_required: false
     tracker/recovery_command_timeout_sec: 0.25
     tracker/recovery_pair_max_skew_sec: 0.10
-    tracker/recovery_allow_reverse: false
+    # supervisor 무조건 후진 재설계(2026-08-22)에 맞춰 REVERSE lease 소비 허용.
+    tracker/recovery_allow_reverse: true
     tracker/recovery_max_reverse_speed_mps: 0.30
     tracker/recovery_max_forward_override_mps: 1.0
     # (tracker 자체 스턱-후진 상태머신 제거: internal_stuck_recovery_enabled 와
@@ -1013,7 +1037,7 @@ opponent_driver_node:
     opponent/size_m: 0.3             # F1TENTH 실차 폭 (was 0.4)
     opponent/drive_rate_hz: 40.0
     opponent/wheelbase_m: 0.33
-    opponent/max_steer_rad: 0.3578   # 상대도 동급 F1TENTH -> 실차 조향 한계 동일
+    opponent/max_steer_rad: 0.3220   # 상대도 동급 F1TENTH -> 실차 조향 한계 동일
     # (opponent/park_x, park_y 제거: sim_race.launch.py 가 PARK_POSES[map] 값을
     #  params_file 뒤에 항상 덮어쓰고, opponent_driver 를 띄우는 launch 는 그것뿐이라
     #  여기 값은 어떤 실행 경로에서도 쓰이지 않았다. 남아 있던 -79.81/-31.26 은

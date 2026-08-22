@@ -46,6 +46,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/obs_timeout_sec", 0.5);
     this->declare_parameter("spliner/trailing_gap_m", 2.5);
     this->declare_parameter("spliner/trailing_decel", 2.5);
+    this->declare_parameter("spliner/trailing_brake_decel", 3.0);
     // 컨트롤러가 wpnt 속도에 곱하는 스케일 (sim tracker 0.5, 실차 1.0).
     // 장애물 실측 속도를 wpnt 속도 단위로 환산할 때 필요 — 안 맞추면
     // 동적 상대 trailing 시 상대보다 느리게 따라가 격차가 벌어진다.
@@ -93,6 +94,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/trailing_lag_sec", 0.3);
     this->declare_parameter("spliner/trailing_ramp_decel", 2.0);
     this->declare_parameter("spliner/trailing_retry_speed", 1.5);
+    this->declare_parameter("spliner/trailing_creep_speed", 0.5);
     this->declare_parameter("spliner/trailing_retry_speed_degraded", 1.5);
     this->declare_parameter("spliner/trailing_vs_filter", true);
     this->declare_parameter("spliner/apex_clearance_eps_m", 0.05);
@@ -137,7 +139,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/lane_blend_out_m", 5.0);
     this->declare_parameter("spliner/early_switch_kappa_max", 0.10);
     this->declare_parameter("spliner/vehicle_wheelbase_m", 0.33);
-    this->declare_parameter("spliner/vehicle_max_steering_rad", 0.3578);
+    this->declare_parameter("spliner/vehicle_max_steering_rad", 0.3220);
     this->declare_parameter("spliner/vehicle_max_steering_rate_radps", 2.0);
     // 조향 기하 게이트 완화 노브 3종. 기본값은 예전 하드코딩과 동일하므로
     // yaml에 없으면 동작이 바뀌지 않는다. 의미는 헤더 멤버 주석 참조.
@@ -167,6 +169,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     obs_timeout_sec_ = this->get_parameter("spliner/obs_timeout_sec").as_double();
     trailing_gap_m_ = this->get_parameter("spliner/trailing_gap_m").as_double();
     trailing_decel_ = this->get_parameter("spliner/trailing_decel").as_double();
+    trailing_brake_decel_ =
+        this->get_parameter("spliner/trailing_brake_decel").as_double();
     cmd_speed_scale_ = this->get_parameter("spliner/cmd_speed_scale").as_double();
     blend_lat_acc_max_ = this->get_parameter("spliner/blend_lat_acc_max").as_double();
     blend_dist_max_m_ = this->get_parameter("spliner/blend_dist_max_m").as_double();
@@ -226,6 +230,8 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         this->get_parameter("spliner/trailing_ramp_decel").as_double();
     trailing_retry_speed_ =
         this->get_parameter("spliner/trailing_retry_speed").as_double();
+    trailing_creep_speed_ =
+        this->get_parameter("spliner/trailing_creep_speed").as_double();
     trailing_retry_speed_degraded_ = this->get_parameter(
         "spliner/trailing_retry_speed_degraded").as_double();
     trailing_vs_filter_ =
@@ -372,6 +378,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         obs_timeout_sec_ < 0.05 || obs_timeout_sec_ > 1.0 ||
         trailing_gap_m_ <= 0.0 || trailing_gap_m_ > lookahead_m_ ||
         trailing_decel_ <= 0.0 || trailing_decel_ > 20.0 ||
+        trailing_brake_decel_ < trailing_decel_ ||
+        trailing_brake_decel_ > 20.0 ||
+        trailing_creep_speed_ < 0.0 ||
+        trailing_creep_speed_ > trailing_retry_speed_ ||
         cmd_speed_scale_ <= 0.0 || cmd_speed_scale_ > 1.0 ||
         blend_lat_acc_max_ <= 0.0 || blend_lat_acc_max_ > 15.0 ||
         blend_dist_max_m_ <= 0.0 || blend_dist_max_m_ > 50.0 ||
@@ -4311,10 +4321,21 @@ bool SplinerNode::BuildTrailing(
     // 기하 하한 초과가 아닌(=일시적) 실패로 들어온 트레일링은 정지가 아니라
     // 감속이다. 정지 목표를 그대로 두면 0을 명령하고, 그 0이 MAP 컨트롤러의
     // 조향까지 0으로 만든다 (control_node.cpp:1057).
-    if (!allow_stop) {
-        v_target_prof_actual = std::max(v_target_prof_actual,
-                                        trailing_retry_speed_);
-    }
+    // ── 바닥은 항상 있다 — 완전 정지 프로파일을 두지 않는다 (2026-08-22) ──
+    // 정지 권한이 없으면 종전대로 trailing_retry_speed_(감속하되 서지 않음).
+    // 정지 권한이 열려도 0 이 아니라 trailing_creep_speed_ 로 바닥을 깐다.
+    // 운영 요구: 접촉하더라도 스택이 죽지 않고, 장애물만 치우면 스스로 다시
+    // 진행해야 한다. 0 을 명령하면 v=0 자기유지 고정점(래치가
+    // evade_committed 를 닫아 컨트롤러 발진 하한까지 닫힌다)과 조향 사망
+    // (전 점 vx=0, 0807 코스아웃)이 동시에 열린다.
+    // 접촉 속도를 낮추는 일은 바닥이 아니라 **제동 능력**(trailing_brake_decel_)
+    // 이 한다 — 그쪽이 실제 물리 한계까지 쓰므로 크리프까지 확실히 내려간다.
+    // ⚠️ 동적 상대(allow_stop=true, obs_vs_eff>0)는 v_target_prof_actual 이
+    //    이미 상대 속도라 이 max 가 걸리지 않는다. 크리프는 상대가 실제로
+    //    멈춰 있을 때만 발현된다.
+    v_target_prof_actual = std::max(
+        v_target_prof_actual,
+        allow_stop ? trailing_creep_speed_ : trailing_retry_speed_);
 
     // 물리적으로 도달 가능한 최소 속도 곡선. 현재 속도 v0에서 지연 T 뒤부터
     // trailing_ramp_decel_로 감속했을 때 전방 dist 지점에서의 속도다.
@@ -4800,9 +4821,12 @@ bool SplinerNode::BuildTrailing(
             //    상대 뒤에서 급정거**한다. 정적으로 분류돼 있어도 관측 창
             //    평균(obs_vs_eff)이 상대 속도를 들고 있으므로 그것을 쓴다.
             //    진짜로 멈춰 있으면 창 평균도 0 이라 결과가 같다.
+            // 2026-08-22: allow_stop 이어도 0 이 아니라 크리프다 (위 바닥
+            // 주석과 같은 근거 — 완전 정지 프로파일을 두지 않는다).
             v_target_prof_actual =
                 allow_stop ? (obs.is_static && obs_ever_moved
-                                  ? std::max(obs_vs_eff, 0.0) : 0.0)
+                                  ? std::max(obs_vs_eff, trailing_creep_speed_)
+                                  : trailing_creep_speed_)
                            : trailing_retry_speed_degraded_;
         }
     }
@@ -5038,22 +5062,76 @@ bool SplinerNode::BuildTrailing(
             // ⚠️ 트레이드는 1326줄이 이미 명시한 것과 동일하다 — 정적 장애물에
             // 대한 "완전 정지" 경로가 이 분기에서도 사라진다. 남는 방어선은
             // 컨트롤러 백스톱과 recovery_supervisor 다.
+            // ── 여기만 실제 제동 능력을 쓴다 (2026-08-22) ──────────────────
+            // 위 5001줄 주석의 진단이 이 커밋의 근거다: "이 분기가 발동하는
+            // 거리(0.2~5.6m)에서는 trailing_decel 1.0 으로 세우는 데 필요한
+            // 거리가 이미 남은거리를 넘는다 — v_stop 은 정지 곡선이 아니라
+            // reachable_v 에 눌린 가속 금지 캡으로만 동작한다."
+            // 램프가 장애물과 부딪히는 것이 **확정된** 분기이므로 추종용
+            // 감속도가 아니라 차가 실제로 낼 수 있는 감속도를 쓴다.
+            //   run_0822_172617 t=167.5: stop_dist 2.03m, v 4.51 에서
+            //   decel 1.0 -> v_stop 1.74 지만 바닥 2.5 에 지워져 무제동,
+            //   s=21.6 을 3.1 m/s 로 통과해 관통(실측 접촉 2.9 m/s).
+            //   decel 3.0 -> v_stop 2.70, 필요 감속 3.2 m/s² (실측 능력 4.19)
+            //   로 추종 가능하고 그 뒤 크리프까지 계속 내려간다.
+            // ⚠️ v_stop 은 max() **안**에 있어 바닥으로 동작한다 — 여기 감속도를
+            //    올리면 "더 세게 제동한다"가 아니라 **명령이 올라간다**(늦게
+            //    제동해도 된다). run_0822_172617 재생으로 확인: decel 1.0->3.0
+            //    이 t=167.5 무더기 전면 계획속도를 1.47 -> 1.97 로 **악화**시켰다.
+            //    그래서 v_stop 은 보수적인 추종 감속도 그대로 둔다.
             const double aT_stop = decel_eff * trailing_lag_sec_;
+            // 실제 지렛대는 reachable_v 다. 그 곡선은 "지금 속도에서 이 거리
+            // 안에 낼 수 있는 최저 속도"이고 max() 의 바닥이라, 감속도를
+            // 과소평가하면 **명령이 그 위에 묶인다**.
+            //   같은 재생 t=167.8: v0 3.66, 전면까지 2.2m ->
+            //   sqrt(3.66² - 2·2.0·(2.2-1.1)) = 3.00 = 실제 계획값과 일치.
+            //   즉 무더기를 3.0 m/s 로 지나가라고 명령한 것은 이 줄이다.
+            // 접촉이 확정된 이 분기에서만 실측 제동 능력을 쓴다
+            // (run_0822_172617 실측 0.3s 창 최대 4.19 m/s², 브레이크 7A).
+            const double brake_decel = std::max(trailing_brake_decel_,
+                                                decel_eff);
+            auto reachable_brake = [&](double dist) {
+                const double eff = std::max(dist - v0 * trailing_lag_sec_, 0.0);
+                return std::sqrt(
+                    std::max(v0 * v0 - 2.0 * brake_decel * eff, 0.0));
+            };
+            // ── 바닥이 접촉을 보장하면 바닥을 크리프로 내린다 (2026-08-22) ──
+            // 이 분기의 바닥은 v_target_prof_actual(정적 = 2.5/1.5)이다.
+            // 그런데 남은 거리가 그 바닥조차 세울 수 없을 만큼 짧으면, 바닥을
+            // 유지하는 것은 "접촉을 확정하고 그 속도로 들이받겠다"는 뜻이
+            // 된다. 그때만 크리프로 내린다 — 조건이 물리식이라 여유가 있는
+            // 통상 트레일링(이 분기의 대다수)은 종전 바닥 그대로다.
+            //   run_0822_172617 1:40 실측: t=101.38 stop_dist 0.00m 인데
+            //   바닥 1.5 가 그대로 남아 파편 위로 전진 -> 접촉.
+            //   같은 런 t=100.43 은 stop_dist 2.32m 라 이 규칙이 걸리지 않는다.
+            // ⚠️ 크리프이지 0 이 아니다 — 완전 정지 프로파일은 두지 않는다.
+            const double floor_stop_dist =
+                v_target_prof_actual * v_target_prof_actual /
+                (2.0 * std::max(brake_decel, 0.05));
+            // ⚠️ !allow_stop 일 때만이다. 정지 권한이 열린 경우의
+            //    v_target_prof_actual 은 (a) 움직이는 상대의 속도이거나
+            //    (b) 이미 크리프다. (a)에서 크리프로 떨어뜨리면 2 m/s 로
+            //    달리는 상대 뒤에서 0.5 로 급감속해 간격이 통째로 벌어진다 —
+            //    H2H 추종의 퇴행이다. (b)는 min 이 항등이라 볼 필요가 없다.
+            //    즉 이 규칙은 "정지 권한 없는 정적 장애물" 전용이다.
+            const double brake_floor =
+                (!allow_stop && floor_stop_dist > stop_dist)
+                    ? std::min(v_target_prof_actual, trailing_creep_speed_)
+                    : v_target_prof_actual;
             for (size_t i = 0; i < out_wpnts.wpnts.size(); ++i) {
                 const double dist = static_cast<double>(i) * wpnt_dist_;
                 const double rem_stop = std::max(stop_dist - dist, 0.0);
                 const double v_stop = std::max(
                     -aT_stop + std::sqrt(
-                        aT_stop * aT_stop +
-                        v_target_prof_actual * v_target_prof_actual +
+                        aT_stop * aT_stop + brake_floor * brake_floor +
                         2.0 * decel_eff * rem_stop),
                     0.0);
                 // v_target 을 바닥으로 함께 깐다 — 3999줄 주석과 같은 이유로
                 // 지연항 -aT 가 rem_stop=0 에서 v_target 아래로 내려간다.
                 out_wpnts.wpnts[i].vx_mps = std::min(
                     out_wpnts.wpnts[i].vx_mps,
-                    std::max({v_stop, reachable_v(dist),
-                              v_target_prof_actual}) / command_scale);
+                    std::max({v_stop, reachable_brake(dist), brake_floor}) /
+                        command_scale);
             }
             // 속도를 덮어썼으면 ax 도 다시 계산한다. ApplySpeedProfile 은
             // 마지막에 v² 공간미분으로 ax 를 맞추는데, 이 덮어쓰기는 그
@@ -5074,8 +5152,8 @@ bool SplinerNode::BuildTrailing(
             }
             RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
                 "Trailing 램프가 장애물과 충돌 (blocking s=%.2f, 정지까지 "
-                "%.2fm) — 속도 바닥 해제하고 제동",
-                blocking_s, stop_dist);
+                "%.2fm) — 제동 %.1f m/s², 바닥 %.2f m/s",
+                blocking_s, stop_dist, brake_decel, brake_floor);
         }
     }
 
@@ -5341,7 +5419,7 @@ void SplinerNode::UpdateCorridorBlockLatch() {
             NoteOutcome("corridor_block_stop_latched");
             RCLCPP_WARN(this->get_logger(),
                 "회랑 봉쇄 래치: 정지 권한 개방 (s=%.2f, v=%.2f m/s, "
-                "hold %.2fs) — 트레일링 속도 바닥을 푼다",
+                "hold %.2fs) — 트레일링 바닥을 크리프까지 내린다",
                 cur_s_, cur_vs_, corridor_block_stop_hold_sec_);
             pitwall::Event("회랑 봉쇄 — 정지 권한 개방");
         }

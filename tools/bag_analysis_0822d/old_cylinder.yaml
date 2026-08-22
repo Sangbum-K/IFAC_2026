@@ -1,0 +1,4 @@
+perception_obstacle_bridge_node:
+  ros__parameters:
+    bridge/static_cylinder_radius_m: 0.25
+    bridge/static_cylinder_band_m: [0.05, 0.25]

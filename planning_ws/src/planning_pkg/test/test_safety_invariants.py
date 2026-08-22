@@ -77,13 +77,46 @@ def test_default_profile_is_fail_safe():
     assert local["local_trajectory/require_avoidance_heartbeat"] is True
     assert local["local_trajectory/avoidance_timeout_sec"] <= 0.25
     assert local["local_trajectory/frenet_odom_source_timeout_sec"] <= 0.25
-    # recovery 체인은 현재 기본 비활성 (launch recovery:=true opt-in).
-    # 다시 켤 때도 후진 계열은 검증 전까지 꺼져 있어야 한다.
-    assert recovery["recovery/enabled"] is False
-    assert recovery.get("recovery/allow_reverse", False) is False
-    assert recovery.get("recovery/rear_coverage_confirmed", False) is False
+    # recovery 체인 부활 (2026-08-22): 기본 활성. 노드 기동은 launch
+    # (recovery:=auto)가, 내부 게이트는 이 값이 결정한다. 발동은 "완전히
+    # 박았을 때"로 한정되고, allow_reverse가 운용 킬스위치다.
+    assert recovery["recovery/enabled"] is True
+    assert recovery["recovery/allow_reverse"] is True
     assert tracker["tracker/recovery_required"] is False
-    assert tracker["tracker/recovery_allow_reverse"] is False
+    assert tracker["tracker/recovery_allow_reverse"] is True
+    # 재설계에서 삭제된 rear/align 계열 — 남아 있으면 declare 되지 않은 키라
+    # 기동이 거부된다.
+    for removed in (
+        "recovery/rear_coverage_confirmed",
+        "recovery/rear_check_dist_m",
+        "recovery/front_check_dist_m",
+        "recovery/align_tolerance_rad",
+        "recovery/align_speed_mps",
+        # 경계 예측 정지 계열 — run_0822_191159 에서 정상 주행을 오탐해 삭제.
+        "recovery/boundary_stop_margin_m",
+        "recovery/boundary_persist_sec",
+        "recovery/boundary_reaction_time_sec",
+        "recovery/boundary_braking_decel_mps2",
+        "recovery/require_boundary_horizon",
+        "recovery/resume_grace_sec",
+    ):
+        assert removed not in recovery, removed
+    # 벽 접촉 임계: run_0822_191159 의 진짜 접촉(-0.00m)은 잡고 오탐(0.31m)은
+    # 거르는 구간 안에 있어야 한다.
+    assert -0.05 <= recovery["recovery/wall_contact_margin_m"] <= 0.15
+    # 후진/복구 파라미터의 안전 범위. 후진 요청 속도는 control의 하드캡보다
+    # 크면 잘려서 무의미해지므로 캡 이하를 강제한다.
+    assert 0.3 <= recovery["recovery/recovery_max_reverse_distance_m"] <= 1.0
+    assert 2 <= recovery["recovery/recovery_max_attempts"] <= 5
+    assert recovery["recovery/progress_reset_m"] >= \
+        2.0 * recovery["recovery/recovery_max_reverse_distance_m"]
+    control_base = _ros_params(
+        _yaml(WORKSPACE / "control_ws" / "src" / "control_pkg" /
+              "config" / "params.yaml"),
+        "control",
+    )
+    assert recovery["recovery/recovery_reverse_speed_mps"] <= \
+        control_base["recovery/max_reverse_speed_mps"]
     # (tracker/internal_stuck_recovery_enabled 삭제: 자체 후진 상태머신을
     #  통째로 제거해 tracker 는 STOP 래치만 한다. 후진은 supervisor 몫.)
     assert "tracker/internal_stuck_recovery_enabled" not in tracker
@@ -192,22 +225,27 @@ def test_real_profiles_require_exact_time_and_fresh_inputs():
         assert bridge["bridge/tf_max_age_sec"] <= 0.10
 
 
-def test_control_profiles_disable_reverse_and_supervisor_not_required():
+def test_control_profiles_disable_recovery_chain():
     control_base = _ros_params(
         _yaml(WORKSPACE / "control_ws" / "src" / "control_pkg" /
               "config" / "params.yaml"),
         "control",
     )
+    # base는 벤치/단독 실행 fail-safe로 계속 꺼져 있다.
     assert control_base["recovery/allow_reverse"] is False
-    for env_name in ("real_car", "race_map", "sim"):
+    assert control_base["recovery/require_supervisor"] is False
+    # 2026-08-22 recovery 전면 비활성: launch가 supervisor를 띄우지 않으므로
+    # 주행 env 4종은 lease를 요구하면 안 된다(요구하면 출발 자체가 막힌다).
+    # 후진 소비도 함께 닫아 둔다 — 되살릴 때 둘 다 true로 되돌릴 것.
+    for env_name in ("real_car", "race_map", "sim", "sim_real_car"):
         control_env = _ros_params(
             _yaml(WORKSPACE / "control_ws" / "src" / "control_pkg" /
                   "config" / "environments" / f"{env_name}.yaml"),
             "control",
         )
-        # recovery 체인 비활성 상태이므로 supervisor 부재로 fail-closed 하지 않는다.
-        assert control_env["recovery/require_supervisor"] is False
-        assert control_env["vehicle/speed_scale"] <= 1.0
+        assert control_env["recovery/require_supervisor"] is False, env_name
+        assert control_env["recovery/allow_reverse"] is False, env_name
+        assert control_env["vehicle/speed_scale"] <= 1.0, env_name
 
 
 def test_sim_controller_matches_planner_speed_model():
@@ -268,6 +306,57 @@ def test_launch_does_not_auto_enable_sp():
     assert "sp = sp_candidate" not in planner_launch
     assert "overtaking_csv_file', default_value=''" in planner_launch
     assert "overtaking_csv_file', default_value=''" in sim_launch
+
+
+def test_launch_disables_recovery_by_default():
+    """recovery 전면 비활성(2026-08-22): launch 기본이 false여야 한다.
+
+    control env의 require_supervisor=false와 쌍이다. 한쪽만 되돌리면
+    (기본 false + require true) 차가 출발조차 못 하는 조합이 된다.
+    """
+    planner_launch = (
+        PKG / "launch" / "planner_stack.launch.py"
+    ).read_text(encoding="utf-8")
+    sim_launch = SIM_RACE_LAUNCH.read_text(encoding="utf-8")
+    assert "'recovery', default_value='false'" in planner_launch
+    # auto 경로 자체는 남겨 둔다 (recovery:=auto 로 되살릴 수 있어야 한다).
+    assert "env != 'mapping'" in planner_launch
+    # sim_race는 인자를 선언하고 planner_stack으로 통과시켜야 한다.
+    assert "'recovery', default_value='false'" in sim_launch
+    assert "'recovery': LaunchConfiguration('recovery')" in sim_launch
+
+
+def test_recovery_supervisor_source_invariants():
+    """상태머신 재설계(2026-08-22)의 소스 수준 회귀 방지.
+
+    - rear-safe 게이트와 RECOVER_ALIGN은 삭제됐다 — 되살아나면 벽 크래시가
+      다시 STOP 막다른 길이 된다.
+    - 경계 예측 정지(COLLISION_STOP)는 삭제됐다 — run_0822_191159 에서 실제
+      여유 0.84m 인데도 3회 모두 트립했고, 정지 시 조향이 0으로 꺾여 차를
+      벽으로 보냈다.
+    - 후진 타임아웃은 STOP 래치가 아니라 RECOVER_STOP(전진 재시도)이어야 한다.
+    - 복귀 grace 파라미터는 declare 되어 있어야 한다.
+    """
+    src = (PKG / "src" / "recovery_supervisor_node.cpp").read_text(
+        encoding="utf-8")
+    hdr = (
+        PKG / "include" / "planning_pkg" / "recovery_supervisor_node.hpp"
+    ).read_text(encoding="utf-8")
+    for banned in (
+        "IsRearSafe", "RECOVER_ALIGN", "rear_coverage_confirmed",
+        # 경계 예측 정지 — 되살리면 정상 주행이 다시 멈추고 조향이 끊긴다.
+        "IsBoundaryViolation", "State::COLLISION_STOP", "StoppingDistance",
+    ):
+        assert banned not in src, banned
+        assert banned not in hdr, banned
+    assert re.search(
+        r"State::RECOVER_STOP,\s*\"reverse timeout", src), \
+        "reverse timeout은 RECOVER_STOP으로 가야 한다 (STOP 래치 회귀 금지)"
+    assert 'declare_parameter("recovery/progress_reset_m"' in src
+    assert 'declare_parameter("recovery/wall_contact_margin_m"' in src
+    # 후진 진입은 벽 접촉 게이트를 반드시 통과해야 한다.
+    assert re.search(r"!IsStuck\(now_sec\)\s*\|\|\s*!wall_contact", src), \
+        "후진 진입에 벽 접촉 게이트가 없다"
 
 
 def _sim_race_real_car_vehicle():
@@ -1076,10 +1165,15 @@ def test_ever_moved_stop_authority_is_paired_with_measured_speed():
         "급감속한다 (allow_stop 변경과 반드시 같이 가야 한다)"
     )
     # (3) 복귀 기하가 없는 최악 분기도 같은 규약을 따른다.
+    #     2026-08-22: 바닥이 0 -> trailing_creep_speed_ 로 바뀌었다. 완전 정지
+    #     프로파일을 두지 않는다는 운영 요구(접촉해도 스택 유지, 장애물을
+    #     치우면 자력 재개)라 0 리터럴은 이제 **금지**다.
     assert re.search(
         r"allow_stop\s*\?\s*\(obs\.is_static && obs_ever_moved\s*"
-        r"\?\s*std::max\(obs_vs_eff, 0\.0\) : 0\.0\)", src, re.S), (
-        "복귀 기하 없음 분기가 ever_moved 트랙에 0 을 그대로 명령한다"
+        r"\?\s*std::max\(obs_vs_eff, trailing_creep_speed_\)\s*"
+        r":\s*trailing_creep_speed_\)", src, re.S), (
+        "복귀 기하 없음 분기가 ever_moved 트랙에 관측 창 평균/크리프 대신 "
+        "다른 값을 명령한다"
     )
     # (4) 문턱은 콘(실측 0.13~0.21 m)과 상대(p50 8.36 m) 사이에 있어야 한다.
     params = _ros_params(_yaml(PARAMS), "spliner_node")
@@ -1089,6 +1183,57 @@ def test_ever_moved_stop_authority_is_paired_with_measured_speed():
         f"사이를 못 가른다"
     )
 
+
+
+def test_no_complete_stop_profile():
+    """완전 정지 프로파일 금지 (2026-08-22).
+
+    운영 요구: 접촉하더라도 스택이 죽지 않고, 장애물만 치우면 스스로 다시
+    진행해야 한다. 목표 속도 0 은 두 함정을 동시에 연다 —
+      (a) 래치가 evade_committed 를 닫아 컨트롤러 발진 하한까지 닫히는
+          v=0 자기유지 고정점 (사람이 개입해야 풀린다),
+      (b) 전 점 vx=0 이 MAP 컨트롤러의 조향을 죽인다 (0807 코스아웃).
+    접촉 속도를 낮추는 일은 바닥이 아니라 제동 능력이 한다.
+    """
+    src = _spliner_source()
+
+    # (1) 트레일링 바닥은 allow_stop 여부와 무관하게 항상 존재한다.
+    assert re.search(
+        r"v_target_prof_actual = std::max\(\s*"
+        r"v_target_prof_actual,\s*"
+        r"allow_stop \? trailing_creep_speed_ : trailing_retry_speed_\);",
+        src, re.S), (
+        "정지 권한이 열렸을 때 바닥이 사라진다 — 완전 정지 프로파일이 부활했다"
+    )
+
+    # (2) 접촉이 확정된 분기는 추종용이 아니라 실제 제동 능력을 쓴다.
+    assert "trailing_brake_decel_" in src, (
+        "램프 충돌 제동이 추종용 감속도(trailing_decel)를 그대로 쓴다 — "
+        "제동 곡선이 아니라 '가속 금지' 캡으로만 동작한다"
+    )
+
+    # (3) 바닥이 접촉을 보장할 때만 크리프로 내린다 (통상 트레일링은 유지).
+    assert re.search(r"!allow_stop && floor_stop_dist\s*>\s*stop_dist", src), (
+        "접촉 확정 크리프 전환이 물리식(바닥 정지거리 > 남은거리)이 아니거나 "
+        "정지 권한 없는 정적 전용이 아니다 — 움직이는 상대 뒤에서 급감속한다"
+    )
+
+    # (4) 파라미터 불변식.
+    params = _ros_params(_yaml(PARAMS), "spliner_node")
+    creep = params["spliner/trailing_creep_speed"]
+    retry = params["spliner/trailing_retry_speed"]
+    decel = params["spliner/trailing_decel"]
+    brake = params["spliner/trailing_brake_decel"]
+    assert 0.0 < creep <= retry, (
+        f"trailing_creep_speed={creep} 가 0 이거나 retry({retry})를 넘는다"
+    )
+    # 크리프는 접촉해도 스택이 사는 속도여야 한다 — 너무 높으면 그냥 들이받는다.
+    assert creep <= 1.0, f"trailing_creep_speed={creep} 는 접촉 속도로 너무 높다"
+    # 제동 능력은 실측(run_0822_172617: 0.3s 창 최대 4.19 m/s²) 아래.
+    assert decel <= brake <= 4.2, (
+        f"trailing_brake_decel={brake} 가 추종용({decel})보다 낮거나 "
+        f"실측 제동 능력(4.19)을 넘는다"
+    )
 
 def test_corridor_block_verdict_reaches_stop_authority():
     """"합치면 트랙이 막힌다" 판정이 정지 권한까지 도달해야 한다.

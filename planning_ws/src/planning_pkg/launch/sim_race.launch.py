@@ -264,7 +264,7 @@ def launch_setup(context, *args, **kwargs):
     #                          (레이스라인 생성에 쓰는 MU_PROFILE 0.80은 계획용
     #                           derate라 다른 값 — 그건 CSV에 이미 반영돼 있다)
     #   a_max 9.51   -> 4.5   : deployment_profiles.A_ACC_MAX
-    #   s_min -0.4189 -> -0.3578: deployment_profiles.MAX_RIGHT_STEER
+    #   s_min -0.4189 -> -0.3220: deployment_profiles.MAX_RIGHT_STEER
     #   s_max  0.4189 ->  0.3800: deployment_profiles.MAX_LEFT_STEER
     #                           (실차의 방향별 control clamp와 동일)
     #   v_max 20.0   -> 8.5   : deployment_profiles.RACELINE_V_MAX
@@ -299,7 +299,7 @@ def launch_setup(context, *args, **kwargs):
     REAL_CAR_VEHICLE = {
         'vehicle.mu': 0.90,
         'vehicle.a_max': 4.5,
-        'vehicle.s_min': -0.3578, 'vehicle.s_max': 0.3800,
+        'vehicle.s_min': -0.3220, 'vehicle.s_max': 0.3800,
         'vehicle.v_max': 9.0, 'vehicle.v_min': -1.0,
         'vehicle.width': 0.30, 'vehicle.length': 0.55,
         # 실차 Hokuyo /scan 40 Hz (run_0804 실측 748msg/18.5s). gym 기본 250 Hz는
@@ -400,6 +400,8 @@ def launch_setup(context, *args, **kwargs):
         'centerline_csv_file': center_csv,
         # recovery yaw 소스. pf:=false면 sim에 pf가 없으므로 gym GT odom을 쓴다.
         'pose_odom_topic': '/pf/pose/odom' if use_pf else '/ego_racecar/odom',
+        # planner_stack의 recovery 스위치 통과 (기본 false: 전면 비활성).
+        'recovery': LaunchConfiguration('recovery').perform(context).strip(),
     }
     if lidar_perception:
         stack_args.update({
@@ -579,6 +581,9 @@ def generate_launch_description():
                               description='RViz 실행 여부'),
         DeclareLaunchArgument('tracker', default_value='true',
                               description='Python 트래커 실행 여부 (false면 C++ control_node 사용)'),
+        DeclareLaunchArgument('recovery', default_value='false',
+                              description='planner_stack recovery 통과 인자: '
+                                          "false(기본, 2026-08-22 전면 비활성) | ''/auto | true"),
         DeclareLaunchArgument('pf', default_value='false',
                               description='true면 gym GT 대신 particle_filter로 '
                                           '위치추정한다 (sim_odom_drift_node가 '
@@ -593,7 +598,7 @@ def generate_launch_description():
                                           '빈 값이면 params.yaml 기본값만 사용.'),
         DeclareLaunchArgument('vehicle', default_value='gym_default',
                               description='gym 차량 물리 프로파일: gym_default | real_car. '
-                                          'real_car는 mu 0.90 / a_max 4.5 / 조향 좌 0.3800·우 -0.3578 / '
+                                          'real_car는 mu 0.90 / a_max 4.5 / 조향 좌 0.3800·우 -0.3220 / '
                                           'v_max 7.0 등 실측값을 넣어 고속 슬립까지 '
                                           '실차에 맞춘다.'),
         DeclareLaunchArgument('map_filter', default_value='',

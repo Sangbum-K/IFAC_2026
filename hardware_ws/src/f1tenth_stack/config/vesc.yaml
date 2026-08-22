@@ -48,21 +48,19 @@
     # mechanical slip (servo saver, horn spline, horn screw, tie rod / knuckle
     # re-seating on a wall hit).
     #
-    # 0.3941 is the value that is actually on the car and drives well. That does
-    # NOT retire the mechanical finding -- see ~/TUNING_STATUS.md section 11 for
+    # 0.424 is the currently configured value. That does NOT retire the
+    # mechanical finding -- see ~/TUNING_STATUS.md section 11 for
     # the hands-on check and the "three consecutive runs within +-0.005" bar
     # that has to be cleared before calling the neutral fixed.
-    steering_angle_to_servo_offset: 0.44
+    steering_angle_to_servo_offset: 0.424
     #
     # Derived limits (delta = (servo - offset)/gain, servo clipped to
     # [servo_min, servo_max] below):
-    #   right (0.70-0.3935)/-0.8564 = -0.357894 rad (20.51 deg)  <- binding side
-    #   left  (0.05-0.3935)/-0.8564 = +0.401098 rad (22.98 deg)
-    #   symmetric 0.357894 rad -> min turn radius 0.882 m, kappa_max 1.133 1/m
-    # Symmetric planning consumers use 0.3578 -- the binding limit itself,
-    # rounded down only enough to stay inside it (0.03%). Control uses explicit
-    # directional limits: right 0.3578, left 0.3800 for the first loaded test
-    # after a stand command reached 0.395 (servo 0.0552) without driver clip.
+    #   right (0.70-0.424)/-0.8564 = -0.322279 rad (18.45 deg) <- binding side
+    #   left  (0.05-0.424)/-0.8564 = +0.436712 rad (25.02 deg)
+    #   symmetric 0.322279 rad -> min turn radius 0.988 m, kappa_max 1.012 1/m
+    # Symmetric planning consumers use 0.3220, just inside the binding limit.
+    # Control uses explicit directional limits: right 0.3220, left 0.3800.
     #   planning spliner/vehicle_max_steering_rad, tracker/max_steer_rad,
     #   opponent/max_steer_rad, global_trajectory/validation_max_steer_rad,
     #   deployment_profiles.MAX_STEER, control vehicle/max_{left,right}_steering_angle_rad.
@@ -137,7 +135,11 @@
     # (reverted 5.0->7.0 same day -- see that constant's comment for why).
     # ⚠️ real hardware current ceiling change, needs on-car brake verification.
     ackermann_brake_max: 7.0
-    brake_speed_error_gain: 2.0       # brake A per (m/s) of overspeed
+    # run_0822_070229: gain 5.0에서 계획 감속 중 과속 p90 0.88 m/s,
+    # 보통 최대 명령 5.2~5.7/7.0 A, 7 A 직선 감속 중앙값 -2.60 m/s2였다.
+    # 하드웨어 상한은 유지하고 기존 여유를 조금 더 일찍 쓰도록 6.0으로 조정.
+    # 실측 배터리 회생 입력은 peak 2.95 A(5250 mAh 기준 0.56 C)였다.
+    brake_speed_error_gain: 10.0       # brake A per (m/s) of overspeed
     brake_decel_threshold: 0.1        # planned deceleration intent (m/s^2)
     brake_entry_speed_error: 0.10     # planned-decel brake entry (m/s)
     brake_overspeed_error: 0.20       # brake entry without decel intent (m/s)
