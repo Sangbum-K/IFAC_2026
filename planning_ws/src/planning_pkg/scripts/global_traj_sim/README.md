@@ -57,11 +57,17 @@ True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
 
 급코너 진입 감속은 절대 `s` 위치를 저장하지 않고 새 맵의 곡률에서 매번 다시
 검출한다. 기본값은 peak `|kappa|>=0.50`인 코너에 한해 `|kappa|>=0.32`가 처음
-보이는 진입점의 4 m 전부터 2 m 뒤까지 기존 완성 속도 프로파일의 `0.96`을
-상한으로 적용한다. 그래서 급코너에서 먼 직선과 완만한 코너는 직접 제한하지
-않는다. 일회성 비교는 `--sharp-entry-scale`, `--sharp-entry-preview`,
-`--sharp-entry-hold`로 하고, 실제 적용 구간·속도 하락·예상 랩타임 증가는
-generation manifest의 `validation.sharp_corner_entry`에 기록된다.
+보이는 진입점의 4 m 전부터 `|kappa|>=0.25`인 코너 body 끝까지 기존 완성 속도
+프로파일의 `0.92`를 상한으로 적용한다. 그중 실제 진입점부터 body 끝까지는 절대
+`4.50 m/s` 상한도 함께 적용해 둘 중 더 낮은 값을 쓴다. 실차
+`velocity_scale=0.96`에서는 절대 상한이 약 `4.32 m/s`다. 진입 뒤 2 m는 body가
+더 짧더라도 배율을 유지하는 최소 거리다. 급코너에서 먼 직선과 완만한 코너는 직접
+제한하지 않지만, 제한 시작점까지의 제동과 탈출 후 가속 램프는 인접 직선으로
+이어질 수 있다.
+일회성 비교는 `--sharp-entry-scale`, `--sharp-entry-preview`,
+`--sharp-entry-hold`, `--sharp-entry-max-speed`로 하고, 실제 적용 구간·속도
+하락·예상 랩타임 증가는 generation manifest의
+`validation.sharp_corner_entry`에 기록된다.
 
 **라인-벽 이격은 이제 상수가 아니라 구간별로 다르다.** SLAM 트랙은 폭이
 2배 넘게 변하는데(my_track 0.9~2.15 m) 균일 `SAFE_DIST` 하나로는 넓은 곳에서

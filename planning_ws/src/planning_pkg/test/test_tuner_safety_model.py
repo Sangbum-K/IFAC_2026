@@ -42,10 +42,12 @@ def _load_generator_safety_slice(steering_lut):
         'SHARP_CORNER_ENTRY_KAPPA', 'SHARP_CORNER_BODY_KAPPA',
         'SHARP_CORNER_PREVIEW_M', 'SHARP_CORNER_ENTRY_HOLD_M',
         'SHARP_CORNER_ENTRY_SPEED_SCALE',
+        'SHARP_CORNER_ENTRY_MAX_SPEED_MPS',
     }
     definitions = {
         '_max_segment_endpoint_speed', 'velocity_profile',
-        'sharp_corner_entry_mask',
+        'sharp_corner_entry_mask', 'sharp_corner_inner_mask',
+        'sharp_corner_entry_speed_cap',
         '_lookup_steer_angle', '_lookup_lateral_accel', 'PurePursuitSim',
     }
     selected = []
@@ -307,7 +309,7 @@ def test_sharp_corner_entry_mask_limits_only_qualified_entry_window():
     segment_ds = np.full(count, 0.1)
     kappa = np.zeros(count)
 
-    # 급코너 body 7~13 m, 진입 8 m, peak 0.60. 직접 제한은 4~10 m.
+    # 급코너 body 7~13 m, 진입 8 m, peak 0.60. 직접 제한은 4~13 m.
     kappa[70:131] = 0.26
     kappa[80:121] = 0.35
     kappa[100] = 0.60
@@ -318,12 +320,15 @@ def test_sharp_corner_entry_mask_limits_only_qualified_entry_window():
         s, kappa, segment_ds=segment_ds)
     assert info['detected_corners'] == 1
     assert info['zones'][0]['entry_s_m'] == pytest.approx(8.0)
+    assert info['zones'][0]['body_end_s_m'] == pytest.approx(13.0)
+    assert info['zones'][0]['post_entry_m'] == pytest.approx(5.0)
     assert mask[np.argmin(np.abs(s - 4.0))]
     assert mask[np.argmin(np.abs(s - 10.0))]
+    assert mask[np.argmin(np.abs(s - 13.0))]
     assert not mask[np.argmin(np.abs(s - 3.8))]
-    assert not mask[np.argmin(np.abs(s - 10.2))]
+    assert not mask[np.argmin(np.abs(s - 13.2))]
     assert not np.any(mask[150:181])
-    assert info['direct_limited_distance_m'] == pytest.approx(6.1)
+    assert info['direct_limited_distance_m'] == pytest.approx(9.1)
 
 
 def test_sharp_corner_entry_mask_handles_a_corner_across_s_zero():
@@ -334,7 +339,7 @@ def test_sharp_corner_entry_mask_handles_a_corner_across_s_zero():
     kappa = np.zeros(count)
 
     # body가 18 m에서 시작해 s=0을 지나 3 m까지 이어진다. 진행 방향에서
-    # entry는 19 m이고, [-4,+2] m 창은 15~20 m와 0~1 m로 감겨야 한다.
+    # entry는 19 m이고, 진입 전 4 m부터 body 끝 3 m까지 감겨야 한다.
     kappa[180:] = 0.26
     kappa[:31] = 0.26
     kappa[190:] = 0.36
@@ -345,9 +350,33 @@ def test_sharp_corner_entry_mask_handles_a_corner_across_s_zero():
         s, kappa, segment_ds=segment_ds)
     assert info['detected_corners'] == 1
     assert info['zones'][0]['entry_s_m'] == pytest.approx(19.0)
+    assert info['zones'][0]['body_end_s_m'] == pytest.approx(3.0)
+    assert info['zones'][0]['post_entry_m'] == pytest.approx(4.0)
     assert mask[np.argmin(np.abs(s - 17.0))]
     assert mask[np.argmin(np.abs(s - 0.5))]
+    assert mask[np.argmin(np.abs(s - 3.0))]
+    assert not mask[np.argmin(np.abs(s - 3.2))]
     assert not mask[np.argmin(np.abs(s - 5.0))]
+
+
+def test_sharp_corner_entry_mask_keeps_minimum_hold_for_a_short_body():
+    generator = _load_generator_safety_slice(np.zeros((1, 2)))
+    count = 200
+    s = np.arange(count, dtype=float) * 0.1
+    segment_ds = np.full(count, 0.1)
+    kappa = np.zeros(count)
+
+    # body 끝이 entry에서 0.5 m 뒤여도 기본 hold 2 m까지는 유지한다.
+    kappa[70:86] = 0.26
+    kappa[80:86] = 0.35
+    kappa[82] = 0.60
+
+    mask, info = generator['sharp_corner_entry_mask'](
+        s, kappa, segment_ds=segment_ds)
+    assert info['zones'][0]['body_after_entry_m'] == pytest.approx(0.5)
+    assert info['zones'][0]['post_entry_m'] == pytest.approx(2.0)
+    assert mask[np.argmin(np.abs(s - 10.0))]
+    assert not mask[np.argmin(np.abs(s - 10.2))]
 
 
 def test_sharp_corner_entry_cap_only_lowers_and_stays_in_friction_circle():
@@ -361,17 +390,28 @@ def test_sharp_corner_entry_cap_only_lowers_and_stays_in_friction_circle():
     kappa[100] = 0.60
     mask, _ = generator['sharp_corner_entry_mask'](
         s, kappa, segment_ds=segment_ds)
+    _, info = generator['sharp_corner_entry_mask'](
+        s, kappa, segment_ds=segment_ds)
+    inner_mask = generator['sharp_corner_inner_mask'](
+        s, segment_ds, info['zones'])
 
     mu = 1.4
     baseline = generator['velocity_profile'](
         s, kappa, 7.0, mu, 4.5, 2.38, segment_ds=segment_ds)
-    target = baseline.copy()
-    target[mask] *= 0.96
+    cap = generator['sharp_corner_entry_speed_cap'](
+        baseline, mask, max_speed_mask=inner_mask)
+    target = np.minimum(baseline, cap)
+    scale = generator['SHARP_CORNER_ENTRY_SPEED_SCALE']
+    max_speed = generator['SHARP_CORNER_ENTRY_MAX_SPEED_MPS']
     limited = generator['velocity_profile'](
         s, kappa, target, mu, 4.5, 2.38, segment_ds=segment_ds)
 
+    assert np.all(np.isinf(cap[~mask]))
+    assert np.all(cap[mask & ~inner_mask] == pytest.approx(
+        baseline[mask & ~inner_mask] * scale))
     assert np.all(limited <= baseline + 1e-12)
-    assert np.all(limited[mask] <= baseline[mask] * 0.96 + 1e-12)
+    assert np.all(limited[mask] <= baseline[mask] * scale + 1e-12)
+    assert np.all(limited[inner_mask] <= max_speed + 1e-12)
     assert np.any(limited[~mask] < baseline[~mask] - 1e-6), \
         '감속/가속 램프가 진입 창 경계 밖으로 이어져야 한다'
     ax = (np.roll(limited, -1) ** 2 - limited ** 2) / (2.0 * segment_ds)
