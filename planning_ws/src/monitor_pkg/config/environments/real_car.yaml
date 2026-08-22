@@ -7,3 +7,12 @@ monitor_node:
   ros__parameters:
     monitor/odom_topic: /pf/pose/odom
     monitor/ackermann_topic: /ackermann_cmd
+
+    # 원격 RViz(WiFi) 대역 상한. driven_path/deviation 은 전체 배열을 매 발행마다
+    # 다시 직렬화해 보내므로 주행 시간에 비례해 선형으로 커진다.
+    # 20000점 x 40B x 5Hz = 4MB/s -> WiFi 포화 -> RELIABLE /tf 가 밀려 perception
+    # 전멸 (run_0801_175634, 3분 지점). 1500점(=75m) x 1Hz = 60KB/s.
+    # 전체 궤적/이탈량은 주행 중에 볼 게 아니라 로스백 + bagviz 로 본다.
+    monitor/trail/max_points: 1500
+    monitor/trail/publish_rate_hz: 1.0
+    monitor/deviation/enabled: false
