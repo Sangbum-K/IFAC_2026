@@ -337,14 +337,28 @@ def test_sharp_corner_entry_mask_limits_only_qualified_entry_window():
     assert info['direct_limited_distance_m'] == pytest.approx(9.1)
 
 
+def _write_generation_config(path, enabled=True, **overrides):
+    sharp = {
+        'enabled': enabled,
+        'peak_kappa': 0.50,
+        'entry_kappa': 0.32,
+        'body_kappa': 0.25,
+        'preview_m': 4.0,
+        'hold_m': 2.0,
+        'speed_scale': 0.92,
+        'max_speed_mps': 4.50,
+    }
+    sharp.update(overrides)
+    path.write_text(
+        yaml.safe_dump({'sharp_corner_entry': sharp}, sort_keys=False),
+        encoding='utf-8')
+
+
 @pytest.mark.parametrize('enabled', [True, False])
 def test_generation_yaml_toggles_sharp_corner_entry(tmp_path, enabled):
     generator = _load_generator_safety_slice(np.zeros((1, 2)))
     config = tmp_path / 'raceline_generation.yaml'
-    config.write_text(
-        'sharp_corner_entry:\n'
-        f'  enabled: {str(enabled).lower()}\n',
-        encoding='utf-8')
+    _write_generation_config(config, enabled=enabled)
 
     applied = generator['_apply_generation_config'](config)
     assert applied['SHARP_CORNER_ENTRY_ENABLED'] is enabled
@@ -368,12 +382,48 @@ def test_generation_yaml_toggles_sharp_corner_entry(tmp_path, enabled):
 def test_generation_yaml_rejects_non_boolean_toggle(tmp_path):
     generator = _load_generator_safety_slice(np.zeros((1, 2)))
     config = tmp_path / 'raceline_generation.yaml'
-    config.write_text(
-        'sharp_corner_entry:\n'
-        '  enabled: "false"\n',
-        encoding='utf-8')
+    _write_generation_config(config, enabled='false')
 
     with pytest.raises(ValueError, match='YAML bool true/false'):
+        generator['_apply_generation_config'](config)
+
+
+def test_generation_yaml_overrides_every_sharp_corner_parameter(tmp_path):
+    generator = _load_generator_safety_slice(np.zeros((1, 2)))
+    config = tmp_path / 'raceline_generation.yaml'
+    expected = {
+        'SHARP_CORNER_ENTRY_ENABLED': False,
+        'SHARP_CORNER_PEAK_KAPPA': 0.60,
+        'SHARP_CORNER_ENTRY_KAPPA': 0.40,
+        'SHARP_CORNER_BODY_KAPPA': 0.30,
+        'SHARP_CORNER_PREVIEW_M': 5.0,
+        'SHARP_CORNER_ENTRY_HOLD_M': 3.0,
+        'SHARP_CORNER_ENTRY_SPEED_SCALE': 0.90,
+        'SHARP_CORNER_ENTRY_MAX_SPEED_MPS': 4.25,
+    }
+    _write_generation_config(
+        config, enabled=False, peak_kappa=0.60, entry_kappa=0.40,
+        body_kappa=0.30, preview_m=5.0, hold_m=3.0,
+        speed_scale=0.90, max_speed_mps=4.25)
+
+    applied = generator['_apply_generation_config'](config)
+    for name, value in expected.items():
+        assert applied[name] == pytest.approx(value)
+        assert generator[name] == pytest.approx(value)
+
+
+def test_generation_yaml_rejects_missing_or_string_numeric_value(tmp_path):
+    generator = _load_generator_safety_slice(np.zeros((1, 2)))
+    config = tmp_path / 'raceline_generation.yaml'
+    _write_generation_config(config)
+    document = yaml.safe_load(config.read_text(encoding='utf-8'))
+    del document['sharp_corner_entry']['hold_m']
+    config.write_text(yaml.safe_dump(document), encoding='utf-8')
+    with pytest.raises(ValueError, match='누락된.*hold_m'):
+        generator['_apply_generation_config'](config)
+
+    _write_generation_config(config, speed_scale='0.92')
+    with pytest.raises(ValueError, match='speed_scale.*YAML 숫자'):
         generator['_apply_generation_config'](config)
 
 
@@ -383,6 +433,13 @@ def test_repository_generation_yaml_is_valid_and_enabled():
     assert applied['config_path'] == str(
         PACKAGE_ROOT / 'config' / 'raceline_generation.yaml')
     assert applied['SHARP_CORNER_ENTRY_ENABLED'] is True
+    assert applied['SHARP_CORNER_PEAK_KAPPA'] == pytest.approx(0.50)
+    assert applied['SHARP_CORNER_ENTRY_KAPPA'] == pytest.approx(0.32)
+    assert applied['SHARP_CORNER_BODY_KAPPA'] == pytest.approx(0.25)
+    assert applied['SHARP_CORNER_PREVIEW_M'] == pytest.approx(4.0)
+    assert applied['SHARP_CORNER_ENTRY_HOLD_M'] == pytest.approx(2.0)
+    assert applied['SHARP_CORNER_ENTRY_SPEED_SCALE'] == pytest.approx(0.92)
+    assert applied['SHARP_CORNER_ENTRY_MAX_SPEED_MPS'] == pytest.approx(4.50)
 
 
 def test_sharp_corner_entry_mask_handles_a_corner_across_s_zero():

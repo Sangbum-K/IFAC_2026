@@ -4,3 +4,17 @@ sharp_corner_entry:
   # true: apply the 0.92 sharp-corner scale and 4.50 m/s inner-corner cap.
   # false: generate the original speed profile without either extra limit.
   enabled: true
+  # Only corners whose peak absolute curvature reaches this value are limited.
+  peak_kappa: 0.50
+  # The first point reaching this curvature is the corner entry.
+  entry_kappa: 0.32
+  # Curvature threshold used to join the full corner body.
+  body_kappa: 0.25
+  # Directly limit speed this far before the detected entry [m].
+  preview_m: 4.0
+  # Minimum distance to keep the limit after entry [m].
+  hold_m: 2.0
+  # Relative cap from preview start through the end of the corner body.
+  speed_scale: 0.92
+  # Additional absolute CSV cap from entry through body end [m/s].
+  max_speed_mps: 4.50

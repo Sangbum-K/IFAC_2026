@@ -41,7 +41,7 @@ PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track --raceline s
 - `skimage`(medial-axis 중앙선)가 필요한데, pip으로 깔면 numpy 2.x를 딸려
   깔아서 같은 문제를 만든다 → 깐 뒤 venv의 numpy를 uninstall해서 되돌릴 것.
 
-### 기본 수치는 소스에, 급코너 스위치는 YAML에, 일회성 스윕은 CLI에 둔다
+### 기본 수치는 소스에, 급코너 설정은 YAML에, 일회성 스윕은 CLI에 둔다
 
 > 📄 **"CSV 속도가 왜 이 값인가"는 [SPEED_PARAMS.md](SPEED_PARAMS.md) 를 먼저 볼 것.**
 > 어느 상수가 속도를 정하고 어느 게 아무 효과도 없는지, 실차 백 실측 근거와
@@ -51,7 +51,7 @@ PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track --raceline s
 **트랙 생성 파라미터**는 `build_map.py` 상단 `설정` 블록에 모여 있다
 (`MU` 1.50, `MU_PROFILE` 1.40, `MARGIN` 0.08, `RACELINE` `"iqp"`, `MAKE_SP`
 True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
-급코너 감속의 ON/OFF만 아래 설명의 생성 설정 YAML에서 읽는다.
+급코너 감속 묶음은 아래 설명의 생성 설정 YAML에서 읽는다.
 기본 `mkcsv <맵>`은 이 값을 사용한다. `--mu-profile` 등은 스윕용이며 실제
 사용값이 generation manifest에 남는다. 확정값은 상단 상수와 근거 주석으로
 옮겨 다음 `mkcsv`에서도 재현되게 한다. 표와 의미는 maps/README.md 참고.
@@ -65,11 +65,14 @@ True, `SP_CURV_W` 12.0, `INFIELD_FILL_M` 0.8, `MIN_ISLAND_M2` 0.3 …).
 더 짧더라도 배율을 유지하는 최소 거리다. 급코너에서 먼 직선과 완만한 코너는 직접
 제한하지 않지만, 제한 시작점까지의 제동과 탈출 후 가속 램프는 인접 직선으로
 이어질 수 있다.
-기능 스위치는 [`../../config/raceline_generation.yaml`](../../config/raceline_generation.yaml)의
-`sharp_corner_entry.enabled`다. `true`면 위 제한을 적용하고 `false`면 배율과
-절대 상한을 모두 적용하지 않는다. 이 파일은 실시간 ROS 파라미터가 아니라 CSV
-생성 입력이므로, 값을 바꾼 뒤 `mkcsv <맵>` 또는 `build_map.py <맵>`으로 해당
-레이스라인을 다시 생성해야 차량에 반영된다.
+기능 스위치와 위 수치는 모두
+[`../../config/raceline_generation.yaml`](../../config/raceline_generation.yaml)의
+`sharp_corner_entry` 묶음에 있다. `enabled: true`면 제한을 적용하고 `false`면
+배율과 절대 상한을 모두 적용하지 않는다. `peak_kappa`, `entry_kappa`,
+`body_kappa`, `preview_m`, `hold_m`, `speed_scale`, `max_speed_mps`도 여기서
+바꾼다. 이 파일은 실시간 ROS 파라미터가 아니라 CSV 생성 입력이므로, 값을 바꾼
+뒤 `mkcsv <맵>` 또는 `build_map.py <맵>`으로 해당 레이스라인을 다시 생성해야
+차량에 반영된다.
 일회성 비교는 `--sharp-entry-scale`, `--sharp-entry-preview`,
 `--sharp-entry-hold`, `--sharp-entry-max-speed`로 하고, 실제 적용 구간·속도
 하락·예상 랩타임 증가는 generation manifest의

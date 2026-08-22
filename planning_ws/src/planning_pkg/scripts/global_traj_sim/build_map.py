@@ -16,7 +16,7 @@ step1(트랙 추출) + step2(IQP 라인·속도) + step3(시뮬) + step4(저장)
        (mapping.launch.py 저장 위치라 복사 없이 바로 사용).
        확장자는 yaml 의 image: 필드를 따르므로 pgm/png 아무거나 된다.
 
-튜닝 수치는 바로 아래 '설정' 블록에 모아뒀고, 급코너 감속 ON/OFF만
+튜닝 수치는 바로 아래 '설정' 블록에 모아뒀고, 급코너 감속 설정 묶음은
 config/raceline_generation.yaml에서 읽는다. 트랙 크기(스케일)는
 SLAM이 만든 yaml의 resolution/origin을 그대로 쓴다. EXPECTED_SIZE_M 은
 '보통 이 정도(~20x8m) 나온다'는 참고값이라, 추출 결과가 이 범위를 크게
@@ -399,8 +399,8 @@ MU_PROFILE = 1.40
 # 따라서 재매핑으로 절대 s/트랙 길이가 바뀌어도 새 곡률에서 적용 구간을 다시 찾고,
 # 완만한 코너와 급코너에서 먼 직선은 건드리지 않는다. 실제 감속 시작은 이 상한을
 # velocity_profile()에 다시 투영하는 과정에서 종감속 한계만큼 더 앞쪽으로 퍼진다.
-# 기본값은 설정 파일을 읽을 수 없는 테스트용 순수 함수 호출에만 쓰인다.
-# 실제 build_map 실행은 config/raceline_generation.yaml 의 bool 값을 필수로 읽는다.
+# 아래 값은 설정 파일을 읽지 않는 테스트용 순수 함수의 fallback이다.
+# 실제 build_map 실행은 config/raceline_generation.yaml 에서 이 묶음 전체를 읽는다.
 SHARP_CORNER_ENTRY_ENABLED = True
 SHARP_CORNER_PEAK_KAPPA = 0.50       # [1/m] 이 peak 이상인 코너만 대상
 SHARP_CORNER_ENTRY_KAPPA = 0.32      # [1/m] 코너 진입점 판정
@@ -4063,11 +4063,11 @@ _PROFILE_OVERRIDES = {
 
 
 def _apply_generation_config(config_path=None):
-    """YAML의 오프라인 생성 스위치를 모듈 전역에 적용한다.
+    """YAML의 오프라인 급코너 생성 설정을 모듈 전역에 적용한다.
 
     런타임 ROS 파라미터처럼 보이지만 실제로는 CSV 생성 입력이다. 키 오타나
-    ``"false"`` 문자열을 bool로 오인하면 의도와 반대인 CSV가 배포되므로,
-    현재 지원하는 구조와 실제 YAML bool만 엄격하게 허용한다.
+    문자열 숫자를 조용히 받아들이면 의도와 다른 CSV가 배포되므로 현재 지원하는
+    구조, 실제 YAML bool, 숫자 타입을 엄격하게 검사한다.
     """
     path = (RACELINE_GENERATION_CONFIG if config_path is None
             else Path(config_path))
@@ -4082,23 +4082,47 @@ def _apply_generation_config(config_path=None):
     sharp = document.get("sharp_corner_entry")
     if not isinstance(sharp, dict):
         raise ValueError("sharp_corner_entry는 mapping이어야 함")
-    unknown_sharp = set(sharp) - {"enabled"}
+    fields = {
+        "enabled": ("SHARP_CORNER_ENTRY_ENABLED", bool),
+        "peak_kappa": ("SHARP_CORNER_PEAK_KAPPA", float),
+        "entry_kappa": ("SHARP_CORNER_ENTRY_KAPPA", float),
+        "body_kappa": ("SHARP_CORNER_BODY_KAPPA", float),
+        "preview_m": ("SHARP_CORNER_PREVIEW_M", float),
+        "hold_m": ("SHARP_CORNER_ENTRY_HOLD_M", float),
+        "speed_scale": ("SHARP_CORNER_ENTRY_SPEED_SCALE", float),
+        "max_speed_mps": ("SHARP_CORNER_ENTRY_MAX_SPEED_MPS", float),
+    }
+    unknown_sharp = set(sharp) - set(fields)
     if unknown_sharp:
         raise ValueError(
             "지원하지 않는 sharp_corner_entry 키: " +
             ", ".join(sorted(unknown_sharp)))
-    if "enabled" not in sharp or type(sharp["enabled"]) is not bool:
+    missing_sharp = set(fields) - set(sharp)
+    if missing_sharp:
         raise ValueError(
-            "sharp_corner_entry.enabled는 YAML bool true/false여야 함")
+            "누락된 sharp_corner_entry 키: " +
+            ", ".join(sorted(missing_sharp)))
 
-    enabled = sharp["enabled"]
-    globals()["SHARP_CORNER_ENTRY_ENABLED"] = enabled
-    print(f"[생성 설정] {path}: sharp_corner_entry.enabled="
-          f"{str(enabled).lower()}")
-    return {
-        "config_path": str(path),
-        "SHARP_CORNER_ENTRY_ENABLED": enabled,
-    }
+    applied = {"config_path": str(path)}
+    for key, (global_name, value_type) in fields.items():
+        value = sharp[key]
+        if value_type is bool:
+            if type(value) is not bool:
+                raise ValueError(
+                    f"sharp_corner_entry.{key}는 YAML bool true/false여야 함")
+            converted = value
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"sharp_corner_entry.{key}는 YAML 숫자여야 함")
+            converted = float(value)
+        globals()[global_name] = converted
+        applied[global_name] = converted
+
+    print(f"[생성 설정] {path}: " + ", ".join(
+        f"{key}={str(sharp[key]).lower() if fields[key][1] is bool else sharp[key]}"
+        for key in fields))
+    return applied
 
 
 def _apply_profile_overrides(args):
@@ -4131,9 +4155,10 @@ def _apply_profile_overrides(args):
     if applied:
         print("[설정 오버라이드] " + ", ".join(
             f"{name}={value}" for name, value in sorted(applied.items())))
-        print("      ⚠️ 소스 기본값이 아니다. 이 CSV 를 배포하려면 스윕 결과를 "
-              "설정 블록 주석에 남기고 상수를 옮길 것 — CLI 값은 매니페스트에만 "
-              "남고 다음 사람이 mkcsv 를 그냥 돌리면 재현되지 않는다.")
+        print("      ⚠️ 저장된 기본값이 아니다. 이 CSV 를 배포하려면 스윕 결과를 "
+              "설정 블록(일반값)이나 raceline_generation.yaml(급코너값)에 "
+              "옮길 것 — CLI 값은 매니페스트에만 남고 다음 사람이 mkcsv 를 "
+              "그냥 돌리면 재현되지 않는다.")
     return applied
 
 
@@ -4242,25 +4267,25 @@ def main():
                          "안 맞추면 런타임이 CSV 를 거부한다.")
     ap.add_argument("--sharp-entry-scale", type=float, default=None,
                     metavar="SCALE",
-                    help=f"최대 곡률 {SHARP_CORNER_PEAK_KAPPA:.2f} 이상 급코너의 "
-                         "진입 전부터 코너 끝까지의 속도 배율 (기본 "
-                         f"{SHARP_CORNER_ENTRY_SPEED_SCALE:.2f}; 1.0=추가 감속 없음). "
+                    help="generation YAML에서 검출한 급코너의 진입 전부터 "
+                         "코너 끝까지의 속도 배율 (YAML 기본값 사용; "
+                         "1.0=추가 감속 없음). "
                          "급코너에서 먼 직선/완만한 코너는 바꾸지 않는다.")
     ap.add_argument("--sharp-entry-max-speed", type=float, default=None,
                     metavar="MPS",
                     help="급코너 진입점부터 코너 body 끝까지의 CSV 절대 속도 "
-                         "상한 [m/s] (직선 preview에는 배율만 적용; 기본 "
-                         f"{SHARP_CORNER_ENTRY_MAX_SPEED_MPS:.2f}; 실차 "
+                         "상한 [m/s] (직선 preview에는 배율만 적용; YAML "
+                         "기본값 사용; 실차 "
                          "velocity_scale 0.96 적용 시 약 4.32 m/s).")
     ap.add_argument("--sharp-entry-preview", type=float, default=None,
                     metavar="M",
-                    help=f"급코너 진입점 전 직접 감속 구간 [m] (기본 "
-                         f"{SHARP_CORNER_PREVIEW_M:.1f}). 실제 감속 램프는 "
+                    help="급코너 진입점 전 직접 감속 구간 [m] (YAML 기본값 "
+                         "사용). 실제 감속 램프는 "
                          "종감속 한계 때문에 이보다 앞에서 시작할 수 있다.")
     ap.add_argument("--sharp-entry-hold", type=float, default=None,
                     metavar="M",
-                    help=f"진입점 뒤 최소 감속 유지거리 [m] (기본 "
-                         f"{SHARP_CORNER_ENTRY_HOLD_M:.1f}). 검출된 코너 body가 "
+                    help="진입점 뒤 최소 감속 유지거리 [m] (YAML 기본값 사용). "
+                         "검출된 코너 body가 "
                          "더 길면 body 끝까지 자동 연장한다.")
     args = ap.parse_args()
     if args.seal_map:
