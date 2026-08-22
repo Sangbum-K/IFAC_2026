@@ -385,6 +385,21 @@ MU         = 1.5    # 폐루프 검증의 타이어 한계(mu*g)로 쓴다.
 # 0.10의 요구량 여유를 남긴다. 1.45는 --mu-profile로 시험할 수 있지만
 # validation_mu도 먼저 맞아야 하며, 1.50 이상은 생성 전 거부한다.
 MU_PROFILE = 1.40
+
+# 급코너 **진입부만** 기존 완성 속도 프로파일보다 4% 낮춘다.
+# 현재 |kappa| 하나만 보고 코너 안에서 자르면 이미 늦다. 먼저 |kappa|>=BODY 인
+# 닫힌 구간을 코너로 묶고, 그 구간의 peak가 PEAK 이상인 진짜 급코너만 고른 뒤
+# |kappa|가 ENTRY를 처음 넘는 지점의 PREVIEW m 전부터 HOLD m 뒤까지만 제한한다.
+# 따라서 재매핑으로 절대 s/트랙 길이가 바뀌어도 새 곡률에서 진입부를 다시 찾고,
+# 완만한 코너와 급코너에서 먼 직선은 건드리지 않는다. 실제 감속 시작은 이 상한을
+# velocity_profile()에 다시 투영하는 과정에서 종감속 한계만큼 더 앞쪽으로 퍼진다.
+SHARP_CORNER_ENTRY_ENABLED = True
+SHARP_CORNER_PEAK_KAPPA = 0.50       # [1/m] 이 peak 이상인 코너만 대상
+SHARP_CORNER_ENTRY_KAPPA = 0.32      # [1/m] 코너 진입점 판정
+SHARP_CORNER_BODY_KAPPA = 0.25       # [1/m] 닫힌 코너 구간의 시작/끝 판정
+SHARP_CORNER_PREVIEW_M = 4.0         # [m] 진입점 전 직접 제한 구간
+SHARP_CORNER_ENTRY_HOLD_M = 2.0      # [m] 진입 직후 장애물 구간까지 유지
+SHARP_CORNER_ENTRY_SPEED_SCALE = 0.96
 # 2026-07-24: 0.25 -> 0.40 (4 m/s 주행 대비).
 #   0.25로 만든 라인은 실측 최소 벽여유 0.20 m → 차 반폭 0.15를 빼면 차체-벽
 #   0.05 m뿐. 저속(1 m/s)에선 통과했지만 폐루프 시뮬 |lat err|가 4 m/s에서
@@ -2384,6 +2399,120 @@ def closed_moving_average(values, s=None, window_m=None):
     return stacked.mean(axis=0)
 
 
+def sharp_corner_entry_mask(s, kappa, segment_ds=None, enabled=None,
+                            peak_kappa=None, entry_kappa=None,
+                            body_kappa=None, preview_m=None, hold_m=None):
+    """닫힌 경로에서 '진짜 급코너'의 진입 전후만 고른 bool mask를 만든다.
+
+    |kappa|>=body_kappa 인 연결 성분을 코너 하나로 보고, 그 성분의 peak가
+    peak_kappa 이상일 때만 채택한다. 채택된 코너에서 |kappa|가 entry_kappa를
+    처음 넘는 지점을 진입으로 잡아 [entry-preview, entry+hold]를 표시한다.
+    s=0을 가로지르는 코너/진입 창도 modulo 거리로 같은 한 성분으로 처리한다.
+
+    반환 info는 생성 매니페스트에 그대로 넣을 수 있는 JSON 호환 값만 가진다.
+    """
+    enabled = SHARP_CORNER_ENTRY_ENABLED if enabled is None else bool(enabled)
+    peak_kappa = (SHARP_CORNER_PEAK_KAPPA if peak_kappa is None
+                  else float(peak_kappa))
+    entry_kappa = (SHARP_CORNER_ENTRY_KAPPA if entry_kappa is None
+                   else float(entry_kappa))
+    body_kappa = (SHARP_CORNER_BODY_KAPPA if body_kappa is None
+                  else float(body_kappa))
+    preview_m = (SHARP_CORNER_PREVIEW_M if preview_m is None
+                 else float(preview_m))
+    hold_m = (SHARP_CORNER_ENTRY_HOLD_M if hold_m is None
+              else float(hold_m))
+
+    s = np.asarray(s, dtype=float)
+    k = np.abs(np.asarray(kappa, dtype=float))
+    n = len(s)
+    mask = np.zeros(n, dtype=bool)
+    base_info = {
+        "enabled": bool(enabled),
+        "scale": float(SHARP_CORNER_ENTRY_SPEED_SCALE),
+        "peak_kappa": peak_kappa,
+        "entry_kappa": entry_kappa,
+        "body_kappa": body_kappa,
+        "preview_m": preview_m,
+        "hold_m": hold_m,
+        "detected_corners": 0,
+        "direct_limited_pts": 0,
+        "direct_limited_distance_m": 0.0,
+        "zones": [],
+    }
+    if not enabled or n < 3:
+        return mask, base_info
+    if len(k) != n or not np.isfinite(s).all() or not np.isfinite(k).all() or \
+            np.any(np.diff(s) <= 0.0):
+        raise ValueError("sharp-corner entry inputs must be finite and ordered")
+    if not (0.0 <= body_kappa <= entry_kappa <= peak_kappa) or \
+            preview_m < 0.0 or hold_m < 0.0:
+        raise ValueError("sharp-corner entry thresholds/distances are invalid")
+
+    if segment_ds is None:
+        nominal = float(np.median(np.diff(s)))
+        segment_ds = np.diff(s, append=s[-1] + nominal)
+    segment_ds = np.asarray(segment_ds, dtype=float)
+    if len(segment_ds) != n or not np.isfinite(segment_ds).all() or \
+            np.any(segment_ds <= 1e-6):
+        raise ValueError("sharp-corner entry segment lengths are invalid")
+    track_length = float(np.sum(segment_ds))
+    if not np.isfinite(track_length) or track_length <= 0.0:
+        raise ValueError("sharp-corner entry track length is invalid")
+
+    body = k >= body_kappa
+    # 전 구간이 body면 '진입'이 정의되지 않는다. 임의의 s를 진입으로 골라 전
+    # 트랙을 줄이지 말고 비활성으로 남긴다.
+    if not np.any(body) or np.all(body):
+        base_info["full_loop_body"] = bool(np.all(body))
+        return mask, base_info
+
+    # false 다음 점부터 한 바퀴 돌면 s=0을 가로지르는 true 성분도 하나로 묶인다.
+    false_idx = int(np.flatnonzero(~body)[0])
+    order = (false_idx + 1 + np.arange(n)) % n
+    spans = []
+    current = []
+    for idx in order:
+        if body[idx]:
+            current.append(int(idx))
+        elif current:
+            spans.append(current)
+            current = []
+    if current:
+        spans.append(current)
+
+    s0 = float(s[0])
+    s_rel = np.mod(s - s0, track_length)
+    zone_length = min(preview_m + hold_m, track_length)
+    zones = []
+    for span in spans:
+        peak = float(np.max(k[span]))
+        if peak < peak_kappa:
+            continue
+        entry_candidates = [idx for idx in span if k[idx] >= entry_kappa]
+        if not entry_candidates:
+            continue
+        entry_idx = int(entry_candidates[0])
+        entry_s_rel = float(s_rel[entry_idx])
+        zone_start = (entry_s_rel - preview_m) % track_length
+        forward = np.mod(s_rel - zone_start, track_length)
+        zone_mask = forward <= zone_length + 1e-9
+        mask |= zone_mask
+        zones.append({
+            "entry_s_m": float(s[entry_idx]),
+            "peak_kappa": peak,
+            "start_s_m": float(s0 + zone_start),
+            "end_s_m": float(
+                s0 + (zone_start + zone_length) % track_length),
+        })
+
+    base_info["detected_corners"] = len(zones)
+    base_info["direct_limited_pts"] = int(np.sum(mask))
+    base_info["direct_limited_distance_m"] = float(np.sum(segment_ds[mask]))
+    base_info["zones"] = zones
+    return mask, base_info
+
+
 def corner_ax_limits(kappa, straight_accel=None, straight_decel=None,
                      corner_accel=_DEFAULT, corner_decel=_DEFAULT):
     """점별 (종가속 상한, 종감속 상한) — 곡률로 직선값↔코너값 보간.
@@ -2500,9 +2629,48 @@ def build_trajectory(geo, v_max=None, mu=None, margin=None):
     lookahead_info["v_drop_max"] = float(np.max(v_before - v))
     lookahead_info["v_mean_before"] = float(np.mean(v_before))
     lookahead_info["v_mean_after"] = float(np.mean(v))
+    # 급코너 진입 제한은 raw v_cap이 아니라 **기존 완성 프로파일**의 96%를
+    # 상한으로 삼는다. raw v_cap은 이미 폭/곡률/가감속 중 다른 제약보다 높을 수
+    # 있어 거기에 0.96을 곱해도 실제 v가 전혀 안 바뀌는 경우가 있기 때문이다.
+    # 기준 프로파일은 비교용으로만 먼저 스무딩한다. 실제 최종값은 raw lookahead
+    # 프로파일에 진입 상한을 붙여 다시 투영한 뒤 동일한 스무딩을 정확히 한 번
+    # 적용한다. kappa_plan은 더 빠른 기준 v로 만든 것이므로 제한 후에도 보수적이다.
+    baseline_v = smooth_longitudinal(
+        v, s, kappa_plan, ds, mu, accel_lim, decel_lim)
+    entry_mask, entry_info = sharp_corner_entry_mask(
+        s, kappa, segment_ds=ds)
+    entry_scale_active = (
+        entry_info["enabled"] and
+        SHARP_CORNER_ENTRY_SPEED_SCALE < 1.0 - 1e-12 and
+        np.any(entry_mask))
+    entry_info["applied"] = bool(entry_scale_active)
+    if entry_scale_active:
+        entry_cap = np.full_like(v, np.inf)
+        entry_cap[entry_mask] = (
+            baseline_v[entry_mask] * SHARP_CORNER_ENTRY_SPEED_SCALE)
+        entry_target = np.minimum(v, entry_cap)
+        entry_info["direct_binding_pts"] = int(np.sum(entry_target < v - 1e-9))
+        v = velocity_profile(
+            s, kappa_plan, entry_target, mu, accel_lim, decel_lim,
+            segment_ds=ds)
+    else:
+        entry_info["direct_binding_pts"] = 0
+
     raw_diag = longitudinal_diagnostics(
         v, (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds), s, ds)
     v = smooth_longitudinal(v, s, kappa_plan, ds, mu, accel_lim, decel_lim)
+    entry_drop = baseline_v - v
+    if np.any(entry_drop < -1e-9):
+        raise RuntimeError("sharp-corner entry cap increased the speed profile")
+    entry_info["affected_pts"] = int(np.sum(entry_drop > 1e-9))
+    entry_info["max_drop_mps"] = float(np.max(entry_drop))
+    entry_info["mean_drop_mps"] = float(np.mean(entry_drop))
+    entry_info["baseline_lap_time_s"] = float(
+        np.sum(ds / np.maximum(baseline_v, 1e-6)))
+    entry_info["final_lap_time_s"] = float(
+        np.sum(ds / np.maximum(v, 1e-6)))
+    entry_info["lap_time_delta_s"] = (
+        entry_info["final_lap_time_s"] - entry_info["baseline_lap_time_s"])
     ax = (np.roll(v, -1) ** 2 - v ** 2) / (2.0 * ds)
     long_info = longitudinal_diagnostics(v, ax, s, ds)
     long_info["ax_sign_flips_before_smoothing"] = raw_diag["ax_sign_flips"]
@@ -2529,12 +2697,13 @@ def build_trajectory(geo, v_max=None, mu=None, margin=None):
             "width_speed_info": width_speed_info,
             "longitudinal_info": long_info,
             "speed_lookahead_info": lookahead_info,
+            "sharp_corner_entry_info": entry_info,
             "safe_dist_info": geo.get("safe_dist_info")}
 
 
 # 웨이포인트 배열이 아니라 생성 요약인 키. roll/flip 대상이 아니다.
 TRAJ_META_KEYS = ("safe_dist_info", "width_speed_info", "longitudinal_info",
-                  "speed_lookahead_info")
+                  "speed_lookahead_info", "sharp_corner_entry_info")
 
 
 def loop_orientation(xy):
@@ -3605,6 +3774,13 @@ def profile_settings_manifest():
         "longitudinal_smooth_passes": LONGITUDINAL_SMOOTH_PASSES,
         "longitudinal_smooth_m": LONGITUDINAL_SMOOTH_M,
         "speed_lookahead_s": SPEED_LOOKAHEAD_S,
+        "sharp_corner_entry_enabled": SHARP_CORNER_ENTRY_ENABLED,
+        "sharp_corner_peak_kappa": SHARP_CORNER_PEAK_KAPPA,
+        "sharp_corner_entry_kappa": SHARP_CORNER_ENTRY_KAPPA,
+        "sharp_corner_body_kappa": SHARP_CORNER_BODY_KAPPA,
+        "sharp_corner_preview_m": SHARP_CORNER_PREVIEW_M,
+        "sharp_corner_entry_hold_m": SHARP_CORNER_ENTRY_HOLD_M,
+        "sharp_corner_entry_speed_scale": SHARP_CORNER_ENTRY_SPEED_SCALE,
     }
 
 
@@ -3807,6 +3983,9 @@ _PROFILE_OVERRIDES = {
     "kappa_window": "LAT_ERR_KAPPA_WINDOW_M",
     "kappa_high": "LAT_ERR_KAPPA_HIGH",
     "mu_profile": "MU_PROFILE",
+    "sharp_entry_scale": "SHARP_CORNER_ENTRY_SPEED_SCALE",
+    "sharp_entry_preview": "SHARP_CORNER_PREVIEW_M",
+    "sharp_entry_hold": "SHARP_CORNER_ENTRY_HOLD_M",
 }
 
 
@@ -3937,6 +4116,22 @@ def main():
                          "⚠️ 바꾸면 params.yaml 의 "
                          "global_trajectory/validation_mu 도 같이 올릴 것 — "
                          "안 맞추면 런타임이 CSV 를 거부한다.")
+    ap.add_argument("--sharp-entry-scale", type=float, default=None,
+                    metavar="SCALE",
+                    help=f"최대 곡률 {SHARP_CORNER_PEAK_KAPPA:.2f} 이상 급코너의 "
+                         "진입 속도 배율 (기본 "
+                         f"{SHARP_CORNER_ENTRY_SPEED_SCALE:.2f}; 1.0=추가 감속 없음). "
+                         "급코너에서 먼 직선/완만한 코너는 바꾸지 않는다.")
+    ap.add_argument("--sharp-entry-preview", type=float, default=None,
+                    metavar="M",
+                    help=f"급코너 진입점 전 직접 감속 구간 [m] (기본 "
+                         f"{SHARP_CORNER_PREVIEW_M:.1f}). 실제 감속 램프는 "
+                         "종감속 한계 때문에 이보다 앞에서 시작할 수 있다.")
+    ap.add_argument("--sharp-entry-hold", type=float, default=None,
+                    metavar="M",
+                    help=f"진입점 뒤 추가 감속 유지거리 [m] (기본 "
+                         f"{SHARP_CORNER_ENTRY_HOLD_M:.1f}). 진입 직후 장애물 "
+                         "구간만 덮고 코너 전체를 느리게 만들지 않는다.")
     args = ap.parse_args()
     if args.seal_map:
         # 맵 수리만 하고 끝낸다. 프로파일 로드/시뮬은 할 필요도 없고, 수리 전
@@ -3958,6 +4153,12 @@ def main():
         "LAT_ERR_EXIT_LAG_M": LAT_ERR_EXIT_LAG_M,
         "LAT_ERR_KAPPA_WINDOW_M": LAT_ERR_KAPPA_WINDOW_M,
         "LAT_ERR_KAPPA_HIGH": LAT_ERR_KAPPA_HIGH,
+        "SHARP_CORNER_PEAK_KAPPA": SHARP_CORNER_PEAK_KAPPA,
+        "SHARP_CORNER_ENTRY_KAPPA": SHARP_CORNER_ENTRY_KAPPA,
+        "SHARP_CORNER_BODY_KAPPA": SHARP_CORNER_BODY_KAPPA,
+        "SHARP_CORNER_PREVIEW_M": SHARP_CORNER_PREVIEW_M,
+        "SHARP_CORNER_ENTRY_HOLD_M": SHARP_CORNER_ENTRY_HOLD_M,
+        "SHARP_CORNER_ENTRY_SPEED_SCALE": SHARP_CORNER_ENTRY_SPEED_SCALE,
     }
     invalid_finite = [
         name for name, value in finite_settings.items()
@@ -3975,6 +4176,13 @@ def main():
             LAT_ERR_EXIT_DECAY_M < 0.0 or LAT_ERR_EXIT_LAG_M < 0.0 or \
             LAT_ERR_KAPPA_WINDOW_M <= 0.0 or LAT_ERR_KAPPA_HIGH <= 0.0:
         ap.error("속도 프로파일 오버라이드 범위가 잘못됨 (--help 참조)")
+    if not (0.0 < SHARP_CORNER_ENTRY_SPEED_SCALE <= 1.0):
+        ap.error("SHARP_CORNER_ENTRY_SPEED_SCALE은 0 < scale <= 1 이어야 함")
+    if not (0.0 <= SHARP_CORNER_BODY_KAPPA <=
+            SHARP_CORNER_ENTRY_KAPPA <= SHARP_CORNER_PEAK_KAPPA):
+        ap.error("급코너 body <= entry <= peak 곡률 순서가 잘못됨")
+    if SHARP_CORNER_PREVIEW_M < 0.0 or SHARP_CORNER_ENTRY_HOLD_M < 0.0:
+        ap.error("급코너 preview/hold 거리는 0 이상이어야 함")
     if args.closedloop_slack is not None:
         if not np.isfinite(args.closedloop_slack) or args.closedloop_slack < 0.0:
             ap.error("--closedloop-slack 는 0 이상의 유한 숫자여야 한다")
@@ -4075,6 +4283,18 @@ def main():
               f"{la_info['raised_pts']}/{la_info['total_pts']} · v 평균 "
               f"{la_info['v_mean_before']:.2f} -> {la_info['v_mean_after']:.2f} "
               f"m/s (최대 -{la_info['v_drop_max']:.2f})")
+    entry_info = traj.get("sharp_corner_entry_info") or {}
+    if entry_info.get("enabled"):
+        print(f"      [급코너 진입 감속] peak |kappa|>="
+              f"{entry_info.get('peak_kappa', float('nan')):.2f} 코너 "
+              f"{entry_info.get('detected_corners', 0)}개 · 진입 "
+              f"-{entry_info.get('preview_m', 0.0):.1f}/+"
+              f"{entry_info.get('hold_m', 0.0):.1f} m를 x"
+              f"{entry_info.get('scale', 1.0):.2f} · 직접 "
+              f"{entry_info.get('direct_limited_distance_m', 0.0):.2f} m · "
+              f"영향 {entry_info.get('affected_pts', 0)}점 · 최대 -"
+              f"{entry_info.get('max_drop_mps', 0.0):.2f} m/s · 이론 랩 +"
+              f"{entry_info.get('lap_time_delta_s', 0.0):.3f} s")
     for line in report_longitudinal(traj):
         print(line)
     for line in report_speed_pairing(traj, profiles + advisory_profiles):
@@ -4226,6 +4446,7 @@ def main():
             "velocity_profile_settings": profile_settings_manifest(),
             "longitudinal": traj.get("longitudinal_info"),
             "speed_lookahead": traj.get("speed_lookahead_info"),
+            "sharp_corner_entry": traj.get("sharp_corner_entry_info"),
             # 이 라인이 컨트롤러의 추종 백스톱을 얼마나 건드리는가. gate 는
             # 아니지만 LAT_ERR_CORNER_S 를 다시 고를 때 보는 값이라, 어떤
             # CSV 가 어느 정도 여유로 만들어졌는지 여기 남긴다.
