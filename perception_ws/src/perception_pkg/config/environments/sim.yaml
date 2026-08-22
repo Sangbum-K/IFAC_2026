@@ -18,8 +18,8 @@
 # 실차 판정 근거로 쓸 수 있는 건 sim_real_car 쪽뿐이다.
 obstacle_detector_node:
   ros__parameters:
-    # real_car 미러 (근거는 real_car.yaml 의 같은 키 주석)
-    cluster_split_enabled: true
+    # real_car 미러: 초대형 원본은 분할하지 않고 통째로 폐기한다.
+    cluster_split_enabled: false
     # --- 배선: sim ---
     scan_topic: /scan_overlay
     obstacle_topic: /perception/obstacles_detected

@@ -123,6 +123,9 @@ install(PROGRAMS
   scripts/planner/perception_obstacle_bridge_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
+install(FILES scripts/planner/obstacle_bridge_policy.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY rviz
   DESTINATION share/${PROJECT_NAME}
@@ -153,6 +156,11 @@ if(BUILD_TESTING)
     line_resolver
     test/test_line_resolver.py
     TIMEOUT 120
+  )
+  ament_add_pytest_test(
+    obstacle_bridge_policy
+    test/test_obstacle_bridge_policy.py
+    TIMEOUT 60
   )
 endif()
 

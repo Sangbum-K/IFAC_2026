@@ -300,8 +300,11 @@ private:
 
     // 물리적으로 불가능한 크기의 클러스터 거부. 0.0 = 비활성.
     max_cluster_radius_ = this->declare_parameter<double>("max_cluster_radius_m", 0.0);
+    // 초대형 클러스터는 벽 fringe일 가능성이 압도적으로 높다. 원본의 크기
+    // 정보를 잃은 채 조각만 다시 게이트에 넣으면 벽이 여러 장애물로 되살아나
+    // 플래너 회랑을 막는다. 분할은 오프라인 A/B에서만 명시적으로 켠다.
     cluster_split_enabled_ =
-      this->declare_parameter<bool>("cluster_split_enabled", true);
+      this->declare_parameter<bool>("cluster_split_enabled", false);
     // 스캔 처리율 상한.
     this->declare_parameter<double>("process_rate_hz", 20.0);
   }
@@ -909,15 +912,17 @@ private:
     // 계속 발행된다.
     if (max_cluster_radius_ > 0.0) {
       double largest = 0.0;
+      std::size_t oversized = 0;
       for (const auto & c : clusters) {
         largest = std::max(largest, c.radius);
+        if (!passes_cluster_radius_gate(c.radius, max_cluster_radius_)) {
+          ++oversized;
+        }
       }
-      const std::size_t before = clusters.size();
-      // ── 2026-08-19: 버리는 대신 **쪼갠다** ────────────────────────────────
-      // 상대차 반경(0.31)이 게이트(0.35)의 경계선이라, 벽 fringe 와 병합되면
-      // 덩어리째 지워지며 안의 실물도 같이 사라진다. 각도순 점열을 최대 간격
-      // 에서 나눠 게이트를 통과하는 조각만 살린다. 조각이 하나도 안 남으면
-      // 종전대로 그 클러스터는 사라진다(= 진짜 벽).
+      // 기본은 원본 단위로 통째 폐기다. 분할하면 원본이 초대형이었다는
+      // provenance가 사라지고, 벽의 작은 조각도 정상 장애물처럼 통과한다.
+      // 상대차가 벽과 병합된 경우를 살리는 분할은 이 위험을 검증한 A/B에서만
+      // 명시적으로 켠다.
       std::size_t split_recovered = 0;
       std::size_t split_dropped = 0;
       if (cluster_split_enabled_) {
@@ -947,18 +952,32 @@ private:
               return !passes_cluster_radius_gate(c.radius, max_cluster_radius_);
             }),
           clusters.end());
+        split_dropped = oversized;
       }
-      oversize_seen_ += (before > clusters.size() || split_recovered > 0)
-        ? 1U : 0U;
+      // seen/dropped는 모두 원본 클러스터 개수다. recovered만 의도적으로
+      // 출력 조각 수라, 로그에서 둘을 직접 비율로 비교하면 안 된다.
+      oversize_seen_ += oversized;
       oversize_recovered_ += split_recovered;
       oversize_dropped_ += split_dropped;
-      if (clusters.size() != before || split_recovered > 0) {
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(), *this->get_clock(), 2000,
-          "초대형 클러스터 %.2fm > %.2fm — 분할 %zu조각 회수 / %zu개 폐기 "
-          "(누적 회수 %zu / 폐기 %zu)",
-          largest, max_cluster_radius_, split_recovered, split_dropped,
-          oversize_recovered_, oversize_dropped_);
+      if (oversized > 0U) {
+        if (cluster_split_enabled_) {
+          const std::size_t parents_recovered = oversized - split_dropped;
+          const std::size_t total_parents_recovered =
+            oversize_seen_ - oversize_dropped_;
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "초대형 원본 %zu개 (최대 %.2fm > %.2fm) — 분할 통과 %zu원본 -> "
+            "%zu조각 / %zu원본 폐기 (누적 원본 %zu / 통과 %zu / 폐기 %zu / 조각 %zu)",
+            oversized, largest, max_cluster_radius_, parents_recovered, split_recovered,
+            split_dropped, oversize_seen_, total_parents_recovered,
+            oversize_dropped_, oversize_recovered_);
+        } else {
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "초대형 원본 %zu개 (최대 %.2fm > %.2fm) 통째 폐기 "
+            "(누적 원본 %zu / 폐기 %zu)",
+            oversized, largest, max_cluster_radius_, oversize_seen_, oversize_dropped_);
+        }
       }
     }
 
@@ -1228,9 +1247,9 @@ private:
   double dynamic_frenet_reid_backtrack_m_{0.0};
   double reid_distance_{0.0}, reid_timeout_{0.0};
   int pos_hist_len_{2};
-  /// 초대형 클러스터를 삭제 대신 분할할 것인가 (false = 종전 동작).
-  bool cluster_split_enabled_{true};
-  /// 진단 카운터. 로그가 THROTTLE 이라 횟수를 셀 수 없어 누적을 같이 찍는다.
+  /// 초대형 클러스터 분할은 실험용 opt-in. 기본은 원본을 통째로 폐기한다.
+  bool cluster_split_enabled_{false};
+  /// 진단 카운터. seen/dropped = 원본 수, recovered = 출력 조각 수.
   std::size_t oversize_seen_{0}, oversize_recovered_{0}, oversize_dropped_{0};
   // 초 단위 창 (0 이하 = 비활성, 위 프레임 값 사용)
   double track_timeout_sec_{0.0}, n_confirm_sec_{0.0}, n_release_sec_{0.0};

@@ -171,6 +171,9 @@ obstacle_detector_node:
     ray_filter_probe_deg: 1.5
     ray_filter_unstable_m: 0.5
     max_cluster_radius_m: 0.0   # 0 = 비활성
+    # 초대형 원본은 벽으로 보고 통째로 버린다. 분할은 원본 크기 정보를
+    # 잃어 벽 fringe를 정상 장애물로 되살리므로, 오프라인 A/B 외에는 금지.
+    cluster_split_enabled: false
     # 트랙 경계(Frenet) 필터 — ForzaETH laserPointOnTrack 이식.
     # 맵 벽거리와 직교하는 2차 기준(근거는 track_filter.py). 전역 레이스라인
     # (/global_waypoints)이 필요하므로 여기서도 기본 비활성이고, 실차/레이스

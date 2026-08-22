@@ -23,6 +23,9 @@ obstacle_detector_node:
     map_topic: /map
     wall_dist_min_m: 0.25
     max_cluster_radius_m: 0.35
+    # 원본 반경 상한을 넘긴 것은 벽으로 보고 통째로 폐기한다. 분할하면 벽
+    # fringe가 정상 장애물로 재생성돼 플래너 입력에 섞인다.
+    cluster_split_enabled: false
     min_cluster_size: 8
     # 벽에서 0.50m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로 4점까지
     # 허용한다. min_cluster_size 8은 벽 fringe 억제용인데, 그 대가로 벽에서
