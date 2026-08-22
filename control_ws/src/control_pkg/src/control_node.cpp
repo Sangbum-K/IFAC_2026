@@ -691,12 +691,11 @@ private:
     escape_active_stamp_ = this->now();
   }
 
-  // 플래너가 이번 사이클에 **회피 경로를 채택했다**고 알려 오는 신호
-  // (trailing 폴백은 false). 정지 발진 하한의 게이트다 — 근거는
-  // speed_lookahead_min_m_ 선언부 주석.
-  // trailing 은 "회피 못 해서 따라가며 감속" 상태이므로 발진을 밀어 줄
-  // 이유가 없고, run_0822_001734 에서 간격 0.55 m 미만 노출이 거기에
-  // 몰려 있었다 (전체 1.43 s -> trailing 제외 0.15 s).
+  // 플래너가 이번 사이클에 **차를 세워 둘 의도가 없다**고 알려 오는 신호.
+  // 정지 발진 하한의 게이트다 — 근거는 speed_lookahead_min_m_ 선언부 주석.
+  // 회피 경로를 채택한 사이클과, 정지를 거부한 트레일링
+  // (allow_stop=false = 처음부터 정적인 콘 뒤에서 "서지 말고 감속")이
+  // 여기에 들어온다. 진짜 정지 계획(동적 상대 뒤, 비상정지)은 false 다.
   // stamp 를 같이 저장해 신호가 끊기면 하한이 자동으로 꺼진다 (fail-closed).
   void evade_committed_callback(const std_msgs::msg::Bool::SharedPtr msg)
   {

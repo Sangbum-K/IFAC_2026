@@ -1136,6 +1136,10 @@ void SplinerNode::Run() {
 
     bool evasion_valid = false;
     bool used_trailing = false;
+    // 이번 사이클의 트레일링이 **정지를 거부한** 트레일링인가 (allow_stop=false).
+    // 컨트롤러 정지 발진 하한의 게이트가 이 값을 함께 본다 — 근거는
+    // spliner_node.hpp 의 p_evade_committed_ 선언부 주석.
+    bool trailing_no_stop = false;
     // 이번 사이클에 회피를 시도했는가. 장애물이 사라진 사이클에도 반드시
     // 갱신돼야 한다 — 안 그러면 in_ot_sector_가 true로 굳어 다음 장애물의
     // "회피 시도 진입" 상승엣지를 영원히 놓친다.
@@ -1892,6 +1896,7 @@ void SplinerNode::Run() {
                 evasion_valid = BuildTrailing(closest, evasion_wpnts, mrks,
                                               allow_stop, &all_ahead);
                 used_trailing = evasion_valid;
+                trailing_no_stop = used_trailing && !allow_stop;
                 if (used_trailing && closest.is_static &&
                     !static_stop_active_) {
                     // 정적은 이제 어느 쪽이든 정지가 아니라 감속이다
@@ -2060,11 +2065,11 @@ void SplinerNode::Run() {
             std::isfinite(dyn_speed_floor_) ? std::max(dyn_speed_floor_, 0.0)
                                             : 0.0);
         p_dyn_speed_floor_->publish(floor_msg);
-        // 회피 채택 여부. 컨트롤러의 정지 발진 하한 게이트다 — 근거는
-        // spliner_node.hpp 의 p_evade_committed_ 선언부 주석.
-        // trailing 은 "회피 못 해서 따라가며 감속"이므로 false 다.
+        // "이번 사이클에 차를 세워 둘 의도가 없다". 컨트롤러의 정지 발진
+        // 하한 게이트다 — 근거는 spliner_node.hpp 의 p_evade_committed_
+        // 선언부 주석. 정지를 거부한 트레일링(allow_stop=false)도 포함한다.
         std_msgs::msg::Bool evade_msg;
-        evade_msg.data = evasion_valid && !used_trailing;
+        evade_msg.data = evasion_valid && (!used_trailing || trailing_no_stop);
         p_evade_committed_->publish(evade_msg);
     }
 
