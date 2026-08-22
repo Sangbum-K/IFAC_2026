@@ -275,21 +275,18 @@ control:
     "vehicle/max_speed_mps": 1.0
     # Limited by servo_max (0.70) on the right side: beyond servo ~0.7196 the
     # servo stalls against a mechanical stop, so hardware clips at 0.70.
-    # With the 2026-08-11 calibration (gain -0.8564 / offset 0.3935) that is
-    #   right (0.70-0.3935)/-0.8564 = -0.357894 rad (20.51 deg)  <- binding side
-    #   left  (0.05-0.3935)/-0.8564 = +0.401098 rad (22.98 deg)
-    # 0.3578 is the binding right-hand limit itself, rounded down only enough
-    # to stay inside it (0.03%). The left stand test reached 0.395 rad without
-    # driver clipping; deployment starts at 0.380 rad to retain servo margin
-    # before the 0.401098 rad electrical limit.
+    # With the current calibration (gain -0.8564 / offset 0.44):
+    #   right (0.70-0.44)/-0.8564 = -0.303596 rad (17.39 deg)  <- binding side
+    #   left  (0.05-0.44)/-0.8564 = +0.455395 rad (26.09 deg)
+    # The left limit maps to servo 0.0681, retaining margin before servo_min.
     # ⚠️ No margin is left for the unresolved neutral jump (TUNING_STATUS.md
     # section 11: up to 0.036 servo between runs). When the neutral drifts
     # right, near-full-lock commands clip at servo_max, so the controller's
     # saturation ratio reads 1.0 while the car is still under-steering.
-    # Planning remains symmetric and conservative at min(left, right)=0.3578.
+    # Planning limits must be checked separately against the binding right side.
     # Control alone may use the extra left range to recover tracking error.
-    "vehicle/max_left_steering_angle_rad": 0.3800
-    "vehicle/max_right_steering_angle_rad": 0.3578
+    "vehicle/max_left_steering_angle_rad": 0.4343
+    "vehicle/max_right_steering_angle_rad": 0.3035
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5
     # 2026-07-31: 7.0 -> 4.0 (run_0731_223152 실측 제동 ~4.2 m/s²). 7.0이면
