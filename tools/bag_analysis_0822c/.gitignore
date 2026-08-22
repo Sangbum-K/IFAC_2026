@@ -1,0 +1,5 @@
+bag.db3
+*.pkl
+*.npy
+*.txt
+__pycache__/
