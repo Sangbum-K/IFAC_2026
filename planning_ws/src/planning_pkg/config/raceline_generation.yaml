@@ -1,0 +1,6 @@
+# Offline raceline-generation settings used by scripts/global_traj_sim/build_map.py.
+# This is not a live ROS parameter: regenerate the map CSV after changing it.
+sharp_corner_entry:
+  # true: apply the 0.92 sharp-corner scale and 4.50 m/s inner-corner cap.
+  # false: generate the original speed profile without either extra limit.
+  enabled: true

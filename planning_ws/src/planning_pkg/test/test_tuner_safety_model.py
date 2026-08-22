@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,7 @@ def _load_generator_safety_slice(steering_lut):
         BUILD_MAP_PATH.read_text(encoding='utf-8'),
         filename=str(BUILD_MAP_PATH))
     assignments = {
+        'RACELINE_GENERATION_CONFIG',
         'G', 'MU', 'V_MAX',
         'SHARP_CORNER_ENTRY_ENABLED', 'SHARP_CORNER_PEAK_KAPPA',
         'SHARP_CORNER_ENTRY_KAPPA', 'SHARP_CORNER_BODY_KAPPA',
@@ -45,6 +47,7 @@ def _load_generator_safety_slice(steering_lut):
         'SHARP_CORNER_ENTRY_MAX_SPEED_MPS',
     }
     definitions = {
+        '_apply_generation_config',
         '_max_segment_endpoint_speed', 'velocity_profile',
         'sharp_corner_entry_mask', 'sharp_corner_inner_mask',
         'sharp_corner_entry_speed_cap',
@@ -72,6 +75,9 @@ def _load_generator_safety_slice(steering_lut):
 
     namespace = {
         'np': np,
+        'Path': Path,
+        'PKG_ROOT': PACKAGE_ROOT,
+        'yaml': yaml,
         'cKDTree': NumpyTree,
         '_load_steering_lut': lambda _path: steering_lut,
         'RACELINE_V_MAX': profiles.RACELINE_V_MAX,
@@ -329,6 +335,54 @@ def test_sharp_corner_entry_mask_limits_only_qualified_entry_window():
     assert not mask[np.argmin(np.abs(s - 13.2))]
     assert not np.any(mask[150:181])
     assert info['direct_limited_distance_m'] == pytest.approx(9.1)
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_generation_yaml_toggles_sharp_corner_entry(tmp_path, enabled):
+    generator = _load_generator_safety_slice(np.zeros((1, 2)))
+    config = tmp_path / 'raceline_generation.yaml'
+    config.write_text(
+        'sharp_corner_entry:\n'
+        f'  enabled: {str(enabled).lower()}\n',
+        encoding='utf-8')
+
+    applied = generator['_apply_generation_config'](config)
+    assert applied['SHARP_CORNER_ENTRY_ENABLED'] is enabled
+    assert generator['SHARP_CORNER_ENTRY_ENABLED'] is enabled
+
+    count = 200
+    s = np.arange(count, dtype=float) * 0.1
+    segment_ds = np.full(count, 0.1)
+    kappa = np.zeros(count)
+    kappa[70:131] = 0.26
+    kappa[80:121] = 0.35
+    kappa[100] = 0.60
+    mask, info = generator['sharp_corner_entry_mask'](
+        s, kappa, segment_ds=segment_ds)
+
+    assert info['enabled'] is enabled
+    assert bool(np.any(mask)) is enabled
+    assert info['detected_corners'] == (1 if enabled else 0)
+
+
+def test_generation_yaml_rejects_non_boolean_toggle(tmp_path):
+    generator = _load_generator_safety_slice(np.zeros((1, 2)))
+    config = tmp_path / 'raceline_generation.yaml'
+    config.write_text(
+        'sharp_corner_entry:\n'
+        '  enabled: "false"\n',
+        encoding='utf-8')
+
+    with pytest.raises(ValueError, match='YAML bool true/false'):
+        generator['_apply_generation_config'](config)
+
+
+def test_repository_generation_yaml_is_valid_and_enabled():
+    generator = _load_generator_safety_slice(np.zeros((1, 2)))
+    applied = generator['_apply_generation_config']()
+    assert applied['config_path'] == str(
+        PACKAGE_ROOT / 'config' / 'raceline_generation.yaml')
+    assert applied['SHARP_CORNER_ENTRY_ENABLED'] is True
 
 
 def test_sharp_corner_entry_mask_handles_a_corner_across_s_zero():

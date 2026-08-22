@@ -16,7 +16,8 @@ step1(트랙 추출) + step2(IQP 라인·속도) + step3(시뮬) + step4(저장)
        (mapping.launch.py 저장 위치라 복사 없이 바로 사용).
        확장자는 yaml 의 image: 필드를 따르므로 pgm/png 아무거나 된다.
 
-모든 튜닝 파라미터는 바로 아래 '설정' 블록에 모아뒀다. 트랙 크기(스케일)는
+튜닝 수치는 바로 아래 '설정' 블록에 모아뒀고, 급코너 감속 ON/OFF만
+config/raceline_generation.yaml에서 읽는다. 트랙 크기(스케일)는
 SLAM이 만든 yaml의 resolution/origin을 그대로 쓴다. EXPECTED_SIZE_M 은
 '보통 이 정도(~20x8m) 나온다'는 참고값이라, 추출 결과가 이 범위를 크게
 벗어나면 경고만 띄운다. yaml resolution이 틀린 게 확실하면
@@ -61,6 +62,9 @@ from deployment_profiles import (          # noqa: E402
     controller_profile, make_longitudinal_plant, profile_brake_max,
     selected_controller_profiles,
 )
+
+RACELINE_GENERATION_CONFIG = (
+    PKG_ROOT / "config" / "raceline_generation.yaml")
 
 # ============================================================ 설정 (여기만 고치면 됨)
 #
@@ -395,6 +399,8 @@ MU_PROFILE = 1.40
 # 따라서 재매핑으로 절대 s/트랙 길이가 바뀌어도 새 곡률에서 적용 구간을 다시 찾고,
 # 완만한 코너와 급코너에서 먼 직선은 건드리지 않는다. 실제 감속 시작은 이 상한을
 # velocity_profile()에 다시 투영하는 과정에서 종감속 한계만큼 더 앞쪽으로 퍼진다.
+# 기본값은 설정 파일을 읽을 수 없는 테스트용 순수 함수 호출에만 쓰인다.
+# 실제 build_map 실행은 config/raceline_generation.yaml 의 bool 값을 필수로 읽는다.
 SHARP_CORNER_ENTRY_ENABLED = True
 SHARP_CORNER_PEAK_KAPPA = 0.50       # [1/m] 이 peak 이상인 코너만 대상
 SHARP_CORNER_ENTRY_KAPPA = 0.32      # [1/m] 코너 진입점 판정
@@ -4056,6 +4062,45 @@ _PROFILE_OVERRIDES = {
 }
 
 
+def _apply_generation_config(config_path=None):
+    """YAML의 오프라인 생성 스위치를 모듈 전역에 적용한다.
+
+    런타임 ROS 파라미터처럼 보이지만 실제로는 CSV 생성 입력이다. 키 오타나
+    ``"false"`` 문자열을 bool로 오인하면 의도와 반대인 CSV가 배포되므로,
+    현재 지원하는 구조와 실제 YAML bool만 엄격하게 허용한다.
+    """
+    path = (RACELINE_GENERATION_CONFIG if config_path is None
+            else Path(config_path))
+    with path.open(encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    if not isinstance(document, dict):
+        raise ValueError("최상위 값은 mapping이어야 함")
+    unknown_root = set(document) - {"sharp_corner_entry"}
+    if unknown_root:
+        raise ValueError(
+            "지원하지 않는 최상위 키: " + ", ".join(sorted(unknown_root)))
+    sharp = document.get("sharp_corner_entry")
+    if not isinstance(sharp, dict):
+        raise ValueError("sharp_corner_entry는 mapping이어야 함")
+    unknown_sharp = set(sharp) - {"enabled"}
+    if unknown_sharp:
+        raise ValueError(
+            "지원하지 않는 sharp_corner_entry 키: " +
+            ", ".join(sorted(unknown_sharp)))
+    if "enabled" not in sharp or type(sharp["enabled"]) is not bool:
+        raise ValueError(
+            "sharp_corner_entry.enabled는 YAML bool true/false여야 함")
+
+    enabled = sharp["enabled"]
+    globals()["SHARP_CORNER_ENTRY_ENABLED"] = enabled
+    print(f"[생성 설정] {path}: sharp_corner_entry.enabled="
+          f"{str(enabled).lower()}")
+    return {
+        "config_path": str(path),
+        "SHARP_CORNER_ENTRY_ENABLED": enabled,
+    }
+
+
 def _apply_profile_overrides(args):
     """CLI 로 준 속도 프로파일 상수를 모듈 전역에 반영하고 무엇이 바뀌었는지 남긴다.
 
@@ -4121,6 +4166,12 @@ def main():
                          f"종방향 편향 라인(SP_CURV_W={SP_CURV_W:g}), "
                          "center=원시 중앙선. sp는 코너 최저속과 제동 요구가 "
                          "커지므로 검증 통과 뒤 trajectory_csv_file로 명시할 것.")
+    ap.add_argument(
+        "--generation-config", type=Path,
+        default=RACELINE_GENERATION_CONFIG, metavar="YAML",
+        help="오프라인 레이스라인 생성 설정 YAML (기본 "
+             f"{RACELINE_GENERATION_CONFIG}). 변경 뒤 CSV를 다시 생성해야 "
+             "실차에 반영된다.")
     # --- 속도 프로파일 스윕용 오버라이드 -----------------------------------
     # 이 상수들은 원래 파일 상단 '설정' 블록에만 있어서 값 하나를 바꿔 보려면
     # 매번 2400 줄 소스를 편집해야 했다. 그래서 스윕을 안 하게 되고, 안 하니까
@@ -4218,6 +4269,10 @@ def main():
         print(f"[seal] '{args.map}' 맵 무결성 검사 + 수리 ...")
         seal_map(args.map)
         return
+    try:
+        _apply_generation_config(args.generation_config)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        ap.error(f"생성 설정 YAML 오류 ({args.generation_config}): {exc}")
     if args.raceline is not None:
         globals()["RACELINE"] = args.raceline
         print(f"[설정 오버라이드] RACELINE={RACELINE}")
