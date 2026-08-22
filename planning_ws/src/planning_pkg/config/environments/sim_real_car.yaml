@@ -152,10 +152,10 @@ spliner_node:
     spliner/commit_break_requires_visible: true
     spliner/lookahead_m: 12.0
     spliner/loop_rate_hz: 30.0
-    spliner/blend_lat_acc_max: 8.83            # 08-12: 5.0 -> 7.85, 08-13: -> 8.83 (MU_PROFILE 0.90)
+    spliner/blend_lat_acc_max: 13.734          # 08-22: validation_mu/MU_PROFILE 1.40과 정합
     spliner/blend_dist_max_m: 8.0
-    # 레이스라인 생성 MU_PROFILE(0.80) x g. real_car.yaml 과 동일 (근거는 그쪽 주석).
-    spliner/path_lat_acc_max: 8.83
+    # 레이스라인 생성 MU_PROFILE(1.40) x g. real_car.yaml 과 동일 (근거는 그쪽 주석).
+    spliner/path_lat_acc_max: 13.734
     spliner/path_decel_max: 6.0
     spliner/lane_blend_out_m: 5.0
     # 조기 라인 스위치 (real_car.yaml과 동일). 곡률이 이보다 작은 직선 구간에서만

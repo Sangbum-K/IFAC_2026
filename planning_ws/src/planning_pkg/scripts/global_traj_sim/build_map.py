@@ -4048,6 +4048,12 @@ def main():
                          "(cpp_real_car 만 gate, 시뮬은 보고만) / sim=시뮬 / "
                          "all=둘 다 gate. 어느 쪽이든 두 프로파일 모두 실행되고 "
                          "결과가 출력된다.")
+    ap.add_argument("--raceline", choices=("iqp", "sp", "center"), default=None,
+                    help=f"라인 목적함수 (기본 {RACELINE}). iqp=큰 반경의 "
+                         "최소곡률, sp=짧은 코너와 긴 직선을 우선하는 "
+                         f"종방향 편향 라인(SP_CURV_W={SP_CURV_W:g}), "
+                         "center=원시 중앙선. sp는 코너 최저속과 제동 요구가 "
+                         "커지므로 검증 통과 뒤 trajectory_csv_file로 명시할 것.")
     # --- 속도 프로파일 스윕용 오버라이드 -----------------------------------
     # 이 상수들은 원래 파일 상단 '설정' 블록에만 있어서 값 하나를 바꿔 보려면
     # 매번 2400 줄 소스를 편집해야 했다. 그래서 스윕을 안 하게 되고, 안 하니까
@@ -4139,6 +4145,9 @@ def main():
         print(f"[seal] '{args.map}' 맵 무결성 검사 + 수리 ...")
         seal_map(args.map)
         return
+    if args.raceline is not None:
+        globals()["RACELINE"] = args.raceline
+        print(f"[설정 오버라이드] RACELINE={RACELINE}")
     _apply_profile_overrides(args)
     finite_settings = {
         "V_MAX": V_MAX,
@@ -4434,6 +4443,8 @@ def main():
                 "plant": p["plant"],
             } for p in profiles + advisory_profiles],
             "raceline_v_max_mps": V_MAX,
+            "raceline_objective": RACELINE,
+            "sp_curvature_weight": SP_CURV_W if RACELINE == "sp" else None,
             "mu_profile": MU_PROFILE,
             "closedloop_footprint_slack_m": CLOSEDLOOP_FOOTPRINT_SLACK_M,
             "plant_accel_mps2": A_ACC_MAX,

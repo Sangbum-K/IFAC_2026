@@ -429,7 +429,9 @@ spliner_node:
     # trailing d램프/return_speed_cap 이 이 값을 직접 쓴다 — 거기서만 몰래
     # 5.0 이 적용되고 있었다. 실측 근거는 위 escape_arc_lat_acc 주석.
     # 2026-08-13: 7.85 -> 8.83 (MU_PROFILE 0.80 -> 0.90 동반 상향).
-    spliner/blend_lat_acc_max: 8.83     # = path_lat_acc_max (params.yaml 불변식)
+    # 2026-08-22: build_map/validation_mu=1.40과 정합. 8.83(옛 0.90g)에
+    # 남아 있으면 고속 코너의 raceline 자체가 예산을 초과해 회피 잔여그립이 0.
+    spliner/blend_lat_acc_max: 13.734    # = path_lat_acc_max (1.40g)
     spliner/blend_dist_max_m: 8.0
     # 이 값은 마찰원 예산이라 **레이스라인을 생성한 MU_PROFILE 과 같아야** 한다
     # (manifest 의 validation.mu_profile x 9.81). 낮으면 BlendLatAcc 의 잔여 그립
@@ -462,7 +464,7 @@ spliner_node:
     # ⚠️ 위 문단이 함께 요구한 실차 검증 — 회피 중 /pitwall/lat_err 가 벽 여유
     #    0.35 m 안인지 — 은 **아직 통과하지 않았다.** 회피가 실제로 걸리는 첫
     #    주행에서 확인할 것. 그 전까지 이 값은 근거가 반쪽이다.
-    spliner/path_lat_acc_max: 8.83      # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE 0.90 x g)
+    spliner/path_lat_acc_max: 13.734    # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE 1.40 x g)
     # 회피 궤적 정형용 상한. 옛 주석의 "raceline 프로파일 최대 요구 6.27과 정합"은
     # 틀렸다 — my_track0810 CSV 실측 ax 는 [-2.38, +4.50] 이라 최대 제동 요구가
     # 2.38(=A_DEC_PLANNED)이다. 6.27 은 mu 0.68 시절 값. 플랜트 제동 능력은

@@ -122,6 +122,23 @@ def test_default_profile_is_fail_safe():
     assert "tracker/internal_stuck_recovery_enabled" not in tracker
 
 
+def test_avoidance_friction_budget_matches_trajectory_validation_mu():
+    """A stale lower budget makes spare-grip avoidance collapse in corners."""
+    base = _yaml(PARAMS)
+    validation_mu = _ros_params(
+        base, "global_trajectory_node")["global_trajectory/validation_mu"]
+    expected_budget = validation_mu * 9.81
+
+    for env_name in ("sim", "sim_real_car", "real_car"):
+        effective = _env_profile_flat(PKG, env_name)
+        blend = effective[
+            "spliner_node.spliner/blend_lat_acc_max"]
+        path = effective[
+            "spliner_node.spliner/path_lat_acc_max"]
+        assert blend == pytest.approx(path, abs=0.005), env_name
+        assert path == pytest.approx(expected_budget, abs=0.005), env_name
+
+
 def test_default_main_trajectory_semantics():
     cfg = _yaml(PARAMS)
     p = _ros_params(cfg, "global_trajectory_node")

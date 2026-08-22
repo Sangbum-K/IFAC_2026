@@ -23,6 +23,16 @@ cd ~/IFAC_ws/planning_ws/src/planning_pkg/scripts/global_traj_sim
 PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track
 ```
 
+짧은 코너 뒤 직선성을 우선하는 종방향 편향 후보는 기본 IQP를 덮어쓰지 않고
+별도 SP CSV로 만든다. `--raceline sp`를 주면 SP를 메인 후보로 생성·검증할 수
+있으며, 자동 선택되지 않으므로 통과한 파일을 `trajectory_csv_file:=...`로
+명시해야 한다. 작은 반경 때문에 코너 최저속과 제동 요구가 커지는 절충이 있어
+기본값은 계속 `iqp`다.
+
+```bash
+PYTHONNOUSERSITE=1 ~/IFAC_ws/.venv/bin/python build_map.py my_track --raceline sp
+```
+
 **전체 절차(venv 준비·scikit-image 설치·빌드·RViz 튜너)와 이 기계 특유의 함정은
 [`../../maps/README.md`](../../maps/README.md) 가 단일 기준 문서다.** 요약하면:
 

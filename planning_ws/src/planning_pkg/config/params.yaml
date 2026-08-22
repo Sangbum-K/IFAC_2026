@@ -563,7 +563,10 @@ spliner_node:
     # 따라 회피 기하가 말없이 달라진다. (실제로 이 값이 쓰이는 곳은
     # blend_use_spare_grip=false일 때와 trailing d램프/return_speed_cap 뿐.)
     # 2026-08-13: 7.85 -> 8.83 (MU_PROFILE 0.80 -> 0.90 동반).
-    spliner/blend_lat_acc_max: 8.83   # 횡 전환에 배정할 그립 [m/s^2] (0.90g)
+    # 2026-08-22: 생성기/validation_mu가 1.40으로 올라간 뒤에도 이 예산만
+    # 0.90g에 남아, |kappa|*v^2 > 8.83인 코너에서 BlendLatAcc의 남은 그립이
+    # 0으로 접혔다. 회피 진입을 막던 설정 드리프트를 없애기 위해 같은 1.40g.
+    spliner/blend_lat_acc_max: 13.734  # 횡 전환 폴백 예산 [m/s^2] (1.40g)
                                       # 3.0(0.31g)은 raceline(0.75g) 대비 과보수 —
                                       # 6 m/s 전환 6.0 m(1s)로 반응이 늦었다. 5.0이면
                                       # 4.6 m(0.77s). 스월브 자체 곡률 상한(1b 패스)이
@@ -637,7 +640,7 @@ spliner_node:
     # 08-10 에 고친 그 회피 감속이 그대로 되돌아온다.
     # ⚠️ 위 검증(회피 중 /pitwall/lat_err 가 벽 여유 0.35 m 안인지)은 아직
     #    실차에서 하지 않았다. 회피가 걸리는 첫 주행에서 반드시 확인할 것.
-    spliner/path_lat_acc_max: 8.83    # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE*g)
+    spliner/path_lat_acc_max: 13.734  # 오프셋 경로 횡그립 [m/s^2] (MU_PROFILE*g)
     # 회피 궤적 **정형**용 역방향 감속 한계 [m/s^2]. 플랜트 능력이 아니다 —
     # 그건 아래 plant_decel_mps2 다. 둘을 분리하기 전까지 이 값 하나가 양쪽을
     # 겸했고, 그게 아래 ⚠️ 블록의 미해결 항목이었다.
