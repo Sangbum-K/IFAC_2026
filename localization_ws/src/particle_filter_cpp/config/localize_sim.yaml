@@ -57,18 +57,9 @@ particle_filter:
     motion_dispersion_x: 0.05
     motion_dispersion_y: 0.025
     motion_dispersion_theta: 0.08
-    tracking_beam_fail_closed_enabled: true
-    tracking_min_beams: 12
-    tracking_min_angle_span_rad: 1.57
     pose_jump_guard_enabled: true
     max_pose_jump_translation_m: 0.30
     max_pose_jump_yaw_rad: 0.35
-    innovation_guard_enabled: true
-    innovation_guard_window_sec: 0.60
-    innovation_guard_minimum_span_sec: 0.20
-    innovation_guard_max_translation_m: 1.50
-    innovation_guard_max_yaw_rad: 0.18
-    innovation_guard_minimum_coherence: 0.80
     rangelib_variant: 0
     # --- 검증 프로파일 게이트 (실차 localize.yaml 과 같은 값, 둘 다 false) ---
     # ⚠️ 이 두 줄을 빼면 PF 가 아예 안 뜬다. 노드 기본값이 둘 다 true 인데,

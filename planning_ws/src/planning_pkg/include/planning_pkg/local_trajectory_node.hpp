@@ -6,6 +6,7 @@
 #ifndef PLANNING_PKG__LOCAL_TRAJECTORY_NODE_HPP_
 #define PLANNING_PKG__LOCAL_TRAJECTORY_NODE_HPP_
 
+#include <atomic>
 #include <chrono>
 #include <array>
 #include <cmath>
@@ -17,6 +18,7 @@
 
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
 
 #include "f1tenth_planning_msgs/msg/wpnt.hpp"
@@ -34,7 +36,7 @@ private:
   void CallbackGlobalWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
   void CallbackFrenetOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void CallbackAvoidanceWaypoints(const f1tenth_planning_msgs::msg::WpntArray::SharedPtr msg);
-  void CallbackDynSpeedFloor(const std_msgs::msg::Float32::SharedPtr msg);
+  void CallbackTargetPassed(const std_msgs::msg::Bool::SharedPtr msg);
   int FindClosestWaypointIndex(
     double s_coordinate,
     const std::vector<f1tenth_planning_msgs::msg::Wpnt> & global_waypoints,
@@ -81,7 +83,6 @@ private:
   // spliner 가 보내는 동적 속도 바닥에 걸 상한 [m/s]. 위 상수 바닥의 검증
   // 상한(3.0)과 같은 역할이며, 인지가 상대 속도를 크게 잘못 보고해도
   // 홀드가 통째로 무효가 되지 않게 한다.
-  double avoidance_loss_hold_floor_max_{3.0};
 
   // State
   std::vector<f1tenth_planning_msgs::msg::Wpnt> global_waypoints_;
@@ -99,21 +100,22 @@ private:
   double last_avoidance_head_speed_{-1.0};
   std::chrono::steady_clock::time_point last_avoidance_nonempty_time_{};
   bool has_avoidance_head_speed_{false};
-  // spliner /planner/avoidance/speed_floor 의 최신 수신값 (콜백이 쓴다).
-  double dyn_speed_floor_rx_{0.0};
-  // 위 값을 **회피 경로가 아직 살아 있던 시점에** 걸어 둔 것. 홀드는 경로가
-  // 사라진 뒤에 도는데, 그때 상대도 같이 사라져 0 이 흘러오면 바닥이 없어진다.
-  // 그래서 선두 속도(last_avoidance_head_speed_)와 **같은 순간에 같이** 건다.
-  double last_dyn_speed_floor_{0.0};
+  // spliner /planner/avoidance/target_passed 의 최신값 + 수신 시각(steady).
+  // true = "대상이 없고 마지막 정적 대상은 이미 지나쳤다". 홀드는 이때
+  // 걸리지 않는다 — 조우가 기하적으로 끝난 뒤의 캡은 방어가 아니라 순손실
+  // (run_0822_172617: 홀드 29.0 s 의 64.7 % 가 대상 뒤끝 중앙 4.63 m 지남).
+  // 신선도를 함께 보므로 spliner 가 죽으면 종전 동작(무조건 홀드)으로
+  // 돌아간다. atomic 이라 별도 mutex 불필요 (콜백/타이머 단일 값 교환).
+  std::atomic<bool> target_passed_{false};
+  std::atomic<int64_t> target_passed_steady_ns_{0};
   std::mutex mutex_global_waypoints_;
   std::mutex mutex_frenet_odom_;
   std::mutex mutex_avoidance_;
-  std::mutex mutex_dyn_speed_floor_;
 
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_global_waypoints_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr s_frenet_odom_;
   rclcpp::Subscription<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr s_avoidance_waypoints_;
-  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr s_dyn_speed_floor_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr s_target_passed_;
   rclcpp::Publisher<f1tenth_planning_msgs::msg::WpntArray>::SharedPtr p_local_waypoints_;
   rclcpp::TimerBase::SharedPtr t_publish_;
 };

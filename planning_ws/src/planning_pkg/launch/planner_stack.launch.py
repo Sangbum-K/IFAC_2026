@@ -297,8 +297,11 @@ def launch_setup(context, *args, **kwargs):
     if predictor_mode not in ('auto', 'true', 'false'):
         raise RuntimeError(
             f'predictor:={predictor_mode!r} 는 auto | true | false 중 하나여야 합니다')
-    predictor_on = predictor_mode == 'true' or (
-        predictor_mode == 'auto' and env in ('real_car', 'race_map'))
+    # 2026-08-22 (3/8단계): spliner 가 /opponent_prediction/obstacles 구독을
+    # 없앴으므로 auto 는 **끔**이다. 지금 이 노드를 켜면 아무도 안 읽는
+    # 토픽을 계산하며 CPU 만 쓴다. 분석용으로 토픽이 필요하면
+    # predictor:=true 로 명시적으로 켠다.
+    predictor_on = predictor_mode == 'true'
     if predictor_on:
         # 실차 raw /perception/obstacles는 메시지 타입이 다르므로 반드시 bridge
         # 출력인 planning ObstacleArray를 받는다.
@@ -357,7 +360,9 @@ def generate_launch_description():
                                           '(control의 lease 기반 safety override와 연결)'),
         DeclareLaunchArgument('predictor', default_value='auto',
                               description='opponent predictor: auto | true | false. '
-                                          'auto는 real_car/race_map에서 기동'),
+                                          'auto/false 모두 끔 — spliner 가 예측 '
+                                          '튜브를 더는 소비하지 않는다(2026-08-22). '
+                                          '분석용 토픽이 필요할 때만 true'),
         DeclareLaunchArgument('obstacle_topic', default_value='',
                               description='spliner/recovery 장애물 토픽 override '
                                           '(통합 sim: /perception/obstacles_frenet)'),

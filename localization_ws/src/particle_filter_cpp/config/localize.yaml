@@ -34,7 +34,7 @@ particle_filter:
     motion_dispersion_y: 0.025
     motion_dispersion_theta: 0.08
     # Timestamp synchronization for the Jetson Orin Nano. The PF worker is
-    # capped at 20 Hz while /pf/pose/odom is propagated at the odom input rate.
+    # capped at 15 Hz while /pf/pose/odom is propagated at the odom input rate.
     odom_buffer_size: 150
     imu_buffer_size: 150
     odom_sync_wait_sec: 0.04
@@ -42,7 +42,7 @@ particle_filter:
     max_odom_interp_gap_sec: 0.06
     max_imu_interp_gap_sec: 0.06
     max_pending_scan_age_sec: 0.10
-    max_update_rate_hz: 20.0
+    max_update_rate_hz: 15.0
     sync_diagnostics_period_sec: 1.0
     # Stop publishing fresh-looking poses if LiDAR correction has actually
     # stalled; downstream odom timeouts then trigger the race safety stop.
@@ -64,38 +64,23 @@ particle_filter:
     # Only unexpected short returns can be moving obstacles. Keeping long
     # mismatches prevents map/extrinsic errors from being hidden from MCL.
     beam_skip_short_only: true
-    # While a trusted pose is actively driving, never restore a scan dominated
-    # by another car. Keep only the mutually supported, well-spread subset.
-    tracking_beam_fail_closed_enabled: true
-    tracking_min_beams: 12
-    tracking_min_angle_span_rad: 1.57
-    # A hard beam failure is released only by a new /initialpose. Ordinary
-    # quality LOST still uses the stationary local recovery below.
     # Scan-map health hysteresis. quality_gate_enabled controls PF pose output;
     # the separate autonomy readiness below is always fail-closed at startup.
     quality_ok_inlier_fraction: 0.70
     quality_lost_inlier_fraction: 0.40
-    quality_bad_updates_to_lost: 4
-    quality_good_updates_to_recover: 7
+    quality_bad_updates_to_lost: 3
+    quality_good_updates_to_recover: 5
     quality_gate_enabled: false
     # Latched status + per-processed-scan heartbeat. Readiness requires an
-    # accepted /initialpose and the seven consecutive quality-OK updates above.
+    # accepted /initialpose and the five consecutive quality-OK updates above.
     localization_ready_topic: /pf/localization_ready
     localization_quality_topic: /pf/localization_quality
     initialpose_received_topic: /pf/initialpose_received
     initialpose_accepted_topic: /pf/initialpose_accepted
-    # Freeze only when motion evidence and scan-map quality both agree that the
-    # car is stationary and localized.
+    # Freeze only when wheel odom, timestamp-integrated IMU, and scan-to-scan
+    # motion all agree that the car is stationary. VESC raw units are deg/s and
+    # g; these scales convert them to rad/s and m/s^2 inside the PF.
     freeze_stationary_filter: true
-    # Ordinary LOST recovery runs once after one second of stationary,
-    # mostly-valid scans. Hard innovation/beam failures never auto-release.
-    # A close-return majority is treated as occlusion, not relocation.
-    lost_recovery_stationary_updates: 20
-    lost_recovery_min_valid_fraction: 0.80
-    lost_recovery_close_range_m: 0.60
-    lost_recovery_max_close_fraction: 0.40
-    lost_recovery_xy_sigma_m: 1.50
-    lost_recovery_yaw_sigma_rad: 0.70
     # The production C++ path uses the raw scan timestamp. The earlier Python
     # deskew path regressed the 0809 bag and is no longer part of the runtime.
     deskew_enabled: false
@@ -156,24 +141,14 @@ particle_filter:
     # for the normal two-update hysteresis.
     slip_immediate_score: 2.0
     slip_recover_score: 0.50
-    slip_enter_updates: 3
-    slip_recover_updates: 7
+    slip_enter_updates: 2
+    slip_recover_updates: 5
     slip_motion_noise_multiplier: 2.5
     # Reject scan updates that would snap the filter too far from its
     # odom-propagated prediction in a single frame.
     pose_jump_guard_enabled: true
     max_pose_jump_translation_m: 0.30
     max_pose_jump_yaw_rad: 0.35
-    # A wall-like dynamic obstacle can pull the PF by several individually
-    # legal corrections. Accumulate only sub-OK/fallback corrections in scan
-    # time, hold map->odom from the first suspicious update, and fail closed
-    # when their direction remains coherent.
-    innovation_guard_enabled: true
-    innovation_guard_window_sec: 0.60
-    innovation_guard_minimum_span_sec: 0.20
-    innovation_guard_max_translation_m: 1.50
-    innovation_guard_max_yaw_rad: 0.18
-    innovation_guard_minimum_coherence: 0.80
     # Slip can bypass the normal guard only when scan-map support is strong and
     # the correction remains inside this absolute safety envelope.
     slip_jump_bypass_min_scan_fit: 0.75
@@ -181,8 +156,8 @@ particle_filter:
     slip_jump_bypass_max_yaw_rad: 0.80
     # 가드가 영구 거부권이 되지 않도록: 연속 거부가 이 횟수에 닿으면 보정을
     # 한 번 받아들여 재동기화한다. 0 = 비활성(구 동작 = 영구 차단 위험).
-    # PF ~20Hz -> 13회는 약 0.65초. 그 안에 못 붙으면 예측이 틀린 것이다.
-    max_consecutive_jump_rejects: 13
+    # PF ~15Hz -> 10회는 약 0.7초. 그 안에 못 붙으면 예측이 틀린 것이다.
+    max_consecutive_jump_rejects: 10
     # Native C++ GiantLUT repeat-angle raycasting.
     rangelib_variant: 0
 

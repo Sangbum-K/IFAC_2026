@@ -141,21 +141,6 @@ LocalTrajectoryNode::LocalTrajectoryNode(
   // 기본값은 spliner/trailing_retry_speed_degraded, control 의
   // backstop_min_speed_mps 와 같은 1.5 로 맞춘다.
   this->declare_parameter("local_trajectory/avoidance_loss_hold_floor_mps", 1.5);
-  // ── 동적 상대 기준 바닥의 상한 (2026-08-20) ─────────────────────────────
-  // 위 바닥은 **절대 상수**라, 상대가 그보다 빠르면 홀드가 "가속 억제"가
-  // 아니라 감속 장치가 된다. run_0819 86.99~87.44s 실측: 130점 전부가
-  // 정확히 1.50 m/s 로 0.45초 고정 — 그동안 앞차는 1.5~1.8 m/s 였다.
-  // 간격은 벌어지지 않고 랩타임만 잃는다.
-  // spliner 가 /planner/avoidance/speed_floor 로 상대 기준 바닥
-  // (필터 vs x dyn_pass_speed_ratio)을 보내면 그것도 바닥에 포함한다.
-  // 이 값은 그 수신값에 거는 상한이다 — 인지가 상대 속도를 크게 잘못
-  // 보고해도 홀드가 통째로 무효가 되지 않게 한다. 0 이면 수신값을 무시하고
-  // 종전 동작(상수 바닥만)으로 돌아간다.
-  // ⚠️ 캡은 값을 **내리기만** 하므로(w.vx > cap 일 때만 대입) 이 값을 올려도
-  //    차가 레이스라인 계획보다 빨라지지는 않는다. 최악은 홀드 무효화다.
-  this->declare_parameter(
-    "local_trajectory/avoidance_loss_hold_floor_max_mps", 3.0);
-
   loop_rate_hz_ = this->get_parameter("local_trajectory/loop_rate_hz").as_double();
   num_local_waypoints_ =
     this->get_parameter("local_trajectory/num_local_waypoints").as_int();
@@ -183,8 +168,6 @@ LocalTrajectoryNode::LocalTrajectoryNode(
     this->get_parameter("local_trajectory/avoidance_loss_hold_sec").as_double();
   avoidance_loss_hold_floor_ = this->get_parameter(
     "local_trajectory/avoidance_loss_hold_floor_mps").as_double();
-  avoidance_loss_hold_floor_max_ = this->get_parameter(
-    "local_trajectory/avoidance_loss_hold_floor_max_mps").as_double();
 
   const std::array<double, 9> safety_values = {
     loop_rate_hz_, avoidance_timeout_sec_, frenet_odom_timeout_sec_,
@@ -196,11 +179,8 @@ LocalTrajectoryNode::LocalTrajectoryNode(
       [](double value) {return std::isfinite(value);}) ||
     !std::isfinite(minimum_stop_buffer_m_) ||
     !std::isfinite(avoidance_loss_hold_floor_) ||
-    !std::isfinite(avoidance_loss_hold_floor_max_) ||
     // 0 = 수신 바닥 무시(종전 동작). 상한은 상수 바닥의 두 배로 둔다 —
     // 그 위는 "홀드가 사실상 없다"와 같아 fail-open 을 다시 부른다.
-    avoidance_loss_hold_floor_max_ < 0.0 ||
-    avoidance_loss_hold_floor_max_ > 6.0 ||
     // 0 = 비활성. 위로 열면 홀드가 "가속 억제"가 아니라 최저속도 보장이 돼
     // 인지 드롭아웃 중 레이스라인 속도까지 올려 줄 수 있다.
     avoidance_loss_hold_floor_ < 0.0 || avoidance_loss_hold_floor_ > 3.0 ||
@@ -235,10 +215,10 @@ LocalTrajectoryNode::LocalTrajectoryNode(
       &LocalTrajectoryNode::CallbackAvoidanceWaypoints, this,
       std::placeholders::_1));
 
-  s_dyn_speed_floor_ = this->create_subscription<std_msgs::msg::Float32>(
-    "/planner/avoidance/speed_floor", qos_profile,
+  s_target_passed_ = this->create_subscription<std_msgs::msg::Bool>(
+    "/planner/avoidance/target_passed", qos_profile,
     std::bind(
-      &LocalTrajectoryNode::CallbackDynSpeedFloor, this,
+      &LocalTrajectoryNode::CallbackTargetPassed, this,
       std::placeholders::_1));
 
   p_local_waypoints_ =
@@ -320,16 +300,17 @@ void LocalTrajectoryNode::CallbackFrenetOdom(
   has_frenet_odom_ = true;
 }
 
-void LocalTrajectoryNode::CallbackDynSpeedFloor(
-  const std_msgs::msg::Float32::SharedPtr msg)
+void LocalTrajectoryNode::CallbackTargetPassed(
+  const std_msgs::msg::Bool::SharedPtr msg)
 {
-  // Float32 에는 헤더가 없어 신선도를 메시지만으로 판정할 수 없다. 그래서
-  // 이 값은 여기서 쓰이지 않고, 회피 경로가 **살아 있는 동안**에만
-  // last_dyn_speed_floor_ 로 걸린다 (Run 의 홀드 블록). 즉 신선도 계약이
-  // 회피 경로와 완전히 같아진다 — 별도 타임아웃을 만들지 않는다.
-  const double value = static_cast<double>(msg->data);
-  std::lock_guard<std::mutex> lock(mutex_dyn_speed_floor_);
-  dyn_speed_floor_rx_ = (std::isfinite(value) && value > 0.0) ? value : 0.0;
+  // Bool 에는 헤더가 없어 메시지만으로 신선도를 판정할 수 없다 — 수신
+  // 시각(steady)을 같이 저장하고 소비처(홀드 게이트)가 age 를 본다.
+  // spliner 가 죽으면 age 가 자라 게이트가 닫히고 홀드는 종전 동작이 된다.
+  target_passed_.store(msg->data, std::memory_order_relaxed);
+  target_passed_steady_ns_.store(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count(),
+    std::memory_order_relaxed);
 }
 
 void LocalTrajectoryNode::CallbackAvoidanceWaypoints(
@@ -613,33 +594,48 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
         last_avoidance_head_speed_ = head;
         last_avoidance_nonempty_time_ = now_steady;
         has_avoidance_head_speed_ = true;
-        // 동적 바닥도 **같은 순간에** 건다. 홀드는 경로가 사라진 뒤에 도는데
-        // 그때는 상대도 같이 사라져 0 이 흘러오는 경우가 많다 — 살아 있을
-        // 때 걸어 두지 않으면 정작 필요한 순간에 바닥이 없다.
-        double rx = 0.0;
-        {
-          std::lock_guard<std::mutex> floor_lock(mutex_dyn_speed_floor_);
-          rx = dyn_speed_floor_rx_;
-        }
-        last_dyn_speed_floor_ =
-          std::clamp(rx, 0.0, std::max(avoidance_loss_hold_floor_max_, 0.0));
       }
     } else if (has_avoidance_head_speed_ && last_avoidance_head_speed_ >= 0.0) {
       const double since = std::chrono::duration<double>(
         now_steady - last_avoidance_nonempty_time_).count();
-      if (std::isfinite(since) && since >= 0.0 &&
+      // ── 대상 통과 시 조기 해제 (2026-08-22) ─────────────────────────────
+      // 홀드의 목적은 "장애물을 **잃은** 것이 가속 신호가 되지 않게"다.
+      // 그런데 run_0822_172617 실측으로 홀드 활성 29.0 s 의 64.7 % 가
+      // 마지막 회피 대상 뒤끝을 이미 중앙 4.63 m 지난 상태였다 — 조우가
+      // 기하적으로 끝났는데 캡(gb 의 78 %)이 1 초를 더 물고 있었고, 33 %
+      // 사이클에서 실제 감속을 강제했다. spliner 가 매 사이클 내는
+      // target_passed(= 대상 없음 + 마지막 정적 대상 통과)가 신선하게
+      // true 면 홀드를 걸지 않는다. 대상이 **앞에 있는 채로** 사라진
+      // 인지 플리커는 false 로 남으므로 방어는 그대로다. spliner 가 죽어
+      // 신호가 늙으면(>0.5 s) 이 게이트는 닫힌다 = 종전 동작.
+      const int64_t passed_ns =
+        target_passed_steady_ns_.load(std::memory_order_relaxed);
+      const double passed_age = std::chrono::duration<double>(
+        now_steady.time_since_epoch()).count() -
+        static_cast<double>(passed_ns) * 1e-9;
+      const bool passed_fresh =
+        passed_ns > 0 && std::isfinite(passed_age) &&
+        passed_age >= 0.0 && passed_age <= 0.5;
+      if (passed_fresh && target_passed_.load(std::memory_order_relaxed)) {
+        has_avoidance_head_speed_ = false;
+        RCLCPP_INFO_THROTTLE(
+          this->get_logger(), *get_clock(), 2000,
+          "회피 경로 상실 %.2fs — 마지막 대상 통과 확인, 홀드 없이 복귀",
+          since);
+        pitwall::Log("avoidance_loss_hold", 0.0);
+      } else if (std::isfinite(since) && since >= 0.0 &&
         since <= avoidance_loss_hold_sec_)
       {
         // 바닥을 적용한 값으로 캡한다. 기억해 둔 선두 속도 자체는 건드리지
         // 않는다 — 로그가 "무엇을 기억했는지"와 "무엇을 걸었는지"를 둘 다
         // 남겨야 사후 rosbag 분석에서 인과를 되짚을 수 있다.
         // (검증에서 avoidance_loss_hold_floor_ >= 0 이므로 max 0 은 불필요하다.)
-        // 바닥은 셋 중 최대다: 기억한 선두 속도 / 절대 상수 바닥 /
-        // 상대 속도 기준 바닥. 마지막 항이 없으면 상대가 상수보다 빠를 때
-        // 홀드가 감속 장치가 된다 (선언부 주석의 run_0819 실측).
+        // 바닥은 둘 중 최대다: 기억한 선두 속도 / 절대 상수 바닥.
+        // (상대 속도 기준 바닥은 2026-08-22 (4/8단계)에 제거됐다 — spliner 가
+        //  더는 /planner/avoidance/speed_floor 를 내지 않는다. 상대 대비
+        //  속도는 이제 6단계 follow cap 이 spliner 안에서 직접 정한다.)
         const double cap = std::max(
-          {last_avoidance_head_speed_, avoidance_loss_hold_floor_,
-            last_dyn_speed_floor_});
+          last_avoidance_head_speed_, avoidance_loss_hold_floor_);
         int capped = 0;
         for (auto & w : local_waypoints.wpnts) {
           if (std::isfinite(w.vx_mps) && w.vx_mps > cap) {
@@ -651,10 +647,10 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
           RCLCPP_WARN_THROTTLE(
             this->get_logger(), *get_clock(), 1000,
             "회피 경로 상실 %.2fs — 속도 상한 %.2f m/s 유지 (%d점 캡, "
-            "기억 %.2f / 바닥 %.2f / 동적바닥 %.2f). "
+            "기억 %.2f / 바닥 %.2f). "
             "장애물 상실이 가속으로 이어지지 않게 한다",
             since, cap, capped, last_avoidance_head_speed_,
-            avoidance_loss_hold_floor_, last_dyn_speed_floor_);
+            avoidance_loss_hold_floor_);
         }
         pitwall::Log("avoidance_loss_hold", 1.0);
         // 불리언만으로는 사후 분석이 안 된다 — 위 WARN 은 1Hz throttle 이라
@@ -664,10 +660,8 @@ void LocalTrajectoryNode::PublishLocalWaypoints(
         //  tools/bag_analysis_0813/quant.py, bag_analysis_0817/rej.py).
         pitwall::Log("avoidance_loss_hold_cap", cap);
         pitwall::Log("avoidance_loss_hold_memory", last_avoidance_head_speed_);
-        pitwall::Log("avoidance_loss_hold_dyn_floor", last_dyn_speed_floor_);
       } else {
         has_avoidance_head_speed_ = false;
-        last_dyn_speed_floor_ = 0.0;
         pitwall::Log("avoidance_loss_hold", 0.0);
       }
     }

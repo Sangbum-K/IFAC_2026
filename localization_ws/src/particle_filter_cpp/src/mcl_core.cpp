@@ -386,13 +386,6 @@ bool QualityTracker::update(double inlier_fraction)
   return state_ != previous;
 }
 
-void QualityTracker::force_lost()
-{
-  state_ = QualityState::kLost;
-  consecutive_good_ = 0;
-  consecutive_lost_ = bad_to_lost_;
-}
-
 void QualityTracker::reset()
 {
   state_ = QualityState::kStartup;
@@ -401,83 +394,8 @@ void QualityTracker::reset()
 }
 
 QualityState QualityTracker::state() const {return state_;}
-double QualityTracker::ok_fraction() const {return ok_fraction_;}
 int QualityTracker::consecutive_good() const {return consecutive_good_;}
 int QualityTracker::consecutive_lost() const {return consecutive_lost_;}
-
-CumulativeInnovationGuard::CumulativeInnovationGuard(
-  const double window_sec, const double minimum_span_sec,
-  const double maximum_translation_m, const double maximum_yaw_rad,
-  const double minimum_coherence)
-: window_ns_(static_cast<int64_t>(window_sec * 1.0e9)),
-  minimum_span_ns_(static_cast<int64_t>(minimum_span_sec * 1.0e9)),
-  maximum_translation_m_(maximum_translation_m),
-  maximum_yaw_rad_(maximum_yaw_rad),
-  minimum_coherence_(minimum_coherence)
-{
-  if (window_sec <= 0.0 || minimum_span_sec < 0.0 || minimum_span_sec > window_sec ||
-    maximum_translation_m <= 0.0 || maximum_yaw_rad <= 0.0 ||
-    minimum_coherence <= 0.0 || minimum_coherence > 1.0)
-  {
-    throw std::invalid_argument("invalid cumulative innovation guard parameters");
-  }
-}
-
-InnovationGuardUpdate CumulativeInnovationGuard::update(
-  const int64_t stamp_ns, const Pose2d & correction, const bool suspicious)
-{
-  InnovationGuardUpdate result;
-  if (!suspicious || stamp_ns <= 0 || !finite_pose(correction)) {
-    reset();
-    return result;
-  }
-  if (!samples_.empty() && stamp_ns <= samples_.back().stamp_ns) {
-    reset();
-  }
-  samples_.push_back({stamp_ns, correction});
-  while (!samples_.empty() && stamp_ns - samples_.front().stamp_ns > window_ns_) {
-    samples_.pop_front();
-  }
-
-  double translation_path_m = 0.0;
-  double yaw_path_rad = 0.0;
-  for (const Sample & sample : samples_) {
-    result.accumulated = compose(result.accumulated, sample.correction);
-    translation_path_m += translation_norm(sample.correction);
-    yaw_path_rad += std::abs(wrap_angle(sample.correction.yaw));
-  }
-  result.sample_count = samples_.size();
-  if (samples_.size() >= 2U) {
-    result.span_sec = static_cast<double>(
-      samples_.back().stamp_ns - samples_.front().stamp_ns) / 1.0e9;
-  }
-  if (translation_path_m > 0.0) {
-    result.translation_coherence =
-      std::min(1.0, translation_norm(result.accumulated) / translation_path_m);
-  }
-  if (yaw_path_rad > 0.0) {
-    result.yaw_coherence =
-      std::min(1.0, std::abs(result.accumulated.yaw) / yaw_path_rad);
-  }
-  if (samples_.size() < 2U ||
-    samples_.back().stamp_ns - samples_.front().stamp_ns < minimum_span_ns_)
-  {
-    return result;
-  }
-  const bool translation_trip =
-    translation_norm(result.accumulated) >= maximum_translation_m_ &&
-    result.translation_coherence >= minimum_coherence_;
-  const bool yaw_trip =
-    std::abs(result.accumulated.yaw) >= maximum_yaw_rad_ &&
-    result.yaw_coherence >= minimum_coherence_;
-  result.tripped = translation_trip || yaw_trip;
-  return result;
-}
-
-void CumulativeInnovationGuard::reset()
-{
-  samples_.clear();
-}
 
 void ReadinessTracker::receive_initial_pose()
 {
@@ -974,28 +892,10 @@ void MclCore::build_sensor_log_table()
   }
 }
 
-double selected_beam_angle_span(
-  const std::vector<float> & angles, const std::vector<uint8_t> & mask)
-{
-  if (angles.size() != mask.size()) {
-    return 0.0;
-  }
-  double minimum = std::numeric_limits<double>::infinity();
-  double maximum = -std::numeric_limits<double>::infinity();
-  for (std::size_t index = 0; index < angles.size(); ++index) {
-    if (mask[index] != 0U && std::isfinite(angles[index])) {
-      minimum = std::min(minimum, static_cast<double>(angles[index]));
-      maximum = std::max(maximum, static_cast<double>(angles[index]));
-    }
-  }
-  return std::isfinite(minimum) && std::isfinite(maximum) ? maximum - minimum : 0.0;
-}
-
 SensorEvaluation MclCore::evaluate_sensor(
   const Proposal & proposal,
   const std::vector<float> & observed_ranges,
   const std::vector<float> & predicted_ranges,
-  const bool allow_beam_skip_fallback,
   const std::vector<uint8_t> & required_beam_mask) const
 {
   SensorEvaluation result;
@@ -1059,10 +959,8 @@ SensorEvaluation MclCore::evaluate_sensor(
     }
     result.beams.skipped_fraction = required_count == 0U ? 1.0 :
       1.0 - static_cast<double>(selected_count) / static_cast<double>(required_count);
-    result.beams.excessive_skip = selected_count == 0U ||
+    result.beams.fallback_to_all_beams = selected_count == 0U ||
       result.beams.skipped_fraction > parameters_.beam_skip_max_fraction;
-    result.beams.fallback_to_all_beams =
-      result.beams.excessive_skip && allow_beam_skip_fallback;
     if (result.beams.fallback_to_all_beams) {
       for (std::size_t beam = 0; beam < beam_count; ++beam) {
         result.beams.mask[beam] = static_cast<uint8_t>(
@@ -1070,9 +968,9 @@ SensorEvaluation MclCore::evaluate_sensor(
       }
     }
   }
-  result.beams.selected_count = static_cast<std::size_t>(std::count(
+  const std::size_t selected_count = static_cast<std::size_t>(std::count(
     result.beams.mask.begin(), result.beams.mask.end(), static_cast<uint8_t>(1U)));
-  if (result.beams.selected_count == 0U) {
+  if (selected_count == 0U) {
     return result;
   }
   std::vector<double> log_weights(particle_count, 0.0);
@@ -1096,7 +994,7 @@ SensorEvaluation MclCore::evaluate_sensor(
     }
     log_weights[particle] = log_weight / parameters_.squash_factor;
     particle_inlier[particle] = static_cast<double>(inlier_count) /
-      static_cast<double>(result.beams.selected_count);
+      static_cast<double>(selected_count);
     result.beams.best_particle_inlier_fraction = std::max(
       result.beams.best_particle_inlier_fraction, particle_inlier[particle]);
     result.beams.weighted_inlier_fraction += prior[particle] * particle_inlier[particle];

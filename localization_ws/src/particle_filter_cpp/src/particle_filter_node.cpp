@@ -120,8 +120,8 @@ public:
     quality_tracker_(
       declare_parameter<double>("quality_ok_inlier_fraction", 0.70),
       declare_parameter<double>("quality_lost_inlier_fraction", 0.40),
-      declare_parameter<int>("quality_bad_updates_to_lost", 4),
-      declare_parameter<int>("quality_good_updates_to_recover", 7))
+      declare_parameter<int>("quality_bad_updates_to_lost", 3),
+      declare_parameter<int>("quality_good_updates_to_recover", 5))
   {
     read_parameters();
     validate_supported_configuration();
@@ -129,10 +129,6 @@ public:
       slip_translation_innovation_m_, slip_yaw_innovation_rad_,
       slip_enter_score_, slip_recover_score_, slip_enter_updates_,
       slip_recover_updates_, slip_immediate_score_);
-    innovation_guard_ = std::make_unique<CumulativeInnovationGuard>(
-      innovation_guard_window_sec_, innovation_guard_minimum_span_sec_,
-      innovation_guard_max_translation_m_, innovation_guard_max_yaw_rad_,
-      innovation_guard_minimum_coherence_);
 
     const rclcpp::QoS status_qos = rclcpp::QoS(1).reliable().transient_local();
     ready_pub_ = create_publisher<std_msgs::msg::Bool>(ready_topic_, status_qos);
@@ -199,8 +195,6 @@ private:
   {
     int64_t stamp_ns{0};
     std::chrono::steady_clock::time_point received;
-    double valid_fraction{0.0};
-    double close_fraction{0.0};
     std::vector<float> ranges;
     std::vector<float> angles;
   };
@@ -241,17 +235,6 @@ private:
     max_pose_jump_translation_m_ = declare_parameter<double>(
       "max_pose_jump_translation_m", 0.30);
     max_pose_jump_yaw_rad_ = declare_parameter<double>("max_pose_jump_yaw_rad", 0.35);
-    innovation_guard_enabled_ = declare_parameter<bool>("innovation_guard_enabled", true);
-    innovation_guard_window_sec_ = declare_parameter<double>(
-      "innovation_guard_window_sec", 0.60);
-    innovation_guard_minimum_span_sec_ = declare_parameter<double>(
-      "innovation_guard_minimum_span_sec", 0.20);
-    innovation_guard_max_translation_m_ = declare_parameter<double>(
-      "innovation_guard_max_translation_m", 1.50);
-    innovation_guard_max_yaw_rad_ = declare_parameter<double>(
-      "innovation_guard_max_yaw_rad", 0.18);
-    innovation_guard_minimum_coherence_ = declare_parameter<double>(
-      "innovation_guard_minimum_coherence", 0.80);
     low_speed_threshold_mps_ = declare_parameter<double>("low_speed_threshold_mps", 0.2);
     low_speed_xy_deadband_m_ = declare_parameter<double>(
       "low_speed_odom_xy_deadband_m", 0.01);
@@ -263,13 +246,13 @@ private:
     low_speed_jump_yaw_rad_ = declare_parameter<double>(
       "low_speed_jump_guard_yaw_rad", 0.60);
     max_consecutive_jump_rejects_ = declare_parameter<int>(
-      "max_consecutive_jump_rejects", 13);
+      "max_consecutive_jump_rejects", 10);
     odom_sync_wait_sec_ = declare_parameter<double>("odom_sync_wait_sec", 0.04);
     max_odom_interp_gap_sec_ = declare_parameter<double>(
       "max_odom_interp_gap_sec", 0.06);
     max_pending_scan_age_sec_ = declare_parameter<double>(
       "max_pending_scan_age_sec", 0.10);
-    max_update_rate_hz_ = declare_parameter<double>("max_update_rate_hz", 20.0);
+    max_update_rate_hz_ = declare_parameter<double>("max_update_rate_hz", 15.0);
     diagnostics_period_sec_ = declare_parameter<double>(
       "sync_diagnostics_period_sec", 1.0);
     max_localization_update_age_sec_ = declare_parameter<double>(
@@ -286,12 +269,6 @@ private:
       "beam_skip_min_particle_fraction", 0.30);
     beam_skip_max_fraction_ = declare_parameter<double>("beam_skip_max_fraction", 0.50);
     beam_skip_short_only_ = declare_parameter<bool>("beam_skip_short_only", true);
-    tracking_beam_fail_closed_enabled_ = declare_parameter<bool>(
-      "tracking_beam_fail_closed_enabled", true);
-    tracking_min_beams_ = declare_parameter<int>("tracking_min_beams", 12);
-    tracking_min_angle_span_rad_ = declare_parameter<double>(
-      "tracking_min_angle_span_rad", 1.57);
-    quality_ok_inlier_fraction_ = get_parameter("quality_ok_inlier_fraction").as_double();
     quality_gate_enabled_ = declare_parameter<bool>("quality_gate_enabled", false);
     ready_topic_ = declare_parameter<std::string>(
       "localization_ready_topic", "/pf/localization_ready");
@@ -302,18 +279,6 @@ private:
     initial_accepted_topic_ = declare_parameter<std::string>(
       "initialpose_accepted_topic", "/pf/initialpose_accepted");
     freeze_stationary_filter_ = declare_parameter<bool>("freeze_stationary_filter", true);
-    lost_recovery_stationary_updates_ = declare_parameter<int>(
-      "lost_recovery_stationary_updates", 20);
-    lost_recovery_min_valid_fraction_ = declare_parameter<double>(
-      "lost_recovery_min_valid_fraction", 0.80);
-    lost_recovery_close_range_m_ = declare_parameter<double>(
-      "lost_recovery_close_range_m", 0.60);
-    lost_recovery_max_close_fraction_ = declare_parameter<double>(
-      "lost_recovery_max_close_fraction", 0.40);
-    lost_recovery_xy_sigma_m_ = declare_parameter<double>(
-      "lost_recovery_xy_sigma_m", 1.50);
-    lost_recovery_yaw_sigma_rad_ = declare_parameter<double>(
-      "lost_recovery_yaw_sigma_rad", 0.70);
     deskew_enabled_ = declare_parameter<bool>("deskew_enabled", true);
     ground_filter_enabled_ = declare_parameter<bool>("ground_filter_enabled", true);
     scan_match_enabled_ = declare_parameter<bool>("scan_match_enabled", true);
@@ -344,8 +309,8 @@ private:
     slip_enter_score_ = declare_parameter<double>("slip_enter_score", 1.0);
     slip_immediate_score_ = declare_parameter<double>("slip_immediate_score", 2.0);
     slip_recover_score_ = declare_parameter<double>("slip_recover_score", 0.50);
-    slip_enter_updates_ = declare_parameter<int>("slip_enter_updates", 3);
-    slip_recover_updates_ = declare_parameter<int>("slip_recover_updates", 7);
+    slip_enter_updates_ = declare_parameter<int>("slip_enter_updates", 2);
+    slip_recover_updates_ = declare_parameter<int>("slip_recover_updates", 5);
     slip_motion_noise_multiplier_ = declare_parameter<double>(
       "slip_motion_noise_multiplier", 2.5);
     slip_bypass_min_fit_ = declare_parameter<double>(
@@ -370,14 +335,7 @@ private:
       throw std::runtime_error("rangelib_variant must be in [0, 5]");
     }
     if (angle_step_ <= 0 || max_particles_ <= 0 || max_range_m_ <= 0.0 ||
-      theta_discretization_ <= 0 || max_update_rate_hz_ <= 0.0 || random_seed_ < -1 ||
-      tracking_min_beams_ <= 0 || tracking_min_angle_span_rad_ <= 0.0 ||
-      tracking_min_angle_span_rad_ > 2.0 * M_PI ||
-      lost_recovery_stationary_updates_ <= 0 || lost_recovery_xy_sigma_m_ <= 0.0 ||
-      lost_recovery_yaw_sigma_rad_ <= 0.0 || lost_recovery_min_valid_fraction_ < 0.0 ||
-      lost_recovery_min_valid_fraction_ > 1.0 || lost_recovery_close_range_m_ <= 0.0 ||
-      lost_recovery_close_range_m_ >= max_range_m_ ||
-      lost_recovery_max_close_fraction_ < 0.0 || lost_recovery_max_close_fraction_ > 1.0)
+      theta_discretization_ <= 0 || max_update_rate_hz_ <= 0.0 || random_seed_ < -1)
     {
       throw std::runtime_error("invalid particle_filter_cpp parameters");
     }
@@ -550,16 +508,12 @@ private:
       message->range_max : static_cast<float>(max_range_m_);
     const float sensor_min = std::isfinite(message->range_min) ?
       std::max(0.0F, message->range_min) : 0.0F;
-    std::size_t valid_count = 0U;
-    std::size_t close_count = 0U;
     for (std::size_t index = 0; index < message->ranges.size();
       index += static_cast<std::size_t>(angle_step_))
     {
       const float value = message->ranges[index];
       const bool valid = std::isfinite(value) && value >= sensor_min && value > 0.0F &&
         value <= sensor_max && value < 65.5F && value < max_range_m_ * 0.995;
-      valid_count += valid ? 1U : 0U;
-      close_count += valid && value <= lost_recovery_close_range_m_ ? 1U : 0U;
       ranges.push_back(valid ? std::clamp(value, 0.0F, static_cast<float>(max_range_m_)) :
         static_cast<float>(max_range_m_));
       double angle = message->angle_min;
@@ -587,13 +541,7 @@ private:
         get_logger(), "PF C++ raycast budget: %d particles x %zu beams = %zu/update",
         max_particles_, ranges.size(), static_cast<std::size_t>(max_particles_) * ranges.size());
     }
-    const double valid_fraction = static_cast<double>(valid_count) /
-      static_cast<double>(ranges.size());
-    const double close_fraction = valid_count == 0U ? 1.0 :
-      static_cast<double>(close_count) / static_cast<double>(valid_count);
-    ScanSample sample{
-      timestamp, std::chrono::steady_clock::now(), valid_fraction, close_fraction,
-      std::move(ranges), std::move(angles)};
+    ScanSample sample{timestamp, std::chrono::steady_clock::now(), std::move(ranges), std::move(angles)};
     {
       std::lock_guard<std::mutex> lock(scan_mutex_);
       ++offered_scan_count_;
@@ -907,13 +855,6 @@ private:
     }
     last_slip_ = slip;
     last_scan_motion_ = scan_motion;
-    const bool wheel_stationary = std::abs(odom.linear_speed) < low_speed_threshold_mps_ &&
-      translation_norm(action) <= 1.0e-12 && std::abs(action.yaw) <= 1.0e-12;
-    const bool lidar_stationary = scan_motion.valid &&
-      translation_norm(scan_motion.action) <= stationary_scan_translation_m_ &&
-      std::abs(scan_motion.action.yaw) <= stationary_scan_yaw_rad_;
-    const bool stationary_evidence = wheel_stationary && imu_stationary &&
-      lidar_stationary && !slip.active;
 
     const auto prior_particles = core_->particles();
     const auto prior_weights = core_->weights();
@@ -926,34 +867,11 @@ private:
     range_method_->numpy_calc_range_angles(
       queries.data(), const_cast<float *>(scan.angles.data()), predicted.data(),
       static_cast<int>(proposal.particles.size()), static_cast<int>(scan.ranges.size()));
-    const QualityState quality_before_scan = quality_tracker_.state();
-    const bool protect_tracking_beams =
-      tracking_beam_fail_closed_enabled_ && readiness_tracker_.ready();
     SensorEvaluation sensor = core_->evaluate_sensor(
-      proposal, scan.ranges, predicted, !protect_tracking_beams);
-    sensor.beams.selected_angle_span_rad =
-      selected_beam_angle_span(scan.angles, sensor.beams.mask);
-    const bool insufficient_tracking_beams = protect_tracking_beams &&
-      (sensor.beams.selected_count < static_cast<std::size_t>(tracking_min_beams_) ||
-      sensor.beams.selected_angle_span_rad < tracking_min_angle_span_rad_);
-    if (insufficient_tracking_beams) {
-      beam_fail_closed_ = true;
-      ++beam_fail_closed_count_;
-      quality_tracker_.force_lost();
-      readiness_tracker_.update(quality_tracker_.state());
-      innovation_guard_->reset();
-      last_innovation_guard_ = {};
-      last_beam_selection_ = sensor.beams;
-      RCLCPP_ERROR(
-        get_logger(),
-        "PF tracking beams insufficient: %zu beams over %.1fdeg; "
-        "localization is fail-closed until a new initial pose/reset",
-        sensor.beams.selected_count,
-        sensor.beams.selected_angle_span_rad * 180.0 / M_PI);
-    }
+      proposal, scan.ranges, predicted);
     bool correction_accepted = false;
     bool stationary_hold = false;
-    if (sensor.valid && !insufficient_tracking_beams) {
+    if (sensor.valid) {
       last_prior_ess_ratio_ = proposal.prior_ess_ratio;
       if (proposal.resampled) {
         ++resample_count_;
@@ -964,20 +882,18 @@ private:
       last_beam_selection_ = sensor.beams;
       core_->accept(std::move(proposal), std::move(sensor.posterior_weights));
       const Pose2d candidate = core_->expected_pose();
-      const bool map_quality_ok = quality_tracker_.state() != QualityState::kLost &&
-        sensor.beams.weighted_inlier_fraction >= quality_ok_inlier_fraction_;
-      stationary_hold = freeze_stationary_filter_ && stationary_evidence && map_quality_ok;
-      if (innovation_fail_closed_ || beam_fail_closed_) {
-        stationary_hold = false;
-        consecutive_jump_rejects_ = 0;
-        core_->restore_motion_only(prior_particles, prior_weights, action);
-      } else if (stationary_hold) {
+      const bool wheel_stationary = std::abs(odom.linear_speed) < low_speed_threshold_mps_ &&
+        translation_norm(action) <= 1.0e-12 && std::abs(action.yaw) <= 1.0e-12;
+      const bool lidar_stationary = scan_motion.valid &&
+        translation_norm(scan_motion.action) <= stationary_scan_translation_m_ &&
+        std::abs(scan_motion.action.yaw) <= stationary_scan_yaw_rad_;
+      stationary_hold = freeze_stationary_filter_ && wheel_stationary &&
+        imu_stationary && lidar_stationary && !slip.active;
+      if (stationary_hold) {
         ++stationary_hold_count_;
         consecutive_jump_rejects_ = 0;
-        innovation_guard_->reset();
-        last_innovation_guard_ = {};
         core_->restore_motion_only(prior_particles, prior_weights, action);
-      } else if ((pose_jump_guard_enabled_ || innovation_guard_enabled_) && prior_pose) {
+      } else if (pose_jump_guard_enabled_ && prior_pose) {
         const Pose2d predicted_pose = compose(*prior_pose, action);
         const Pose2d correction = compose(inverse(predicted_pose), candidate);
         const double correction_xy = translation_norm(correction);
@@ -988,8 +904,7 @@ private:
           max_xy = low_speed_jump_translation_m_;
           max_yaw = low_speed_jump_yaw_rad_;
         }
-        bool reject = pose_jump_guard_enabled_ &&
-          (correction_xy > max_xy || correction_yaw > max_yaw);
+        bool reject = correction_xy > max_xy || correction_yaw > max_yaw;
         const bool bypass = reject && slip.active &&
           sensor.beams.weighted_inlier_fraction >= slip_bypass_min_fit_ &&
           correction_xy <= slip_bypass_max_translation_m_ &&
@@ -1003,36 +918,8 @@ private:
         {
           reject = false;
         }
-        InnovationGuardUpdate innovation;
-        if (!reject && innovation_guard_enabled_) {
-          const bool suspicious = readiness_tracker_.ready() &&
-            (sensor.beams.excessive_skip || sensor.beams.fallback_to_all_beams ||
-            sensor.beams.weighted_inlier_fraction < quality_tracker_.ok_fraction());
-          innovation = innovation_guard_->update(scan.stamp_ns, correction, suspicious);
-          last_innovation_guard_ = innovation;
-          if (innovation.tripped) {
-            reject = true;
-            innovation_fail_closed_ = true;
-            ++innovation_guard_trip_count_;
-            quality_tracker_.force_lost();
-            readiness_tracker_.update(quality_tracker_.state());
-            RCLCPP_ERROR(
-              get_logger(),
-              "PF cumulative innovation guard tripped: %.3fm/%.1fdeg over %.3fs, "
-              "coherence %.2f/%.2f, samples %zu; localization is fail-closed until reset",
-              translation_norm(innovation.accumulated),
-              std::abs(innovation.accumulated.yaw) * 180.0 / M_PI,
-              innovation.span_sec, innovation.translation_coherence,
-              innovation.yaw_coherence, innovation.sample_count);
-          }
-        } else if (reject && innovation_guard_) {
-          innovation_guard_->reset();
-          last_innovation_guard_ = {};
-        }
         if (reject) {
-          if (!innovation_fail_closed_) {
-            ++consecutive_jump_rejects_;
-          }
+          ++consecutive_jump_rejects_;
           core_->restore_motion_only(prior_particles, prior_weights, action);
         } else {
           consecutive_jump_rejects_ = 0;
@@ -1045,9 +932,7 @@ private:
       }
     } else {
       core_->restore_motion_only(prior_particles, prior_weights, action);
-      if (!insufficient_tracking_beams) {
-        last_beam_selection_.reset();
-      }
+      last_beam_selection_.reset();
     }
     if (!stationary_hold && !correction_accepted) {
       inferred_pose_ = core_->expected_pose();
@@ -1056,58 +941,17 @@ private:
     if (last_beam_selection_) {
       const double quality_score = correction_accepted || stationary_hold ?
         last_beam_selection_->weighted_inlier_fraction : 0.0;
+      const QualityState previous = quality_tracker_.state();
       quality_tracker_.update(quality_score);
       readiness_tracker_.update(quality_tracker_.state());
-      if (innovation_fail_closed_ || beam_fail_closed_) {
-        quality_tracker_.force_lost();
-        readiness_tracker_.update(quality_tracker_.state());
-      }
       if (quality_tracker_.state() == QualityState::kLost) {
         ++quality_lost_update_count_;
       }
-      if (quality_before_scan != QualityState::kLost &&
-        quality_tracker_.state() == QualityState::kLost)
-      {
+      if (previous != QualityState::kLost && quality_tracker_.state() == QualityState::kLost) {
         ++quality_lost_transition_count_;
       }
     }
-    if (quality_tracker_.state() != QualityState::kLost) {
-      consecutive_lost_stationary_updates_ = 0;
-      lost_recovery_attempted_ = false;
-    } else if (!innovation_fail_closed_ && !beam_fail_closed_ && !lost_recovery_attempted_) {
-      const bool recovery_evidence = last_beam_selection_ && stationary_evidence &&
-        scan.valid_fraction >= lost_recovery_min_valid_fraction_ &&
-        scan.close_fraction <= lost_recovery_max_close_fraction_;
-      consecutive_lost_stationary_updates_ = recovery_evidence ?
-        consecutive_lost_stationary_updates_ + 1 : 0;
-      if (consecutive_lost_stationary_updates_ >= lost_recovery_stationary_updates_ &&
-        inferred_pose_)
-      {
-        const Pose2d center = *inferred_pose_;
-        core_->initialize_pose(
-          center, lost_recovery_xy_sigma_m_, lost_recovery_yaw_sigma_rad_);
-        inferred_pose_.reset();
-        consecutive_jump_rejects_ = 0;
-        lost_recovery_attempted_ = true;
-        innovation_guard_->reset();
-        last_innovation_guard_ = {};
-        std::lock_guard<std::mutex> transform_lock(transform_mutex_);
-        map_to_odom_.reset();
-        localized_covariance_.fill(0.0);
-        RCLCPP_WARN(
-          get_logger(),
-          "Persistent LOST: broad local reinitialization around (%.2f, %.2f, %.1fdeg), "
-          "sigma %.2fm/%.1fdeg",
-          center.x, center.y, center.yaw * 180.0 / M_PI,
-          lost_recovery_xy_sigma_m_, lost_recovery_yaw_sigma_rad_ * 180.0 / M_PI);
-      }
-    }
-    const bool innovation_pending = innovation_guard_enabled_ &&
-      last_innovation_guard_.sample_count > 0U;
-    if (inferred_pose_ && !innovation_pending &&
-      !innovation_fail_closed_ && !beam_fail_closed_ &&
-      !(quality_gate_enabled_ && quality_tracker_.state() == QualityState::kLost))
-    {
+    if (inferred_pose_ && !(quality_gate_enabled_ && quality_tracker_.state() == QualityState::kLost)) {
       set_localization_transform_locked(*inferred_pose_, odom);
     }
     previous_filter_odom_ = odom;
@@ -1271,14 +1115,6 @@ private:
     previous_scan_angles_.reset();
     quality_tracker_.reset();
     readiness_tracker_.reset_quality();
-    consecutive_lost_stationary_updates_ = 0;
-    lost_recovery_attempted_ = false;
-    innovation_fail_closed_ = false;
-    beam_fail_closed_ = false;
-    last_innovation_guard_ = {};
-    if (innovation_guard_) {
-      innovation_guard_->reset();
-    }
     if (slip_detector_) {
       slip_detector_->reset();
     }
@@ -1351,7 +1187,6 @@ private:
       "CPU-core %.0f%%, scans %zu/%zu, latest-overwrite %zu (%.0f%%), "
       "sync/stale/order-drop %zu/%zu/%zu, worker-error %zu, odom-buffer %zu/%zu, "
       "ESS-prior/post %.2f/%.2f, scan-fit %.2f, beam-skip %.0f%%, beam-fallback %zu, "
-      "beam-selected/span %zu/%.1fdeg, beam-fail-closed %d trips %zu, "
       "quality %s good/bad %d/%d, ready/initialpose-received/accepted %d/%d/%d, "
       "resampled/lost-updates/lost-transitions %zu/%zu/%zu, "
       "stationary-hold %zu, stationary wheel/IMU/scan 0/0/0, "
@@ -1359,7 +1194,6 @@ private:
       "scan-motion %s %.3fm/%.1fdeg rmse %.3fm inlier %.2f, "
       "slip %s score %.2f, events/recoveries/bypass %zu/%zu/%zu, "
       "slip-age/last-duration 0.00/0.00s, slip-max-correction 0.00m/0.0deg, "
-      "innovation %s %.3fm/%.1fdeg %.3fs coherence %.2f/%.2f n%zu trips %zu, "
       "deskew OFF applied 0, timing/odom/imu-fallback 0/0/0, scan-span 0.0ms, "
       "translation-scale 0.00, deskew-max-motion 0.000m/0.0deg, "
       "geometry disabled ground/offplane/degraded/sync-miss/fallback 0/0/0/0/0, "
@@ -1369,12 +1203,7 @@ private:
       overwrite_percent, scan_sync_drop_count_.load(), scan_stale_drop_count_.load(),
       scan_out_of_order_count_.load(), worker_error_count_.load(), odom_buffer_.size(),
       odom_buffer_.capacity(), last_prior_ess_ratio_, last_posterior_ess_ratio_,
-      scan_fit, beam_skip, beam_fallback_count_.load(),
-      last_beam_selection_ ? last_beam_selection_->selected_count : 0U,
-      last_beam_selection_ ?
-      last_beam_selection_->selected_angle_span_rad * 180.0 / M_PI : 0.0,
-      beam_fail_closed_ ? 1 : 0, beam_fail_closed_count_.load(),
-      quality.c_str(), good, bad,
+      scan_fit, beam_skip, beam_fallback_count_.load(), quality.c_str(), good, bad,
       ready ? 1 : 0, initial_received ? 1 : 0, initial_accepted ? 1 : 0,
       resample_count_.load(), quality_lost_update_count_.load(),
       quality_lost_transition_count_.load(), stationary_hold_count_.load(),
@@ -1386,12 +1215,6 @@ private:
       last_scan_motion_.valid ? last_scan_motion_.inlier_fraction : -1.0,
       last_slip_.active ? "ACTIVE" : "OK", last_slip_.score,
       slip_event_count_.load(), slip_recovery_count_.load(), slip_bypass_count_.load(),
-      innovation_fail_closed_ ? "FAIL_CLOSED" : "OK",
-      translation_norm(last_innovation_guard_.accumulated),
-      std::abs(last_innovation_guard_.accumulated.yaw) * 180.0 / M_PI,
-      last_innovation_guard_.span_sec, last_innovation_guard_.translation_coherence,
-      last_innovation_guard_.yaw_coherence, last_innovation_guard_.sample_count,
-      innovation_guard_trip_count_.load(),
       imu_buffer_.capacity(), scan_shape_drop_count_.load(), profile_label_.c_str());
   }
 
@@ -1426,23 +1249,17 @@ private:
   bool pose_jump_guard_enabled_{true};
   double max_pose_jump_translation_m_{0.30};
   double max_pose_jump_yaw_rad_{0.35};
-  bool innovation_guard_enabled_{true};
-  double innovation_guard_window_sec_{0.60};
-  double innovation_guard_minimum_span_sec_{0.20};
-  double innovation_guard_max_translation_m_{1.50};
-  double innovation_guard_max_yaw_rad_{0.18};
-  double innovation_guard_minimum_coherence_{0.80};
   double low_speed_threshold_mps_{0.2};
   double low_speed_xy_deadband_m_{0.01};
   double low_speed_yaw_deadband_rad_{0.02};
   double low_speed_odom_scale_{0.25};
   double low_speed_jump_translation_m_{0.50};
   double low_speed_jump_yaw_rad_{0.60};
-  int max_consecutive_jump_rejects_{13};
+  int max_consecutive_jump_rejects_{10};
   double odom_sync_wait_sec_{0.04};
   double max_odom_interp_gap_sec_{0.06};
   double max_pending_scan_age_sec_{0.10};
-  double max_update_rate_hz_{20.0};
+  double max_update_rate_hz_{15.0};
   double diagnostics_period_sec_{1.0};
   double max_localization_update_age_sec_{0.50};
   double motion_noise_min_scale_{0.08};
@@ -1454,22 +1271,12 @@ private:
   double beam_skip_min_particle_fraction_{0.30};
   double beam_skip_max_fraction_{0.50};
   bool beam_skip_short_only_{true};
-  bool tracking_beam_fail_closed_enabled_{true};
-  int tracking_min_beams_{12};
-  double tracking_min_angle_span_rad_{1.57};
-  double quality_ok_inlier_fraction_{0.70};
   bool quality_gate_enabled_{false};
   std::string ready_topic_;
   std::string quality_topic_;
   std::string initial_received_topic_;
   std::string initial_accepted_topic_;
   bool freeze_stationary_filter_{true};
-  int lost_recovery_stationary_updates_{20};
-  double lost_recovery_min_valid_fraction_{0.80};
-  double lost_recovery_close_range_m_{0.60};
-  double lost_recovery_max_close_fraction_{0.40};
-  double lost_recovery_xy_sigma_m_{1.50};
-  double lost_recovery_yaw_sigma_rad_{0.70};
   bool deskew_enabled_{true};
   bool ground_filter_enabled_{true};
   bool scan_match_enabled_{true};
@@ -1491,8 +1298,8 @@ private:
   double slip_enter_score_{1.0};
   double slip_immediate_score_{2.0};
   double slip_recover_score_{0.50};
-  int slip_enter_updates_{3};
-  int slip_recover_updates_{7};
+  int slip_enter_updates_{2};
+  int slip_recover_updates_{5};
   double slip_motion_noise_multiplier_{2.5};
   double slip_bypass_min_fit_{0.75};
   double slip_bypass_max_translation_m_{0.80};
@@ -1503,7 +1310,6 @@ private:
   QualityTracker quality_tracker_;
   ReadinessTracker readiness_tracker_;
   std::unique_ptr<SlipDetector> slip_detector_;
-  std::unique_ptr<CumulativeInnovationGuard> innovation_guard_;
   std::unique_ptr<MclCore> core_;
   std::vector<Pose2d> permissible_poses_;
   std::unique_ptr<ranges::OMap> occupancy_map_;
@@ -1523,14 +1329,9 @@ private:
   std::optional<BeamSelection> last_beam_selection_;
   ScanMotionEstimate last_scan_motion_;
   SlipUpdate last_slip_;
-  InnovationGuardUpdate last_innovation_guard_;
-  bool innovation_fail_closed_{false};
-  bool beam_fail_closed_{false};
   double last_prior_ess_ratio_{1.0};
   double last_posterior_ess_ratio_{1.0};
   int consecutive_jump_rejects_{0};
-  int consecutive_lost_stationary_updates_{0};
-  bool lost_recovery_attempted_{false};
 
   std::mutex state_mutex_;
   std::mutex transform_mutex_;
@@ -1568,14 +1369,12 @@ private:
   std::atomic<std::size_t> scan_match_invalid_count_{0};
   std::atomic<std::size_t> resample_count_{0};
   std::atomic<std::size_t> beam_fallback_count_{0};
-  std::atomic<std::size_t> beam_fail_closed_count_{0};
   std::atomic<std::size_t> quality_lost_update_count_{0};
   std::atomic<std::size_t> quality_lost_transition_count_{0};
   std::atomic<std::size_t> stationary_hold_count_{0};
   std::atomic<std::size_t> slip_event_count_{0};
   std::atomic<std::size_t> slip_recovery_count_{0};
   std::atomic<std::size_t> slip_bypass_count_{0};
-  std::atomic<std::size_t> innovation_guard_trip_count_{0};
 
   rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
   rclcpp::TimerBase::SharedPtr map_retry_timer_;
