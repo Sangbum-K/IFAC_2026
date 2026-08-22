@@ -1001,7 +1001,7 @@ def test_follow_cap_is_longitudinal_only():
     d_m 을 만지기 시작하면 회피 경로가 추종에 끌려간다.
     """
     src = _spliner_source()
-    blk = src[src.index("동적 상대 종방향 추종 (2026-08-22, 6/8단계)"):]
+    blk = src[src.index("동적 상대 종방향 추종 (2026-08-23)"):]
     blk = blk[:blk.index("pitwall::Log(\"follow_active\"")]
     assert "w.vx_mps = cap_w;" in blk, "추종 캡이 vx_mps 를 누르지 않는다"
     for lateral in ("d_m", "d_left", "d_right", "x_m", "y_m"):
@@ -1053,45 +1053,50 @@ def test_follow_gap_params_are_physical():
     assert 0.0 < kp <= 5.0
 
 
-def test_straight_overtake_keeps_all_five_gates():
-    """유일한 추월 기동의 발화 조건 5개가 전부 남아 있어야 한다."""
+def test_no_lateral_maneuver_for_dynamic_obstacles():
+    """동적 상대에 대한 **횡 기동이 하나도 없어야** 한다 (2026-08-23).
+
+    라인 스위치·프리스플라인·원호·직선 인코스 추월을 전부 폐기했고,
+    동적 상대에 대한 플래너 출력은 속도 하나뿐이다. 회피 경로를 만드는
+    빌더는 전부 정적 전용 게이트 뒤에 있어야 한다.
+    """
     src = _spliner_source()
-    fn = src[src.index("bool SplinerNode::TryStraightOvertake("):]
-    fn = fn[:fn.index("\nbool SplinerNode::BuildTrailing(")]
-    # ② 직선 + 활주로
-    assert "StraightEndAhead(cur_s_)" in fn, "직선 판정이 없다"
-    assert 'NoteReject("ot_no_runway")' in fn, "활주로 검사가 없다"
-    # ③ 직선 안 정적 장애물 0개
-    assert 'NoteReject("ot_static_in_straight")' in fn, (
-        "직선에 정적 장애물이 있어도 추월을 시도한다 — 회피 우선이 깨진다"
+    # 폐기한 기동이 되살아나지 않았는가.
+    assert "TryStraightOvertake(" not in src, (
+        "직선 인코스 추월이 되살아났다 — 동적은 추종만 해야 한다"
     )
-    # ④ 간격 상한
-    assert "gap > ot_max_gap_m_" in fn, "간격 상한 게이트가 없다"
-    # ⑤ 벽/상대 여유
-    assert "RequiredObstacleClearance(opp)" in fn, "상대 요구 간격을 안 본다"
-    assert "MinWallInSpan(" in fn, "기동 구간 벽 여유를 안 본다"
-    # 최종 검증 3종은 반드시 남아야 한다.
-    for guard in ("WithinTrackBoundary(", "ApplySpeedProfile(",
-                  "CheckPathCollision("):
-        assert guard in fn, f"추월 경로 검증이 빠졌다: {guard}"
-    # 횡이동은 상대 옆에 닿기 전에 끝나야 한다.
-    assert "blend_in > must_finish_by" in fn, (
-        "상대 옆에서 횡이동이 끝나는 기하를 막지 않는다"
+    # 회피 티어의 문(try_evade)은 is_static 하나여야 한다.
+    assert "bool try_evade = closest.is_static;" in src, (
+        "회피 티어 게이트가 is_static 단독이 아니다 — 동적이 회피로 샌다"
     )
+    # 경로 생성 빌더는 전부 그 문 뒤에 있어야 한다.
+    for builder in ("TryLaneSwitch(", "DoSpline(", "BuildEscapeArc("):
+        call = src.index(f"= {builder}") if f"= {builder}" in src else -1
+        assert call > 0, f"{builder} 호출을 찾지 못했다"
+        # 호출 직전 400자 안에 try_evade 게이트가 있어야 한다.
+        assert "try_evade" in src[call - 400:call], (
+            f"{builder} 가 try_evade(정적 전용) 게이트 밖에서 호출된다"
+        )
 
 
-def test_overtake_suspends_the_follow_cap():
-    """추월 중에는 추종 캡을 걸지 않는다 — 상대 속도에 묶이면 못 지나간다."""
+def test_dynamic_branch_only_touches_speed():
+    """동적 분기가 경로를 **생성**하지 않는다 — 캡 또는 트레일링뿐."""
     src = _spliner_source()
-    assert "if (engaged && !ot_now) {" in src, (
-        "추월 중에도 추종 캡이 걸린다 — 레이트 브레이크가 성립하지 않는다"
+    blk = src[src.index("동적 상대 종방향 추종 (2026-08-23)"):]
+    blk = blk[:blk.index('pitwall::Log("follow_active"')]
+    # 주석은 폐기 경위를 설명하며 빌더 이름을 언급하므로 코드만 남긴다.
+    code = "\n".join(
+        ln for ln in blk.splitlines() if not ln.lstrip().startswith("//")
     )
-    # 추월은 추종 중에만, 그리고 정적 회피 경로가 없을 때만 연다.
-    assert "if (engaged && !evasion_valid &&" in src, (
-        "추월이 추종/회피 우선 게이트를 안 거친다"
-    )
-    # 상승엣지 플래그는 매 사이클 갱신돼야 한다 (굳으면 다음 조우를 놓친다).
-    assert "ot_active_ = ot_now;" in src, "ot_active_ 가 매 사이클 갱신되지 않는다"
+    # 허용된 두 출력.
+    assert "w.vx_mps = cap_w;" in code, "추종 캡이 없다"
+    assert "BuildTrailing(opponent" in code, "트레일링 폴백이 없다"
+    # 경로를 새로 만드는 빌더는 여기 있으면 안 된다.
+    for builder in ("TryLaneSwitch", "DoSpline", "BuildEscapeArc",
+                    "TryStraightOvertake"):
+        assert builder not in code, (
+            f"동적 분기가 {builder} 로 횡 경로를 만든다"
+        )
 
 
 def test_dospline_ego_anchor_survives_passing_the_apex():

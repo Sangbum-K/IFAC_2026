@@ -7,11 +7,11 @@ import sys
 
 import numpy as np
 
-# 현재 실차 YAML의 0.380/0.322 rad를 이 프로세스의 배포 검증 모델에만 반영한다.
+# 현재 실차 YAML의 0.395/0.322 rad를 이 프로세스의 배포 검증 모델에만 반영한다.
 # 공용 설정 파일은 사용자의 진행 중 변경이라 건드리지 않는다.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import deployment_profiles as deployment
-deployment.MAX_LEFT_STEER = 0.3800
+deployment.MAX_LEFT_STEER = 0.3950
 deployment.MAX_RIGHT_STEER = 0.3220
 deployment.MAX_STEER = min(deployment.MAX_LEFT_STEER, deployment.MAX_RIGHT_STEER)
 

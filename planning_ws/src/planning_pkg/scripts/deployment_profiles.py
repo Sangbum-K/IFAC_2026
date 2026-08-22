@@ -48,11 +48,11 @@ WHEELBASE = 0.33        # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동
 #   우 (0.70-0.424)/-0.8564 = -0.322279 rad (18.45°) <- 대칭 한계를 결정
 #   좌 (0.05-0.424)/-0.8564 = +0.436712 rad (25.02°)
 # 우측 0.3220은 servo_max 안쪽으로 조금 내린 배포값이다.
-# 좌측은 servo_min에 여유를 둔 0.3800 rad(servo 0.0986)를 사용한다.
-# ⚠️ 그래서 TUNING_STATUS §11 의 중립 튐(런 사이 최대 0.036 servo = 0.042 rad)을
-#    흡수할 마진이 이제 없다. 중립이 우측으로 밀린 런에서는 최대 조향 근처 명령이
-#    servo_max 에서 잘려 "가장 크게 꺾어야 할 때 안 꺾이는" 형태로 나타난다.
-MAX_LEFT_STEER = 0.3800
+# 좌측은 0.3950 rad(servo 0.0857)를 사용한다. servo_min까지 여유는 0.0357이다.
+# ⚠️ TUNING_STATUS §11 의 중립 튐(런 사이 최대 0.036 servo = 0.042 rad)이 이
+#    마진을 거의 전부 소진한다. 중립이 우측으로 밀린 런에서는 최대 조향 근처
+#    명령이 servo_max 에서 잘려 "가장 크게 꺾어야 할 때 안 꺾이는" 형태로 나타난다.
+MAX_LEFT_STEER = 0.3950
 MAX_RIGHT_STEER = 0.3220
 # 경로 생성과 기존 폐루프 안전 모델은 아직 대칭이므로 구속 방향을 사용한다.
 MAX_STEER = min(MAX_LEFT_STEER, MAX_RIGHT_STEER)

@@ -289,7 +289,7 @@ control:
     # saturation ratio reads 1.0 while the car is still under-steering.
     # Planning remains symmetric and conservative at min(left, right)=0.3220.
     # Control alone may use the extra left range to recover tracking error.
-    "vehicle/max_left_steering_angle_rad": 0.3800
+    "vehicle/max_left_steering_angle_rad": 0.3950
     "vehicle/max_right_steering_angle_rad": 0.3220
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5

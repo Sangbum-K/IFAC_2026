@@ -155,18 +155,20 @@ private:
   // 안전에 직결되는 판단에만 이쪽을 쓴다 (ObsClsTrack::max_disp 주석 참조).
   bool WasEverMoved(int32_t id) const;
 
-  // ── 동적 상대 종방향 추종 (2026-08-22, 5~6/8단계) ─────────────────────
+  // ── 동적 상대 종방향 추종 ──────────────────────────────────────────────
   // 상대 뒤 dyn_follow_gap_m_ 를 유지하기 위한 **속도 상한** [m/s].
   // 무한대를 돌려주면 "개입하지 않는다" = 상대를 무시하고 레이스라인 속도로
   // 간다. 이 함수는 **종방향만** 정한다 — 횡(회피)은 정적 파이프라인 몫이고,
   // 그래서 "회피가 최우선, 추종은 속도만"이 구조적으로 성립한다.
+  // 2026-08-23 로 동적 상대에 대한 횡 기동이 전부 폐기됐으므로, 이 함수와
+  // BuildTrailing 이 **동적 상대에 대한 플래너 출력의 전부**다.
   //
   // 개입 시점이 왜 gap 그 자체가 아닌가:
   //   목표 간격에서만 반응하면 접근속도 Δv 를 지울 거리가 없다. 실차
   //   plant_decel 2.38 기준 Δv=3 m/s 를 지우는 데만 1.89 m 가 필요한데
-  //   목표 간격은 1.5 m 다. 그래서 개입 조건을
+  //   목표 간격은 1.0 m 다. 그래서 개입 조건을
   //     gap <= gap_target + Δv²/(2a) + v·T
-  //   로 둔다. 정속 추종(Δv≈0)에서는 거의 gap_target 에서 열리므로 "1.5 m
+  //   로 둔다. 정속 추종(Δv≈0)에서는 거의 gap_target 에서 열리므로 "1.0 m
   //   밖은 신경 쓰지 않는다"는 계약이 그대로 지켜지고, 급접근일 때만 미리
   //   열린다.
   //
@@ -272,45 +274,24 @@ private:
 
   // 추월 섹터: 회피 기하(벽 여유 >= ot_min_clearance)가 성립하고 코너가
   // 아닌(|kappa| <= ot_max_kappa) s 구간을 raceline에서 자동 산출.
-  // 섹터 안에서만 **동적 상대** 회피를 시도하고(밖은 TRAILING 대기),
-  // 섹터 안에서는 ot_speed_scale 배율로 속도를 올린다.
-  // (예전 주석의 "경계 마진 완화"는 실재하지 않는다 — ot_bound_mindist 가
-  //  spline_bound_mindist 와 같은 값이었고 모든 소비처가
-  //  RequiredBoundaryMargin() 하한에 먹혀 완화가 성립한 적이 없어 제거됐다.
-  //  정적 장애물은 섹터와 무관하게 항상 회피를 시도한다.)
-  // 코너를 제외하는 이유:
-  // 코너 아웃라인 추월은 경로가 길어져 페이스 우위가 상쇄된다 — 코너에선
-  // 바짝 붙고 직선에서 속도 차로 제치는 것이 정석.
+  // ⚠️ 2026-08-23 현재 이 섹터는 **진단·시각화 전용**이다. 동적 회피를
+  //    폐기하면서 이 섹터가 게이팅하던 대상이 사라졌고(정적 회피는 원래부터
+  //    섹터와 무관하게 항상 시도한다), 마지막 소비처였던 직선 인코스 추월도
+  //    같이 없앴다. 남겨 두는 것은 마커와 TraceCycle 의 in_sector 열이
+  //    "여기가 직선이었다"를 백 분석에서 계속 읽히게 하기 위해서다.
   void ComputeOtSectors();
   bool InOtSector(double s) const;
-  // 자차가 직선(추월 섹터) 안이면 **그 섹터의 끝 s** 를 돌려준다. 밖이면 -1.
-  // 직선 추월의 활주로 길이와 "코너 진입 지점"이 둘 다 이 값에서 나온다.
-  double StraightEndAhead(double s) const;
-  // [s_from, s_from+span) 구간의 **부호 있는** 곡률 평균으로 코너 안쪽을 정한다.
-  // 좌선회(kappa>0)의 안쪽은 왼쪽(d>0) — OffsetKappa 와 같은 부호 규약이다.
-  // 곡률이 문턱보다 작으면(직선) 빈 문자열 = 선호 없음.
-  std::string CornerInsideSide(double s_from, double span) const;
   void PublishSectorMarkers();
 
-  // ── 직선 인코스 추월 (2026-08-22, 7/8단계) ────────────────────────────
-  // **이 스택의 유일한 추월 기동이다.** 폐기한 SP 레인체인지/준정적 추월과
-  // 달리 발화 조건이 좁고 고정돼 있다:
-  //   ① 지금 상대를 추종 중이다 (간격이 개입 거리 안).
-  //   ② 자차가 직선 섹터 안이고, 코너 진입까지 남은 활주로가 기동에 충분하다.
-  //   ③ 그 직선 구간에 **정적 장애물이 하나도 없다** (있으면 회피가 우선).
-  //   ④ 상대가 너무 멀지 않다 (ot_max_gap_m 이내) — 멀면 얻을 게 없다.
-  //   ⑤ 인코스 오프셋이 벽 여유와 상대 요구 간격을 동시에 만족한다.
-  // 속도는 **캡을 걸지 않는다** — 그것이 "레이트 브레이크"다. 코너 진입에서
-  // 오프셋 곡률이 커지는 만큼 ApplySpeedProfile 이 물리적으로 눌러 준다.
-  //
-  // 실패하면 false 를 돌려주고 호출부가 추종으로 되돌아간다. 커밋은 걸지
-  // 않는다 — 상대가 움직이므로 얼리면 안 되고, 되돌아갈 때의 횡 급전환은
-  // BuildTrailing 의 d 램프(현재 d -> 목표)가 흡수한다.
-  bool TryStraightOvertake(
-    const f1tenth_planning_msgs::msg::Obstacle & opp,
-    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
-    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
-    visualization_msgs::msg::MarkerArray & out_mrks);
+  // ── 추월 기동은 없다 (2026-08-23) ─────────────────────────────────────
+  // 여기 있던 TryStraightOvertake(직선 인코스 레이트브레이크)를 폐기했다.
+  // 그전에 폐기한 SP 레인체인지·준정적 추월과 같은 이유다: 동적 상대의
+  // 상태 추정(vs)이 노이즈와 같은 크기라 횡 기동을 매 사이클 다시 풀게
+  // 되고, 커밋을 걸어도 churn 이 남아 접촉으로 이어졌다.
+  // **동적 상대에 대한 플래너 출력은 이제 속도 하나뿐이다** —
+  // OpponentFollowCap(경로가 있을 때의 캡) 또는 BuildTrailing(없을 때의
+  // 제동 프로파일). 횡 경로 생성(BuildLaneSwitch / DoSpline / BuildEscapeArc)
+  // 은 전부 정적 장애물 전용이다.
 
   // (s, d) -> (x, y). 균일 간격 global waypoints 기반 선형 보간.
   std::pair<double, double> FrenetToCartesian(double s, double d) const;
@@ -847,7 +828,7 @@ private:
   //    1.5 m 는 2.9 m/s 이하에서만 완전 방어이고 그 위에서는 접촉 속도를
   //    낮추는 역할이다 — 직선 추월 창(7.9 m)을 죽이지 않기 위한 의도된
   //    트레이드다. 근본 방어는 위 안전항 + 정적 파이프라인 핸드오프다.
-  double dyn_follow_gap_m_{1.5};
+  double dyn_follow_gap_m_{1.0};
   // 안전항이 절대 침범하지 않는 간격 [m]. 실측 접촉 거리 0.44 위에 둔다.
   double dyn_follow_gap_min_m_{0.6};
   // 비례 추종 이득 [1/s]. 간격 오차 1 m 당 속도 명령 차이.
@@ -1002,22 +983,8 @@ private:
   /// 0 이면 꼬리 절단 비활성(종전 동작).
   double commit_tail_release_lead_m_{4.0};
 
-  // 추월 섹터 파라미터
+  // 추월 섹터 파라미터 (진단·시각화 전용 — ComputeOtSectors 주석 참조)
   bool sector_gating_{true};
-  // ── 직선 인코스 추월 파라미터 ──────────────────────────────────────────
-  bool ot_overtake_enabled_{true};
-  // 인코스 사이드. my_track0821 은 유일한 직선(s 28.0 -> 0.2, 7.9 m) 다음이
-  // 좌코너(직후 4 m 평균 kappa +0.283)이고, 그 직선에서 좌측 여유(1.07~1.22)가
-  // 우측(0.47~0.55)보다 넓다 — 인코스와 넓은 쪽이 일치한다.
-  // "auto" 면 CornerInsideSide 가 매 사이클 판정하고, "left"/"right" 면
-  // 고정하되 판정과 어긋나면 경고만 남긴다(맵이 바뀐 것을 조용히 놓치지 않게).
-  std::string ot_side_{"left"};
-  // 이보다 멀면 시도하지 않는다 [m] — 추종 중(개입 거리 안)이 전제다.
-  double ot_max_gap_m_{2.5};
-  // 코너 안쪽 판정에 요구하는 최소 |평균 곡률| [1/m].
-  double ot_inside_min_kappa_{0.15};
-  // 추월 기동이 진행 중인가 (상승엣지 이벤트 + 추종 캡 보류용).
-  bool ot_active_{false};
   double ot_min_clearance_{0.95};
   double ot_max_kappa_{0.1};         // 섹터 판정 최대 곡률 [rad/m] (0.1 = 반경 10m)
   double ot_sector_min_len_m_{8.0};

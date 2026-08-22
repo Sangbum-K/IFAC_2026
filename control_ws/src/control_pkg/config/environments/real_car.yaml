@@ -49,7 +49,7 @@ control:
     # 바꾸지 않고 이 값만 올리면 안 된다. RACELINE_V_MAX 도 같이 맞출 것.
     "vehicle/max_speed_mps": 9.0
     "vehicle/speed_scale": 1.0
-    # Offset 0.424: +0.3800 rad maps to servo 0.0986 with left-side margin;
+    # Offset 0.424: +0.3950 rad maps to servo 0.0857 with 0.0357 left margin;
     # -0.3220 rad maps just inside servo_max at servo 0.6998.
-    "vehicle/max_left_steering_angle_rad": 0.3800
+    "vehicle/max_left_steering_angle_rad": 0.3950
     "vehicle/max_right_steering_angle_rad": 0.3220

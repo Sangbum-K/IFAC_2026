@@ -84,13 +84,9 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/path_check_margin", 0.15);
     this->declare_parameter("spliner/cluster_gap_s_m", 8.0);
     this->declare_parameter("spliner/trailing_engage_dist_m", 8.0);
-    this->declare_parameter("spliner/dyn_follow_gap_m", 1.5);
+    this->declare_parameter("spliner/dyn_follow_gap_m", 1.0);
     this->declare_parameter("spliner/dyn_follow_gap_min_m", 0.6);
     this->declare_parameter("spliner/dyn_follow_kp", 1.0);
-    this->declare_parameter("spliner/ot_overtake", true);
-    this->declare_parameter("spliner/ot_side", std::string("left"));
-    this->declare_parameter("spliner/ot_max_gap_m", 2.5);
-    this->declare_parameter("spliner/ot_inside_min_kappa", 0.15);
     this->declare_parameter("spliner/trailing_lag_sec", 0.3);
     this->declare_parameter("spliner/trailing_ramp_decel", 2.0);
     this->declare_parameter("spliner/trailing_retry_speed", 1.5);
@@ -217,11 +213,6 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     dyn_follow_gap_min_m_ =
         this->get_parameter("spliner/dyn_follow_gap_min_m").as_double();
     dyn_follow_kp_ = this->get_parameter("spliner/dyn_follow_kp").as_double();
-    ot_overtake_enabled_ = this->get_parameter("spliner/ot_overtake").as_bool();
-    ot_side_ = this->get_parameter("spliner/ot_side").as_string();
-    ot_max_gap_m_ = this->get_parameter("spliner/ot_max_gap_m").as_double();
-    ot_inside_min_kappa_ =
-        this->get_parameter("spliner/ot_inside_min_kappa").as_double();
     trailing_engage_dist_m_ =
         this->get_parameter("spliner/trailing_engage_dist_m").as_double();
     trailing_lag_sec_ =
@@ -337,7 +328,6 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         cluster_gap_s_m_, cluster_gap_d_m_,
         trailing_engage_dist_m_, dyn_follow_gap_m_,
         dyn_follow_gap_min_m_, dyn_follow_kp_,
-        ot_max_gap_m_, ot_inside_min_kappa_,
         cls_min_std_, cls_max_std_, cls_vs_reset_,
         ot_min_clearance_, ot_max_kappa_, lane_blend_out_m_,
         vehicle_wheelbase_m_,
@@ -415,10 +405,6 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         dyn_follow_gap_m_ <= dyn_follow_gap_min_m_ ||
         dyn_follow_gap_m_ > lookahead_m_ ||
         dyn_follow_kp_ <= 0.0 || dyn_follow_kp_ > 5.0 ||
-        // 추월 시도 간격은 추종 개입 안이어야 의미가 있다.
-        ot_max_gap_m_ <= 0.0 || ot_max_gap_m_ > lookahead_m_ ||
-        ot_inside_min_kappa_ < 0.0 || ot_inside_min_kappa_ > 2.0 ||
-        (ot_side_ != "left" && ot_side_ != "right" && ot_side_ != "auto") ||
         trailing_lag_sec_ < 0.0 || trailing_lag_sec_ > 2.0 ||
         trailing_ramp_decel_ <= 0.0 || trailing_ramp_decel_ > 20.0 ||
         trailing_retry_speed_ < 0.0 || trailing_retry_speed_ > 10.0 ||
@@ -730,36 +716,6 @@ bool SplinerNode::InOtSector(double s) const {
     return false;
 }
 
-double SplinerNode::StraightEndAhead(double s) const {
-    for (const auto &[s0, s1] : ot_sectors_) {
-        const bool inside = (s0 <= s1) ? (s >= s0 && s <= s1)
-                                       : (s >= s0 || s <= s1);
-        if (inside) {
-            return s1;
-        }
-    }
-    return -1.0;
-}
-
-std::string SplinerNode::CornerInsideSide(double s_from, double span) const {
-    const int gb_size = static_cast<int>(gb_wpnts_.size());
-    if (gb_size < 2 || !(track_len_ > 0.0) || !(span > 0.0)) {
-        return "";
-    }
-    const int steps = std::max(1, static_cast<int>(span / std::max(wpnt_dist_, 0.01)));
-    double sum = 0.0;
-    const int start = static_cast<int>(Mod(s_from, track_len_) / wpnt_dist_) % gb_size;
-    for (int i = 0; i < steps; ++i) {
-        sum += gb_wpnts_[(start + i) % gb_size].kappa_radpm;
-    }
-    const double mean = sum / static_cast<double>(steps);
-    if (!std::isfinite(mean) || std::abs(mean) < ot_inside_min_kappa_) {
-        return "";
-    }
-    // 좌선회(kappa > 0)의 안쪽은 왼쪽(d > 0).
-    return mean > 0.0 ? "left" : "right";
-}
-
 void SplinerNode::PublishSectorMarkers() {
     visualization_msgs::msg::MarkerArray arr;
     visualization_msgs::msg::Marker del;
@@ -896,8 +852,6 @@ void SplinerNode::Run() {
     bool spline_fallback_now = false;
     // 이번 사이클에 동적 추종 캡이 걸렸는가 (pitwall 상승엣지용).
     bool follow_now = false;
-    // 이번 사이클에 직선 인코스 추월 경로를 발행했는가.
-    bool ot_now = false;
     bool static_stop_now = false;
     bool escape_arc_now = false;
     // 이번 사이클에 회피/추종 티어가 겨눌 대상이 하나라도 있었는가.
@@ -1385,15 +1339,16 @@ void SplinerNode::Run() {
             // 위에서 만든 all_ahead_now 를 그대로 쓴다 (장애물마다
             // 장애물별 전처리를 다시 도는 중복 계산 제거).
             const auto &all_ahead = all_ahead_now;
-            // 섹터 게이팅: 장애물(예측 장애물이면 따라잡는 지점)이 추월 섹터
-            // 안일 때만 회피 시도. 섹터 안은 공격 모드(경계 마진 완화 + 속도
-            // 부스트), 밖은 TRAILING으로 따라가다 섹터에서 승부한다.
-            // 동적 상대를 이미 추월 중(|d| 큼)이면 섹터 이탈로 공격을 끊지
-            // 않는다 — 끊기면 trailing d램프가 차를 상대 위치(raceline)로
-            // 도로 끌어당겨 접촉한다 (섹터 조각 경계에서 진동 실측).
-            bool mid_pass = std::abs(cur_d_) > side_switch_d_tresh_ &&
-                            !closest.is_static;
-            bool in_sector = !sector_gating_ || mid_pass ||
+            // 섹터 게이팅: 예전에는 "장애물이 추월 섹터 안일 때만 회피 시도,
+            // 밖에서는 TRAILING 대기"였다. 그 게이트의 대상이던 동적 회피가
+            // 폐기되면서 지금은 아무것도 게이팅하지 않는다.
+            // (여기 있던 mid_pass 예외는 삭제했다 — "동적 상대를 추월 중이면
+            //  섹터 이탈로 끊지 않는다"는 조건인데, 이 분기는 static_close
+            //  전용이라 `!closest.is_static` 이 항상 거짓이었다. 동적 추월
+            //  기동 폐기(2026-08-23)로 되살아날 일도 없다.)
+            // in_sector 는 지금은 진단용이다 — 정적 회피는 섹터와 무관하게
+            // 항상 시도하고, 동적에는 회피 자체가 없다.
+            bool in_sector = !sector_gating_ ||
                              InOtSector(Mod(closest.s_center, track_len_));
             // 정적 장애물은 섹터(직선) 밖이어도 회피해야 한다 — trailing으로
             // 빠지면 v_target=0이라 그 뒤에 영원히 정지 (헤어핀 정적 장애물
@@ -1697,8 +1652,8 @@ void SplinerNode::Run() {
             }
         }
 
-        // ── 동적 상대 종방향 추종 (2026-08-22, 6/8단계) ────────────────────
-        // 새 동적 계약 전체가 여기 있다. 횡은 한 줄도 정하지 않는다.
+        // ── 동적 상대 종방향 추종 (2026-08-23) ─────────────────────────────
+        // 동적 계약 전체가 여기 있고, **횡은 한 줄도 정하지 않는다**.
         //   · 간격이 개입 거리 밖이면 아무것도 하지 않는다 (레이스라인 속도).
         //   · 안쪽이면 목표 간격 dyn_follow_gap_m 를 유지하는 속도 상한을
         //     계산해서 **속도만** 누른다.
@@ -1707,26 +1662,21 @@ void SplinerNode::Run() {
         // 회피 경로가 없으면 BuildTrailing 이 제동 프로파일을 만든다 (그쪽은
         // 거리별 곡선이라 예고 제동이 되고 캡은 스칼라라 반응 제어다 —
         // 횡 기동이 없을 때는 예고 쪽이 낫다).
+        //
+        // ── 동적 추월 기동 없음 (2026-08-23) ───────────────────────────────
+        // 이 자리에 있던 마지막 횡 기동(직선 인코스 레이트브레이크
+        // TryStraightOvertake)을 폐기했다. 그 앞 단계에서 이미 폐기한
+        // SP 레인체인지·준정적 추월과 같은 결론이다 — 상대 상태 추정(vs)의
+        // 노이즈가 신호와 같은 크기라, 매 사이클 다시 푸는 횡 기동은 커밋을
+        // 걸어도 churn 이 남고 그 churn 이 접촉으로 이어졌다.
+        // 이제 동적 상대에 대한 플래너의 출력은 **속도 하나뿐**이다:
+        // 추종 캡(경로가 있을 때) 또는 트레일링 제동 프로파일(없을 때).
+        // 횡 경로 생성은 정적 장애물 전용이다.
         if (!perception_stale && !dyn_close.empty()) {
             const auto opponent = nearest_ahead(dyn_close);
             const double cap = OpponentFollowCap(opponent);
             const bool engaged = std::isfinite(cap);
-            // ── 직선 인코스 추월 (7/8단계) ────────────────────────────────
-            // 이 스택의 **유일한** 추월 시도다. 추종 중일 때만 열리고
-            // (= "모든 회피 조건은 trailing 중"), 정적 회피 경로가 이미 있으면
-            // 열지 않는다 — 회피가 우선이기 때문이다.
-            // 성립하면 추종 캡을 **걸지 않는다**. 그것이 레이트 브레이크다:
-            // 상대 속도에 묶이면 애초에 지나갈 수가 없다.
-            if (engaged && !evasion_valid &&
-                TryStraightOvertake(opponent, all_ahead_now,
-                                    evasion_wpnts, mrks)) {
-                ot_now = true;
-                evasion_valid = true;
-                if (!ot_active_) {
-                    pitwall::Event("직선 인코스 추월 시도 (레이트 브레이크)");
-                }
-            }
-            if (engaged && !ot_now) {
+            if (engaged) {
                 follow_now = true;
                 if (evasion_valid) {
                     const double cap_w =
@@ -1752,15 +1702,11 @@ void SplinerNode::Run() {
                          Mod(opponent.s_start - cur_s_, track_len_));
         }
         pitwall::Log("follow_active", follow_now ? 1.0 : 0.0);
-        pitwall::Log("overtake_active", ot_now ? 1.0 : 0.0);
     }
     if (follow_now && !follow_active_) {
         pitwall::Event("동적 상대 추종 시작 (간격 유지)");
     }
     follow_active_ = follow_now;
-    // 추월 기동은 장애물이 사라진 사이클에도 반드시 내려가야 한다 —
-    // 굳으면 다음 조우의 상승엣지를 영영 놓친다 (try_evade_now 와 같은 이유).
-    ot_active_ = ot_now;
     if (used_trailing && !trailing_active_) {
         pitwall::Event("TRAILING 폴백 (회피 불가 — 감속 추종)");
     }
@@ -4060,177 +4006,6 @@ bool SplinerNode::BuildEscapeArc(
     return true;
 }
 
-bool SplinerNode::TryStraightOvertake(
-    const f1tenth_planning_msgs::msg::Obstacle &opp,
-    const std::vector<f1tenth_planning_msgs::msg::Obstacle> &all_ahead,
-    f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
-    visualization_msgs::msg::MarkerArray &out_mrks) {
-    const int gb_size = static_cast<int>(gb_wpnts_.size());
-    if (!ot_overtake_enabled_ || gb_size < 2 || !(track_len_ > 0.0)) {
-        return false;
-    }
-    // ── ② 직선 안인가 / 코너 진입까지 남은 활주로 ──────────────────────
-    const double s_corner = StraightEndAhead(cur_s_);
-    if (s_corner < 0.0) {
-        NoteReject("ot_not_in_straight");
-        return false;
-    }
-    const double runway = Mod(s_corner - cur_s_, track_len_);
-    if (!std::isfinite(runway) || runway <= 0.0 || runway > track_len_ * 0.5) {
-        NoteReject("ot_no_runway");
-        return false;
-    }
-    // ── ④ 상대가 사정거리 안인가 ───────────────────────────────────────
-    const double gap = Mod(opp.s_start - cur_s_, track_len_);
-    if (!std::isfinite(gap) || gap > ot_max_gap_m_ || gap > track_len_ * 0.5) {
-        NoteReject("ot_gap_too_far");
-        return false;
-    }
-    // ── ③ 직선 구간에 정적 장애물이 하나도 없어야 한다 ─────────────────
-    // 있으면 회피가 우선이고, 추월 기동이 그 회피 라인을 먹어 버린다.
-    for (const auto &o : all_ahead) {
-        if (!o.is_static) {
-            continue;
-        }
-        const double ahead = Mod(o.s_start - cur_s_, track_len_);
-        if (ahead <= runway) {
-            NoteReject("ot_static_in_straight");
-            return false;
-        }
-    }
-    // ── 인코스 사이드 결정 ─────────────────────────────────────────────
-    // 코너 진입 직후 구간의 곡률로 안쪽을 구하고, 고정 설정과 어긋나면
-    // 경고만 남긴다 (맵이 바뀐 것을 조용히 놓치지 않기 위한 것이다).
-    const std::string derived = CornerInsideSide(s_corner, 4.0);
-    std::string side = ot_side_;
-    if (side == "auto") {
-        if (derived.empty()) {
-            NoteReject("ot_no_inside_side");
-            return false;
-        }
-        side = derived;
-    } else if (!derived.empty() && derived != side) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 5000,
-            "직선 추월 인코스 설정(%s)이 코너 곡률 판정(%s)과 다르다 — "
-            "맵/레이스라인이 바뀐 것이 아닌지 확인할 것",
-            side.c_str(), derived.c_str());
-    }
-    const double sgn = (side == "left") ? 1.0 : -1.0;
-
-    // ── ⑤ 오프셋: 상대 가장자리 + 요구 간격, 벽 여유로 클램프 ──────────
-    const double need = RequiredObstacleClearance(opp) + apex_clearance_eps_m_;
-    const double d_need = (side == "left") ? (opp.d_left + need)
-                                           : (opp.d_right - need);
-    // 벽 여유는 기동 전 구간(자차 ~ 코너 진입)의 최소값으로 본다.
-    double wall_left = 0.0, wall_right = 0.0;
-    MinWallInSpan(cur_s_, Mod(cur_s_ + runway, track_len_),
-                  wall_left, wall_right);
-    const double margin = RequiredBoundaryMarginAt(spline_bound_mindist_, gap);
-    const double d_limit = (side == "left") ? (wall_left - margin)
-                                            : -(wall_right - margin);
-    const double d_hold = (side == "left") ? std::min(d_need, d_limit)
-                                           : std::max(d_need, d_limit);
-    // 인코스로 **실제로** 비켜야 하고, 요구 간격을 만족해야 한다.
-    if (sgn * d_hold < sgn * d_need - 1e-6) {
-        NoteReject("ot_wall_no_room");
-        return false;
-    }
-    if (!(sgn * d_hold > 0.0)) {
-        NoteReject("ot_offset_degenerate");
-        return false;
-    }
-
-    // ── 기하: 진입 블렌드 + 유지 + 복귀 ────────────────────────────────
-    const double amp_in = d_hold - cur_d_;
-    const double kappa_in = BlendKappaMax(cur_s_, Mod(cur_s_ + runway, track_len_));
-    const double a_lat = BlendLatAcc(cur_s_, Mod(cur_s_ + runway, track_len_));
-    double v_in = PlanSpeed();
-    double blend_in = 0.0;
-    for (int it = 0; it < 2; ++it) {
-        blend_in = BlendDist(amp_in, v_in, a_lat, kappa_in, cur_s_);
-        v_in = std::max(BlendPlanSpeed(cur_s_, blend_in), PlanSpeed());
-    }
-    if (!std::isfinite(blend_in) || blend_in <= 0.0) {
-        NoteReject("ot_blend_geom");
-        return false;
-    }
-    // 상대 옆을 지나기 전에 횡이동이 끝나야 한다 — 상대 옆에서 옮기면
-    // 그대로 접촉이다. 여유로 차 반길이를 더 뺀다.
-    const double must_finish_by =
-        std::max(gap - vehicle_half_length_m_, 0.0);
-    if (blend_in > must_finish_by) {
-        NoteReject("ot_blend_too_long");
-        return false;
-    }
-    // 복귀는 코너 진입부터. 그 뒤 구간이 계획 범위 안에 들어와야 한다.
-    const double blend_out = std::max(
-        lane_blend_out_m_,
-        BlendDist(d_hold, v_in, a_lat,
-                  BlendKappaMax(Mod(cur_s_ + runway, track_len_),
-                                Mod(cur_s_ + runway + lane_blend_out_m_,
-                                    track_len_)),
-                  Mod(cur_s_ + runway, track_len_)));
-    const double span = runway + blend_out;
-    if (!PlanSpanAllowed(span)) {
-        NoteReject("ot_span");
-        return false;
-    }
-
-    // ── 경로 생성 ──────────────────────────────────────────────────────
-    const int n = std::max(static_cast<int>(span / wpnt_dist_), 2);
-    auto d_at = [&](double t) {
-        if (t <= blend_in) {
-            const double w = std::clamp(t / std::max(blend_in, 1e-3), 0.0, 1.0);
-            const double ss = w * w * (3.0 - 2.0 * w);   // smoothstep
-            return cur_d_ + amp_in * ss;
-        }
-        if (t <= runway) {
-            return d_hold;
-        }
-        const double w = std::clamp((t - runway) / std::max(blend_out, 1e-3),
-                                    0.0, 1.0);
-        const double ss = w * w * (3.0 - 2.0 * w);
-        return d_hold * (1.0 - ss);
-    };
-    out_wpnts.wpnts.reserve(n);
-    for (int i = 0; i < n; ++i) {
-        const double t = i * wpnt_dist_;
-        const double s = Mod(cur_s_ + t, track_len_);
-        const int gi = static_cast<int>(s / wpnt_dist_) % gb_size;
-        const double d = d_at(t);
-        if (!WithinTrackBoundary(gi, d, spline_bound_mindist_)) {
-            NoteReject("ot_boundary");
-            out_wpnts.wpnts.clear();
-            return false;
-        }
-        const auto xy = FrenetToCartesian(s, d);
-        auto w = MakeBaseWpnt(i, s, d, xy.first, xy.second, gi);
-        // 속도 캡을 걸지 않는다 = 레이트 브레이크. 물리는 아래
-        // ApplySpeedProfile 이 오프셋 곡률로 다시 잡는다.
-        w.vx_mps = std::min(gb_wpnts_[gi].vx_mps, gb_vmax_);
-        out_wpnts.wpnts.push_back(w);
-    }
-    if (!ApplySpeedProfile(out_wpnts.wpnts)) {
-        NoteReject("ot_speed_profile");
-        out_wpnts.wpnts.clear();
-        return false;
-    }
-    // ── 충돌 검증: 상대를 포함한 전방 전체와 (s,d,t) 검사 ───────────────
-    double blocking_s = 0.0;
-    if (!CheckPathCollision(out_wpnts.wpnts, all_ahead, &blocking_s)) {
-        NoteReject("ot_collision");
-        out_wpnts.wpnts.clear();
-        return false;
-    }
-    for (size_t i = 0; i < out_wpnts.wpnts.size(); i += 5) {
-        const auto &w = out_wpnts.wpnts[i];
-        out_mrks.markers.push_back(
-            MakeWpntMarker(w.x_m, w.y_m, w.vx_mps, static_cast<int>(i)));
-    }
-    NoteOutcome("ok_straight_overtake");
-    return true;
-}
-
 bool SplinerNode::BuildTrailing(
     const f1tenth_planning_msgs::msg::Obstacle &obs,
     f1tenth_planning_msgs::msg::WpntArray &out_wpnts,
@@ -5250,10 +5025,17 @@ void SplinerNode::ClassifyObstacles(
         // 지나가는 콘 옆에서 트레일링 명령 p50 0.74 m/s (일반 정적 2.85) 로
         // 기어갔다. 그 백의 67개 트랙 전부, 1 m 밖 관측만으로는 어느 것도
         // 문턱을 넘지 않는다.
-        // 진짜 상대의 이동은 이보다 먼 거리에서 관측된다 — 종방향 추종이
-        // 유지하는 간격 자체가 dyn_follow_gap_m 1.5 m 이고 감지는 6~8 m 다.
-        // 그래서 "달리다 멈춘 상대" 인지는 유지된다. 문턱(0.5)만 올리는
-        // 대안은 기각 — 1.07 m 드리프트는 진짜 이동과 크기로 구분이 안 된다.
+        // 진짜 상대의 이동은 이보다 먼 거리에서 관측된다 — 감지가 6~8 m 라
+        // 접근 구간 전체가 표본이다. 그래서 "달리다 멈춘 상대" 인지는
+        // 유지된다. 문턱(0.5)만 올리는 대안은 기각 — 1.07 m 드리프트는
+        // 진짜 이동과 크기로 구분이 안 된다.
+        // ⚠️ 2026-08-23 dyn_follow_gap_m 이 1.5 -> 1.0 이 되면서 정속 추종
+        //    중의 정상 간격이 이 상수(1.5) **아래**로 들어온다. 즉 목표
+        //    간격에 붙어 따라가는 동안에는 max_disp 가 적산되지 않는다.
+        //    ever_moved 는 그 앞의 접근 구간(gap > 1.5)에서 이미 세워지므로
+        //    판정 자체는 유지되지만, "처음부터 1 m 안에서 만난 상대"는
+        //    ever_moved 를 못 얻는다 — 이 값을 내리는 것은 근접 프레임
+        //    드리프트(위 실측 0.72/0.53 m)를 도로 들이는 것이라 하지 않는다.
         //
         // 값은 같은 백의 민감도로 골랐다 (남는 max_disp / 적산 프레임 비율):
         //   1.0 m -> 0.45 (여유 0.05) / 54 %      <- 문턱에 너무 붙는다
