@@ -159,6 +159,25 @@ perception_obstacle_bridge_node:
     # 마지막 실측 정적 장애물만 0.75초 유지한다. 이 출력은 is_visible=false라
     # 동적 예측/커밋을 만들지 않고, 동적 분류가 들어오면 즉시 폐기한다.
     bridge/visible_static_hold_sec: 0.75
+    # H2H dynamic shadow (2026-08-22 run_0822_hth #108/#110): visible raw
+    # dynamic 상대와 가까운 벽 반사가 새 static id로 갈라져 spliner가 한
+    # 회랑으로 병합하면 trailing 감속이 난다. 새 source + 현재 dynamic +
+    # map 벽 근접을 모두 만족할 때만 2.5초 quarantine한다. 이미 확정된
+    # 정적 장애물은 절대 지우지 않는다. 일반 장애물 배치 A/B에서는 끌 것.
+    bridge/dynamic_static_shadow_enabled: true
+    bridge/dynamic_static_shadow_ahead_m: 2.50
+    bridge/dynamic_static_shadow_behind_m: 0.25
+    bridge/dynamic_static_shadow_d_m: 1.00
+    # #105의 마지막 visible 관측(153.355) 뒤 #110을 지나가는 시각(155.646)
+    # 까지 덮는 값. 짧으면 상대가 사라진 뒤 ghost가 다시 나와 같은 감속을 낸다.
+    bridge/dynamic_static_shadow_hold_sec: 2.50
+    # #108/#110의 map EDT는 각각 약 0.47/0.35m. 벽에서 먼 실제 정적 물체는
+    # 이 H2H gate로 숨기지 않는다.
+    bridge/dynamic_static_shadow_wall_max_m: 0.60
+    # #105는 raw is_dynamic=true였지만 confidence reset 때 bridge가 static으로
+    # 강제했다. H2H에서는 raw dynamic provenance를 유지해 상대를 정적 벽처럼
+    # 취급하지 않는다. 기본값(true)은 기존 일반 주행의 보수적 동작을 보존한다.
+    bridge/force_low_confidence_dynamic_static: false
     # 정적 장애물 고정 원통 (근거 주석은 perception_obstacle_bridge_node.py
     # 선언부). detector radius 가 매 프레임 재측정되어 같은 콘의 트랙 내
     # 변동폭이 p50 0.14 m 이고, 그게 obs.d_left/d_right 를 ±0.07 m 흔든다 —

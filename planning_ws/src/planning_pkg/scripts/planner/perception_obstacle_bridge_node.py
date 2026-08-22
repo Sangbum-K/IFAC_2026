@@ -43,7 +43,12 @@ from sensor_msgs.msg import LaserScan
 from f1tenth_planning_msgs.msg import Obstacle, ObstacleArray, WpntArray
 from f1tenth_perception_msgs.msg import ObstacleArray as PerceptionObstacleArray
 from obstacle_bridge_policy import (
+    bridge_output_is_static,
+    DynamicFrenetWitness,
+    DynamicShadowQuarantine,
     StaticHoldBook,
+    static_candidate_is_in_dynamic_shadow,
+    static_source_is_new,
     static_hold_ids_for_dynamic_source,
     visible_static_wall_distance_minimum,
 )
@@ -80,9 +85,15 @@ class PerceptionObstacleBridgeNode(Node):
         #   True  → is_visible(이번 프레임 실측)이면 confidence 와 무관하게 통과.
         #           confidence 는 존재 확률이 아니라 정적/동적 분류 진행률이므로
         #           존재 필터로 쓰면 실측된 장애물이 지워진다 (아래 사용부 주석의
-        #           run_0812_013630 3:14 사고). 분류 미확정은 삭제 대신 '정적 취급'.
+        #           run_0812_013630 3:14 사고). 분류 미확정은 legacy 프로파일에서
+        #           삭제 대신 '정적 취급'하며, H2H는 raw dynamic을 보존할 수 있다.
         #   False → 옛 동작(실측이든 외삽이든 confidence 로 삭제). A/B 용.
         self.declare_parameter('bridge/visible_bypasses_confidence', True)
+        # raw dynamic은 움직임 증거가 있는 상태다. legacy 기본값은
+        # confidence reset 순간 정적으로 눌러 하류를 보수화하지만, H2H에서는
+        # 실제 상대를 정적으로 바꾸지 않도록 프로파일에서 false를 쓴다.
+        self.declare_parameter(
+            'bridge/force_low_confidence_dynamic_static', True)
         self.declare_parameter('bridge/wall_margin_m', 0.10)
         # 큰 extent를 축소/삭제하지 않고 진단하는 임계값. 유령 제거는
         # footprint-corridor overlap과 opt-in map filter가 담당한다.
@@ -162,6 +173,22 @@ class PerceptionObstacleBridgeNode(Node):
         # 실측: 쪼개진 조각 수명 p50 3프레임 / 진짜 이웃 콘은 30~210프레임.
         # 이 한도를 넘으면 별개 장애물로 되돌린다 (hold_duplicate).
         self.declare_parameter('bridge/reassoc_max_dup_frames', 8)
+        # ── Head-to-head dynamic shadow (2026-08-22) ───────────────────
+        # 상대차를 실제로 보고 있는 프레임에만, 그 옆 벽에서 새로 태어난
+        # static source를 짧게 quarantine 한다. run_0822_hth의 #108/#110은
+        # 상대 #105와 별개 id로 생긴 벽 반사라, spliner가 둘을 한 회랑으로
+        # 묶어 trailing 감속을 걸었다.
+        #
+        # ⚠️ 일반적인 "동적 근처 정적 삭제"가 아니다. (1) 이번 프레임의
+        # visible raw dynamic witness, (2) 새 source id, (3) map 벽 근접을
+        # 모두 요구한다. 이미 확정된 정적 장애물은 상대가 옆을 지나도
+        # 절대 지우지 않는다. 기본값은 꺼 둔다; H2H 검증 프로파일만 opt-in.
+        self.declare_parameter('bridge/dynamic_static_shadow_enabled', False)
+        self.declare_parameter('bridge/dynamic_static_shadow_ahead_m', 2.50)
+        self.declare_parameter('bridge/dynamic_static_shadow_behind_m', 0.25)
+        self.declare_parameter('bridge/dynamic_static_shadow_d_m', 1.00)
+        self.declare_parameter('bridge/dynamic_static_shadow_hold_sec', 2.50)
+        self.declare_parameter('bridge/dynamic_static_shadow_wall_max_m', 0.60)
         # ── 정적 장애물 고정 원통 모델 ────────────────────────────────────
         # detector 의 radius 는 "중심에서 가장 먼 점까지"라 **매 프레임 다시**
         # 측정된다. LiDAR 는 앞쪽 호만 보므로 거리·각도·빔 개수에 따라 값이
@@ -358,6 +385,8 @@ class PerceptionObstacleBridgeNode(Node):
         self.min_confidence = float(p('bridge/min_confidence').value)
         self.visible_bypasses_confidence = bool(
             p('bridge/visible_bypasses_confidence').value)
+        self.force_low_confidence_dynamic_static = bool(
+            p('bridge/force_low_confidence_dynamic_static').value)
         self.wall_margin = float(p('bridge/wall_margin_m').value)
         self.lpf_alpha = float(p('bridge/vel_lpf_alpha').value)
         self.max_abs_vs = float(p('bridge/max_abs_vs_mps').value)
@@ -377,6 +406,18 @@ class PerceptionObstacleBridgeNode(Node):
         self.reassoc_min_obs = int(p('bridge/reassoc_min_obs').value)
         self.reassoc_max_dup_frames = int(
             p('bridge/reassoc_max_dup_frames').value)
+        self.dynamic_static_shadow_enabled = bool(
+            p('bridge/dynamic_static_shadow_enabled').value)
+        self.dynamic_static_shadow_ahead = float(
+            p('bridge/dynamic_static_shadow_ahead_m').value)
+        self.dynamic_static_shadow_behind = float(
+            p('bridge/dynamic_static_shadow_behind_m').value)
+        self.dynamic_static_shadow_d = float(
+            p('bridge/dynamic_static_shadow_d_m').value)
+        self.dynamic_static_shadow_hold_sec = float(
+            p('bridge/dynamic_static_shadow_hold_sec').value)
+        self.dynamic_static_shadow_wall_max = float(
+            p('bridge/dynamic_static_shadow_wall_max_m').value)
         self.cyl_radius = float(p('bridge/static_cylinder_radius_m').value)
         _band = [float(v) for v in p('bridge/static_cylinder_band_m').value]
         self.cyl_lo, self.cyl_hi = (_band + [0.0, 0.0])[:2]
@@ -447,6 +488,11 @@ class PerceptionObstacleBridgeNode(Node):
             self.max_source_age, self.source_future_tolerance,
             self.projection_reacquire_distance, self.wall_dist_min,
             self.visible_static_wall_slack, self.visible_static_hold_sec,
+            self.dynamic_static_shadow_ahead,
+            self.dynamic_static_shadow_behind,
+            self.dynamic_static_shadow_d,
+            self.dynamic_static_shadow_hold_sec,
+            self.dynamic_static_shadow_wall_max,
             self.map_timeout,
         )
         if (not all(math.isfinite(value) for value in finite_values)
@@ -478,6 +524,16 @@ class PerceptionObstacleBridgeNode(Node):
                 <= self.wall_dist_min
                 or not 0.0 <= self.visible_static_hold_sec
                 <= min(1.0, self.forget_sec)
+                or not 0.05 <= self.dynamic_static_shadow_ahead <= 5.0
+                or not 0.0 <= self.dynamic_static_shadow_behind <= 2.0
+                or not 0.05 <= self.dynamic_static_shadow_d <= 2.0
+                # Lease는 H2H 유령 source의 짧은 수명만 덮는다. map wall
+                # evidence 없는 정적 물체를 장시간 숨기지 않게 상한을 둔다.
+                or not 0.0 <= self.dynamic_static_shadow_hold_sec <= 5.0
+                or not (self.wall_dist_min
+                        <= self.dynamic_static_shadow_wall_max <= 2.0)
+                or (self.dynamic_static_shadow_enabled
+                    and not self.use_map_filter)
                 or not 0.1 <= self.map_timeout <= 60.0
                 # 기억 파라미터. 비활성이어도 검증한다 — 켜는 시점에 값이
                 # 이상하면 그때는 이미 주행 중이다.
@@ -516,6 +572,9 @@ class PerceptionObstacleBridgeNode(Node):
         self.track_length = 0.0
         self.tracks = {}         # id -> {'t', 'arrival_t', 's', 'd', 'vs', 'vd', 'wi'}
         self.static_holds = StaticHoldBook(self.visible_static_hold_sec)
+        self.dynamic_static_shadow = DynamicShadowQuarantine(
+            self.dynamic_static_shadow_hold_sec)
+        self.dynamic_static_shadow_suppressed = 0
         # detector id -> {'to': 기존 트랙 id, 'dup': 연속 중복 프레임 수}.
         # 매 프레임 게이트를 다시 확인해서, 그 물체가 실제로 갈라져 나가면
         # (게이트 밖) 매핑을 끊는다.
@@ -1378,6 +1437,71 @@ class PerceptionObstacleBridgeNode(Node):
         if stamp_is_zero:
             now_sec = arrival_sec
             out.header.stamp = self.get_clock().now().to_msg()
+
+        def source_xy(source):
+            """Transform one source position into the bridge target frame."""
+            x, y = float(source.position.x), float(source.position.y)
+            if tf is not None:
+                x, y = cos_y * x - sin_y * y + tx, sin_y * x + cos_y * y + ty
+            return x, y
+
+        # Snapshot raw dynamic evidence before processing static sources.  The
+        # source array has no ordering contract, so looking only at self.tracks
+        # would miss a dynamic obstacle that happens to follow its wall ghost
+        # in the same message.  These witnesses deliberately use raw
+        # is_dynamic/is_visible: low confidence is a classifier-progress value
+        # and may make the *output* conservative-static, but must not erase
+        # evidence of the opponent for the H2H shadow gate.
+        frame_dynamic_witnesses = []
+        if self.dynamic_static_shadow_enabled:
+            for candidate in msg.obstacles:
+                if not (bool(candidate.is_dynamic)
+                        and bool(candidate.is_visible)):
+                    continue
+                candidate_values = (
+                    float(candidate.confidence), float(candidate.radius),
+                    float(candidate.position.x), float(candidate.position.y),
+                )
+                # The normal pass below rejects a malformed frame.  Do not let
+                # such a candidate become a shadow witness before that happens.
+                if (not all(math.isfinite(value) for value in candidate_values)
+                        or not 0.0 <= candidate.confidence <= 1.0
+                        or candidate.radius < 0.0):
+                    continue
+                if (candidate.confidence < self.min_confidence
+                        and not self.visible_bypasses_confidence):
+                    continue
+                witness_x, witness_y = source_xy(candidate)
+                witness_half = max(float(candidate.radius), 0.05)
+                if self.use_map_filter and self.wall_dist is not None:
+                    witness_wall_dist = self.wall_distance(witness_x, witness_y)
+                    if (witness_wall_dist is None
+                            or witness_wall_dist < self.wall_dist_min):
+                        continue
+                witness_prev = self.tracks.get(int(candidate.id))
+                if witness_prev is None:
+                    entry = self.reassoc.get(int(candidate.id))
+                    witness_hint_track = (
+                        self.tracks.get(entry['to']) if entry is not None else None)
+                    witness_hint = (witness_hint_track.get('wi')
+                                    if witness_hint_track is not None else None)
+                else:
+                    witness_hint = witness_prev.get('wi')
+                try:
+                    witness_s, witness_d, _, witness_right, witness_left = \
+                        self.cartesian_to_frenet(
+                            witness_x, witness_y, witness_hint)
+                except RuntimeError:
+                    # The normal pass emits the fail-closed diagnostic below.
+                    continue
+                witness_corridor_lo = -witness_right + self.wall_margin
+                witness_corridor_hi = witness_left - self.wall_margin
+                if (witness_d - witness_half > witness_corridor_hi
+                        or witness_d + witness_half < witness_corridor_lo):
+                    continue
+                frame_dynamic_witnesses.append(
+                    DynamicFrenetWitness(witness_s, witness_d))
+
         seen_src = set()          # 이번 프레임의 **detector** id (중복 검사용)
         seen_ids = set()          # 이번 프레임에 갱신된 **트랙** id
         # 랩 기억용: 이번 프레임에 살아남은 장애물의 (s, d, is_dynamic).
@@ -1450,6 +1574,7 @@ class PerceptionObstacleBridgeNode(Node):
                 entry = self.reassoc.get(int(src.id))
                 self.static_holds.forget(*static_hold_ids_for_dynamic_source(
                     src.id, entry['to'] if entry is not None else None))
+                self.dynamic_static_shadow.forget(src.id)
             if src.confidence < self.min_confidence:
                 if not (self.visible_bypasses_confidence and measured):
                     continue
@@ -1458,9 +1583,7 @@ class PerceptionObstacleBridgeNode(Node):
             # 없는 운동을 예측해 회랑을 엉뚱하게 비운다 — 후자가 더 위험하다.
             # (spliner 의 cls_* 가 몇 프레임 뒤 어차피 재분류한다.)
             unsettled_class = src.confidence < self.min_confidence
-            x, y = src.position.x, src.position.y
-            if tf is not None:
-                x, y = cos_y * x - sin_y * y + tx, sin_y * x + cos_y * y + ty
+            x, y = source_xy(src)
             raw_half = max(float(src.radius), 0.05)
 
             # 맵 벽거리 필터: frenet d는 코너에서 실제 벽거리와 어긋나
@@ -1488,14 +1611,15 @@ class PerceptionObstacleBridgeNode(Node):
             #     거부하므로, 여기로 오는 것은 required=False 인 경우뿐이다.
             #   · 격자 밖 좌표      -> 이 장애물만 삭제. 맵 밖 점은 트랙 위에
             #     있을 수 없으므로 프레임을 죽일 이유가 없다.
+            candidate_wall_dist = None
             if self.use_map_filter and self.wall_dist is not None:
-                wall_dist = self.wall_distance(x, y)
-                if wall_dist is None:
+                candidate_wall_dist = self.wall_distance(x, y)
+                if candidate_wall_dist is None:
                     continue        # 격자 밖 — 트랙 위일 수 없다
                 wall_minimum = visible_static_wall_distance_minimum(
                     self.wall_dist_min, self.visible_static_wall_slack,
                     measured, bool(src.is_dynamic), raw_half, self.cyl_hi)
-                if wall_dist < wall_minimum:
+                if candidate_wall_dist < wall_minimum:
                     # centroid 기준으로 판정한다. 예전 조건
                     # (wall_dist + raw_half < wall_dist_min)은 raw_half가
                     # wall_dist_min보다 크면 중심이 벽 픽셀 위(거리 0)여도
@@ -1506,14 +1630,14 @@ class PerceptionObstacleBridgeNode(Node):
                     # 진짜 차량(0.30m 폭)은 벽에 붙어도 중심이 >=0.15m 떨어진다.
                     continue
                 if (wall_minimum < self.wall_dist_min
-                        and wall_dist < self.wall_dist_min):
+                        and candidate_wall_dist < self.wall_dist_min):
                     # run_0822_hth의 세 백에서 raw가 있는데 Frenet 배열이 빈
                     # 527개 정적 후보 중 521개가 바로 이 0.25~0.30m 밴드였다.
                     # 전체 guard를 낮추지 않고, detector의 point-level 0.25m
                     # 기준을 통과한 작은 실측 정적 후보만 여기서 살린다.
                     self.get_logger().info(
                         f'visible static map slack: id={src.id} '
-                        f'wall={wall_dist:.2f}m cutoff={wall_minimum:.2f}m',
+                        f'wall={candidate_wall_dist:.2f}m cutoff={wall_minimum:.2f}m',
                         throttle_duration_sec=5.0)
 
             prev = self.tracks.get(src.id)
@@ -1533,6 +1657,59 @@ class PerceptionObstacleBridgeNode(Node):
                     f'Frenet projection failed: {error}; frame rejected',
                     throttle_duration_sec=2.0)
                 return
+
+            # centroid가 아니라 obstacle footprint와 drivable corridor의
+            # overlap을 본다. 벽 가까운 실제 물체가 차로로 돌출하면 삭제하면
+            # 안 된다. raw_half를 써서 고정 원통 모델이 존재 판정을 여는
+            # 방향으로 작용하지 않게 한다.
+            corridor_lo = -d_right_bound + self.wall_margin
+            corridor_hi = d_left_bound - self.wall_margin
+            if d - raw_half > corridor_hi or d + raw_half < corridor_lo:
+                continue
+
+            # H2H containment: a freshly allocated static source beside a
+            # current raw-dynamic opponent can be a wall reflection split into
+            # a second detector id (#108/#110 in run_0822_hth).  Do not merge
+            # it into the dynamic track; quarantine the new source before it
+            # can create a bridge track, hold, or spliner cluster instead.
+            #
+            # This is intentionally narrower than a generic proximity filter:
+            # map-wall evidence and a same-frame visible dynamic witness are
+            # both required, and an already established static source passes.
+            source_id = int(src.id)
+            if (self.dynamic_static_shadow_enabled
+                    and not bool(src.is_dynamic)):
+                reassoc_entry = self.reassoc.get(source_id)
+                is_new_static_source = static_source_is_new(
+                    source_id, self.tracks,
+                    reassoc_entry['to'] if reassoc_entry is not None else None)
+                in_dynamic_shadow = (
+                    candidate_wall_dist is not None
+                    and candidate_wall_dist
+                    <= self.dynamic_static_shadow_wall_max
+                    and static_candidate_is_in_dynamic_shadow(
+                        s, d, frame_dynamic_witnesses, self.track_length,
+                        self.dynamic_static_shadow_ahead,
+                        self.dynamic_static_shadow_behind,
+                        self.dynamic_static_shadow_d))
+                if self.dynamic_static_shadow.should_quarantine(
+                        source_id, arrival_sec, is_new_static_source,
+                        in_dynamic_shadow):
+                    # A hold must never resurrect a source that this gate just
+                    # rejected.  The source has no bridge track yet, so this
+                    # does not delete a confirmed static obstacle.
+                    self.static_holds.forget(source_id)
+                    self.reassoc.pop(source_id, None)
+                    seen_src.add(source_id)
+                    self.dynamic_static_shadow_suppressed += 1
+                    self.get_logger().info(
+                        f'H2H dynamic shadow quarantine: static id={source_id} '
+                        f's={s:.2f} d={d:+.2f} wall={candidate_wall_dist:.2f}m '
+                        f'witnesses={len(frame_dynamic_witnesses)} '
+                        f'count={self.dynamic_static_shadow_suppressed}',
+                        throttle_duration_sec=1.0)
+                    continue
+
             # ── 같은 물체의 재등록/중복이면 기존 트랙 id 로 취급한다 ────────
             # 여기서 정하는 track_id 가 (1) Welford 누적의 키, (2) 발행 id 다.
             # 발행 id 를 유지해야 spliner 의 회피 커밋이 "새 장애물"로 깨지지
@@ -1600,16 +1777,6 @@ class PerceptionObstacleBridgeNode(Node):
                 wd = self.wall_distance(x, y)
                 if wd is not None and wd > self.cyl_open_space:
                     half = self.cyl_radius
-
-            # centroid가 아니라 obstacle footprint와 drivable corridor의 overlap을
-            # 본다. 벽 가까운 실제 물체가 차로로 돌출하면 삭제하면 안 된다.
-            # ⚠️ 여기는 **raw_half** 를 쓴다 (고정 전 값). 삭제 판정이라
-            # extent 를 줄이면 "살짝 걸친 진짜 물체"를 지우는 쪽으로 움직인다 —
-            # 고정 원통은 보고값에만 적용하고 존재 판정은 원시 extent 로 둔다.
-            corridor_lo = -d_right_bound + self.wall_margin
-            corridor_hi = d_left_bound - self.wall_margin
-            if d - raw_half > corridor_hi or d + raw_half < corridor_lo:
-                continue
 
             # (맵 벽거리 필터는 투영 앞으로 옮겼다 — 위 주석 참조.)
 
@@ -1773,11 +1940,13 @@ class PerceptionObstacleBridgeNode(Node):
             obs.vs_var = vel_var
             obs.vd_var = vel_var
             obs.size = 2.0 * half
-            obs.is_static = not src.is_dynamic  # 초기값 — spliner cls_*가 재분류
-            if unsettled_class and not obs.is_static:
+            obs.is_static = bridge_output_is_static(
+                bool(src.is_dynamic), unsettled_class,
+                self.force_low_confidence_dynamic_static)
+            if (self.force_low_confidence_dynamic_static
+                    and unsettled_class and bool(src.is_dynamic)):
                 # 위 주석 참조: 분류 미확정 트랙은 정적으로 눌러 통과시킨다.
                 # 삭제(옛 동작)와 달리 장애물은 그대로 남고, 취급만 보수적이다.
-                obs.is_static = True
                 self.get_logger().info(
                     f'분류 미확정(conf={src.confidence:.2f} < '
                     f'{self.min_confidence:.2f}, id={src.id}) — 정적으로 취급',
@@ -1803,6 +1972,11 @@ class PerceptionObstacleBridgeNode(Node):
         # 최신 실측 정적 장애물만 짧게 이어 준다. 이 값은 측정이 아니므로
         # is_visible=false이고, 동적 객체를 동결하지 않으며 라이브가 항상 이긴다.
         for _, held in self.static_holds.missing(arrival_sec, seen_ids):
+            if self.dynamic_static_shadow.is_active(held.id, arrival_sec):
+                # A source rejected by the H2H gate must not come back through
+                # the 0.75 s static-hold path in this or a later frame.
+                self.static_holds.forget(held.id)
+                continue
             held_obs = self.copy_obstacle(held)
             held_obs.is_visible = False
             held_obs.vs = 0.0
@@ -1812,6 +1986,8 @@ class PerceptionObstacleBridgeNode(Node):
 
         # 랩 기억 주입 — 실측 뒤에 붙인다 (라이브가 항상 우선).
         self.memory_inject(out, live_entries, arrival_sec)
+
+        self.dynamic_static_shadow.prune(arrival_sec)
 
         # 오래 안 보인 트랙 정리
         stale = [i for i, t in self.tracks.items()

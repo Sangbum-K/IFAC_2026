@@ -63,6 +63,15 @@ perception_obstacle_bridge_node:
     # real_car.yaml과 동일: 작은 visible static 후보만 0.30 -> 0.25m.
     bridge/visible_static_wall_slack_m: 0.05
     bridge/visible_static_hold_sec: 0.75
+    # H2H dynamic shadow — run_0822_hth에서 상대 옆 벽 반사가 새 static id로
+    # 갈라지는 경우만 quarantine한다. 값/근거는 real_car.yaml을 따른다.
+    bridge/dynamic_static_shadow_enabled: true
+    bridge/dynamic_static_shadow_ahead_m: 2.50
+    bridge/dynamic_static_shadow_behind_m: 0.25
+    bridge/dynamic_static_shadow_d_m: 1.00
+    bridge/dynamic_static_shadow_hold_sec: 2.50
+    bridge/dynamic_static_shadow_wall_max_m: 0.60
+    bridge/force_low_confidence_dynamic_static: false
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
 
