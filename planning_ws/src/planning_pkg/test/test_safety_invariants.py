@@ -630,6 +630,27 @@ def test_visible_static_wall_relaxation_stays_inside_detector_guard():
         assert 0.0 < hold <= min(1.0, bridge["bridge/track_forget_sec"])
 
 
+def test_h2h_dynamic_shadow_is_explicit_and_wall_bounded():
+    """H2H ghost containment must not become a generic static-object filter."""
+    for env_name in ("real_car", "sim_real_car", "sim", "race_map"):
+        bridge = _ros_params(
+            _yaml(PKG / "config" / "environments" / f"{env_name}.yaml"),
+            "perception_obstacle_bridge_node",
+        )
+        assert bridge["bridge/dynamic_static_shadow_enabled"] is True
+        assert 0.05 <= bridge["bridge/dynamic_static_shadow_behind_m"] <= 0.25
+        assert 2.18 <= bridge["bridge/dynamic_static_shadow_ahead_m"] <= 2.50
+        assert 0.80 <= bridge["bridge/dynamic_static_shadow_d_m"] <= 1.00
+        # run_0822_hth #105 last visible -> #110 ego pass was about 2.29 s.
+        assert 2.30 <= bridge["bridge/dynamic_static_shadow_hold_sec"] <= 3.0
+        assert bridge["bridge/use_map_filter"] is True
+        assert bridge["bridge/wall_dist_min_m"] <= \
+            bridge["bridge/dynamic_static_shadow_wall_max_m"] <= 0.60
+        # The source's raw dynamic state is the H2H witness; a confidence reset
+        # must not turn the actual opponent into the accompanying static ghost.
+        assert bridge["bridge/force_low_confidence_dynamic_static"] is False
+
+
 def test_bridge_reads_only_fields_that_exist_on_perception_obstacle():
     """브릿지가 **입력** 메시지에 없는 필드를 읽지 않는지.
 

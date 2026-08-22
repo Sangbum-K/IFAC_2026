@@ -77,6 +77,15 @@ perception_obstacle_bridge_node:
     # real_car.yaml과 동일: 작은 visible static 후보만 0.30 -> 0.25m.
     bridge/visible_static_wall_slack_m: 0.05
     bridge/visible_static_hold_sec: 0.75
+    # H2H dynamic shadow — real_car.yaml과 동일. 새 벽 static id만 raw dynamic
+    # 상대의 shadow에서 quarantine하며, 확정 정적 장애물은 유지한다.
+    bridge/dynamic_static_shadow_enabled: true
+    bridge/dynamic_static_shadow_ahead_m: 2.50
+    bridge/dynamic_static_shadow_behind_m: 0.25
+    bridge/dynamic_static_shadow_d_m: 1.00
+    bridge/dynamic_static_shadow_hold_sec: 2.50
+    bridge/dynamic_static_shadow_wall_max_m: 0.60
+    bridge/force_low_confidence_dynamic_static: false
     # 정적 장애물 고정 원통 — 근거는 real_car.yaml 같은 블록.
     # ⚠️ 시뮬 합성 장애물은 virtual_obstacle_node 가 각도 구간에 일정 거리를
     #    쓰므로 radius 가 거의 안 흔들린다. 즉 **심에서는 이 변경의 효과가
