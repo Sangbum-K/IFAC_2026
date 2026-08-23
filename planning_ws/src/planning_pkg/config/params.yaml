@@ -1050,7 +1050,19 @@ waypoint_tracker_node:
 virtual_obstacle_node:
   ros__parameters:
     virtual_obstacle/publish_rate_hz: 10.0
-    virtual_obstacle/obstacle_size_m: 0.3
+    # 심 안에 놓는 가짜 장애물의 **물리 크기**(지름 [m]). 브릿지의
+    # static_cylinder_radius_m(=0.30) 과 짝이 맞아야 한다.
+    # 2026-08-24: 0.3 -> 0.58. 0.3 은 대회 규격 콘(지름 30 cm) 시절 값인데,
+    # 지금 실차에 놓는 물체는 run_0822_192752 스캔 원 적합으로 반경 0.289 다.
+    # 그대로 두면 perception:=lidar 모드에서 **실제 30 cm 물체를 브릿지가
+    # 60 cm 로 고정 발행**한다 — 심이 실차보다 2 배 비관적이 되고, 그 모드의
+    # 존재 이유(실차와 같은 경로로 실차 거동을 미리 본다)가 무너진다.
+    # 실차의 관계와 같아진다: 물리 0.58 <- 고정 0.60 (여유 1 cm).
+    # ⚠️ 이 값을 바꾸면 test/sim/my_track_test.py 의 접촉 판정선도 같이
+    #    움직여야 한다 (접촉 = 물체 반경 + 차 반폭 0.15).
+    # ⚠️ perception:=ground_truth(기본) 에서는 브릿지가 안 뜨므로 고정이
+    #    안 걸린다. 그 모드에서는 이 값이 곧 플래너가 보는 크기다.
+    virtual_obstacle/obstacle_size_m: 0.58
     virtual_obstacle/remove_radius_m: 0.5   # 이 반경 내 재클릭 시 장애물 제거
     virtual_obstacle/laser_offset_m: 0.275  # lidar_overlay: base_link->laser 오프셋
 

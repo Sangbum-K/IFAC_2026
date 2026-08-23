@@ -7,7 +7,7 @@
   A. /planner/ot_sectors/markers 발행 (섹터 개수 > 0 — 소형 트랙 게이팅 통과)
   B. 솔로 주행 (ego odom 이동)
   C. 레이스라인 위 정적 장애물 -> spliner 반응(otwpnts) + 통과 또는 안전정지,
-     관통 금지 (center-to-center < 0.30 m = 접촉)
+     관통 금지 (center-to-center < 0.44 m = 접촉)
   D. 장애물 제거 후 재가속
 """
 import glob
@@ -138,7 +138,7 @@ def main():
     # C. 추월 섹터 중심(가장 곧은 구간)에 정적 장애물 배치 — 회피가 설계된
     #    구간에서 실제로 클리어하는지 검증. 소형 루프라 ego가 여러 바퀴 돌며
     #    반복 접근. 조기중단 없이 60s 관측: (1) otwpnts 반응, (2) 근접 통과 시
-    #    min_gap(관통 금지 >0.30), (3) ego s 진행 지속(영구 스턱 아님).
+    #    min_gap(관통 금지 >0.44), (3) ego s 진행 지속(영구 스턱 아님).
     tr = STracker()
     tr.s(t.ego.pose.pose.position.x, t.ego.pose.pose.position.y)
     # 섹터 s0=25.27~31.46 중심(kappa~0, clr 0.70) — 자동 산출 섹터와 일치
@@ -171,7 +171,11 @@ def main():
             min_gap = min(min_gap, gap)
     reacted = t.otwpnts > 0
     check('정적 장애물 회피 반응 (otwpnts 발행)', reacted, f'({t.otwpnts} msgs)')
-    check('근접 통과 시 관통 없음', approaches == 0 or min_gap > 0.30,
+    # 접촉 = 장애물 반경 + 차 반폭 = 0.29 + 0.15 = 0.44 m.
+    # 2026-08-24: 0.30 -> 0.44. virtual_obstacle/obstacle_size_m 이 0.3(반경
+    # 0.15) 이던 시절의 값이었다. 물체를 실차와 같은 0.58 로 키웠으므로
+    # 접촉선도 같이 움직인다 — 안 움직이면 실제로 박은 통과를 통과시킨다.
+    check('근접 통과 시 관통 없음', approaches == 0 or min_gap > 0.44,
           f'(근접샘플 {approaches}, 최소거리 '
           f'{min_gap if min_gap < 1e8 else float("nan"):.2f}m)')
     check('장애물 존재 중 주행 지속(스턱 아님)', progressed > 5.0,
