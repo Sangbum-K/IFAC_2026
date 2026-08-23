@@ -4633,8 +4633,8 @@ bool SplinerNode::BuildTrailing(
                         }
                     }
                 }
-                // ★ 접촉하지 않는 후보를 찾는다 (2026-08-23). 종전에는
-                //   "덜 나쁜 쪽"이면 여유가 음수여도 옮겼다 — 아래 루프 주석.
+                // 여유가 **가장 큰** 후보를 찾는다. 음수 후보도 후보다 —
+                //   아래 "여유<0 배제" 시도의 실패 기록 참조.
                 // 이분 탐색이 아니라 균등 스캔이다 — 여유는 후보 f 에 대해
                 // 단조가 아니다 (장애물 박스를 가로지르면 양끝이 크고 가운데가
                 // 작다). 단조 가정으로 이분하면 정확히 그 가운데로 수렴한다.
@@ -4652,37 +4652,58 @@ bool SplinerNode::BuildTrailing(
                         NoteReject("trailing_cand_in_pocket");
                         continue;
                     }
-                    // ── ★ 여유가 음수인 후보로는 옮기지 않는다 (2026-08-23) ──
-                    // 이 구제는 "덜 나쁜 쪽"을 고르게 돼 있었는데, 실측에서
-                    // **고른 후보가 100 % 여유 < 0** 이었다 (run_0823_043254
-                    // 9/9, run_0823_044748 43/43, 여유 중앙 -0.10 / -0.14 m).
-                    // 즉 한 번도 안전한 자리를 고른 적이 없고, 043254 에서는
-                    // 9 회 전부 좌우 부호를 뒤집으며 중앙 0.58 m 를 건너뛰라고
-                    // 지시했다 — 90.7 s 충돌이 정확히 그 지시를 따른 결과다
-                    // (89.60 s "d 0.10 -> -0.57, 차체 여유 -0.115 m").
-                    // 어차피 닿을 자리로 0.6 m 를 건너뛰는 것은 "덜 나쁨"이
-                    // 아니라 **횡속도만 얹은 정면충돌**이다. 접촉하지 않는
-                    // 후보가 없으면 옮기지 않고, 아래에서 속도를 더 낮춘다.
-                    const double slack =
-                        ramp_obstacle_slack(cand, len, back_len_for(cand), false);
-                    if (slack < 0.0) {
-                        continue;
-                    }
+                    // ── ✗ 폐기된 수정: "여유<0 후보는 배제" (2026-08-23) ─────
+                    // run_0823_043254/044748 에서 이 구제가 고른 후보가 100%
+                    // 여유<0 이었다는 관찰(9/9, 43/43)을 근거로 `slack < 0 ->
+                    // continue` 를 넣었다. **틀렸다.** 그 관찰의 옳은 해석은
+                    // "목적지가 나쁘다"가 아니라 "**출발지가 더 나빴다**"이고,
+                    // 바로 위 2026-08-19 주석이 이미 그 실험(유지하면 차체
+                    // 접촉 120 -> 232, 옮기면 105)을 적어 두고 있었다.
+                    //   run_0823_091423 실측 (그 수정이 실제로 들어간 런):
+                    //     · 구제가 옮긴 횟수          0 회
+                    //     · trailing_contact_unavoidable 320 사이클
+                    //     · 발행 경로 차체관통 비율은 55% -> 32% 로 줄었지만
+                    //       **관통 깊이 중앙이 -0.114 -> -0.241 m 로 2 배**
+                    //     · 충돌 조우의 횡이동 중앙 0.56 -> **0.07 m**
+                    //       (= 회피를 아예 시도하지 않고 그대로 박았다)
+                    //     · 93 / 121 / 135 / 165.5 / 207 s 다섯 건 전부
+                    //       "접촉 회피 후보 없음 ... 유지" 로그 뒤 충돌.
+                    //   그중 92.68 s 는 장애물군 d[-0.69,+0.24] 한가운데인
+                    //   d=+0.08 을 "유지"하라고 지시했다 — 발행 경로가 곧
+                    //   장애물 정중앙을 관통한다.
+                    // 좁은 회랑에서 여유<0 은 정상이다. 여기서 물어야 할 것은
+                    // "안전한가"가 아니라 "**지금보다 나은가**"이고, 그 비교는
+                    // 아래 `slack > best_slack`(best_slack 초기값 = 유지했을
+                    // 때의 여유)가 이미 하고 있다. 다시 넣지 말 것.
+                    //
+                    // 90.7 s 의 "0.58 m 반대편 점프"는 이 규칙이 아니라 **실행
+                    // 가능성**의 문제였고, 그건 바로 아래 검사가 담당한다.
+                    //
                     // ── 그 횡이동을 남은 거리 안에 실제로 넣을 수 있는가 ──
                     // ramp_len_for = BlendDist 는 조향 기하 하한을 이미 담고
                     // 있지만, 그 길이가 **장애물까지 남은 거리보다 길면** 경로는
                     // 장애물 옆을 지날 때까지 목표에 도달하지 못한다.
                     //   124.13 s 실측: 1.5 m 남기고 0.45 m 반대편 점프 지시 —
                     //   4 m/s 에서 필요 최소반경 0.97 m, 실제 가능 1.57 m.
+                    // 작은 f 는 램프도 짧으므로 이 검사가 후보를 전부 지우지는
+                    // 않는다 — 남은 거리에 맞는 만큼만 옮기게 된다.
                     if (len > std::max(dist_to_block, 0.0) + wpnt_dist_) {
                         NoteReject("trailing_cand_no_room_to_steer");
                         continue;
                     }
+                    const double slack =
+                        ramp_obstacle_slack(cand, len, back_len_for(cand), false);
                     if (slack > best_slack) {
                         best_slack = slack;
                         best_f = f;
                     }
                 }
+                // 옮길지와 속도를 낮출지는 **별개 판단**이다 (2026-08-23).
+                //   · best_f > 0      -> 지금보다 나은 자리가 있다 = 옮긴다
+                //   · best_slack < 0  -> 그렇게 옮겨도 여전히 닿는다 = 늦춘다
+                // 둘은 같은 사이클에 동시에 참일 수 있다. 예전에 이것을
+                // if/else 로 묶었더니 "안전한 후보가 없으면 아예 안 옮긴다"가
+                // 되어 발행 경로가 장애물 정중앙에 머물렀다 (위 폐기 기록).
                 if (best_f > 0.0) {
                     const double held = d_goal;
                     d_goal = goal_at(best_f);
@@ -4693,20 +4714,16 @@ bool SplinerNode::BuildTrailing(
                         "이동 (d %.2f -> %.2f, 차체 여유 %.3f m)",
                         held, d_goal, best_slack);
                     NoteReject("trailing_hold_pierces_obstacle");
-                } else {
-                    // ★ 접촉하지 않는 후보가 없다 (2026-08-23).
-                    // 종전에는 이럴 때도 "덜 나쁜 쪽"으로 옮겨 갔고, 그 결과가
-                    // 여유 -0.10 ~ -0.14 m 짜리 반대편 점프였다. 이제는
-                    // 옮기지 않고 **속도를 더 낮춘다** — 이 사이클의 답은
-                    // "어디로 갈까"가 아니라 "얼마나 느리게 닿을까"다.
-                    // 접촉 에너지는 v^2 이므로, 바로 아래에서 바닥이
+                }
+                if (best_slack < 0.0) {
+                    // 옮겼든 못 옮겼든 최선이 여전히 접촉이다 — 속도를 낮춘다.
+                    // 접촉 에너지는 v^2 이므로 바닥이
                     // trailing_retry_speed_degraded_(1.5) -> 0.8 m/s 로
                     // 내려가면 3.5 분의 1 이 된다.
                     contact_unavoidable = true;
                     RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
-                        "Trailing 접촉 회피 후보 없음 (최선 여유 %.3f m) — "
-                        "횡목표 %.2f 유지하고 속도 바닥을 낮춘다",
-                        best_slack, d_goal);
+                        "Trailing 최선 후보도 접촉 (여유 %.3f m, 횡목표 %.2f) — "
+                        "속도 바닥을 낮춘다", best_slack, d_goal);
                     NoteReject("trailing_contact_unavoidable");
                 }
             }
@@ -6132,7 +6149,24 @@ double SplinerNode::SteerKappaMaxAt(double speed) const {
 }
 
 double SplinerNode::SteerKappaMax() const {
-    return SteerKappaMaxAt(PlanSpeed());
+    // ── ✗ 폐기: 이 함수를 SteerKappaMaxAt(PlanSpeed()) 로 바꿨다 (2026-08-23)
+    // 회피 기하 게이트가 "지금 속도에서 낼 수 있는 곡률"을 쓰게 한 변경인데,
+    // **코너 진입에서 회피를 통째로 죽였다**. 진입 중에는 아직 감속 전이라
+    // PlanSpeed() 가 코너 계획속도보다 높고, 그 속도의 kappa_max 가
+    // **레이스라인 곡률 자체보다 작아진다** — 그러면 진폭 0 짜리 기동조차
+    // 불성립이라 BlendGeomFeasible 이 모든 길이에서 false 를 돌린다.
+    //   run_0823_091423 실측: 주행 프레임의 4.7%(v>3.5 구간 6.5%)에서
+    //   레이스라인 |kappa| > 그 속도의 조향능력이었고, 계획 사이클당
+    //   기하 거부가 lane 0.17 -> 0.35 / spline 0.44 -> 0.67 /
+    //   escape 0.08 -> 0.34 로 2~4 배가 됐다. 92.61 s 의
+    //   "기하 하한 8.00 m 필요 — 어떤 속도로도 불가"가 그 sentinel 이다.
+    // 원칙: **조향 LUT 은 속도를 낮추는 데만 쓰고, 회피를 거부하는 데는
+    // 쓰지 않는다.** 속도 의존분은 아래 세 곳이 담당한다 —
+    //   (1) global_trajectory 의 레이스라인 속도캡
+    //   (2) ApplySpeedProfile 의 점별 속도캡
+    //   (3) BlendDist 의 횡그립 예산 상한
+    // 셋 다 "느려질 뿐" 경로를 버리지 않는다.
+    return SteerKappaKinematic();
 }
 
 bool SplinerNode::BlendGeomFeasible(double amplitude, double blend_len,
@@ -6144,7 +6178,7 @@ bool SplinerNode::BlendGeomFeasible(double amplitude, double blend_len,
         return false;
     }
     const double kappa_steer_max =
-        (speed >= 0.0) ? SteerKappaMaxAt(speed) : SteerKappaMax();
+        SteerKappaKinematic();   // 속도 의존 금지 — SteerKappaMax() 주석
     if (kappa_steer_max <= 1e-3) {
         return false;
     }
@@ -6202,7 +6236,7 @@ double SplinerNode::BlendGeomFloor(double amplitude, double kappa_track,
         return 0.0;
     }
     const double kappa_steer_max =
-        (speed >= 0.0) ? SteerKappaMaxAt(speed) : SteerKappaMax();
+        SteerKappaKinematic();   // 속도 의존 금지 — SteerKappaMax() 주석
     if (kappa_steer_max <= 1e-3) {
         return 0.0;
     }
@@ -6449,35 +6483,10 @@ double SplinerNode::BlendSpeedCap(
                               /*speed=*/0.0)) {
         return 0.0;
     }
-    // (1) 그립 기준 상한 — 종전 식.
-    double cap = available / std::sqrt(6.0 * a / a_lat);
-    if (!steer_grip_.enabled()) {
-        return cap;
-    }
-    // (2) 조향 능력 기준 상한 — "그 속도에서 이 기동의 곡률을 실제로 낼 수
-    //     있는가". kappa_max(v) 가 v 에 대해 단조감소이므로 성립집합이
-    //     [0, v*] 구간이고 이분법이 성립한다. 위에서 speed=0 판정을 이미
-    //     통과했으므로 lo=0 은 항상 성립한다.
-    const bool s_ctx = (s_from >= 0.0 && std::isfinite(s_from) &&
-                        !gb_wpnts_.empty() && track_len_ > 0.0);
-    auto steer_ok = [&](double v) {
-        if (s_ctx) {
-            return BlendGeomFeasible(amplitude, available, s_from, false, v);
-        }
-        return available >= BlendGeomFloor(amplitude, kappa_track, false, -1.0, v);
-    };
-    if (!steer_ok(cap)) {
-        double lo = 0.0, hi = cap;
-        for (int it = 0; it < 12 && (hi - lo) > 0.02; ++it) {
-            const double mid = 0.5 * (lo + hi);
-            if (steer_ok(mid)) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        cap = lo;
-    }
+    // 그립 기준 상한 — 종전 식. (조향 능력 기준 이분탐색은 제거했다:
+    // BlendGeomFeasible 이 다시 속도 무관이라 항등이 됐다. 근거는
+    // SteerKappaMax() 주석의 폐기 기록.)
+    const double cap = available / std::sqrt(6.0 * a / a_lat);
     return cap;
 }
 
