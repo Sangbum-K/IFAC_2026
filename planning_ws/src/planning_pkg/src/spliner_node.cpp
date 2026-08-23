@@ -4253,6 +4253,26 @@ bool SplinerNode::BuildTrailing(
             d_goal = retry_d_target_;
         }
     }
+    // ── ★ 이미 정한 회피 방향과 반대인 목표는 쓰지 않는다 (2026-08-23) ─────
+    // retry_d_target_ 은 레인 루프에서 **간격 검사를 통과한 사이드**의 값이다.
+    // 그 루프는 first 가 실패하면 second(= 반대편)로 넘어가므로, 우리가 이미
+    // "이쪽으로 간다"고 정한 쪽(intent_side_)과 **반대 부호**가 기록될 수 있다.
+    // 그러면 트레일링 램프만 반대편으로 끌려가고, 그 방향은 대개 막힌 쪽이다.
+    //   run_0823_091423 92.51 s 원목표 +0.49(좌, 열린 쪽) -> 92.68 s -0.62(우,
+    //   막힌 쪽). 0.17 초 만에 부호가 뒤집혔고 그대로 충돌했다.
+    // intent_side_ 에는 이미 히스테리시스가 걸려 있으므로(MoreSpace), 여기서
+    // 그 결정을 그대로 존중하면 트레일링 목표도 같은 안정성을 물려받는다.
+    // 잠금이 만료됐거나(kOtSideLockSec) 의도가 없으면 종전과 같다.
+    if (has_intent_side_ && !intent_side_.empty() && std::abs(d_goal) > 0.02) {
+        const double intent_age = (this->now() - intent_stamp_).seconds();
+        const bool fresh = intent_age >= 0.0 && intent_age <= kOtSideLockSec;
+        const bool contradicts = (intent_side_ == "left") ? (d_goal < 0.0)
+                                                          : (d_goal > 0.0);
+        if (fresh && contradicts) {
+            NoteReject("trailing_goal_against_intent");
+            d_goal = 0.0;   // 반대편으로 끌려가느니 라인 복귀를 목표로 둔다
+        }
+    }
     const double planned_span = std::min(
         span + extend, std::max(track_len_ - wpnt_dist_, wpnt_dist_));
     int n = std::max(static_cast<int>(planned_span / wpnt_dist_), 2);
@@ -4617,7 +4637,8 @@ bool SplinerNode::BuildTrailing(
             double best_slack = ramp_obstacle_slack(
                 d_goal, d_ramp_len, d_back_len, false);
             if (best_slack < 0.0) {
-                double best_f = 0.0;
+                double best_d = d_goal;
+                bool has_best = false;
                 // 램프가 실제로 쓸 수 있는 종방향 거리 = 가장 가까운 장애물
                 // 앞끝까지. 장애물이 없으면 +inf 라 아래 검사가 항등이 된다.
                 double dist_to_block = std::numeric_limits<double>::infinity();
@@ -4638,10 +4659,33 @@ bool SplinerNode::BuildTrailing(
                 // 이분 탐색이 아니라 균등 스캔이다 — 여유는 후보 f 에 대해
                 // 단조가 아니다 (장애물 박스를 가로지르면 양끝이 크고 가운데가
                 // 작다). 단조 가정으로 이분하면 정확히 그 가운데로 수렴한다.
+                // ── ★ 후보를 **양쪽 모두** 훑는다 (2026-08-23) ────────────
+                // 종전 스캔은 [cur_d_, full_goal] 한 구간뿐이었다. 그래서
+                // full_goal 이 어쩌다 막힌 쪽을 가리키면 **열린 쪽이 후보에
+                // 아예 들어오지 못한다** — 구조적으로 빠져나갈 길이 없다.
+                //   run_0823_091423 실측: 92.68 / 121.18 / 134.78 / 165.02 /
+                //   207.98 s 의 7 프레임 중 6 프레임에서 좌측이 0.46~0.78 m
+                //   비어 있었는데(차폭 0.30) full_goal 은 -0.62(우측)였다.
+                // 그래서 반대 방향 후보도 같은 간격으로 넣는다. 벽 불변식
+                // (ramp_ok) · 주머니 · 실행 가능성 검사를 똑같이 통과해야
+                // 하므로 위험한 후보가 새로 뽑히지는 않는다 — 후보 **집합만**
+                // 넓히고 선택 기준(여유 최대)은 그대로다.
+                // 범위 0.8 m: 이 트랙 반폭(회랑 0.45~1.0 m)을 덮는 값이고,
+                // 그보다 멀리는 어차피 ramp_ok 가 벽에서 잘라낸다.
+                std::vector<double> cands;
+                cands.reserve(18);
                 for (int it = 1; it <= 10; ++it) {
-                    const double f = 0.1 * static_cast<double>(it);
-                    const double cand = goal_at(f);
+                    cands.push_back(goal_at(0.1 * static_cast<double>(it)));
+                }
+                const double away = (full_goal >= cur_d_) ? -1.0 : 1.0;
+                for (int it = 1; it <= 8; ++it) {
+                    cands.push_back(cur_d_ + away * 0.1 * static_cast<double>(it));
+                }
+                for (const double cand : cands) {
                     const double len = ramp_len_for(cand);
+                    if (std::abs(cand - cur_d_) < 0.02) {
+                        continue;       // 진행량이 없는 후보는 볼 값어치가 없다
+                    }
                     if (!ramp_ok(cand, len)) {
                         continue;       // 벽 불변식은 그대로 지킨다
                     }
@@ -4695,18 +4739,19 @@ bool SplinerNode::BuildTrailing(
                         ramp_obstacle_slack(cand, len, back_len_for(cand), false);
                     if (slack > best_slack) {
                         best_slack = slack;
-                        best_f = f;
+                        best_d = cand;
+                        has_best = true;
                     }
                 }
                 // 옮길지와 속도를 낮출지는 **별개 판단**이다 (2026-08-23).
-                //   · best_f > 0      -> 지금보다 나은 자리가 있다 = 옮긴다
+                //   · has_best        -> 지금보다 나은 자리가 있다 = 옮긴다
                 //   · best_slack < 0  -> 그렇게 옮겨도 여전히 닿는다 = 늦춘다
                 // 둘은 같은 사이클에 동시에 참일 수 있다. 예전에 이것을
                 // if/else 로 묶었더니 "안전한 후보가 없으면 아예 안 옮긴다"가
                 // 되어 발행 경로가 장애물 정중앙에 머물렀다 (위 폐기 기록).
-                if (best_f > 0.0) {
+                if (has_best) {
                     const double held = d_goal;
-                    d_goal = goal_at(best_f);
+                    d_goal = best_d;
                     d_ramp_len = ramp_len_for(d_goal);
                     d_back_len = back_len_for(d_goal);
                     RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), 1000,
