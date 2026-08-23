@@ -110,7 +110,32 @@ obstacle_detector_node:
     dynamic_frenet_reid_lateral_gate_m: 0.45
     dynamic_frenet_reid_progress_slack_m: 0.80
     dynamic_frenet_reid_backtrack_m: 0.30
-    n_confirm_sec: 0.78
+    # ── 확정 지연이 회피 진입거리를 먹는다 (2026-08-23) ──────────────────
+    # 0.78 -> 0.40. 이 값은 물리량이 아니라 legacy 프레임 수(12 @15.4Hz)를
+    # 초로 환산한 값이었다. 그런데 플래너 쪽에서 재면 **회피 예산 전체보다
+    # 크다**:
+    #   run 60초 실측 (ifac_roboracer, 정적 콘 1개)
+    #     · LiDAR 최초 관측 ~6.4 m  (range_max 12.0, 헤어핀 시선)
+    #     · 확정 지연 0.78 s x 4.3 m/s = -3.4 m
+    #     · 플래너 최초 수신 3.03 m  (id 466/477 첫 프레임 nobs=0)
+    #     · 차 반길이 -0.28 m -> 가용 2.35 m
+    #   같은 지점(s=30.1, kappa 0.70)에서 0.5 m 회피에 **감속으로도 못 줄이는**
+    #   진입거리 하한이 3.17 m 다. 즉 0.8 m 가 모자라 lane/spline/원호가 전부
+    #   거부되고 트레일링으로 떨어졌다 (98/107 사이클 = 92%).
+    # 0.40 이면 가용이 3.9 m 가 되어 하한을 넘긴다.
+    #
+    # ⚠️ 이건 유령 방어를 절반으로 줄이는 값이다. 남는 방어선:
+    #    · 맵 벽 필터(use_map_filter) / 트랙경계 필터(use_track_filter)
+    #    · spliner 의 cls_min_nb_meas(5) — 정적/동적 분류
+    #    · spliner 의 commit_min_obs(7) — 회피 경로 **동결**
+    #    확정과 커밋을 이중으로 걸어 도합 1.0 s(≈4.4 m)를 쓰고 있었다.
+    #    "발행은 일찍, 동결은 늦게"가 이 구조의 원래 의도다.
+    # ⚠️ sim/실차 공통값이다 (sim_real_car.yaml 이 이 키를 덮지 않는다). 실차
+    #    투입 전에 유령 확정률을 반드시 다시 재라 — 지표는 spliner 의
+    #    /pitwall/outcome_cluster_merge_blocks_track 과
+    #    /pitwall/reject_escape_not_visible_static.
+    # 되돌리기: 이 한 줄을 0.78 로.
+    n_confirm_sec: 0.40
     n_release_sec: 1.23
     dynamic_release_sec: 6.04
     pos_hist_sec: 2.99

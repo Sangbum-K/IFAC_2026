@@ -606,7 +606,12 @@ spliner_node:
     # 없어서 params.yaml만 보면 존재를 알 수 없었다.
     spliner/blend_use_spare_grip: true
     # 진입 속도 캡이 0으로 접혔을 때 정지 라치를 벗어나기 위한 크리프 속도 [m/s].
+    # 이 속도 이하에서만 "횡전환을 장애물 옆(hold 구간)까지 끌고 간다"를
+    # 허용한다. 환경별로 올릴 수 있다 — environments/*.yaml 의 근거·대가 참조.
     spliner/creep_escape_speed: 0.6
+    # 마지막 유효 회피경로 폴백 수명 [s]. 0 = off (종전 BuildTrailing 폴백).
+    # 근거는 spliner_node.hpp 의 last_good_wpnts_ 선언부.
+    spliner/last_good_hold_sec: 2.0
     # 위치/속도 분산 footprint 팽창의 상한 [m].
     # ⚠️ 이 값은 "이상치 차단"이어야 하는데 실제로는 **상시 동작점**이다:
     #    브릿지가 position_var_floor=0.01 / velocity_var_floor=0.25 를 상수로

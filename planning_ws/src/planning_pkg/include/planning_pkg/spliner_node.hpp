@@ -1222,6 +1222,40 @@ private:
   // 기하 하한 초과(allow_stop)나 perception 비상정지에서는 예전대로 복귀한다.
   double retry_d_target_{0.0};
   rclcpp::Time retry_d_stamp_{0, 0, RCL_ROS_TIME};
+  // ── 마지막 유효 회피경로 (2026-08-24) ────────────────────────────────
+  // 티어(라인스위치/스플라인/원호)가 **전부** 실패한 사이클의 폴백이다.
+  // 종전 폴백은 BuildTrailing 하나였는데, 그 경로는 레이스라인 기반이라
+  // d_goal 이 만료되면 **장애물 쪽으로 되돌아간다** — 이 함수가 불리는 상황은
+  // 정의상 raceline 위에 장애물이 있는 상황이므로 그 방향이 가장 위험하다.
+  // (같은 인식이 BuildTrailing 되감기 종점 주석 2026-08-17 에 이미 있다.)
+  //
+  // 계약: **직전에 성립했던 회피경로를 기하·속도 그대로 다시 발행한다.**
+  //   · 재검증은 "통과해야 발행하는 게이트"가 아니라 **모니터**다.
+  //     충돌이 잡히면 경로를 버리지 않고 그 경로 위에 제동만 덮는다.
+  //   · 경로를 포기하는 유일한 사유는 "자차가 그 경로에서 벗어났다"(못 타는
+  //     경로) 또는 "끝까지 주행했다/만료됐다" 뿐이다.
+  // 커밋(committed_*)과의 차이: 커밋은 관측수/속도 게이트를 통과해야 만들어
+  // 지고, 통과하면 티어보다 **먼저** 재생된다. 이쪽은 게이트 없이 저장되고
+  // 티어가 전부 실패했을 때만 쓰인다 — 즉 커밋의 하위 폴백이다.
+  f1tenth_planning_msgs::msg::WpntArray last_good_wpnts_;
+  visualization_msgs::msg::MarkerArray last_good_mrks_;
+  std::vector<double> last_good_geom_ceiling_;
+  double last_good_start_s_{-1.0};
+  double last_good_until_s_{-1.0};
+  double last_good_lat_budget_{-1.0};
+  rclcpp::Time last_good_stamp_{0, 0, RCL_ROS_TIME};
+  bool has_last_good_{false};
+  /// 재생 상태의 상승엣지 판정용 (이벤트를 매 사이클 쏟지 않기 위함).
+  bool last_good_replay_active_{false};
+  /// 저장 수명 [s]. 0 이면 기능 off (= 종전 BuildTrailing 폴백).
+  double last_good_hold_sec_{2.0};
+  /// 마지막 유효 경로를 폴백으로 재생한다. 성공하면 out_* 를 채우고 true.
+  bool ReplayLastGoodEvasion(
+    const std::vector<f1tenth_planning_msgs::msg::Obstacle> & all_ahead,
+    f1tenth_planning_msgs::msg::WpntArray & out_wpnts,
+    visualization_msgs::msg::MarkerArray & out_mrks,
+    bool * braked);
+
   bool has_retry_d_{false};
   static constexpr double kRetryDHoldSec{0.7};  // 목표 유효 시간 (정적/준정적)
   std::mutex mutex_obstacles_;

@@ -589,7 +589,9 @@ def test_static_cylinder_model_cannot_understate_extent():
     크게 넘으면 "판정을 여는 방향"으로 밀린다. 근거는 rosbag run_0812_013630
     실측 — perception_obstacle_bridge_node.py 선언부 주석 참조.
     """
-    for env_name in ("real_car", "sim_real_car", "sim"):
+    # race_map 은 2026-08-24 까지 세 값이 아예 없어서 이 루프에서 빠져 있었다
+    # (없으니 KeyError, KeyError 나니 빼 둠 — 비어 있는 것이 안 들키는 구조).
+    for env_name in ("real_car", "sim_real_car", "sim", "race_map"):
         # 벽 판정선은 base params.yaml 이 0.0(비활성)이고 env 에서 켜진다.
         perception = _ros_params(
             _yaml(WORKSPACE / "perception_ws" / "src" / "perception_pkg" /
@@ -1003,12 +1005,14 @@ def test_dynamic_obstacles_never_enter_the_evasion_tiers():
                  "dyn_speed_floor_", "ot_speed_scale_"):
         assert gone not in code, f"폐기한 동적 기구가 되살아났다: {gone}"
     # ③ 커밋은 정적 전용이다 (동적에 커밋을 걸면 상대가 움직여도 얼어붙는다).
-    assert re.search(
-        r"const bool commit_candidate =\s*"
-        r"evasion_valid && !used_trailing &&\s*"
-        r"closest\.is_static &&", src), (
-        "커밋 승격이 정적 전용이 아니다"
-    )
+    # 2026-08-24: 항이 늘어도(`!last_good_replay_now` 등) 불변식은 같으므로
+    # 추가 항을 허용한다. 고정하는 것은 **세 조건이 전부 있다**는 사실이다.
+    m = re.search(r"const bool commit_candidate =(.*?);", src, re.S)
+    assert m, "commit_candidate 선언을 찾지 못했다"
+    cond = " ".join(m.group(1).split())
+    for need in ("evasion_valid", "!used_trailing", "closest.is_static"):
+        assert need in cond, (
+            f"커밋 승격 조건에서 {need} 가 사라졌다 — 정적 전용이 아니다: {cond}")
 
 
 def test_follow_cap_is_longitudinal_only():

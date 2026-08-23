@@ -22,7 +22,16 @@ obstacle_detector_node:
     use_map_filter: true
     map_topic: /map
     wall_dist_min_m: 0.25
-    max_cluster_radius_m: 0.35
+    # 0.35 -> 0.55 (2026-08-24). real_car 는 3b3af85 에서 이미 올렸는데 대회
+    # 프로파일만 남아 있었다. 0.35 는 "이 크기를 넘는 원본은 벽으로 보고
+    # 통째로 폐기"하는 선인데, 지금 트랙에 놓는 물체의 라이다 원시 반경이
+    # p50 0.28~0.36 / p90 0.41 / max 0.478 이라 상당수 프레임에서 콘 자체가
+    # 벽으로 분류돼 사라진다 — 브릿지 band 상한 0.44 보다 낮으면 "고정은
+    # 하겠다는데 detector 가 먼저 버리는" 모순이라 불변식
+    # test_static_cylinder_model_cannot_understate_extent 가 그 위를 막는다.
+    # real_car 의 실차 근거: 0.35 는 상대차 측면(반경 0.28)까지는 통과시키지만
+    # 실주행에서 상대차 클러스터가 잘려 나가는 경우가 있었다.
+    max_cluster_radius_m: 0.55
     # 원본 반경 상한을 넘긴 것은 벽으로 보고 통째로 폐기한다. 분할하면 벽
     # fringe가 정상 장애물로 재생성돼 플래너 입력에 섞인다.
     cluster_split_enabled: false

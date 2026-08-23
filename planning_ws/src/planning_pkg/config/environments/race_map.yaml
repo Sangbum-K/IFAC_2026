@@ -72,6 +72,21 @@ perception_obstacle_bridge_node:
     bridge/dynamic_static_shadow_hold_sec: 2.50
     bridge/dynamic_static_shadow_wall_max_m: 0.60
     bridge/force_low_confidence_dynamic_static: false
+    # ── 정적 고정 원통 (2026-08-24 추가) ────────────────────────────────
+    # 이 세 줄이 여기에 **없어서** 대회 프로파일만 브릿지 선언부 기본값
+    # (radius 0.15 / band [0.05, 0.25]) 으로 돌고 있었다. 0.15 는 대회 규격
+    # 콘(지름 30 cm) 시절 값이고, 지금 트랙에 놓는 물체는 run_0822_192752
+    # 스캔 원 적합으로 반경 0.289 다 — 즉 폭을 절반으로 보고 라인을 그렸다.
+    # 더 나쁜 쪽은 band 다: 그 물체의 원시 반경 분포(p50 0.28~0.36 / p90 0.41)
+    # 가 [0.05, 0.25] 를 통째로 벗어나 적용률이 13~41% 로 떨어지고, 발행 폭이
+    # 프레임마다 고정값 <-> 원시값을 왕복해 회피 레인 판정이 사이클마다
+    # 뒤집혔다 (명령속도 2.57 <-> 0.55 m/s, 랩당 1.32 s 손실).
+    # 값·근거·되돌리는 법은 전부 real_car.yaml 의 동일 블록 주석에 있다.
+    # ⚠️ 세 값은 real_car 와 **같이** 움직여야 한다 (불변식
+    #    test_static_cylinder_model_cannot_understate_extent 가 강제).
+    bridge/static_cylinder_radius_m: 0.30
+    bridge/static_cylinder_band_m: [0.02, 0.44]
+    bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
 

@@ -230,7 +230,14 @@ spliner_node:
     # 레이스라인 생성 MU_PROFILE(1.40) x g. real_car.yaml 과 동일 (근거는 그쪽 주석).
     spliner/path_lat_acc_max: 13.734
     spliner/path_decel_max: 6.0
-    spliner/lane_blend_out_m: 5.0
+    # ── 복귀 블렌드 5.0 -> 3.0 (2026-08-24) ─────────────────────────────
+    # 복귀 블렌드 길이의 **하한**이다 (blend_out = max(이 값, BlendDist(...))).
+    # 5.0 m 는 폭 1.5~2.3 m 트랙에서 과해, 복귀가 끝나기 전에 다음 코너의
+    # 좁아지는 벽에 걸려 벽 클램프 경로로 떨어진다 — 시뮬 60초 실측에서
+    # lane_wall_clamped 48 건으로 최다 실패 사유였다.
+    # 단축 사다리 바닥은 geom_out(속도 무관 조향 기하 하한)이라 안전은 그대로.
+    # ⚠️ 실차 미검증.
+    spliner/lane_blend_out_m: 3.0
     # 조기 라인 스위치 (real_car.yaml과 동일). 곡률이 이보다 작은 직선 구간에서만
     # 회피 라인으로 미리 전환하고 헤어핀은 기존대로 늦게 전환한다.
     spliner/early_switch_kappa_max: 0.10
@@ -244,6 +251,21 @@ spliner_node:
     #     "계획이 통과한다"는 증거일 뿐 "실차가 그 곡률을 돈다"는 증거가 아니다.)
     spliner/obs_traj_tresh: 0.45
     spliner/evasion_dist: 0.35
+    # ── hold 구간 침범 완화의 속도 문턱 0.6 -> 2.0 [m/s] (2026-08-24) ─────
+    # 진입 예산(dist_front)이 모자랄 때 hold 구간(장애물 옆 + 뒤 0.5 m)까지
+    # 횡전환에 쓰도록 허용하는 문턱. 문턱을 올려도 속도는 안 올라간다 —
+    # creep_cap 이 entry_speed_cap 으로 걸려 진입 속도가 기하에 맞게 눌린다.
+    # ⚠️ 대가: 횡전환이 장애물 **옆에서** 끝나는 기하가 주행 중에도 생긴다.
+    #    안전은 CheckPathCollision 한 겹만 남는다. 접촉이 늘면 여기부터
+    #    되돌릴 것 (0.6 이 종전 동작). **실차 미검증.**
+    spliner/creep_escape_speed: 2.0
+    # ── 마지막 유효 회피경로 폴백 수명 [s] (2026-08-24, 신설) ─────────────
+    # 티어가 전부 실패한 사이클에 BuildTrailing 대신 직전에 성립했던 회피
+    # 경로를 기하·속도 그대로 재발행한다. 0 이면 기능 off (= 종전 동작).
+    # 재검증은 게이트가 아니라 모니터다 — 충돌이 잡히면 경로를 버리지 않고
+    # 그 라인 위에 제동만 덮는다. 근거는 spliner_node.hpp 선언부.
+    # ⚠️ 실차 미검증.
+    spliner/last_good_hold_sec: 2.0
     # (spliner/inside_speed_scale 제거 — real_car.yaml과 동일. 코너 안쪽 회피
     #  감속은 오프셋 곡률 마찰원 캡이 담당하고, 고정 배율은 이미
     #  1.0(항등)이라 코드에서 함께 삭제됐다.)
