@@ -65,7 +65,7 @@ def split_line_variant(name):
     return name, ''
 
 
-def _resolve_map_csvs(share_dir, line_name, base_name):
+def _resolve_map_csvs(share_dir, line_name, base_name, suffix=''):
     """(raceline, sp, centerline) 파일명. 노드가 config/ 하위 상대경로로 여는 값이므로
     basename만 돌려준다. 못 찾으면 (필수 항목만) 알아듣게 죽는다.
 
@@ -81,21 +81,32 @@ def _resolve_map_csvs(share_dir, line_name, base_name):
         if len(found) > 1:
             raise RuntimeError(
                 '여러 CSV가 %s에 매칭됩니다. 고속 주행에서 임의 선택하지 않습니다: %s\n'
-                '  trajectory_csv_file:=<정확한 파일명>으로 지정하세요.'
+                '  suffix:=<max...> 또는 trajectory_csv_file:=<정확한 파일명>'
+                '으로 지정하세요.'
                 % (pattern, ', '.join(os.path.basename(f) for f in found)))
         return os.path.basename(found[0]) if found else None
 
-    raceline = pick(traj_dir, line_name + '_iqp_*.csv')
+    pattern = line_name + '_iqp_' + (suffix + '.csv' if suffix else '*.csv')
+    raceline = pick(traj_dir, pattern)
     if raceline is None:
+        versions = sorted(
+            os.path.basename(f)[len(line_name + '_iqp_'):-len('.csv')]
+            for f in _existing(os.path.join(
+                traj_dir, line_name + '_iqp_*.csv')))
+        if suffix and versions:
+            raise RuntimeError(
+                'map:=%s에 suffix:=%s 버전이 없습니다.\n'
+                '  사용 가능한 suffix: %s'
+                % (base_name, suffix, ', '.join(versions)))
         available = sorted({
             os.path.basename(f).split('_iqp_')[0]
             for f in _existing(os.path.join(traj_dir, '*_iqp_*.csv'))})
         raise RuntimeError(
-            "map:=%s 의 raceline CSV(%s_iqp_*.csv)가 없습니다: %s\n"
+            "map:=%s 의 raceline CSV(%s)가 없습니다: %s\n"
             '  사용 가능한 라인: %s\n'
             '  (원본을 아직 안 뽑았다면 mkcsv <맵이름>, '
             '_tuned 는 튜너에서 한 번 저장해야 생깁니다)'
-            % (line_name, line_name, traj_dir, ', '.join(available) or '(없음)'))
+            % (line_name, pattern, traj_dir, ', '.join(available) or '(없음)'))
 
     # 파일 존재/같은 suffix만으로는 SP의 폐루프 안전 검증을 증명하지 못한다.
     # 현재 저장된 구형 SP 중에도 새 조향·마찰 검증을 실패하는 파일이 있으므로
@@ -158,7 +169,14 @@ def launch_setup(context, *args, **kwargs):
         line_variant = line_arg
     line_name = '%s_%s' % (map_name, line_variant) if line_variant else map_name
 
-    trajectory_arg = LaunchConfiguration('trajectory_csv_file').perform(context)
+    trajectory_arg = LaunchConfiguration('trajectory_csv_file').perform(context).strip()
+    suffix_arg = LaunchConfiguration('suffix').perform(context).strip()
+    if suffix_arg and trajectory_arg:
+        raise RuntimeError(
+            'suffix:=와 trajectory_csv_file:=은 동시에 쓸 수 없습니다. '
+            '버전 또는 파일명 중 하나만 지정하세요.')
+    if suffix_arg and not map_name:
+        raise RuntimeError('suffix:=%s 는 map:= 없이 쓸 수 없습니다.' % suffix_arg)
     map_traj = map_sp = map_center = None
     map_notes = []
     if map_name:
@@ -172,7 +190,7 @@ def launch_setup(context, *args, **kwargs):
                     'centerline(%s) 없음 — 시각화만 비게 됩니다' % map_center)
         else:
             map_traj, map_sp, map_center, map_notes = \
-                _resolve_map_csvs(share_dir, line_name, map_name)
+                _resolve_map_csvs(share_dir, line_name, map_name, suffix_arg)
     elif line_variant:
         raise RuntimeError(
             'line:=%s 는 map:= 없이 쓸 수 없습니다 (어느 맵의 라인인지 알 수 없음)'
@@ -352,6 +370,9 @@ def generate_launch_description():
                               description='라인 변형 태그 (map:=<맵>_<태그> 와 동등). '
                                           '"tuned" 는 접미사로도 되고, 그 밖의 임의 '
                                           '태그는 이 인자로만 줄 수 있다. 비우면 원본'),
+        DeclareLaunchArgument('suffix', default_value='',
+                              description='<맵>_iqp_<suffix>.csv에서 사용할 '
+                                          'raceline 버전. 비우면 한 개인 후보를 자동 선택'),
         DeclareLaunchArgument('trajectory_csv_file', default_value='',
                               description='raceline CSV 파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('overtaking_csv_file', default_value='',

@@ -20,6 +20,7 @@ PLANNER_STACK_LAUNCH = PACKAGE_ROOT / 'launch' / 'planner_stack.launch.py'
 REAL_CAR_LAUNCH = (
     WORKSPACE_ROOT / 'integration_ws' / 'src' / 'integration_pkg' /
     'launch' / 'real_car.launch.py')
+STACK_LAUNCH = REAL_CAR_LAUNCH.with_name('stack.launch.py')
 NODE_SOURCE = PACKAGE_ROOT / 'src' / 'global_trajectory_node.cpp'
 PARAMS_YAML = PACKAGE_ROOT / 'config' / 'params.yaml'
 
@@ -81,6 +82,26 @@ def test_split_line_variant_only_strips_a_real_suffix():
     assert split('tuned') == ('tuned', '')
     # 중간에 들어 있는 'tuned' 는 변형이 아니다.
     assert split('my_tuned_track') == ('my_tuned_track', '')
+
+
+def test_exact_csv_override_is_forwarded_to_planner():
+    """rc의 정확한 CSV 선택이 중간 launch에서 유실되지 않아야 한다."""
+    real_car = REAL_CAR_LAUNCH.read_text(encoding='utf-8')
+    stack = STACK_LAUNCH.read_text(encoding='utf-8')
+    assert "DeclareLaunchArgument(\n            'trajectory_csv_file'" in real_car
+    assert "stack_args['trajectory_csv_file'] = trajectory_csv" in real_car
+    assert "DeclareLaunchArgument(\n            'trajectory_csv_file'" in stack
+    assert "planner_args['trajectory_csv_file'] = trajectory_csv" in stack
+
+
+def test_csv_suffix_is_forwarded_to_planner():
+    """rc의 맵은 고정한 채 raceline suffix만 하위 planner까지 전달한다."""
+    real_car = REAL_CAR_LAUNCH.read_text(encoding='utf-8')
+    stack = STACK_LAUNCH.read_text(encoding='utf-8')
+    planner = PLANNER_STACK_LAUNCH.read_text(encoding='utf-8')
+    assert "stack_args['suffix'] = suffix" in real_car
+    assert "planner_args['suffix'] = suffix" in stack
+    assert "_resolve_map_csvs(share_dir, line_name, map_name, suffix_arg)" in planner
 
 
 def test_advisory_is_only_reachable_through_a_line_variant():

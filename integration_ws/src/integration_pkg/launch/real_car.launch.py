@@ -17,6 +17,9 @@ RViz에서 "2D Pose Estimate"로 초기 위치를 한 번 찍는 것뿐이고, P
 
 맵을 바꾸려면 (PF 맵 + planner CSV 3종이 한 번에 따라간다):
   ros2 launch integration_pkg real_car.launch.py map:=my_track2
+같은 맵의 raceline CSV가 여러 개면 파일명의 suffix로 고른다:
+  ros2 launch integration_pkg real_car.launch.py map:=my_track2 \
+    suffix:=max7.00ms_margin0.08m_mu0.90
 
 레이스라인 튜너로 손본 라인으로 달리려면 맵 이름에 _tuned 를 붙인다:
   ros2 launch integration_pkg real_car.launch.py map:=my_track0808_tuned
@@ -100,6 +103,8 @@ def launch_setup(context, *args, **kwargs):
             % (pf_profile, ', '.join(PF_AB_PROFILES)))
     # 빈 값이면 각 하위 launch의 기존 기본값(localize.yaml / params.yaml)을 쓴다.
     map_name = LaunchConfiguration('map').perform(context)
+    trajectory_csv = LaunchConfiguration('trajectory_csv_file').perform(context)
+    suffix = LaunchConfiguration('suffix').perform(context)
     # map:=<맵>_tuned 는 '다른 맵'이 아니라 '같은 맵의 사람 튜닝 라인'이다.
     # localization(PF)은 <맵>.yaml 만 있으므로 접미사를 떼고 넘겨야 한다.
     # 레이스라인 CSV 선택은 planner_stack.launch.py 가 접미사를 보고 처리하므로
@@ -191,6 +196,10 @@ def launch_setup(context, *args, **kwargs):
     stack_args = {'env': 'real_car'}
     if map_name:
         stack_args['map'] = map_name
+    if trajectory_csv:
+        stack_args['trajectory_csv_file'] = trajectory_csv
+    if suffix:
+        stack_args['suffix'] = suffix
     stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             _share('integration_pkg') + '/launch/stack.launch.py'),
@@ -239,6 +248,14 @@ def generate_launch_description():
                               description='맵 이름. PF 맵(particle_filter_cpp/maps/<이름>.yaml)과 '
                                           'planner CSV 3종을 한 번에 전환한다. '
                                           '빈 값이면 localize.yaml / params.yaml 기본값 유지'),
+        DeclareLaunchArgument(
+            'trajectory_csv_file', default_value='',
+            description='같은 맵의 raceline이 여러 개일 때 사용할 정확한 '
+                        'CSV 파일명 (planning_pkg/config/global_trajectory/)'),
+        DeclareLaunchArgument(
+            'suffix', default_value='',
+            description='같은 맵의 raceline 버전. <맵>_iqp_<suffix>.csv를 '
+                        '선택하며 비우면 한 개인 CSV를 자동 선택'),
         DeclareLaunchArgument(
             'pf_profile',
             default_value='variant0_no_ground_no_deskew',

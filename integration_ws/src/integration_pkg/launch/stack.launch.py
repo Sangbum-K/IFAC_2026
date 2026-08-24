@@ -46,6 +46,8 @@ def launch_setup(context, *args, **kwargs):
     actions = []
 
     map_name = LaunchConfiguration('map').perform(context).strip()
+    trajectory_csv = LaunchConfiguration('trajectory_csv_file').perform(context).strip()
+    suffix = LaunchConfiguration('suffix').perform(context).strip()
 
     if env in ('sim', 'sim_real_car'):
         if not map_name:
@@ -91,7 +93,7 @@ def launch_setup(context, *args, **kwargs):
                 # 맵마다 iqp CSV가 여러 벌이면 launch의 glob이 "임의 선택하지
                 # 않음"으로 죽는다 (예: my_map은 mu0.65/mu0.75 두 벌 ->
                 # suffix:=max6.00ms_margin0.08m_mu0.65 필요). 한 벌이면 자동 추론.
-                'suffix': LaunchConfiguration('suffix').perform(context),
+                'suffix': suffix,
                 'rviz': LaunchConfiguration('rviz').perform(context),
                 'tracker': 'false',
                 'perception': 'lidar',
@@ -115,6 +117,10 @@ def launch_setup(context, *args, **kwargs):
         planner_args = {'env': env}
         if map_name:
             planner_args['map'] = map_name
+        if trajectory_csv:
+            planner_args['trajectory_csv_file'] = trajectory_csv
+        if suffix:
+            planner_args['suffix'] = suffix
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(planning_share, 'launch', 'planner_stack.launch.py')),
@@ -158,13 +164,17 @@ def generate_launch_description():
                                           'params.yaml 값 유지. ⚠️ raceline CSV가 '
                                           '있는 맵만 쓸 수 있다 '
                                           '(config/global_trajectory/<맵>_iqp_*.csv)'),
+        DeclareLaunchArgument(
+            'trajectory_csv_file', default_value='',
+            description='(env:=real_car|race_map) 사용할 정확한 raceline CSV '
+                        '파일명 (config/global_trajectory/)'),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='(env:=sim) RViz 실행 여부'),
         DeclareLaunchArgument('maps_dir', default_value='',
                               description='(env:=sim*) 맵 폴더. 빈 값이면 '
                                           '워크스페이스 공용 ~/IFAC_ws/maps'),
         DeclareLaunchArgument('suffix', default_value='',
-                              description='(env:=sim*) raceline CSV 접미사. '
+                              description='raceline CSV 접미사. '
                                           '빈 값이면 맵의 iqp CSV에서 자동 추론 '
                                           '(여러 개면 launch가 거부하므로 명시 필요)'),
         DeclareLaunchArgument('map_filter', default_value='',
