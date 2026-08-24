@@ -84,8 +84,11 @@ perception_obstacle_bridge_node:
     # 값·근거·되돌리는 법은 전부 real_car.yaml 의 동일 블록 주석에 있다.
     # ⚠️ 세 값은 real_car 와 **같이** 움직여야 한다 (불변식
     #    test_static_cylinder_model_cannot_understate_extent 가 강제).
-    bridge/static_cylinder_radius_m: 0.30
-    bridge/static_cylinder_band_m: [0.02, 0.44]
+    # 2026-08-24: 대회장 장애물 실측(지름 30 cm)에 맞춰 radius 0.30 -> 0.17
+    # (실측 0.15 + 안전 2 cm — 이 트랙에선 0.20 까지 대가가 0),
+    # band [0.02, 0.44] -> [0.02, 0.32]. 근거는 real_car.yaml 동일 블록.
+    bridge/static_cylinder_radius_m: 0.17
+    bridge/static_cylinder_band_m: [0.02, 0.32]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0

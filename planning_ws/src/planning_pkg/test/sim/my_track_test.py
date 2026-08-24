@@ -171,11 +171,12 @@ def main():
             min_gap = min(min_gap, gap)
     reacted = t.otwpnts > 0
     check('정적 장애물 회피 반응 (otwpnts 발행)', reacted, f'({t.otwpnts} msgs)')
-    # 접촉 = 장애물 반경 + 차 반폭 = 0.29 + 0.15 = 0.44 m.
-    # 2026-08-24: 0.30 -> 0.44. virtual_obstacle/obstacle_size_m 이 0.3(반경
-    # 0.15) 이던 시절의 값이었다. 물체를 실차와 같은 0.58 로 키웠으므로
-    # 접촉선도 같이 움직인다 — 안 움직이면 실제로 박은 통과를 통과시킨다.
-    check('근접 통과 시 관통 없음', approaches == 0 or min_gap > 0.44,
+    # 접촉 = 장애물 반경 + 차 반폭 = 0.15 + 0.15 = 0.30 m.
+    # 2026-08-24 (2): 0.44 -> 0.30. 대회장 장애물 실측(지름 30 cm)에 맞춰
+    # virtual_obstacle/obstacle_size_m 을 0.58 -> 0.30 으로 내린 데 따른 것.
+    # 이 선은 물체 반경에 종속이므로 그 값과 **반드시 같이** 움직여야 한다 —
+    # 크게 두면 실제로 박은 통과를 통과시키고, 작게 두면 멀쩡한 통과를 죽인다.
+    check('근접 통과 시 관통 없음', approaches == 0 or min_gap > 0.30,
           f'(근접샘플 {approaches}, 최소거리 '
           f'{min_gap if min_gap < 1e8 else float("nan"):.2f}m)')
     check('장애물 존재 중 주행 지속(스턱 아님)', progressed > 5.0,

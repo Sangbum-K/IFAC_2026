@@ -35,13 +35,17 @@ obstacle_detector_node:
     # 원본 반경 상한을 넘긴 것은 벽으로 보고 통째로 폐기한다. 분할하면 벽
     # fringe가 정상 장애물로 재생성돼 플래너 입력에 섞인다.
     cluster_split_enabled: false
-    min_cluster_size: 8
+    # 2026-08-24: 8/4 -> 6/3. 장애물 실측이 지름 0.58 -> 0.30 으로 줄어
+    # max_view_ahead 8 m 지점 여유가 +7 % 밖에 안 남았다. 4 까지 내리면
+    # 코너 벽 fringe 억제가 사라지므로 6 에서 멈춘다 (여유 +43 %).
+    # 근거·위험·되돌리는 법은 real_car.yaml 동일 블록.
+    min_cluster_size: 6
     # 벽에서 0.50m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로 4점까지
     # 허용한다. min_cluster_size 8은 벽 fringe 억제용인데, 그 대가로 벽에서
     # 먼 작은 물체(폭 0.2m = 4.5m 거리에서 ~4점)까지 잘렸다 —
     # run_0806_155621에서 15프레임 미검출로 통로에 '가짜 틈'이 생겼다.
     # 막힌 통로를 열렸다고 오판하면 그 틈으로 회피를 시도하므로 위험하다.
-    min_cluster_size_open: 4
+    min_cluster_size_open: 3
     open_space_dist_m: 0.50
     # 트랙 경계(Frenet) 필터 — real_car.yaml과 동일한 이유·값.
     # 전역 레이스라인이 있어야 동작하고, 없으면 조용히 미적용된다(fail-open).
