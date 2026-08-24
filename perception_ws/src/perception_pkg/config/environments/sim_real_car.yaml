@@ -58,7 +58,10 @@ obstacle_detector_node:
     # min_cluster_size: 100000
     # 2026-08-24: 8/4 -> 6/3. 장애물 실측이 지름 0.58 -> 0.30 으로 줄어
     # max_view_ahead 8 m 지점 여유가 +7 % 밖에 안 남았다. 4 까지 내리면
-    # 코너 벽 fringe 억제가 사라지므로 6 에서 멈춘다 (여유 +43 %).
+    # 코너 벽 fringe 억제가 사라지므로 6 에서 멈춘다.
+    # ⚠️ 그 "+43 %" 는 지름 0.30 기준이고 **실제 콘은 지름 0.20** 이다 —
+    #    임계 6 의 8 m 여유는 실제로 -5 % (검출 한계 7.6 m). 값을 유지한
+    #    근거와 남은 위험은 real_car.yaml 의 min_cluster_size 주석에 있다.
     # 근거·위험·되돌리는 법은 real_car.yaml 동일 블록.
     min_cluster_size: 6
     # 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로

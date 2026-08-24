@@ -75,7 +75,7 @@ perception_obstacle_bridge_node:
     # ── 정적 고정 원통 (2026-08-24 추가) ────────────────────────────────
     # 이 세 줄이 여기에 **없어서** 대회 프로파일만 브릿지 선언부 기본값
     # (radius 0.15 / band [0.05, 0.25]) 으로 돌고 있었다. 0.15 는 대회 규격
-    # 콘(지름 30 cm) 시절 값이고, 지금 트랙에 놓는 물체는 run_0822_192752
+    # 콘 시절 값이고, 지금 트랙에 놓는 물체는 run_0822_192752
     # 스캔 원 적합으로 반경 0.289 다 — 즉 폭을 절반으로 보고 라인을 그렸다.
     # 더 나쁜 쪽은 band 다: 그 물체의 원시 반경 분포(p50 0.28~0.36 / p90 0.41)
     # 가 [0.05, 0.25] 를 통째로 벗어나 적용률이 13~41% 로 떨어지고, 발행 폭이
@@ -84,11 +84,14 @@ perception_obstacle_bridge_node:
     # 값·근거·되돌리는 법은 전부 real_car.yaml 의 동일 블록 주석에 있다.
     # ⚠️ 세 값은 real_car 와 **같이** 움직여야 한다 (불변식
     #    test_static_cylinder_model_cannot_understate_extent 가 강제).
-    # 2026-08-24: 대회장 장애물 실측(지름 30 cm)에 맞춰 radius 0.30 -> 0.17
-    # (실측 0.15 + 안전 2 cm — 이 트랙에선 0.20 까지 대가가 0),
-    # band [0.02, 0.44] -> [0.02, 0.32]. 근거는 real_car.yaml 동일 블록.
-    bridge/static_cylinder_radius_m: 0.17
-    bridge/static_cylinder_band_m: [0.02, 0.32]
+    # 2026-08-24 (3): 대회 콘 실반경 0.10 (지름 20 cm) 에 맞춰
+    # radius 0.30 -> 0.15 (실측 0.10 + 안전 5 cm — 이 트랙에선 0.20 까지
+    # 대가가 0), band [0.02, 0.44] -> [0.02, 0.30].
+    # ⚠️ 08-24 (2) 가 한때 0.17 / [0.02, 0.32] 로 적었던 것은 "실측 지름
+    #    30 cm" 라는 오기 때문이다 (고정값 0.15 를 물리 반경으로 오인 + 2 cm
+    #    이중 패딩). 근거는 real_car.yaml 동일 블록.
+    bridge/static_cylinder_radius_m: 0.15
+    bridge/static_cylinder_band_m: [0.02, 0.30]
     bridge/static_cylinder_open_space_m: 0.30
     bridge/map_topic: /map
     bridge/map_timeout_sec: 5.0
