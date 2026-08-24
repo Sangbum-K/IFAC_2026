@@ -54,11 +54,15 @@ obstacle_detector_node:
     # ---- 이하 검출/필터: real_car.yaml과 동일 (근거·실측표는 그쪽 주석) ----
     # 벽 fringe 억제. 상한은 검출률이 정한다(10 이상이면 벽에 붙은 장애물
     # 검출이 94% -> 59%로 무너진다).
-    min_cluster_size: 8
+    # 2026-08-24: 8/4 -> 6/3. 장애물 실측이 지름 0.58 -> 0.30 으로 줄어
+    # max_view_ahead 8 m 지점 여유가 +7 % 밖에 안 남았다. 4 까지 내리면
+    # 코너 벽 fringe 억제가 사라지므로 6 에서 멈춘다 (여유 +43 %).
+    # 근거·위험·되돌리는 법은 real_car.yaml 동일 블록.
+    min_cluster_size: 6
     # 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로
     # 4점까지 허용. 없으면 노드 기본값 0(비활성)이라 폭 0.2 m 물체를 놓쳐
     # 막힌 통로에 '가짜 틈'이 생긴다 (실차 run_0806_155621).
-    min_cluster_size_open: 4
+    min_cluster_size_open: 3
     open_space_dist_m: 0.50
     gating_distance: 0.45
     # ---- 맵 벽 필터 ----

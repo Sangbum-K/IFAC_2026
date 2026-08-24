@@ -50,19 +50,24 @@ obstacle_detector_node:
     # ⚠️ 08-05 재현 기준선으로 되돌리려면 아래 두 줄을 맞바꾼다.
     #   min_cluster_size: 100000  = 인지 OFF (그날의 차 그대로. 클러스터가 절대
     #                               안 생기고 빈 ObstacleArray만 계속 흐른다)
-    #   min_cluster_size: 8       = 인지 ON  (회피/벽구별 개발 모드)
+    #   min_cluster_size: 6       = 인지 ON  (회피/벽구별 개발 모드. 값 자체는
+    #                               real_car 를 따라가므로 아래 현행값을 볼 것)
     # 08-06 현재 ON — 벽/장애물 구별을 rosbag_0801 재생으로 고친 뒤
     # sim에서 frenet 회피 라인이 실제로 나오는지 확인하려고 켰다.
     # real_car.yaml과 같은 값이어야 한다 (배선만 sim, 거동은 실차 동일).
     # min_cluster_size: 100000
-    min_cluster_size: 8
+    # 2026-08-24: 8/4 -> 6/3. 장애물 실측이 지름 0.58 -> 0.30 으로 줄어
+    # max_view_ahead 8 m 지점 여유가 +7 % 밖에 안 남았다. 4 까지 내리면
+    # 코너 벽 fringe 억제가 사라지므로 6 에서 멈춘다 (여유 +43 %).
+    # 근거·위험·되돌리는 법은 real_car.yaml 동일 블록.
+    min_cluster_size: 6
     # 벽에서 open_space_dist_m 이상 떨어진 클러스터는 벽 fringe일 수 없으므로
     # 4점까지 허용한다. 이게 없으면 노드 기본값 0(비활성)이라 **sim만** 작은
     # 물체를 놓친다 — 실차 run_0806_155621에서 폭 0.2m 물체(스캔 4점)가
     # 15프레임 미검출되어 통로에 0.48~0.63m '가짜 틈'이 생긴 그 버그다.
     # 막힌 통로를 열렸다고 오판하면 그 틈으로 회피를 시도하므로, sim에서
     # 재현되지 않으면 회피 검증이 실차보다 낙관적으로 나온다.
-    min_cluster_size_open: 4
+    min_cluster_size_open: 3
     open_space_dist_m: 0.50
     gating_distance: 0.45
     # 2026-08-11: 8 -> 19. real_car.yaml 과 값이 갈리면 sim 검증이 실차와
