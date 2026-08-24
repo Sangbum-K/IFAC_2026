@@ -5824,7 +5824,30 @@ bool SplinerNode::ReplayLastGoodEvasion(
     // ── (4) 발행 ────────────────────────────────────────────────────────
     // 기하는 그대로, 속도만 현재 차속으로 다시 푼다 (커밋 재생과 같은 근거 —
     // 동결된 속도가 발목을 잡는 것이 실측 손실의 절반이었다).
+    // 헤더는 **이번 사이클 것**을 유지한다 (2026-08-24, run_0824_164445).
+    // 통째 대입하면 header.stamp 가 최초 계산 시점으로 되돌아가고, 재생이
+    // 이어지는 동안 stamp 가 얼어붙는다 (최대 last_good_hold_sec = 2.0s).
+    // 그러면 local_trajectory 가 이 경로를 죽은 것으로 본다 — 중복 stamp 기각
+    // -> source age > avoidance_timeout_sec(0.20) 기각 -> heartbeat stale ->
+    // **/local_waypoints 발행 자체 중단** -> control 이 waypoint_timeout_sec
+    // (0.25) 뒤 정지. 즉 "회피경로를 유지하려는" 코드가 경로 자체를 끊는다.
+    //   실측: 재생 1811 사이클 중 1767 이 stamp 동결 구간 안, /local_waypoints
+    //   공백 56 회 / 48.6 s (주행의 9.5%). 그중 63.7~65.5 s 는 헤어핀 진입에서
+    //   조향 0 개루프 직진 -> d -0.11 -> -0.98 (우측 경계 -0.84) 코스아웃.
+    // 커밋 재생(Tier 0.5)이 멀쩡한 이유도 같다 — 그쪽은 .wpnts 만 복사한다.
+    // ⚠️ 이 수정만으로 Tier-0 을 되살리지 말 것. 현재 Tier-0 은
+    //    spliner/last_good_hold_sec: 0.0 으로 꺼져 있고(4개 config 전부),
+    //    스탬프와 **무관한** 결함이 둘 더 남아 있다:
+    //      (a) 재생이 커밋의 파기 판정을 되돌린다 — committed_break 29 회 중
+    //          17 회를 다음 프레임에 같은 경로로 되살렸고 그중 11 회가
+    //          파기 사유 path_collision. 스탬프를 고치면 그 경로가 컨트롤러까지
+    //          정상 전달돼 오히려 더 위험하다.
+    //      (b) commit_candidate 가 !last_good_replay_now 를 요구해(위 :1697)
+    //          재생 중에는 커밋 승격이 구조적으로 불가능하다.
+    //    되살리려면 (a)(b) 를 먼저 해결할 것.
+    const auto replay_header = out_wpnts.header;
     out_wpnts = last_good_wpnts_;
+    out_wpnts.header = replay_header;
     out_mrks = last_good_mrks_;
     if (!last_good_geom_ceiling_.empty() &&
         last_good_geom_ceiling_.size() == out_wpnts.wpnts.size()) {

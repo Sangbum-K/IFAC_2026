@@ -614,7 +614,24 @@ spliner_node:
     spliner/creep_escape_speed: 0.6
     # 마지막 유효 회피경로 폴백 수명 [s]. 0 = off (종전 BuildTrailing 폴백).
     # 근거는 spliner_node.hpp 의 last_good_wpnts_ 선언부.
-    spliner/last_good_hold_sec: 2.0
+    # ── 2026-08-24 폐기 (run_0824_164445) ────────────────────────────────
+    # 0 = off. Tier-0 재생은 실차에서 단 한 번도 설계대로 동작하지 않았다:
+    #   · ReplayLastGoodEvasion 이 out_wpnts 를 **메시지 통째로** 대입해
+    #     Run() 이 찍은 header.stamp 까지 덮었다 -> 스탬프가 최대 0.97 s 고정
+    #     -> local_trajectory 가 duplicate/out-of-order + source age 로 전량
+    #     기각 -> require_avoidance_heartbeat 로 /local_waypoints 발행 중단.
+    #     실측 공백 50 회 / 47.3 s (주행의 9.2%), 그 구간 티어 결과의 98% 가
+    #     last_good_replay.
+    #   · 커밋(committed_hold)이 충돌로 파기한 경로를 되살렸다 — 파기 29 회 중
+    #     17 회, 그중 11 회가 path_collision.
+    #   · commit_candidate 가 !last_good_replay_now 를 요구하므로 재생 중에는
+    #     커밋 승격이 **구조적으로 불가능**했다. s=28.8 콘 실측: nobs 가 7 에
+    #     도달한 357.00 에 좌측 경로가 커밋됐어야 하는데 재생이 물고 있어
+    #     357.64 에 만료된 뒤 우측(여유 +0.05 m)으로 뒤집혔다. 4 랩 전부 동일.
+    # 하려던 일("티어 실패 시 raceline 복귀 대신 직전 라인 유지")은 이미
+    # committed_hold 가 한다 — 그쪽은 `.wpnts` 만 대입해 헤더가 살아 있다.
+    # 되돌리기: 2.0. 단, 위 셋을 먼저 고치지 않으면 같은 사고가 재현된다.
+    spliner/last_good_hold_sec: 0.0
     # 위치/속도 분산 footprint 팽창의 상한 [m].
     # ⚠️ 이 값은 "이상치 차단"이어야 하는데 실제로는 **상시 동작점**이다:
     #    브릿지가 position_var_floor=0.01 / velocity_var_floor=0.25 를 상수로

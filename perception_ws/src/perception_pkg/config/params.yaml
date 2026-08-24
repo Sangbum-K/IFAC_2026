@@ -134,8 +134,23 @@ obstacle_detector_node:
     #    투입 전에 유령 확정률을 반드시 다시 재라 — 지표는 spliner 의
     #    /pitwall/outcome_cluster_merge_blocks_track 과
     #    /pitwall/reject_escape_not_visible_static.
-    # 되돌리기: 이 한 줄을 0.78 로.
-    n_confirm_sec: 0.40
+    # ── 2026-08-24 되돌림 (run_0824_164445) ──────────────────────────────
+    # 위 블록이 요구한 실차 측정("유령 확정률을 반드시 다시 재라")을 했고,
+    # 되돌림 조건이 충족됐다. 08-23 10:11 런(0.78)과 이번 런(0.40) 비교,
+    # **주행거리로 정규화**하고 v>2 m/s 에서 새로 등장한 id 만 셌다:
+    #     새 id            4.63 -> 19.12 개/100 m   (4.1 배)
+    #     그중 수명<1.0 s   0.99 ->  7.60 개/100 m   (7.7 배)
+    #     유령 비율          21% ->    40%           (레이아웃 무관 지표)
+    #     프레임당 장애물    0.41 ->   1.44 개
+    # 이 블록이 지목한 지표도 같이 갔다:
+    #     /pitwall/outcome_cluster_merge_blocks_track  13.9 -> 1175.6 /100 s
+    #     /pitwall/reject_escape_not_visible_static    47.3 ->   85.2 /100 s
+    # 그리고 회피 성공률이 떨어졌다:
+    #     /pitwall/outcome_ok_lane_switch              31.1 ->   12.2 /100 s
+    # 확정 지연이 회피 진입거리를 먹는다는 위 논지 자체는 맞다. 다만 그 예산은
+    # 유령 방어를 절반으로 깎아서 살 것이 아니라 회피 기하 쪽에서 벌어야 한다.
+    # 되돌리기: 이 한 줄을 0.40 으로 (위 지표를 같이 재는 조건에서만).
+    n_confirm_sec: 0.78
     n_release_sec: 1.23
     dynamic_release_sec: 6.04
     pos_hist_sec: 2.99

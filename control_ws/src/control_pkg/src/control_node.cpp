@@ -319,6 +319,10 @@ public:
     autonomous_ = this->declare_parameter<bool>("autonomous_on_start", false);
 
     waypoint_timeout_ = this->declare_parameter<double>("waypoint_timeout_sec", 0.5);
+    // 데이터 공백(경로/odom 소실, 비유한 명령, 측위 게이트)에서 **조향을
+    // 유지하는** 시간 [s]. 0 이면 종전 동작(즉시 조향 0). 근거는 coast_stop().
+    stop_steer_hold_sec_ = this->declare_parameter<double>(
+      "stop_steer_hold_sec", 0.5);
     odom_timeout_ = this->declare_parameter<double>("odom_timeout_sec", 0.5);
     frenet_odom_timeout_ = this->declare_parameter<double>("frenet_odom_timeout_sec", 0.5);
     imu_acceleration_sign_ = this->declare_parameter<double>("imu_acceleration_sign", -1.0);
@@ -527,8 +531,9 @@ public:
 private:
   void validate_parameters()
   {
-    const std::array<double, 46> finite_values = {
+    const std::array<double, 47> finite_values = {
       control_rate_, waypoint_timeout_, odom_timeout_, frenet_odom_timeout_,
+      stop_steer_hold_sec_,
       imu_acceleration_sign_, source_stamp_future_tolerance_,
       localization_ready_timeout_,
       recovery_command_timeout_, recovery_pair_max_skew_,
@@ -551,6 +556,7 @@ private:
         [](double value) {return std::isfinite(value);}) ||
       control_rate_ < 1.0 || control_rate_ > 200.0 ||
       waypoint_timeout_ < 0.01 || waypoint_timeout_ > 2.0 ||
+      stop_steer_hold_sec_ < 0.0 || stop_steer_hold_sec_ > 2.0 ||
       odom_timeout_ < 0.01 || odom_timeout_ > 2.0 ||
       frenet_odom_timeout_ < 0.01 || frenet_odom_timeout_ > 2.0 ||
       source_stamp_future_tolerance_ < 0.0 ||
@@ -727,7 +733,9 @@ private:
       RCLCPP_ERROR_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
         "Localization not ready -> autonomy stop (teleop/estop remain available)");
-      publish_stop();
+      // 측위 상실은 "서라"가 아니라 "모르겠다"다. 조향까지 0 으로 내리면 차가
+      // 직진하다 벽으로 나간다 (run_0822_000933 코스아웃의 형태). coast_stop().
+      coast_stop();
     }
   }
 
@@ -902,7 +910,7 @@ private:
           "Localization autonomy gate blocked: received=%s ready=%s age=%.3fs",
           has_localization_ready ? "yes" : "no",
           localization_ready ? "true" : "false", status_age);
-        publish_stop();
+        coast_stop();       // 위 콜백과 같은 근거
         return;
       }
     }
@@ -1040,6 +1048,7 @@ private:
       command.drive.acceleration = 0.0F;
       command.drive.jerk = 0.0F;
       command.drive.steering_angle = 0.0F;
+      coast_stop_since_.reset();   // 정상 명령 — 공백 유지 창을 닫는다
       command_pub_->publish(command);
       return;
     }
@@ -1087,7 +1096,9 @@ private:
       RCLCPP_ERROR_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
         "MAP controller produced a non-finite command -> stop");
-      publish_stop();
+      // 컨트롤러 출력이 깨진 것이지 서라는 명령이 아니다 — 조향은 마지막
+      // 유효값을 유지한다.
+      coast_stop();
       return;
     }
 
@@ -1234,6 +1245,7 @@ private:
     command.drive.acceleration = static_cast<float>(target_acceleration);
     command.drive.jerk = 0.0F;
     command.drive.steering_angle = static_cast<float>(steering_angle);
+    coast_stop_since_.reset();   // 정상 명령 — 공백 유지 창을 닫는다
     command_pub_->publish(command);
 
     geometry_msgs::msg::PointStamped lookahead;
@@ -1661,7 +1673,52 @@ private:
   {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 2000, "%s -> stop", reason);
-    publish_stop();
+    coast_stop();
+  }
+
+  // ── 데이터 공백은 "정지 의도"가 아니다 (2026-08-24) ────────────────────
+  // publish_stop() 은 기본 생성 메시지를 발행하므로 speed 와 **steering 이
+  // 동시에 0** 이 된다. 상위가 죽으라고 한 것(E-stop / autonomy off / recovery
+  // STOP)이면 옳지만, 경로나 odom 이 잠깐 끊긴 것뿐일 때는 그 0.5 초 동안
+  // 차가 3~6 m/s 로 **눈감고 직진**한다는 뜻이다.
+  //   run_0824_164445 실측 — /local_waypoints 공백 50 회 / 47.3 s (주행의
+  //   9.2%). 그 동안 steer=0 & speed=0 명령이 실속도 >1 m/s 에서 881 프레임
+  //   (4.3%), 진입속도 6 m/s 대가 5 회. t=357.04~357.64 의 0.60 s 는 코너가
+  //   왼쪽으로 휘는 구간(kappa +0.28)이라 직진만으로 d 가 -0.02 -> -0.19 로
+  //   밀렸고, 그 0.17 m 가 좌측 회피를 기하 하한 미달(필요 2.58 m / 가용
+  //   2.21 m)로 죽여 우측(벽 여유 +0.05 m)으로 뒤집혔다. 4 랩 전부 동일.
+  // 그래서 속도만 0 으로 덮고 조향은 **마지막 rate-limited 명령**을 유지한다.
+  // 무한정 유지하면 꺾인 채 굳으므로 stop_steer_hold_sec 이 지나면 종전
+  // publish_stop() 의미론(조향 0)으로 떨어진다.
+  // curr_steering_angle_ 를 지우지 않는 것도 의도다 — 지우면 데이터가 돌아왔을
+  // 때 max_steering_rate_ 로 0 에서 다시 슬루해야 해 복귀가 늦다 (실측: 정지
+  // 해제 직후 "MAP steering rate clipped" 가 연속으로 찍힌다).
+  // ⚠️ 유지 창은 "데이터가 끊긴 뒤 경과 시간"이지 매 호출마다 갱신되지 않는다.
+  //    창을 여는 리셋은 **정상 명령을 실제로 발행한 지점**에서만 한다.
+  void coast_stop()
+  {
+    if (!command_pub_) {
+      return;
+    }
+    const auto now = this->now();
+    if (!coast_stop_since_.has_value()) {
+      coast_stop_since_ = now;
+    }
+    const double held = (now - *coast_stop_since_).seconds();
+    if (!std::isfinite(held) || held < 0.0 || held > stop_steer_hold_sec_) {
+      publish_stop();
+      return;
+    }
+    last_speed_command_ = 0.0;
+    last_control_time_.reset();
+    ackermann_msgs::msg::AckermannDriveStamped command;
+    command.header.stamp = now;
+    command.header.frame_id = "base_link";
+    command.drive.speed = 0.0F;
+    command.drive.acceleration = 0.0F;
+    command.drive.jerk = 0.0F;
+    command.drive.steering_angle = static_cast<float>(curr_steering_angle_);
+    command_pub_->publish(command);
   }
 
   void publish_stop()
@@ -1681,6 +1738,9 @@ private:
   // Parameters
   double control_rate_{40.0};
   double waypoint_timeout_{0.5};
+  double stop_steer_hold_sec_{0.5};
+  /// 데이터 공백이 시작된 시각 (coast_stop 유지 창의 기준).
+  std::optional<rclcpp::Time> coast_stop_since_;
   double odom_timeout_{0.5};
   double frenet_odom_timeout_{0.5};
   double imu_acceleration_sign_{-1.0};
