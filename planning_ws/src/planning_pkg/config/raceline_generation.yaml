@@ -15,6 +15,6 @@ sharp_corner_entry:
   # Minimum distance to keep the limit after entry [m].
   hold_m: 2.0
   # Relative cap from preview start through the end of the corner body.
-  speed_scale: 0.92
+  speed_scale: 0.82
   # Additional absolute CSV cap from entry through body end [m/s].
-  max_speed_mps: 4.50
+  max_speed_mps: 3.65

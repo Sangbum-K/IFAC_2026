@@ -5,9 +5,9 @@
 # ---------------------------------------------------------------------------
 global_trajectory_node:
   ros__parameters:
-    # my_track0817 실차: v-max 7, 계획 mu 0.90 (raceline 재생성 시 접미사 함께 교체)
+    # my_track0824_realfinal 실차: v-max 9, 계획 mu 1.40 (raceline 재생성 시 접미사 함께 교체)
     # margin 0.08 = 소형 트랙 회피 corridor 확보용 (build_map MARGIN, 주행선 불변)
-    # 랩 32.2 m, safe_dist는 adaptive 0.38~0.55 m (CSV 첫 줄 헤더에 기록).
+    # 랩 42.6 m, safe_dist는 adaptive 0.49~0.55 m (corridor 1.62~4.03 m; CSV 첫 줄 헤더에 기록).
     # 2026-08-07: 옛 my_track 라인은 b05264b에서 삭제됐는데 이 기본값만 남아
     # install에 남은 유령 CSV로 주행하고 있었다 — 현행 맵으로 교체.
     # 2026-08-11: 0807 -> 0810. 08-10 실차 두 런(run_0810_233206/233521)이
@@ -22,7 +22,10 @@ global_trajectory_node:
     # 달렸다 — 백의 /map 이 395x319 res 0.05 origin (-13.055981, -7.690340) 으로
     # maps/my_track0817.yaml 과 정확히 일치한다. 위 08-11 주석이 예고한 사고를
     # 또 반복하지 않으려면 여기가 현행 맵이어야 한다.
-    global_trajectory/trajectory_csv_file: my_track0817_iqp_max7.00ms_margin0.08m_mu0.90.csv
+    # 2026-08-24: 0817 -> 0824_realfinal. 0817 이전의 모든 raceline/centerline CSV 를
+    # 저장소에서 삭제했으므로 이 기본값이 0817 을 가리키면 파일 없음으로 죽는다.
+    # validation_mu 1.40 / max 9.00 m/s 는 이 CSV 와 이미 짝이 맞다.
+    global_trajectory/trajectory_csv_file: my_track0824_realfinal_iqp_max9.00ms_margin0.08m_mu1.40.csv
     # SP는 전 구간 경계/조향 검증을 통과한 파일만 map:= 또는 CLI로 원자적으로
     # 연결한다. 현재 기본 SP는 R_min 한계 위반이라 안전 기본값은 비활성.
     global_trajectory/overtaking_csv_file: ""
@@ -1158,4 +1161,4 @@ planner_visualizer_node:
     planning_viz/loop_rate_hz: 10.0
     # trajectory_csv_file 과 같은 맵이어야 한다 (섞이면 시각화 중앙선만 다른
     # 트랙을 그려서 "레이스라인이 코스를 벗어난 것처럼" 보인다).
-    planning_viz/centerline_csv_file: my_track0817_centerline.csv
+    planning_viz/centerline_csv_file: my_track0824_realfinal_centerline.csv
