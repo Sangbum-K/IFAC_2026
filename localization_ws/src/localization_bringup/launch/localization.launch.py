@@ -37,6 +37,10 @@ def _resolve_map(context, *args, **kwargs):
     여기서 존재 확인을 하는 이유: 맵 파일이 없으면 map_server 가 조용히 죽고
     PF 가 영영 수렴하지 않는다. 원인을 찾기 어려운 실패라 launch 단계에서 막는다.
     """
+    if (context.launch_configurations.get('backend') == 'slam_toolbox'
+            and context.launch_configurations.get('mode') == 'mapping'):
+        return []
+
     if context.launch_configurations.get('map_yaml_path'):
         return []
 

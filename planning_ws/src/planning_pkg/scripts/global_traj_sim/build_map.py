@@ -220,6 +220,14 @@ INFIELD_FILL_M = 0.8
 # medial-axis 골격이 스페클에서 가지를 치는 걸 막는다.
 MIN_ISLAND_M2 = 0.3
 
+# --despeckle 이 지워 주는 '떠 있는 점' 의 최대 넓이 [m^2]. 링(트랙 free 영역)
+# 안에 완전히 둘러싸여 떠 있는 비-free 섬만 대상이고, 벽에 붙은 것은 애초에
+# 링의 구멍이 아니라 잡히지도 않는다.
+# 0.05 m^2 = 20 px(0.05 m/px) 기준: 실차 장애물은 실측 반경 0.29 m → 원 넓이
+# 0.26 m^2(≈106 px)이고, 그 중 LiDAR 가 보는 앞면 호만 찍혀도 30 px 은 넘는다.
+# 그래서 이 문턱은 진짜 물체를 지울 수 없다 — SLAM 잔점(1~10 px)만 걸린다.
+DESPECKLE_MAX_M2 = 0.05
+
 # ROS map_saver 는 미관측(unknown) 셀을 정확히 205 로 쓴다 → occ = 50/255 = 0.19608.
 # 그런데 이 워크스페이스 SLAM 이 뱉는 yaml 은 전부 free_thresh: 0.25 라서
 # `occ < free_thresh` 가 unknown 을 통째로 '주행 가능'으로 삼킨다. 자세한 건
@@ -1683,6 +1691,112 @@ def seal_map(map_name):
     print(f"      '{img_path.name}' 수정 완료 — 다시 실행하면 트랙이 잡힌다.")
 
 
+def _select_ring(free_mask):
+    """free 마스크 → 트랙 링 = '가운데가 뚫린' 가장 큰 비-테두리 free 성분.
+
+    load_track 과 despeckle_map 이 **같은** 규약으로 트랙을 고르게 하려고
+    빼놨다. 한쪽만 고치면 파일 수리와 CSV 생성이 서로 다른 트랙을 보게 된다.
+    반환: (ring, ring_lab, labels, sizes) — 못 찾으면 ring/ring_lab 이 None.
+    """
+    labels, n = ndimage.label(free_mask)
+    sizes = ndimage.sum(free_mask, labels, range(1, n + 1))
+    for lab in (1 + np.argsort(sizes)[::-1]):
+        comp = labels == lab
+        touches_border = (comp[0, :].any() or comp[-1, :].any()
+                          or comp[:, 0].any() or comp[:, -1].any())
+        if touches_border:                 # 맵 바깥 배경 → 버림
+            continue
+        filled = ndimage.binary_fill_holes(comp)
+        if filled.sum() - comp.sum() > comp.sum() * 0.02:
+            return comp, int(lab), labels, sizes
+    return None, None, labels, sizes
+
+
+def _ring_specks(ring, resolution, max_m2):
+    """링 안에 **떠 있는** 비-free 섬 중 max_m2 이하인 것 → [(mask, px), ...].
+
+    링의 '구멍'만 후보로 삼는 게 이 함수의 안전장치다. 바깥벽·인필드 배리어는
+    링의 구멍이 아니거나(바깥벽) 넓이가 문턱을 한참 넘어서(인필드) 절대 안
+    걸린다. 즉 여기서 나오는 것은 '트랙 한복판에 몇 픽셀 떠 있는 점' 뿐이다.
+    """
+    holes = ndimage.binary_fill_holes(ring) & ~ring
+    hl, hn = ndimage.label(holes)
+    max_px = float(max_m2) / (resolution * resolution)
+    specks = []
+    for lab in range(1, hn + 1):
+        m = hl == lab
+        px = int(m.sum())
+        if px <= max_px:
+            specks.append((m, px))
+    return specks
+
+
+def despeckle_map(map_name, max_m2=DESPECKLE_MAX_M2):
+    """트랙 한복판에 떠 있는 SLAM 잔점을 맵 **파일**에서 지운다 (--despeckle).
+
+    왜 파일인가 — seal_map 의 ⚠️ 와 같은 이유다. 런타임(map_server/PF/
+    perception)도 이 .pgm 을 읽으므로, build_map 만 메모리에서 지우면 CSV 와
+    런타임이 다른 기하를 보게 된다.
+
+    왜 필요한가 (2026-08-24, my_track0824_real) — 6 px(0.015 m^2) 짜리 잔점
+    하나가 주행선 위에 떠 있어서 footprint 게이트가 s=21.3~22.2 m 를 통째로
+    FAIL 시켰다. 골격 추출은 이런 점을 이미 무시하지만(skeleton_ring), 폭·
+    침범 판정의 단일 기준인 raw_ring 은 원본 그대로라 잡아낸다. 그 설계는
+    **일부러** 그런 것이다 — 진짜 기둥을 지운 마스크로 검증하면 안 되니까.
+    그래서 지우는 판단은 자동이 아니라 사람이 이 플래그로 내린다.
+    """
+    yaml_path = _find_map_yaml(map_name)
+    with open(yaml_path) as f:
+        meta = yaml.safe_load(f)
+    img_path = yaml_path.parent / meta["image"]
+    image = Image.open(img_path)
+    if image.mode != "L":
+        raise RuntimeError(
+            f"--despeckle 은 8-bit 그레이스케일 맵만 고칠 수 있다 "
+            f"(이 파일 mode={image.mode}). 손으로 고칠 것.")
+    arr = np.array(image, dtype=np.uint8)
+    img = arr.astype(float)
+    if meta.get("negate", 0):
+        img = 255.0 - img
+    occ = (255.0 - img) / 255.0
+    free_mask = _known_free_mask(occ, meta)
+    resolution = (float(RESOLUTION_OVERRIDE) if RESOLUTION_OVERRIDE is not None
+                  else float(meta["resolution"]))
+    origin = np.array(meta["origin"][:3], dtype=float)
+    H = arr.shape[0]
+
+    ring, _, labels, sizes = _select_ring(free_mask)
+    if ring is None:
+        raise RuntimeError(_unclosed_map_report(
+            labels, sizes, resolution, origin, H, map_name))
+
+    specks = _ring_specks(ring, resolution, max_m2)
+    if not specks:
+        print(f"      '{map_name}' 트랙 안에 {max_m2:.3f} m^2 이하로 떠 있는 "
+              f"점이 없다 — 지울 것 없음.")
+        return
+
+    free_value = 0 if meta.get("negate", 0) else 254
+    backup = img_path.with_suffix(img_path.suffix + ".bak")
+    if not backup.exists():
+        backup.write_bytes(img_path.read_bytes())
+        print(f"      백업: {backup.name}")
+    total_px = 0
+    for mask, px in sorted(specks, key=lambda t: -t[1]):
+        rows, cols = np.nonzero(mask)
+        rc = (int(round(rows.mean())), int(round(cols.mean())))
+        print(f"        {_fmt_px(rc, resolution, origin, H)}  "
+              f"{px} px = {px * resolution * resolution:.3f} m^2 -> free")
+        arr[mask] = free_value
+        total_px += px
+    Image.fromarray(arr, mode="L").save(img_path)
+    print(f"      '{img_path.name}' 에서 잔점 {len(specks)}개 / {total_px} px "
+          f"제거 완료 — 다시 실행하면 이 자리는 주행 가능으로 잡힌다.")
+    print(f"      ⚠️ 지운 것 중에 **진짜 물체**가 있었는지 "
+          f"outputs/{map_name}_trajectory.png 로 확인할 것. "
+          f"되돌리려면 {backup.name} 를 되돌려 놓으면 된다.")
+
+
 def _find_map_yaml(map_name):
     """<맵>.yaml 을 MAPS_SEARCH_DIRS 순서로 찾아 경로를 돌려준다.
 
@@ -1784,21 +1898,7 @@ def load_track(map_name):
         raise ValueError("map YAML origin contains NaN/Inf")
 
     # --- 링(가운데 구멍 뚫린 free 영역 = 트랙) 검출 ---------------------------
-    labels, n = ndimage.label(free_mask)
-    sizes = ndimage.sum(free_mask, labels, range(1, n + 1))
-    ring = None
-    ring_lab = None
-    for lab in (1 + np.argsort(sizes)[::-1]):
-        comp = labels == lab
-        touches_border = (comp[0, :].any() or comp[-1, :].any()
-                          or comp[:, 0].any() or comp[:, -1].any())
-        if touches_border:                 # 맵 바깥 배경 → 버림
-            continue
-        filled = ndimage.binary_fill_holes(comp)
-        if filled.sum() - comp.sum() > comp.sum() * 0.02:
-            ring = comp
-            ring_lab = int(lab)
-            break
+    ring, ring_lab, labels, sizes = _select_ring(free_mask)
     if ring is None:
         # 예전엔 여기서 "닫힌 고리를 못 찾음" 한 줄만 남기고 죽었다. 원인이
         # 픽셀 몇 개일 때 그 한 줄로는 아무 것도 못 한다 — 어디가 새는지까지
@@ -1820,6 +1920,24 @@ def load_track(map_name):
               f"{where}{more}")
         print(f"             레이스라인엔 무해하지만 맵 결함이다 — "
               f"'build_map.py {map_name} --seal-map' 으로 그 자리만 메울 수 있다.")
+    # 트랙 한복판에 떠 있는 잔점은 여기서 지우지 않는다 — raw_ring 은 원본이
+    # 기준이어야 하고, 진짜 기둥일 수도 있기 때문이다. 대신 있다는 사실을
+    # 알린다: 이게 없으면 뒤에서 footprint 게이트가 FAIL 할 때 원인이 6 px
+    # 짜리 점이라는 걸 사람이 알 수가 없다 (2026-08-24 my_track0824_real).
+    specks = _ring_specks(ring, resolution, DESPECKLE_MAX_M2)
+    if specks:
+        worst = sorted(specks, key=lambda t: -t[1])[:3]
+        where = " · ".join(
+            _fmt_px((int(round(np.nonzero(m)[0].mean())),
+                     int(round(np.nonzero(m)[1].mean()))),
+                    resolution, origin, H) + f" {px}px"
+            for m, px in worst)
+        more = f" (총 {len(specks)} 곳)" if len(specks) > 3 else ""
+        print(f"      [warn] 트랙 안에 떠 있는 잔점 {len(specks)}개: {where}{more}")
+        print(f"             벽여유/footprint 검증은 이걸 진짜 장애물로 센다. "
+              f"SLAM 잔점이면 "
+              f"'build_map.py {map_name} --despeckle' 로 맵 파일에서 지울 것.")
+
     # 원본 occupancy component는 corridor/footprint의 불변 안전 기준이다.
     # 아래 정리는 medial-axis 추출용 사본에만 적용한다. 실제 작은 기둥/장애물을
     # 지운 마스크로 최종 검증하는 오류를 막는다.
@@ -4173,6 +4291,13 @@ def main():
                          "SLAM 맵이 테두리에서 잘렸거나 벽이 1 px 대각 계단일 때 "
                          "쓴다. 메모리가 아니라 **파일**을 고치므로 map_server/PF/"
                          "perception 과 CSV 가 같은 기하를 보게 된다.")
+    ap.add_argument("--despeckle", nargs="?", type=float,
+                    const=DESPECKLE_MAX_M2, default=None, metavar="M2",
+                    help=f"레이스라인을 만들지 않고, 트랙 한복판에 떠 있는 "
+                         f"SLAM 잔점(기본 {DESPECKLE_MAX_M2:g} m^2 이하)만 맵 "
+                         f"파일에서 지우고 끝낸다 (원본은 .pgm.bak 로 백업). "
+                         f"몇 px 짜리 점 하나가 footprint 게이트를 FAIL 시킬 때 "
+                         f"쓴다. 벽에 붙은 것은 대상이 아니라 안전하다.")
     ap.add_argument("--dir", choices=("cw", "ccw", "auto"), default="ccw",
                     help="주행 방향 (기본 ccw). 이 스택의 트랙은 반시계로 돈다 — "
                          "시계로 돌 맵만 cw 를 준다. auto 는 예전 휴리스틱으로, "
@@ -4293,6 +4418,13 @@ def main():
         # 기하로 CSV 를 만들어 버리는 사고도 막는다 — 고친 뒤 다시 실행할 것.
         print(f"[seal] '{args.map}' 맵 무결성 검사 + 수리 ...")
         seal_map(args.map)
+        return
+    if args.despeckle is not None:
+        # seal_map 과 같은 이유로 여기서 끝낸다 — 수리 전 기하로 CSV 를 만들어
+        # 버리는 사고를 막는다. 고친 뒤 다시 실행할 것.
+        print(f"[despeckle] '{args.map}' 트랙 안 잔점 제거 "
+              f"(<= {args.despeckle:g} m^2) ...")
+        despeckle_map(args.map, args.despeckle)
         return
     try:
         _apply_generation_config(args.generation_config)

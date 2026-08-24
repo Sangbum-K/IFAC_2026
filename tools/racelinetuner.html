@@ -48,6 +48,7 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
 #trackwrap{position:relative;min-width:0}
 #track{width:100%;height:100%;display:block;cursor:crosshair}
 #track.pan{cursor:grabbing}
+#track.line{cursor:move}
 #hint{
   position:absolute;left:10px;bottom:10px;color:var(--dim);font-size:11.5px;
   background:#11151ccc;padding:6px 9px;border-radius:6px;pointer-events:none;
@@ -129,8 +130,8 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
       속도는 오른쪽 <b>속도 막대</b>를 잡고 위/아래로 끕니다 — 잡은 막대는 좌우로
       흔들려도 그 자리에 고정되고, 옆 막대가 설정한 범위만큼 따라옵니다.<br>
       <b>휠</b> 커서 아래 막대 ±0.1 m/s · <b>Shift+클릭</b> 그 막대만 원본으로 ·
-      라인 기하는 이 도구로 바꾸지 않습니다 (<code>mkcsv</code> 담당)<br>
-      트랙: <b>드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
+      트랙 선을 <b>좌클릭 드래그</b>하면 라인을 튜닝합니다.<br>
+      빈 공간/우클릭 <b>드래그</b> 화면 이동 · <b>휠</b> 확대 · <b>더블클릭</b> 전체 맞춤 ·
       회색 점선 = <b>mkcsv 원본</b>
     </div>
   </div>
@@ -562,10 +563,39 @@ function nearestOut(wx, wy) {
   return { index: best, dist: Math.sqrt(bd) };
 }
 const track = $("track");
-// 라인 기하는 이 도구에서 편집하지 않는다 (mkcsv 담당). 트랙 캔버스는
-// 보기 전용 — 화면 이동/확대와 호버 읽기만 한다.
+let lineInflight = false, linePending = null;
+async function pumpLine() {
+  if (lineInflight || !linePending) return;
+  const op = linePending; linePending = null; lineInflight = true;
+  try {
+    const res = await fetch("/api/edit", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ops:[op]})});
+    const data = await res.json();
+    if (data.error) log("서버 오류: " + data.error, "e"); else absorb(data);
+  } catch (err) { log("통신 실패: " + err, "e"); }
+  finally { lineInflight = false; pumpLine(); }
+}
+function lineOp(phase, ev) {
+  const rect = track.getBoundingClientRect();
+  const [x,y] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
+                    track.clientWidth, track.clientHeight);
+  linePending = {op:"line_drag", phase, index:drag.index, x, y};
+  pumpLine();
+}
 track.addEventListener("mousedown", (ev) => {
   if (!D) return;
+  const rect = track.getBoundingClientRect();
+  const [wx,wy] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
+                      track.clientWidth, track.clientHeight);
+  const near = nearestOut(wx, wy);
+  if (ev.button === 0 && near.dist < 18/view.k) {
+    ev.preventDefault();
+    drag = {kind:"line", index:near.index};
+    track.classList.add("line");
+    lineOp("start", ev);
+    return;
+  }
   drag = { kind:"pan", x:ev.clientX, y:ev.clientY, cx:view.cx, cy:view.cy };
   track.classList.add("pan");
 });
@@ -579,6 +609,9 @@ window.addEventListener("mousemove", (ev) => {
     view.cy = drag.cy + (ev.clientY-drag.y)/view.k;
     redraw(); return;
   }
+  if (drag && drag.kind === "line") {
+    lineOp("move", ev); return;
+  }
   if (inside) {
     const [wx,wy] = S2W(ev.clientX-rect.left, ev.clientY-rect.top,
                         track.clientWidth, track.clientHeight);
@@ -586,8 +619,9 @@ window.addEventListener("mousemove", (ev) => {
     if (near.dist < 40/view.k) { hoverIdx = near.index; readout(); drawTrack(); drawCharts(); }
   }
 });
-window.addEventListener("mouseup", () => {
-  drag = null; track.classList.remove("pan");
+window.addEventListener("mouseup", (ev) => {
+  if (drag && drag.kind === "line") lineOp("end", ev);
+  drag = null; track.classList.remove("pan", "line");
 });
 track.addEventListener("wheel", (ev) => {
   ev.preventDefault();
@@ -849,8 +883,7 @@ window.addEventListener("resize", () => {
     MAPIMG.src = data.layers.png;
   }
   absorb(data);
-  log("속도 막대를 잡고 위/아래로 끄세요 — 옆 막대가 따라옵니다. " +
-      "휠 = ±0.1 m/s, Shift+클릭 = 그 막대만 원본으로.");
+  log("트랙 선 좌클릭 드래그 = 라인 튜닝 · 빈 공간/우클릭 드래그 = 화면 이동.");
 })();
 </script>
 </body>

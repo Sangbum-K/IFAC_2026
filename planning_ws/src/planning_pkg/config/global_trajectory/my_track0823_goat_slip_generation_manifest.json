@@ -1,0 +1,308 @@
+{
+  "files": [
+    {
+      "bytes": 8442,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0823_goat_centerline.csv",
+      "role": "centerline_output",
+      "sha256": "20796ad8f9d48197edde7896d237056b738e59efe4b00b3503d8dad481e6e828"
+    },
+    {
+      "bytes": 8442,
+      "path": "planning_ws/src/planning_pkg/config/centerline/my_track0823_goat_centerline.csv",
+      "role": "centerline_runtime",
+      "sha256": "20796ad8f9d48197edde7896d237056b738e59efe4b00b3503d8dad481e6e828"
+    },
+    {
+      "bytes": 35912,
+      "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0823_goat_slip_iqp_max9.00ms_margin0.08m_mu2.00.csv",
+      "role": "main_output",
+      "sha256": "79285457ec4526f6e8457bea81fcac3e7b20f2045845b0fc706c4652983603be"
+    },
+    {
+      "bytes": 35912,
+      "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0823_goat_slip_iqp_max9.00ms_margin0.08m_mu2.00.csv",
+      "role": "main_runtime",
+      "sha256": "79285457ec4526f6e8457bea81fcac3e7b20f2045845b0fc706c4652983603be"
+    }
+  ],
+  "generation_content_sha256": "13ac08b77d71ea8d5c728075bc7a40503f4c4f74fff0a5437acfe4d0e414f329",
+  "generation_id": "87e73cf31a1841f5bfe7a154f13d3de3",
+  "line_variant": "my_track0823_goat_slip",
+  "main": "my_track0823_goat_slip_iqp_max9.00ms_margin0.08m_mu2.00.csv",
+  "map": "my_track0823_goat",
+  "schema_version": 1,
+  "sp": null,
+  "sp_disabled_reason": "slip-experiment main line (corner-cut / hug-wall)",
+  "sp_enabled": false,
+  "sp_expected": "my_track0823_goat_slip_sp_max9.00ms_margin0.08m_mu2.00.csv",
+  "validation": {
+    "adaptive_safe_dist": {
+      "enabled": true,
+      "narrow_pts": 0,
+      "safe_max": 0.5500000000000002,
+      "safe_median": 0.5433333333333332,
+      "safe_min": 0.41250000000000003,
+      "total_pts": 70,
+      "width_max": 3.925,
+      "width_median": 2.0500000000000003,
+      "width_min": 1.375
+    },
+    "adaptive_speed_by_width": {
+      "binding_pts": 217,
+      "corner_pts": 354,
+      "enabled": true,
+      "limited_pts": 230,
+      "raw_v_min": 1.9230769230769234,
+      "slope_max": 0.065,
+      "slope_min": 0.03042369928991128,
+      "smoothed_pts": 174,
+      "total_pts": 354,
+      "v_min": 2.1978021978021984
+    },
+    "advisory_profiles": [
+      "python_sim_tracker"
+    ],
+    "backstop": {
+      "path_error_max_m": 0.6035176744591798,
+      "path_error_steps": 41,
+      "path_error_threshold_m": 0.3,
+      "speed_cut_max_mps": 3.7246925858481057,
+      "steer_sat_steps": 7,
+      "steer_sat_threshold": 0.85,
+      "total_steps": 321,
+      "triggered_steps": 43
+    },
+    "brake_decel_per_amp": 0.14,
+    "closedloop_footprint_slack_m": 0.1,
+    "corner_attack": {
+      "a_lat_max_mps2": 14.000000000000002,
+      "accel_max_mps2": 4.5000000000000515,
+      "attack_accel_mps2": 4.5,
+      "attack_decel_mps2": 2.4,
+      "corners": [
+        {
+          "a_lat_after_mps2": 13.80084262153141,
+          "a_lat_before_mps2": 5.466189060581936,
+          "grip_ratio": 1.0723265440195346,
+          "kappa_apex": 0.7313299897462133,
+          "radius_apex_m": 1.3673717938833887,
+          "s_apex_m": 3.299970262256983,
+          "turn_deg": 100.7054714558396,
+          "v_apex_after_mps": 4.344062952180336,
+          "v_apex_before_mps": 2.7339189346931407
+        },
+        {
+          "a_lat_after_mps2": 13.459907213005934,
+          "a_lat_before_mps2": 18.261443250271363,
+          "grip_ratio": 1.0458358362863975,
+          "kappa_apex": 0.8944199982086163,
+          "radius_apex_m": 1.1180429798113236,
+          "s_apex_m": 17.700033838710528,
+          "turn_deg": 103.61304368513213,
+          "v_apex_after_mps": 3.879272453490871,
+          "v_apex_before_mps": 4.518526134392583
+        },
+        {
+          "a_lat_after_mps2": 13.999999999999998,
+          "a_lat_before_mps2": 5.96509531701102,
+          "grip_ratio": 1.0878010878010878,
+          "kappa_apex": 0.9613099118172754,
+          "radius_apex_m": 1.0402472581496474,
+          "s_apex_m": 21.49986697087915,
+          "turn_deg": 95.95756607670647,
+          "v_apex_after_mps": 3.8162103734064585,
+          "v_apex_before_mps": 2.4910186767910862
+        },
+        {
+          "a_lat_after_mps2": 14.0,
+          "a_lat_before_mps2": 19.127540693784894,
+          "grip_ratio": 1.087801087801088,
+          "kappa_apex": 0.8107134134826594,
+          "radius_apex_m": 1.2334815032900517,
+          "s_apex_m": 35.100019617584664,
+          "turn_deg": 95.99497480597712,
+          "v_apex_after_mps": 4.155567475816116,
+          "v_apex_before_mps": 4.8573107425005695
+        }
+      ],
+      "decel_min_mps2": -2.400000000000052,
+      "demand_max_mps2": 14.705441169852746,
+      "enabled": true,
+      "measured_grip_mps2": 12.87,
+      "over_grip_pts": 13,
+      "raised_pts": 304,
+      "ramp_ok": true,
+      "slip_target_mps2": 14.0,
+      "total_pts": 354,
+      "v_max_after": 7.549997611556201,
+      "v_min_after": 3.8162103734064585,
+      "v_min_before": 2.1978021978021984,
+      "width_speed_cap_bypassed": true
+    },
+    "corner_cut": {
+      "enabled": false,
+      "min_turn_deg": 34.37746770784939,
+      "radius_m": 0.0
+    },
+    "corner_scrub_decel": {
+      "cap_mps2": 0.0,
+      "enabled": false,
+      "gain_per_alat": 0.0,
+      "total_pts": 354
+    },
+    "friction_overdrive": true,
+    "gate_profiles": [
+      "cpp_real_car"
+    ],
+    "gate_target": "real",
+    "hug_wall": {
+      "apex_frac": 0.55,
+      "band_m": 0.25,
+      "blend_m": 1.5,
+      "enabled": true,
+      "entry_m": 1.0,
+      "exit_m": 0.0,
+      "margin_m": 0.3,
+      "side": "inside",
+      "wall_clearance_min_m": 0.275
+    },
+    "longitudinal": {
+      "accel_limit_min": 2.2,
+      "ax_sign_flips": 13,
+      "ax_sign_flips_before_smoothing": 15,
+      "decel_limit_min": 2.2,
+      "jerk_limit": 30.0,
+      "jerk_max": 222.67671437374,
+      "jerk_over_pts": 41,
+      "jerk_p50": 1.0705523649317232,
+      "jerk_p99": 93.49905310519901,
+      "jerk_p99_before_smoothing": 216.6465369363823,
+      "smooth_passes": 2
+    },
+    "mu_profile": 2.0,
+    "plant_accel_mps2": 4.5,
+    "plant_decel_planned_mps2": 2.38,
+    "profile_settings": [
+      {
+        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "controller_speed_scale": 1.0,
+        "max_speed_mps": 9.0,
+        "name": "cpp_real_car",
+        "planner_speed_scale": 0.96,
+        "plant": "vesc"
+      },
+      {
+        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "controller_speed_scale": 0.3,
+        "max_speed_mps": 9.0,
+        "name": "python_sim_tracker",
+        "planner_speed_scale": 0.96,
+        "plant": "ideal"
+      }
+    ],
+    "raceline_v_max_mps": 9.0,
+    "speed_lookahead": {
+      "enabled": true,
+      "lookahead_s": 0.25,
+      "profile": "cpp_real_car",
+      "raised_pts": 182,
+      "total_pts": 354,
+      "v_drop_max": 0.005577612109459729,
+      "v_mean_after": 4.4377992815130085,
+      "v_mean_before": 4.437815531125138,
+      "window_max_m": 1.7049128344384918
+    },
+    "straight_boost": {
+      "boosted_len_m": 8.60023035166648,
+      "boosted_pts": 86,
+      "ceiling_after_max": 8.0,
+      "ceiling_before_max": 6.714956754002864,
+      "ceiling_window_m": 6.0,
+      "enabled": true,
+      "kappa_max": 0.1,
+      "min_len_m": 4.0,
+      "requested_mps": 8.0,
+      "runs": [
+        {
+          "boosted": false,
+          "kappa_max": 0.0604457930407691,
+          "length_m": 0.6000152178898168,
+          "pts": 6,
+          "s_end_m": 2.0000093534330263,
+          "s_start_m": 1.4999959816069288,
+          "v_baseline_max_mps": 3.950038482035373
+        },
+        {
+          "boosted": false,
+          "kappa_max": 0.09230112923874223,
+          "length_m": 1.000026024090278,
+          "pts": 10,
+          "s_end_m": 7.399940651493256,
+          "s_start_m": 6.499916703860709,
+          "v_baseline_max_mps": 4.61606122935809
+        },
+        {
+          "boosted": false,
+          "kappa_max": 0.09974945556351451,
+          "length_m": 3.5000916274074734,
+          "pts": 35,
+          "s_end_m": 13.200056053410963,
+          "s_start_m": 9.799966824378743,
+          "v_baseline_max_mps": 4.9265012509666795
+        },
+        {
+          "boosted": false,
+          "kappa_max": 0.0405660691229673,
+          "length_m": 0.10001901420886981,
+          "pts": 1,
+          "s_end_m": 18.599953791840456,
+          "s_start_m": 18.599953791840456,
+          "v_baseline_max_mps": 4.166549121839175
+        },
+        {
+          "boosted": false,
+          "kappa_max": 0.09646652465389849,
+          "length_m": 0.3999992231363919,
+          "pts": 4,
+          "s_end_m": 19.699956829546796,
+          "s_start_m": 19.399959487956362,
+          "v_baseline_max_mps": 3.71388521238537
+        },
+        {
+          "boosted": true,
+          "kappa_max": 0.09975502461389664,
+          "length_m": 8.60023035166648,
+          "pts": 86,
+          "s_end_m": 31.80003336049619,
+          "s_start_m": 23.29980508735321,
+          "v_baseline_max_mps": 6.714956754002864
+        }
+      ],
+      "runs_boosted": 1,
+      "runs_total": 6,
+      "target_mps": 8.0,
+      "total_len_m": 35.399979091937944,
+      "total_pts": 354,
+      "v_baseline_max_mps": 6.714956754002864,
+      "width_cap_min_on_boost": 5.626653524479358,
+      "width_capped_pts": 42
+    },
+    "velocity_profile_settings": {
+      "corner_accel_mps2": 2.2,
+      "corner_decel_mps2": 2.2,
+      "lat_err_corner_s": 0.065,
+      "lat_err_exit_decay_m": 2.0,
+      "lat_err_kappa_window_m": 10.0,
+      "lat_err_straight_s": 0.03,
+      "longitudinal_smooth_m": 0.55,
+      "longitudinal_smooth_passes": 2,
+      "mu_profile": 2.0,
+      "scrub_decel_max_mps2": 0.0,
+      "scrub_decel_per_alat": 0.0,
+      "speed_lookahead_s": 0.25,
+      "v_max_mps": 9.0,
+      "width_cap_smooth_m": 0.55,
+      "width_cap_smooth_max_gain": 1.2
+    }
+  }
+}

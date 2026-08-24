@@ -192,6 +192,9 @@ class Session:
         self.undo_stack = []
         # 막대를 잡고 있는 동안의 기준 상태 (speed_drag 참조). None 이면 안 잡음.
         self.drag_base = None
+        # 라인 점을 잡은 동안에도 되돌리기 한 칸만 쌓고, 매 프레임 같은 기준의
+        # 앵커에서 다시 푼다. 마우스 이동 이벤트 수만큼 편집이 누적되면 안 된다.
+        self.line_drag_base = None
         self.resumed = False
         self._resume()
 
@@ -264,6 +267,20 @@ class Session:
         if phase == "end":
             self.drag_base = None
 
+    def drag_line(self, operation):
+        phase = operation.get("phase", "move")
+        if phase == "start" or self.line_drag_base is None:
+            self.snapshot_undo()
+            self.line_drag_base = dict(self.state.anchors)
+        self.state.anchors = dict(self.line_drag_base)
+        index = int(operation["index"]) % self.state.n
+        point = np.array([float(operation["x"]), float(operation["y"])])
+        alpha = float((point - self.state.xy0[index]) @ self.state.normal0[index])
+        self.state.set_anchor(index, alpha)
+        self.state.solve()
+        if phase == "end":
+            self.line_drag_base = None
+
     def apply(self, operations):
         state = self.state
         messages = []
@@ -278,9 +295,13 @@ class Session:
             if kind == "speed_drag":
                 self.drag_speed(operation)
                 continue
+            if kind == "line_drag":
+                self.drag_line(operation)
+                continue
             # 드래그 도중에 다른 편집이 끼어들면(단축키 등) 기준 상태를 버린다 —
             # 안 그러면 다음 프레임이 그 편집을 지운 상태에서 다시 시작한다.
             self.drag_base = None
+            self.line_drag_base = None
             self.snapshot_undo()
             if kind == "anchor_xy":
                 index = int(operation["index"]) % state.n
