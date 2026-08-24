@@ -13,20 +13,20 @@
       "sha256": "5fbb1fb96dc517a56ad2e81d585509a4dcd93018e385a8e57c61b125bd939bf5"
     },
     {
-      "bytes": 43419,
+      "bytes": 43429,
       "path": "planning_ws/src/planning_pkg/scripts/global_traj_sim/outputs/my_track0824_realfinal_iqp_max9.00ms_margin0.08m_mu1.40.csv",
       "role": "main_output",
-      "sha256": "9bd6ab1d8d5a6b058f40cc1fe65e806d310374e1fd603717793b808ed6caeccf"
+      "sha256": "862976a10c44dce50896c3c9e2d22d74273545de9c5a81cb7874b1424834df72"
     },
     {
-      "bytes": 43419,
+      "bytes": 43429,
       "path": "planning_ws/src/planning_pkg/config/global_trajectory/my_track0824_realfinal_iqp_max9.00ms_margin0.08m_mu1.40.csv",
       "role": "main_runtime",
-      "sha256": "9bd6ab1d8d5a6b058f40cc1fe65e806d310374e1fd603717793b808ed6caeccf"
+      "sha256": "862976a10c44dce50896c3c9e2d22d74273545de9c5a81cb7874b1424834df72"
     }
   ],
-  "generation_content_sha256": "9c9986d651a2fee45ac6b1677435445ccabb02127b7e972e3ea94f73baaf306a",
-  "generation_id": "54cea3ece93440e1963a139034b03088",
+  "generation_content_sha256": "1830c578c20efab2c34308d1a51ee0cb6224e046e71107f44bc2e9ee14329972",
+  "generation_id": "4de6c8d962ce441f983add468afb885b",
   "main": "my_track0824_realfinal_iqp_max9.00ms_margin0.08m_mu1.40.csv",
   "map": "my_track0824_realfinal",
   "schema_version": 1,
@@ -62,14 +62,14 @@
       "python_sim_tracker"
     ],
     "backstop": {
-      "path_error_max_m": 0.27559282454558676,
-      "path_error_steps": 0,
+      "path_error_max_m": 0.3219039164624073,
+      "path_error_steps": 12,
       "path_error_threshold_m": 0.3,
-      "speed_cut_max_mps": 0.0,
+      "speed_cut_max_mps": 0.4455056193351335,
       "steer_sat_steps": 0,
       "steer_sat_threshold": 0.85,
-      "total_steps": 410,
-      "triggered_steps": 0
+      "total_steps": 366,
+      "triggered_steps": 12
     },
     "brake_decel_per_amp": 0.14,
     "closedloop_footprint_slack_m": 0.0,
@@ -79,15 +79,15 @@
     "gate_target": "real",
     "longitudinal": {
       "accel_limit_min": 2.2,
-      "ax_sign_flips": 6,
-      "ax_sign_flips_before_smoothing": 6,
+      "ax_sign_flips": 8,
+      "ax_sign_flips_before_smoothing": 8,
       "decel_limit_min": 2.2,
       "jerk_limit": 30.0,
-      "jerk_max": 122.76637792963163,
-      "jerk_over_pts": 32,
-      "jerk_p50": 0.374927853744321,
-      "jerk_p99": 97.60954106678571,
-      "jerk_p99_before_smoothing": 117.48349996798247,
+      "jerk_max": 249.35459419167321,
+      "jerk_over_pts": 43,
+      "jerk_p50": 0.5863406771790006,
+      "jerk_p99": 139.23576735918851,
+      "jerk_p99_before_smoothing": 165.92002343940845,
       "smooth_passes": 2
     },
     "mu_profile": 1.4,
@@ -95,7 +95,7 @@
     "plant_decel_planned_mps2": 2.38,
     "profile_settings": [
       {
-        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/miru/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
+        "config_sources": "/home/hanseungyeon/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/hanseungyeon/IFAC_ws/planning_ws/src/planning_pkg/config/environments/real_car.yaml + /home/hanseungyeon/IFAC_ws/control_ws/src/control_pkg/config/params.yaml + /home/hanseungyeon/IFAC_ws/control_ws/src/control_pkg/config/environments/real_car.yaml",
         "controller_speed_scale": 1.0,
         "max_speed_mps": 9.0,
         "name": "cpp_real_car",
@@ -103,7 +103,7 @@
         "plant": "vesc"
       },
       {
-        "config_sources": "/home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/miru/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
+        "config_sources": "/home/hanseungyeon/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/hanseungyeon/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml + /home/hanseungyeon/IFAC_ws/planning_ws/src/planning_pkg/config/params.yaml + /home/hanseungyeon/IFAC_ws/planning_ws/src/planning_pkg/config/environments/sim.yaml",
         "controller_speed_scale": 0.3,
         "max_speed_mps": 9.0,
         "name": "python_sim_tracker",
@@ -114,65 +114,65 @@
     "raceline_objective": "iqp",
     "raceline_v_max_mps": 9.0,
     "sharp_corner_entry": {
-      "absolute_cap_distance_m": 14.501044884194894,
+      "absolute_cap_distance_m": 14.501044884194815,
       "absolute_cap_pts": 145,
-      "affected_pts": 427,
+      "affected_pts": 423,
       "applied": true,
-      "baseline_lap_time_s": 7.7821958728524,
+      "baseline_lap_time_s": 7.782195872860969,
       "body_kappa": 0.25,
       "detected_corners": 4,
       "direct_binding_pts": 267,
-      "direct_limited_distance_m": 26.70254611499758,
+      "direct_limited_distance_m": 26.70254611499748,
       "direct_limited_pts": 267,
       "enabled": true,
       "entry_kappa": 0.32,
       "extend_through_body": true,
-      "final_lap_time_s": 9.711544765036836,
+      "final_lap_time_s": 8.505389378785942,
       "hold_m": 2.0,
-      "lap_time_delta_s": 1.9293488921844357,
-      "max_drop_mps": 1.8107082259158749,
-      "max_post_entry_m": 5.60039720086807,
-      "max_speed_mps": 3.65,
-      "mean_drop_mps": 1.0617391582262234,
+      "lap_time_delta_s": 0.7231935059249732,
+      "max_drop_mps": 0.9607082260085047,
+      "max_post_entry_m": 5.6003972008680485,
+      "max_speed_mps": 4.5,
+      "mean_drop_mps": 0.4771306061318436,
       "peak_kappa": 0.5,
       "preview_m": 4.0,
-      "scale": 0.82,
+      "scale": 0.92,
       "zones": [
         {
-          "body_after_entry_m": 1.4001201517200066,
-          "body_end_s_m": 9.700789098285643,
-          "end_s_m": 10.300668946565636,
-          "entry_s_m": 8.300668946565636,
-          "peak_kappa": 0.6040878968245176,
+          "body_after_entry_m": 1.4001201517199924,
+          "body_end_s_m": 9.700789098285593,
+          "end_s_m": 10.300668946565601,
+          "entry_s_m": 8.300668946565601,
+          "peak_kappa": 0.6040878968245058,
           "post_entry_m": 2.0,
-          "start_s_m": 4.3006689465656365
+          "start_s_m": 4.300668946565601
         },
         {
-          "body_after_entry_m": 1.5001362174874373,
-          "body_end_s_m": 13.001141887172269,
-          "end_s_m": 13.501005669684831,
-          "entry_s_m": 11.501005669684831,
-          "peak_kappa": 0.5829183201255024,
+          "body_after_entry_m": 1.5001362174874338,
+          "body_end_s_m": 13.001141887172215,
+          "end_s_m": 13.501005669684782,
+          "entry_s_m": 11.501005669684782,
+          "peak_kappa": 0.582918320125428,
           "post_entry_m": 2.0,
-          "start_s_m": 7.501005669684831
+          "start_s_m": 7.5010056696847816
         },
         {
-          "body_after_entry_m": 5.60039720086807,
-          "body_end_s_m": 26.40248356450939,
-          "end_s_m": 26.40248356450939,
-          "entry_s_m": 20.80208636364132,
-          "peak_kappa": 0.8455974958337781,
-          "post_entry_m": 5.60039720086807,
-          "start_s_m": 16.80208636364132
+          "body_after_entry_m": 5.6003972008680485,
+          "body_end_s_m": 26.40248356450928,
+          "end_s_m": 26.40248356450928,
+          "entry_s_m": 20.80208636364123,
+          "peak_kappa": 0.8455974958337472,
+          "post_entry_m": 5.6003972008680485,
+          "start_s_m": 16.80208636364123
         },
         {
-          "body_after_entry_m": 5.6003470218664635,
-          "body_end_s_m": 5.900379032771869,
-          "end_s_m": 5.900379032771866,
-          "entry_s_m": 0.30003201090540554,
-          "peak_kappa": 0.9231916942213018,
-          "post_entry_m": 5.6003470218664635,
-          "start_s_m": 39.00460735481038
+          "body_after_entry_m": 5.600347021866437,
+          "body_end_s_m": 5.90037903277184,
+          "end_s_m": 5.900379032771838,
+          "entry_s_m": 0.30003201090540377,
+          "peak_kappa": 0.9231916942213286,
+          "post_entry_m": 5.600347021866437,
+          "start_s_m": 39.00460735481021
         }
       ]
     },
@@ -183,10 +183,10 @@
       "profile": "cpp_real_car",
       "raised_pts": 267,
       "total_pts": 427,
-      "v_drop_max": 0.7436376631948649,
-      "v_mean_after": 5.784650181756677,
-      "v_mean_before": 5.960363618109998,
-      "window_max_m": 2.23206964731802
+      "v_drop_max": 0.7436376631806674,
+      "v_mean_after": 5.784650181751906,
+      "v_mean_before": 5.960363618107082,
+      "window_max_m": 2.232069647332162
     },
     "velocity_profile_settings": {
       "corner_accel_mps2": 2.2,
@@ -202,8 +202,8 @@
       "sharp_corner_entry_enabled": true,
       "sharp_corner_entry_hold_m": 2.0,
       "sharp_corner_entry_kappa": 0.32,
-      "sharp_corner_entry_max_speed_mps": 3.65,
-      "sharp_corner_entry_speed_scale": 0.82,
+      "sharp_corner_entry_max_speed_mps": 4.5,
+      "sharp_corner_entry_speed_scale": 0.92,
       "sharp_corner_peak_kappa": 0.5,
       "sharp_corner_preview_m": 4.0,
       "speed_lookahead_s": 0.25,
