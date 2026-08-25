@@ -114,6 +114,10 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/standstill_watchdog_sec", 2.0);
     this->declare_parameter("spliner/standstill_speed_eps", 0.20);
     this->declare_parameter("spliner/cluster_gap_d_m", 0.8);
+    // 봉쇄 기하에서 일시적 박스 제외 — 근거는 spliner_node.hpp 선언부 주석.
+    this->declare_parameter("spliner/cluster_ghost_miss_frames", 4);
+    this->declare_parameter("spliner/cluster_merge_dynamic", false);
+    this->declare_parameter("spliner/cluster_min_obs", 5);
     // 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식)
     this->declare_parameter("spliner/cls_min_nb_meas", 5);
     this->declare_parameter("spliner/cls_min_std", 0.16);
@@ -276,6 +280,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     standstill_speed_eps_ =
         this->get_parameter("spliner/standstill_speed_eps").as_double();
     cluster_gap_d_m_ = this->get_parameter("spliner/cluster_gap_d_m").as_double();
+    cluster_ghost_miss_frames_ = static_cast<int>(
+        this->get_parameter("spliner/cluster_ghost_miss_frames").as_int());
+    cluster_merge_dynamic_ =
+        this->get_parameter("spliner/cluster_merge_dynamic").as_bool();
+    cluster_min_obs_ = static_cast<int>(
+        this->get_parameter("spliner/cluster_min_obs").as_int());
     cls_min_nb_meas_ = static_cast<int>(this->get_parameter("spliner/cls_min_nb_meas").as_int());
     cls_min_std_ = this->get_parameter("spliner/cls_min_std").as_double();
     cls_max_std_ = this->get_parameter("spliner/cls_max_std").as_double();
@@ -431,6 +441,12 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
         path_check_margin_ < 0.0 || path_check_margin_ > 2.0 ||
         cluster_gap_s_m_ < 0.0 || cluster_gap_s_m_ > lookahead_m_ ||
         cluster_gap_d_m_ < 0.0 || cluster_gap_d_m_ > 5.0 ||
+        // 0 = 기능 off. 상한은 perception 의 coast 수명(track_timeout_sec 0.80
+        // = 30Hz 에서 24프레임)보다 크면 게이트가 영원히 안 걸리므로 그 언저리.
+        cluster_ghost_miss_frames_ < 0 || cluster_ghost_miss_frames_ > 30 ||
+        // 0 = off. commit_min_obs 를 넘기면 "회피는 커밋되는데 그 회피를
+        // 만든 장애물은 아직 병합도 못 하는" 역전이 생기므로 그 위로 못 간다.
+        cluster_min_obs_ < 0 || cluster_min_obs_ > commit_min_obs_ ||
         trailing_engage_dist_m_ <= 0.0 || trailing_engage_dist_m_ > lookahead_m_ ||
         // 목표 간격은 안전 하한보다 커야 하고 lookahead 안이어야 한다.
         dyn_follow_gap_min_m_ < 0.0 ||
@@ -5456,6 +5472,10 @@ void SplinerNode::ClassifyObstacles(
         }
         auto &tr = cls_tracks_[obs.id];
         tr.last_seen = now;
+        // 연속 미관측(코스팅) 프레임 수. **아래 표본 부족 continue 보다 앞에서**
+        // 세야 한다 — 유령은 대개 관측이 적어 그 continue 에 걸린다.
+        tr.miss_run = obs.is_visible ? 0 : tr.miss_run + 1;
+        tr.ever_visible = tr.ever_visible || obs.is_visible;
         // s는 첫 관측 기준으로 unwrap해 원형 좌표 std 왜곡 방지
         if (tr.s_hist.empty()) {
             tr.s_ref = obs.s_center;
@@ -6073,6 +6093,26 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
                         mergeable = false;
                     }
                 }
+                // ── 일시적 박스는 합치지 않는다 (2026-08-25) ──────────────
+                // **위 봉쇄 근거 판정 뒤에** 둔다. 근거(정지 권한)는 종전
+                // 그대로 두고 기하만 뺀다 — hpp 의 cluster_merge_dynamic_
+                // 주석에 있는 잔해 함정 때문이다.
+                if (mergeable) {
+                    const auto ki = TransientKindOf(obs[i]);
+                    const auto kj = TransientKindOf(obs[j]);
+                    if (ki != TransientKind::kReal ||
+                        kj != TransientKind::kReal) {
+                        RCLCPP_INFO_THROTTLE(this->get_logger(), *get_clock(),
+                            2000,
+                            "클러스터 병합 생략: 일시적 박스 "
+                            "(id %d[%s] + %d[%s]) — 따로 두고 "
+                            "CheckPathCollision 에 맡긴다",
+                            obs[i].id, TransientKindName(ki),
+                            obs[j].id, TransientKindName(kj));
+                        NoteOutcome("cluster_merge_skipped_transient");
+                        mergeable = false;
+                    }
+                }
                 if (mergeable) {
                     auto &a = obs[i];
                     const auto &b = obs[j];
@@ -6138,6 +6178,14 @@ std::vector<f1tenth_planning_msgs::msg::Obstacle> SplinerNode::ClusterObstacles(
                 !std::isfinite(b.s_start) || !std::isfinite(b.s_end) ||
                 !std::isfinite(a.d_left) || !std::isfinite(a.d_right) ||
                 !std::isfinite(b.d_left) || !std::isfinite(b.d_right)) {
+                continue;
+            }
+            // 일시적 박스(코스팅 유령 / 동적 상대)는 사이 통로를 메울 자격이
+            // 없다 — run_0824_192407 176.65 `사이 통로 봉쇄: id 231+235 사이
+            // 0.14 m` 는 구성원 **둘 다 상대차**였고, 그 한 줄이 성립해 있던
+            // 우측 회피(d_hold -0.54)를 96 ms 만에 지웠다. 근거는 hpp
+            // cluster_ghost_miss_frames_ 주석.
+            if (IsTransientBox(a) || IsTransientBox(b)) {
                 continue;
             }
             const double ai = Mod(a.s_start - ref, track_len_);
@@ -6214,6 +6262,57 @@ int SplinerNode::ObsSeen(int32_t id) const {
     auto it = cls_tracks_.find(id);
     return (it == cls_tracks_.end())
         ? 0 : static_cast<int>(it->second.s_hist.size());
+}
+
+bool SplinerNode::IsCoastGhost(
+    const f1tenth_planning_msgs::msg::Obstacle &o) const {
+    if (cluster_ghost_miss_frames_ <= 0 || o.is_visible) {
+        return false;
+    }
+    // 병합된 박스는 `a.is_visible = a || b` 라 실물이 하나라도 섞였으면
+    // 여기 못 온다. 남은 것은 "이 트랙 자체가 지금 외삽 중"인 경우다.
+    auto it = cls_tracks_.find(o.id);
+    if (it == cls_tracks_.end()) {
+        return false;     // 이력이 없으면 판단 근거도 없다 — 유령으로 몰지 않는다
+    }
+    // ⚠️ 실측된 적이 없으면(=랩 기억 주입) 유령이 아니다. hpp 주석 참조.
+    if (!it->second.ever_visible) {
+        return false;
+    }
+    return it->second.miss_run >= cluster_ghost_miss_frames_;
+}
+
+SplinerNode::TransientKind SplinerNode::TransientKindOf(
+    const f1tenth_planning_msgs::msg::Obstacle &o) const {
+    // (1) coast 유령.
+    if (IsCoastGhost(o)) {
+        return TransientKind::kGhost;
+    }
+    // (2) 지나가는 상대차. ClassifyObstacles 가 이미 덮어쓴 뒤의 플래그다.
+    if (!cluster_merge_dynamic_ && !o.is_static) {
+        return TransientKind::kDynamic;
+    }
+    // (3) 신생 박스. 분류로는 못 막는 창이다 — 지나가는 차의 첫 프레임과
+    //     진짜 콘의 첫 프레임은 s/d 범위도 vs 도 구별되지 않는다.
+    if (cluster_min_obs_ > 0 && ObsSeen(o.id) < cluster_min_obs_) {
+        return TransientKind::kFresh;
+    }
+    return TransientKind::kReal;
+}
+
+const char *SplinerNode::TransientKindName(TransientKind k) {
+    switch (k) {
+        case TransientKind::kGhost:   return "유령";
+        case TransientKind::kDynamic: return "동적";
+        case TransientKind::kFresh:   return "신생";
+        case TransientKind::kReal:    break;
+    }
+    return "실물";
+}
+
+bool SplinerNode::IsTransientBox(
+    const f1tenth_planning_msgs::msg::Obstacle &o) const {
+    return TransientKindOf(o) != TransientKind::kReal;
 }
 
 bool SplinerNode::WasEverDynamic(int32_t id) const {

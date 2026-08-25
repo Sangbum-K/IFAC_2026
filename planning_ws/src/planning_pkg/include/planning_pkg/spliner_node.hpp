@@ -157,6 +157,28 @@ private:
   // ClusterObstacles 가 병합 시 min(a.id, b.id) 를 남기므로 이 조회는
   int ObsSeen(int32_t id) const;
 
+  /// 봉쇄 기하에서 박스를 빼야 하는 사유. kReal 이 아니면 뺀다.
+  /// 판정 사다리는 TransientKindOf 한 곳에만 둔다 — 예전에 가부(bool)와
+  /// 로그 문자열이 같은 사다리를 두 벌 갖고 있었고, 그런 복제는 한쪽만
+  /// 고쳤을 때 로그가 거짓말하는 형태로 조용히 어긋난다.
+  enum class TransientKind { kReal, kGhost, kDynamic, kFresh };
+  TransientKind TransientKindOf(
+    const f1tenth_planning_msgs::msg::Obstacle & o) const;
+  static const char * TransientKindName(TransientKind k);
+
+  // 이 박스를 **봉쇄 기하**(ClusterObstacles 의 병합 / 사이 통로 봉쇄)에서
+  // 빼야 하는가. 둘 중 하나면 참:
+  //   (1) 연속 미관측이 cluster_ghost_miss_frames_ 이상인 coast 유령
+  //   (2) 동적으로 분류된 박스 (cluster_merge_dynamic_ 이 false 일 때)
+  // 어느 쪽도 "무시한다"는 뜻이 아니다 — 개별 박스로 남아 CheckPathCollision
+  // 과 모든 하류 검증을 그대로 통과해야 한다. 빼는 것은 "다른 물체와 합쳐
+  // **없는 벽**을 세울 권한" 하나뿐이다.
+  bool IsTransientBox(const f1tenth_planning_msgs::msg::Obstacle & o) const;
+
+  // 지금 외삽(coasting) 중인 트랙인가 — **실측된 적이 있고** 연속 미관측이
+  // cluster_ghost_miss_frames_ 이상. 랩 기억 주입은 여기 해당하지 않는다.
+  bool IsCoastGhost(const f1tenth_planning_msgs::msg::Obstacle & o) const;
+
   // 이 id 가 spliner 분류 이력에서 한 번이라도 동적이었나 (ObsClsTrack::ever_dynamic).
   // 모르는 id 면 false — 처음 보는 트랙에 마진을 주지 않는다.
   bool WasEverDynamic(int32_t id) const;
@@ -832,6 +854,68 @@ private:
   double path_check_margin_{0.15};   // 경로-장애물 충돌 판정 횡방향 여유 [m]
   double cluster_gap_s_m_{8.0};      // 이 s 간격 이내 장애물은 병합 후보 [m]
   double cluster_gap_d_m_{0.8};      // 사이 corridor가 이보다 좁으면 병합 [m]
+  // ── 봉쇄 기하에서 일시적 박스를 뺀다 (2026-08-25, run_0824_192407) ──────
+  // ClusterObstacles 의 병합/사이통로봉쇄는 **통로를 없애는 비관적 조작**이라
+  // 이 파일의 정책("사전 필터는 낙관적, 가부는 CheckPathCollision")과 반대
+  // 방향이다. 그런데도 지금까지 정적/동적·실관측/코스팅을 하나도 안 가렸다.
+  //
+  // run_0824_192407 t=176.6~179.0 실측 (콘 #234 접촉):
+  //   · 176.626 우측 회피경로 성립(87점, d +0.28 -> -0.54) -> **96 ms 뒤 소멸**.
+  //     지운 것은 상대차 두 박스다 — `사이 통로 봉쇄: id 231+235 사이 0.14 m`
+  //     (둘 다 상대차) + `231(상대차)+234(콘)` 병합.
+  //   · 콘 위치 s=11.95 의 자차 중심 가용 폭: **진짜 정적만이면 0.55~0.87 m 로
+  //     한 번도 안 막힌다.** 본 대로면 176.88~177.85 의 0.97 s 가 0.00~0.03 m.
+  //     그 0.97 s 중 **0.73 s(75%)** 는 상대차가 이미 떠난 뒤의 coast 유령이다.
+  //   · 상대차가 콘의 s 창을 비운 것은 t≈176.96, 자차 도착은 178.99 — 2.03 s 뒤.
+  //     그때 상대는 6 m 앞이었다. 종방향 계약은 정상이었다(gap 4.16 > engage
+  //     2.81 -> follow_active=0). 즉 상대는 **횡으로만** 우리를 죽였다.
+  //
+  // 왜 병합이 특히 나쁜가: `a.vs = min(a.vs, b.vs)` 라 상대차(vs +2.22)와
+  // 콘(-0.07)이 합쳐지면 vs 가 -0.07 로 덮여, CheckPathCollision 이 갖고 있는
+  // `motion_s = vs*t` 전파가 **사후에 무력화**된다. 게다가 `is_static = a && b`
+  // 라 합쳐진 박스가 동적이 되어 콘이 회피 티어(static_close)에서 빠진다.
+  //
+  // 연속 미관측 프레임 수가 이 값 이상인 코스팅 트랙은 병합/사이통로봉쇄에
+  // 참여시키지 않는다. 0 이면 기능 off(종전 동작).
+  // 4 인 이유(run_0824_192407 전체 트랙 593개 실측):
+  //   · 소멸 직전 coast 꼬리 561개, median **29프레임(707 ms)** — track_timeout_sec
+  //     0.80 이 그대로 보인다. 전체 장애물 관측의 46%가 is_visible=false 이고
+  //     그중 72%가 이 꼬리다.
+  //   · 중간 미관측(진짜 가림)은 median **2프레임(30 ms)**, 54%가 <=2프레임.
+  //   두 분포가 4프레임(=0.1 s)에서 깨끗이 갈린다 — 꼬리는 거의 전부 거르고
+  //   짧은 가림은 거의 전부 남긴다.
+  // ⚠️ 게이트는 **실측된 적 있는** 트랙에만 건다(ObsClsTrack::ever_visible).
+  //    랩 기억 주입은 정의상 is_visible=false 인데 그쪽은 회랑 기하에 쓰는
+  //    것이 계약이다 — 같이 빼면 bridge 의 memory_inject 가 무력화된다.
+  //    ⚠️ 남는 구멍: **이번 통과에 실측된 뒤 가려져 기억으로 이어지는** 트랙은
+  //    ever_visible=true 라 여기 걸린다. memory_enabled 를 켤 때 다시 볼 것.
+  int cluster_ghost_miss_frames_{4};
+  // 동적으로 분류된 박스를 병합/사이통로봉쇄에 참여시킬 것인가.
+  // false(기본)면 정적끼리만 합친다. 동적은 개별 박스로 남아
+  // CheckPathCollision 이 **자기 vs 로 전파해** 판정한다 = 방어선은 그대로다.
+  // ⚠️ 이 게이트는 `corridor_block_evidence_`(정지 권한)에는 걸지 않는다 —
+  //    잔해는 클러스터 재분할로 중심이 미끄러져 "움직인 구성원"이 되므로
+  //    (run_0822_000310: 사고 버스트 93쌍 중 70쌍) 같은 게이트를 근거에도
+  //    걸면 [[planning-corridor-block-verdict]] 가 못박은 기능이 통째로 죽는다.
+  //    아래 ClusterObstacles 는 근거 판정을 **게이트 앞에서** 끝낸다.
+  bool cluster_merge_dynamic_{false};
+  // 관측 수가 이 값 미만인 **신생 박스**도 봉쇄 기하에서 뺀다. 0 이면 off.
+  // 위 둘과 같은 개념이다 — "박스는 있는데 그 기하를 아직 못 믿는다".
+  // 갓 태어난 트랙은 s/d 범위도 vs 도 수렴 전이라, 지나가는 차의 첫 프레임과
+  // 진짜 콘의 첫 프레임이 **구별되지 않는다**. 그래서 분류(정적/동적)로는
+  // 이 창을 못 막는다: run_0824_192407 176.62 의
+  //   `사이 통로 봉쇄: id 234(콘)+235(상대차) 0.29 m < 필요 0.48`
+  // 에서 #235 는 관측 **1프레임**이었고 vs 도 +0.03 이라 어떤 속도 문턱도
+  // 안 걸린다. 그 한 줄이 콘 #234 의 d_right 를 -0.09 -> -0.24 로 늘렸고,
+  // 0.17 s 뒤 완화된 d_hold -0.54 가 **여유 0.02 m** 로 거부됐다.
+  //
+  // 문턱을 cls_min_nb_meas(5)와 같이 둔다 — 분류기가 트랙을 믿기 시작하는
+  // 지점과 같은 곳이다. 같은 계열의 선례가 셋 있다:
+  //   StableObstacles(commit_break_min_obs 3) / commit_min_obs(7) /
+  //   cls_min_nb_meas(5). 전부 "갓 뜬 트랙에 파괴 권한을 주지 않는다"이다.
+  // 낙관 창의 대가는 최대 5사이클(≈0.17 s)이고, 그 사이에도 신생 박스는
+  // **개별 박스로 CheckPathCollision 을 그대로 통과해야 한다**(fail-closed).
+  int cluster_min_obs_{5};
   // (evasion_dist_min_ 제거 — 2026-08-10)
   // "벽이 좁을 때 apex를 여기까지 줄여서라도 시도한다"는 하한이었으나,
   // 모든 소비처가 max(evasion_dist_min_, RequiredObstacleClearance(obs)) 로
@@ -976,6 +1060,19 @@ private:
     // (실차 콘 max_disp 최대 0.244 m / 시뮬 0.422 m, 문턱 0.5), 정지 권한처럼
     // 안전에 직결되는 판단은 분류 결과가 아니라 이 값으로 건다.
     double max_disp{0.0};
+    // 연속 **미관측**(is_visible=false) 프레임 수. 실관측이 한 번 오면 0.
+    // perception 은 트랙을 잃어도 track_timeout_sec(0.80) 동안 KF 로 외삽해
+    // 계속 발행하므로, 이 카운터만이 "실측"과 "무덤까지 끌고 가는 외삽"을
+    // 가른다. 소비처는 ClusterObstacles 의 봉쇄 기하 하나다
+    // (cluster_ghost_miss_frames_ 주석에 분포 실측).
+    int miss_run{0};
+    // 이 트랙이 **한 번이라도 실측된 적**이 있나 (is_visible=true 를 본 적).
+    // coast 꼬리(실측 뒤 외삽)와 랩 기억 주입(처음부터 끝까지 외삽)을 가른다.
+    // bridge 의 memory_inject 계약이 "기억은 is_visible=False 로 넣되 **회랑
+    // 기하와 속도 상한에는 그대로 쓴다**(비대칭 사용)"이므로, 기억을 유령으로
+    // 몰면 그 계약이 조용히 깨진다 (perception_obstacle_bridge_node.py 의
+    // memory_inject docstring). 기억은 실측된 적이 없으므로 이 값이 false 다.
+    bool ever_visible{false};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
   std::map<int32_t, ObsClsTrack> cls_tracks_;

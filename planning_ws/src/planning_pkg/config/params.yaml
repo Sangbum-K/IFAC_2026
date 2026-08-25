@@ -920,6 +920,17 @@ spliner_node:
     # 충돌구간(수 m 앞)이 한 박스로 합쳐지는 역할도 겸한다.
     spliner/cluster_gap_s_m: 3.0         # 이 s 간격 이내면 병합 후보 [m] (was 8.0, 소형 트랙)
     spliner/cluster_gap_d_m: 0.6         # 사이 corridor가 이보다 좁으면 병합 [m] (was 0.8)
+    # ── 봉쇄 기하에서 일시적 박스 제외 (2026-08-25, run_0824_192407) ──────
+    # 병합과 사이통로봉쇄는 통로를 없애는 **비관적** 조작인데 지금까지
+    # 정적/동적·실관측/코스팅을 하나도 안 가렸다. 상대차가 콘 옆을 지나가는
+    # 1.5초 동안 회랑이 통째로 막힌 것으로 보여 성립해 있던 회피(d -0.54)가
+    # 96 ms 만에 지워졌고 그대로 콘에 접촉했다. 상세 근거·실측은
+    # spliner_node.hpp 의 cluster_ghost_miss_frames_ 선언부 주석.
+    # 빼는 것은 "합쳐서 없는 벽을 세울 권한"뿐이고, 개별 박스로는 그대로
+    # CheckPathCollision(동적은 vs 전파 포함)을 통과해야 한다.
+    spliner/cluster_ghost_miss_frames: 4 # 연속 미관측 N프레임 이상이면 제외 (0=off)
+    spliner/cluster_merge_dynamic: false # true = 종전 동작(동적도 병합)
+    spliner/cluster_min_obs: 5           # 관측 N회 미만 신생 박스도 제외 (0=off)
     # 정적/동적 재분류 (unicorn perception/multi_tracking.py 이식):
     # 위치 std 투표(min/max_std) + 정지 재분류(vs_reset)로 perception의
     # is_static을 덮어쓴다 — 파킹한 상대를 동적으로 두면 예측 유령·섹터
