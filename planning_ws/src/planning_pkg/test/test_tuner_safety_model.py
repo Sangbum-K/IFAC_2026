@@ -438,8 +438,8 @@ def test_repository_generation_yaml_is_valid_and_enabled():
     assert applied['SHARP_CORNER_BODY_KAPPA'] == pytest.approx(0.25)
     assert applied['SHARP_CORNER_PREVIEW_M'] == pytest.approx(4.0)
     assert applied['SHARP_CORNER_ENTRY_HOLD_M'] == pytest.approx(2.0)
-    assert applied['SHARP_CORNER_ENTRY_SPEED_SCALE'] == pytest.approx(0.92)
-    assert applied['SHARP_CORNER_ENTRY_MAX_SPEED_MPS'] == pytest.approx(4.50)
+    assert applied['SHARP_CORNER_ENTRY_SPEED_SCALE'] == pytest.approx(0.98)
+    assert applied['SHARP_CORNER_ENTRY_MAX_SPEED_MPS'] == pytest.approx(5.00)
 
 
 def test_sharp_corner_entry_mask_handles_a_corner_across_s_zero():
