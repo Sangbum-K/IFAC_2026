@@ -647,6 +647,8 @@ spliner_node:
     # 중립점을 기계적으로 수리한 뒤 재평가할 것. 올릴 때의 검증 절차는
     # (a) 회피 중 /pitwall/lat_err 가 벽 여유(최소 0.35 m) 안인가
     # (b) control 백스톱(map/backstop_steer_sat_ratio 0.85) 발화가 늘지 않는가.
+    spliner/steer_kappa_scale: 1.25
+    spliner/geom_floor_margin: 1.00
     spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
     # ── hold 구간 침범 완화의 속도 문턱 [m/s] ─────────────────────────────
