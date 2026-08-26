@@ -133,6 +133,18 @@ def generator_constants(path=GENERATOR_PATH, names=_GENERATOR_CONSTANTS):
     return values
 
 
+def _unknown_occupancy():
+    """build_map.ROS_UNKNOWN_OCC — map_saver 의 unknown 205 → occ 50/255.
+
+    베껴 적지 않고 생성기에서 읽는다(_GENERATOR_CONSTANTS 와 같은 이유). 생성기를
+    못 읽는 환경에서도 튜너는 떠야 하므로 ROS 규약값으로만 폴백한다.
+    """
+    try:
+        return generator_constants(names=("ROS_UNKNOWN_OCC",))["ROS_UNKNOWN_OCC"]
+    except (FileNotFoundError, ValueError, KeyError):
+        return 50.0 / 255.0
+
+
 # ======================================================== 트랙 맵
 class TrackMap:
     """맵 이미지 → 주행 가능 마스크 + 월드↔픽셀 변환.
@@ -155,7 +167,15 @@ class TrackMap:
         if meta.get("negate", 0):
             image = 255.0 - image
         occupancy = (255.0 - image) / 255.0        # ROS map_server 관례
-        free = occupancy < float(meta.get("free_thresh", 0.196))
+        # unknown(map_saver 의 205) 을 free 로 세지 않는다 —
+        # build_map._known_free_mask 와 **같은 판정**이어야 한다. 이 워크스페이스
+        # SLAM 이 뱉는 yaml 은 free_thresh 가 0.25 라서 `occ < free_thresh` 가
+        # unknown(occ 0.196) 을 통째로 삼키고, 인필드 벽이 한 군데라도 뚫려 있으면
+        # 트랙 성분이 바깥 배경과 이어져 링 검출이 통째로 실패한다.
+        # my_track0824_realfinal 이 정확히 그 경우였다: build_map 은 라인을
+        # 만드는데 튜너만 "닫힌 고리를 못 찾음" 으로 죽었다.
+        free = occupancy < min(float(meta.get("free_thresh", 0.196)),
+                               _unknown_occupancy())
         self.res = float(meta["resolution"])
         origin = meta.get("origin")
         if not isinstance(origin, (list, tuple)) or len(origin) < 3:

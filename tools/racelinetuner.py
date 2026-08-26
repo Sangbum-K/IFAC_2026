@@ -109,23 +109,70 @@ def deployed_line_name():
         return ""
 
 
+def split_map_and_variant(resolver, stem):
+    """'my_track0824_realfinal_gotosleep' -> ('my_track0824_realfinal', 'gotosleep').
+
+    변형 목록을 여기 적지 않는다 — launch 의 LINE_VARIANTS 사본이 하나 더 늘면
+    반드시 어긋난다(그 두 사본조차 테스트로 강제하고 있다). 대신 **맵 yaml 이
+    실제로 있는 가장 긴 접두사**를 맵으로 본다. 맵 이름 자체에 '_' 가 들어 있어도
+    (my_track0824_realfinal) 맞고, 새 변형을 만들 때 이 파일을 고칠 필요가 없다.
+    """
+    parts = stem.split("_")
+    for cut in range(len(parts), 0, -1):
+        candidate = "_".join(parts[:cut])
+        try:
+            resolver.find_map_yaml(candidate)
+        except FileNotFoundError:
+            continue
+        return candidate, "_".join(parts[cut:])
+    return stem, ""
+
+
+def _is_tuned_variant(variant):
+    return variant == "tuned" or variant.endswith("_tuned")
+
+
 def list_lines(resolver):
-    """맵 이름 -> {original, tuned} 파일명. 소스 트리 기준."""
+    """맵 -> {변형: {'base': 파일명, 'tuned': 파일명}}. 소스 트리 기준.
+
+    변형 '' 은 build_map 원본이고, 'gotosleep' 처럼 이름이 붙은 것은 같은 맵의
+    다른 레이스라인이다. 각 변형은 자기 자신을 기준으로 튜닝본을 하나 갖는다
+    (원본 -> _tuned, gotosleep -> gotosleep_tuned).
+    """
     lines = {}
     for path in sorted(resolver.CSV_DIR.glob("*_iqp_*.csv")):
         stem = path.name.split("_iqp_", 1)[0]
-        if stem.endswith("_tuned"):
-            lines.setdefault(stem[: -len("_tuned")], {})["tuned"] = path.name
+        map_name, variant = split_map_and_variant(resolver, stem)
+        if _is_tuned_variant(variant):
+            base = "" if variant == "tuned" else variant[: -len("_tuned")]
+            lines.setdefault(map_name, {}).setdefault(base, {})["tuned"] = path.name
         else:
-            lines.setdefault(stem, {})["original"] = path.name
+            lines.setdefault(map_name, {}).setdefault(variant, {})["base"] = path.name
     return lines
 
 
-def resolve_target(resolver, requested):
-    """사용자가 준 이름 -> (맵이름, 원본 CSV 파일명).
+def line_label(map_name, variant):
+    return f"{map_name}_{variant}" if variant else map_name
 
-    받는 형태: 맵 이름(`my_track0808`), `_tuned` 붙은 이름, CSV 파일명 그대로,
-    빈 값(= params.yaml 의 현행 라인).
+
+def _available_lines_text(lines):
+    rows = []
+    for map_name in sorted(lines):
+        for variant in sorted(lines[map_name]):
+            if "base" in lines[map_name][variant]:
+                rows.append("    " + line_label(map_name, variant))
+    return "\n".join(rows)
+
+
+def resolve_target(resolver, requested):
+    """사용자가 준 이름 -> (맵이름, 기준 CSV 파일명, 라인 이름).
+
+    받는 형태:
+      · 맵 이름            my_track0824_realfinal          → 원본 라인
+      · 라인 변형 이름     my_track0824_realfinal_gotosleep → 그 변형
+      · 튜닝본 이름        <위 둘>_tuned                    → 그 기준 라인
+      · CSV 파일명 그대로
+      · 빈 값              params.yaml 의 현행 라인
     """
     lines = list_lines(resolver)
     if not lines:
@@ -134,25 +181,69 @@ def resolve_target(resolver, requested):
             "  먼저 mkcsv <맵이름> 으로 원본을 만드세요.")
     name = (requested or "").strip()
     if name.endswith(".csv"):
-        stem = name.split("_iqp_", 1)[0].split("_sp_", 1)[0]
-        name = stem[: -len("_tuned")] if stem.endswith("_tuned") else stem
-    if name.endswith("_tuned"):
-        name = name[: -len("_tuned")]
+        name = name.split("_iqp_", 1)[0].split("_sp_", 1)[0]
     if not name:
         deployed = deployed_line_name()
         if deployed:
             name = deployed.split("_iqp_", 1)[0]
-    if name not in lines:
+    if not name:
         raise SystemExit(
-            f"맵 '{name or '(지정 없음)'}' 의 원본 라인을 못 찾았습니다.\n"
-            f"  가능한 맵: {', '.join(sorted(lines))}\n"
-            f"  (원본이 없으면 mkcsv <맵이름> 먼저)")
-    entry = lines[name]
-    if "original" not in entry:
+            "편집할 라인을 못 정했습니다 (params.yaml 도 못 읽음).\n"
+            f"  편집 가능한 라인:\n{_available_lines_text(lines)}")
+    map_name, variant = split_map_and_variant(resolver, name)
+    # '..._tuned' 로 불렀으면 그 튜닝본의 **기준 라인**을 연다. 튜너는 언제나
+    # 기준 라인 위에서 편집하고 튜닝본은 결과물이다 (원본 불변 계약).
+    if _is_tuned_variant(variant):
+        variant = "" if variant == "tuned" else variant[: -len("_tuned")]
+    entry = lines.get(map_name, {}).get(variant)
+    if not entry or "base" not in entry:
         raise SystemExit(
-            f"'{name}' 에 튜닝본만 있고 원본이 없습니다. 원본이 기준이라 편집할 수 "
-            "없습니다 — mkcsv 로 원본을 다시 만드세요.")
-    return name, entry["original"]
+            f"'{name}' 의 기준 라인을 못 찾았습니다.\n"
+            f"  편집 가능한 라인:\n{_available_lines_text(lines)}\n"
+            "  (원본이 없으면 mkcsv <맵이름> 먼저)")
+    return map_name, entry["base"], line_label(map_name, variant)
+
+
+def load_reference(resolver, requested, map_name, base_csv):
+    """비교용으로 같이 그릴 다른 라인 -> {'name','csv','xy','vx'} 또는 None.
+
+    지금 편집 중인 라인이 '좋아진 건지'는 옆에 뭘 놓고 보느냐로만 판단된다.
+    기본은 params.yaml 이 실제로 배포 중인 라인이다 — 화면에서 비교하려고
+    매번 다른 도구로 그림을 그리는 일이 없어야 한다.
+    """
+    name = (requested or "").strip()
+    if name.lower() in ("off", "none", ""):
+        return None
+    if name.lower() == "auto":
+        deployed = deployed_line_name()
+        if not deployed:
+            return None
+        csv_name = deployed
+    else:
+        try:
+            _, csv_name, _ = resolve_target(resolver, name)
+        except SystemExit:
+            return None
+    if csv_name == base_csv:
+        return None
+    path = resolver.CSV_DIR / csv_name
+    if not path.is_file():
+        return None
+    try:
+        rows, _ = resolver.load_csv(path)
+    except Exception:
+        return None
+    stem = csv_name.split("_iqp_", 1)[0].split("_sp_", 1)[0]
+    reference_map, _ = split_map_and_variant(resolver, stem)
+    if reference_map != map_name:
+        # 다른 맵의 라인을 같은 좌표계에 겹쳐 그리면 거짓 비교가 된다.
+        return None
+    return {
+        "name": stem,
+        "csv": csv_name,
+        "xy": [[float(r[1]), float(r[2])] for r in rows],
+        "vx": [float(r[7]) for r in rows],
+    }
 
 
 def parse_csv_margin(csv_name, default=0.15):
@@ -445,6 +536,7 @@ class Handler(BaseHTTPRequestHandler):
     session = None
     resolver = None
     layers = None
+    reference = None
     lock = threading.Lock()
 
     def log_message(self, fmt, *args):        # 요청 로그로 콘솔을 덮지 않는다
@@ -478,6 +570,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.lock:
                     payload = self.session.payload()
                 payload["layers"] = self.layers
+                payload["reference"] = self.reference
                 self._send(payload)
                 return
         except Exception as exc:
@@ -531,6 +624,10 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
         "--list", action="store_true", help="편집 가능한 라인만 출력하고 종료")
+    parser.add_argument(
+        "--reference", default="auto", metavar="라인",
+        help="비교용으로 같이 그릴 다른 라인 (기본 auto = params.yaml 의 현행 "
+             "배포 라인). 'off' 로 끈다.")
     arguments = parser.parse_args()
 
     if not PAGE_PATH.is_file():
@@ -538,25 +635,38 @@ def main():
     resolver = load_resolver()
     png_encoder = load_png_encoder()
     if arguments.list:
-        for name, entry in sorted(list_lines(resolver).items()):
-            print("%-22s 원본=%s  튜닝본=%s" % (
-                name, entry.get("original", "(없음)"),
-                entry.get("tuned", "(없음)")))
+        for map_name in sorted(list_lines(resolver)):
+            variants = list_lines(resolver)[map_name]
+            for variant in sorted(variants):
+                entry = variants[variant]
+                if "base" not in entry:
+                    continue
+                print("%-34s 기준=%s  튜닝본=%s" % (
+                    line_label(map_name, variant), entry["base"],
+                    entry.get("tuned", "(없음)")))
         return
 
-    map_name, base_csv = resolve_target(resolver, arguments.map)
+    map_name, base_csv, label = resolve_target(resolver, arguments.map)
     session = Session(resolver, map_name, base_csv)
+    session.line_label = label
     ok, detail = verify_map_layer_orientation(session.track)
     layers = map_layers(session.track, png_encoder)
 
+    print(f"[racelinetuner] 라인    {label}")
     print(f"[racelinetuner] 맵      {session.map_yaml}")
-    print(f"[racelinetuner] 원본    {session.base_path}")
+    print(f"[racelinetuner] 기준    {session.base_path}")
     print(f"[racelinetuner] 튜닝본  {session.tuned_path}"
           f"{'  (이어서 편집)' if session.resumed else '  (새로 생성)'}")
+    print(f"[racelinetuner] 저장 뒤: ./build_all.sh  ->  "
+          f"rc {label}_tuned")
     print(f"[racelinetuner] 웨이포인트 {session.state.n}개, 랩 "
           f"{session.state.length0:.2f} m, corridor margin "
           f"{session.state.corridor_margin:.2f} m, v_max "
           f"{session.state.v_max:.2f} m/s")
+    reference = load_reference(
+        resolver, arguments.reference, map_name, base_csv)
+    print(f"[racelinetuner] 비교선  "
+          f"{reference['name'] + '  (' + reference['csv'] + ')' if reference else '(없음)'}")
     print(f"[racelinetuner] 배경    {'OK' if ok else '⚠️ 확인 필요'} — {detail}")
     for note in session.notes:
         print(f"[racelinetuner] {note}")
@@ -564,6 +674,7 @@ def main():
     Handler.session = session
     Handler.resolver = resolver
     Handler.layers = layers
+    Handler.reference = reference
 
     server = ThreadingHTTPServer(("127.0.0.1", arguments.port), Handler)
     url = f"http://127.0.0.1:{arguments.port}/"

@@ -119,6 +119,7 @@ button.mini.on{background:#1d3b5c;border-color:var(--accent)}
   <div class="sep"></div>
   <label class="sl"><input id="showMap" type="checkbox" checked> 맵</label>
   <label class="sl"><input id="showBase" type="checkbox" checked> 원본선</label>
+  <label class="sl" id="refWrap" style="display:none"><input id="showRef" type="checkbox" checked> <span id="refName">비교선</span></label>
   <label class="sl"><input id="showBad" type="checkbox" checked> 위반표시</label>
 </div>
 
@@ -160,6 +161,7 @@ const $ = (id) => document.getElementById(id);
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 let D = null;            // 서버 스냅샷
 let LAYERS = null;       // 맵 배경
+let REF = null;          // 비교용 다른 라인 (기본: params.yaml 의 배포 라인)
 let MAPIMG = null;
 let busy = false;
 // 속도 막대: 원본 격자에서 고르게 뽑은 스테이션. 사람이 잡는 대상이자
@@ -269,6 +271,18 @@ function drawTrack() {
       const [px,py] = W2S(wx, wy, W, H);
       ctx.fillRect(px-1, py-1, 2, 2);
     }
+  }
+
+  // 비교선 — 지금 편집 중인 라인이 아니라 **다른 라인**(기본: 배포 중인 라인).
+  // 원본선(회색 점선)과 색을 확실히 갈라야 한다: 원본선은 "이 라인의 편집 전",
+  // 비교선은 "아예 다른 라인" 이라 뜻이 다르다.
+  if (REF && $("showRef").checked) {
+    ctx.setLineDash([]); ctx.strokeStyle = "#b06ad9"; ctx.lineWidth = 2.0;
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    REF.xy.forEach((p,i)=>{ const [x,y]=W2S(p[0],p[1],W,H);
+      i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+    ctx.closePath(); ctx.stroke(); ctx.globalAlpha = 1;
   }
 
   // 원본 라인 (회색 점선)
@@ -534,6 +548,11 @@ function absorb(data) {
   const notes = (data.meta && data.meta.notes) || [];
   D = data;
   if (data.layers) LAYERS = data.layers;
+  if (data.reference !== undefined && data.reference) {
+    REF = data.reference;
+    $("refName").textContent = "비교선: " + REF.name;
+    $("refWrap").style.display = "";
+  }
   $("who").textContent = `${D.meta.map} → ${D.meta.tuned_csv}`;
   $("undo").disabled = !D.meta.undo_depth;
   $("inflV").textContent = "±" + D.limits.influence_m.toFixed(1) + " m";
@@ -864,7 +883,7 @@ for (const btn of document.querySelectorAll("button.mini[data-infl]"))
     markPresets(+btn.dataset.infl);
     edit({op:"params", influence_m:+btn.dataset.infl});
   });
-for (const id of ["showMap","showBase","showBad"])
+for (const id of ["showMap","showBase","showBad","showRef"])
   $(id).addEventListener("change", redraw);
 
 /* ------------------------------------------------------------ 시작 */
