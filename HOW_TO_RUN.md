@@ -45,7 +45,9 @@ tune my_track0728          # 브라우저가 열린다 (http://127.0.0.1:8770)
 # 우측 '속도 막대'를 잡고 위/아래로 드래그 → 그 구간 속도 (넣은 값이 그대로 들어간다)
 #   잡은 막대는 좌우로 흔들려도 고정 · 옆 막대는 "따라오는 범위"만큼 같이 움직인다
 #   휠 = 커서 아래 막대 ±0.1 m/s (Shift+휠 ±0.5) · Shift+클릭 = 그 막대만 원본으로
-# 라인 기하는 이 도구로 안 바꾼다 (mkcsv 담당) — 아래 '남은 그립/벽 여유'는 보기용
+# 트랙 위의 라인 점을 잡아 끌면 기하도 바뀐다 (앵커는 등호 제약이라 안 깎인다)
+# 상단 '비교선' 체크박스 = params.yaml 이 배포 중인 라인을 같이 그린다
+#   (다른 라인과 비교하려면 tune <라인> --reference <다른 라인>, 끄려면 --reference off)
 # 저장 → 원본이 아니라 <맵>_tuned_iqp_*.csv 로 따로 저장된다
 cd ~/IFAC_ws && ./build_all.sh   # 저장은 '소스 트리' CSV라 빌드 필요
 rc my_track0728_tuned            # 튜닝한 라인으로 주행 (원본은 rc my_track0728)
@@ -100,19 +102,77 @@ bagviz                       # 서버 시작 → 브라우저에서 http://127.0
 # 다른 PC 브라우저에서 보려면: bagviz --host 0.0.0.0
 ```
 
-### alias 목록 (`~/.zshrc`)
+### 명령 목록
 
-| alias | 하는 일 |
+`sa` / `rc` / `rckill` / `tune` / `mkcsv` 의 **정의는 리포지토리 안**에 있습니다
+(`tools/ifac_shell.zsh`). dotfile 에만 두면 기계를 옮길 때마다 손으로 다시 만들다
+잃어버립니다 — 실제로 `mkcsv` 가 그렇게 사라져서 이 문서만 남아 있었습니다.
+
+**기계당 1회 설치** — `~/.zshrc` **맨 끝**에 한 줄:
+
+```bash
+source ~/IFAC_ws/tools/ifac_shell.zsh
+```
+
+> ⚠️ **맨 끝**이어야 하고, 예전 `alias rc=...` / `alias sa=...` 줄은 지우거나
+> 주석 처리하세요. zsh 에서는 같은 이름이면 alias 가 함수보다 먼저 잡히고,
+> 나중에 정의된 쪽이 이깁니다. (이 파일이 위쪽의 같은 이름 alias 는 걷어내지만,
+> **아래쪽**에 남아 있는 것까지는 못 고칩니다.)
+>
+> 옛 `rc <맵 전체이름>` 사용법은 그대로 동작합니다 — 이름 해석이 넓어졌을 뿐입니다.
+> 달라진 것 하나: 인자 없이 `rc` 만 치면 기본 맵으로 달리지 않고 **라인 목록**을 띄웁니다.
+
+| 명령 | 하는 일 |
 |---|---|
 | `sa` | IFAC_ws 전체 워크스페이스 source (오버레이 순서 고정) |
-| `rc [맵] [인자...]` | 실차 원커맨드 (`real_car.launch.py`) |
+| `rc [라인] [인자...]` | 실차 원커맨드 (`real_car.launch.py`). 인자 없으면 라인 목록 |
+| `rckill` | 남아 있는 스택 프로세스 정리 (INT → 10초 → KILL) |
 | `mapp <맵> [인자...]` | 매핑 (`mapping.launch.py`) |
 | `mkcsv <맵> [cw\|ccw]` | 레이스라인/센터라인 CSV 생성 |
-| `tune [맵] [옵션...]` | 레이스라인 튜너 웹앱 (`tools/racelinetuner.py`). 원본 보존, `<맵>_tuned_*.csv` 로 저장 → `./build_all.sh` → `rc <맵>_tuned` |
+| `tune [라인] [옵션...]` | 레이스라인 튜너 웹앱 (`tools/racelinetuner.py`). 원본 보존, `<라인>_tuned_*.csv` 로 저장 → `./build_all.sh` → `rc <라인>_tuned` |
 | `rosbag` | 전체 토픽 녹화 (marker류 제외) |
 | `bagviz` | 로스백 시각화 웹앱 (`tools/bagviz.py`, 드래그앤드롭·재생·차트) |
 | `hw` | 하드웨어 bringup만 (`rc hardware:=false`와 짝) |
 | `cb` | `colcon build` |
+
+#### `rc` 는 라인 이름을 뒤에서부터 맞춥니다
+
+```bash
+rc                                        # 달릴 수 있는 라인 + 각각의 빌드 상태
+rc gotosleep                              # = rc my_track0824_realfinal_gotosleep
+rc tuned                                  # = rc my_track0824_realfinal_tuned
+rc my_track0824_realfinal rviz:=false     # 전체 이름도 그대로
+```
+
+`_` 단위 접미사로 맞추고, **둘 이상에 걸리면 고르지 않고 멈춥니다** (후보를 보여줍니다).
+맵이 늘어 `gotosleep` 이 두 라인에 걸리게 되면 그때부터는 전체 이름을 쓰면 됩니다.
+
+#### 한 터미널에서 라인을 바꿔 가며 돌릴 때
+
+`rc` 는 launch 전에 **실제로 열 CSV 파일과 `generation_id` 를 찍고**, 조용히 꼬이는
+경로 넷을 미리 막습니다. 전부 "잘못된 CSV 로 달리는데 화면은 정상"이라 사람이
+못 알아채는 종류입니다.
+
+| 상황 | `rc` 가 하는 일 |
+|---|---|
+| 짧은 이름이 두 라인에 걸림 | 후보를 보여주고 멈춤 (exit 2) |
+| 앞선 `rc` 노드가 안 죽고 남음 | 목록을 보여주고 멈춤 → `rckill` (exit 3) |
+| `tune` 저장 후 빌드 안 함 (소스 ≠ install) | 두 `generation_id` 를 나란히 보여주고 멈춤 (exit 6) |
+| 셸이 소스 안 됨 / 반만 됨 | `sa` 를 대신 실행 |
+| 다른 IFAC_ws 사본이 셸에 섞임 | 멈춤 — 새 터미널에서 다시 (exit 7) |
+
+두 번째 항목이 제일 위험합니다. ROS 2 는 **같은 이름 노드가 둘이어도 에러를 안 내서**,
+`global_trajectory_node` 가 두 개면 서로 다른 CSV 를 같은 토픽에 던지고 차가 두 라인을
+번갈아 따라갑니다. 그래서 라인을 바꿀 때는 이 순서를 쓰세요:
+
+```bash
+# Ctrl+C 로 멈춘 뒤
+rckill && rc <다음 라인>
+```
+
+> Ctrl+C 만으로는 `ros2 launch` 와 `wait_for_localization.py` 가 몇 초간 남는 것을
+> 확인했습니다(6초 시점 기준). 남아 있으면 다음 `rc` 가 위 가드에 걸려 멈추므로
+> **틀린 채로 달리는 일은 없지만**, `rckill` 을 붙여 두면 멈추지도 않습니다.
 
 
 
