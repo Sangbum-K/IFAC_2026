@@ -279,18 +279,23 @@ control:
     "vehicle/max_speed_mps": 1.0
     # Limited by servo_max (0.70) on the right side: beyond servo ~0.7196 the
     # servo stalls against a mechanical stop, so hardware clips at 0.70.
-    # With the current calibration (gain -0.8564 / offset 0.424):
-    #   right (0.70-0.424)/-0.8564 = -0.322279 rad (18.45 deg) <- binding side
-    #   left  (0.05-0.424)/-0.8564 = +0.436712 rad (25.02 deg)
-    # The deployed left limit maps to servo 0.0986, retaining margin.
-    # ⚠️ No margin is left for the unresolved neutral jump (TUNING_STATUS.md
-    # section 11: up to 0.036 servo between runs). When the neutral drifts
-    # right, near-full-lock commands clip at servo_max, so the controller's
-    # saturation ratio reads 1.0 while the car is still under-steering.
-    # Planning remains symmetric and conservative at min(left, right)=0.3220.
+    # With the current calibration (gain -0.8564 / offset 0.3906):
+    #   right (0.70-0.3906)/-0.8564 = -0.36128 rad (20.70 deg) <- binding side
+    #   left  (0.05-0.3906)/-0.8564 = +0.39771 rad (22.79 deg)
+    # 2026-08-26: recomputed for the post-wheel-swap neutral. The between-run
+    # jump of TUNING_STATUS.md section 11 is gone -- six runs land inside
+    # +-0.0024 servo -- so a single offset finally holds. Each side backs
+    # ~0.007-0.008 servo off its mechanical end, ~3x that residual spread, so
+    # a drift steers instead of clipping:
+    #   left  0.3884 -> servo 0.05797 (servo_min 0.05 + 0.00797)
+    #   right 0.3531 -> servo 0.69299 (servo_max 0.70 - 0.00701)
+    # The asymmetry is now real geometry (0.3906 is not centred in
+    # [0.05, 0.70]); the old 0.3950/0.3220 pair was the 2.23 deg neutral bias
+    # in disguise and happened to cancel it at full lock only.
+    # Planning remains symmetric and conservative at min(left, right)=0.3531.
     # Control alone may use the extra left range to recover tracking error.
-    "vehicle/max_left_steering_angle_rad": 0.3950
-    "vehicle/max_right_steering_angle_rad": 0.3220
+    "vehicle/max_left_steering_angle_rad": 0.3884
+    "vehicle/max_right_steering_angle_rad": 0.3531
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5
     # 2026-07-31: 7.0 -> 4.0 (run_0731_223152 실측 제동 ~4.2 m/s²). 7.0이면

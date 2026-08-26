@@ -36,7 +36,7 @@ GlobalTrajectoryNode::GlobalTrajectoryNode(const std::string &node_name, const r
     this->declare_parameter("global_trajectory/velocity_scale_slew_per_sec", 0.1);
     this->declare_parameter("global_trajectory/validation_mu", 0.75);
     this->declare_parameter("global_trajectory/validation_wheelbase_m", 0.33);
-    this->declare_parameter("global_trajectory/validation_max_steer_rad", 0.3220);
+    this->declare_parameter("global_trajectory/validation_max_steer_rad", 0.3531);
     this->declare_parameter("global_trajectory/validation_tolerance", 0.03);
     this->declare_parameter("global_trajectory/validation_ax_tolerance", 1.0);
     // "strict"(기본) | "advisory". advisory 는 마찰원/조향 한계 위반을 경고로만

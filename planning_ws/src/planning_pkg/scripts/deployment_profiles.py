@@ -44,16 +44,22 @@ STEERING_LUT_DIR = "control_ws/src/control_pkg/config/steering_lookup"
 # '검증한 차'와 '달리는 차'가 다르면 PASS가 아무 것도 보장하지 않기 때문이다.
 WHEELBASE = 0.33        # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동일)
 # [rad] 서보 기구의 방향별 배포 한계. hardware vesc.yaml 에서 직접 유도한다:
-#   delta = (servo - offset) / gain, gain -0.8564 / offset 0.424
-#   우 (0.70-0.424)/-0.8564 = -0.322279 rad (18.45°) <- 대칭 한계를 결정
-#   좌 (0.05-0.424)/-0.8564 = +0.436712 rad (25.02°)
-# 우측 0.3220은 servo_max 안쪽으로 조금 내린 배포값이다.
-# 좌측은 0.3950 rad(servo 0.0857)를 사용한다. servo_min까지 여유는 0.0357이다.
-# ⚠️ TUNING_STATUS §11 의 중립 튐(런 사이 최대 0.036 servo = 0.042 rad)이 이
-#    마진을 거의 전부 소진한다. 중립이 우측으로 밀린 런에서는 최대 조향 근처
-#    명령이 servo_max 에서 잘려 "가장 크게 꺾어야 할 때 안 꺾이는" 형태로 나타난다.
-MAX_LEFT_STEER = 0.3950
-MAX_RIGHT_STEER = 0.3220
+#   delta = (servo - offset) / gain, gain -0.8564 / offset 0.3906
+#   우 (0.70-0.3906)/-0.8564 = -0.36128 rad (20.70°) <- 대칭 한계를 결정
+#   좌 (0.05-0.3906)/-0.8564 = +0.39771 rad (22.79°)
+# 2026-08-26 바퀴 교체 후 재계산. 배포값은 양쪽 다 기구 끝에서 servo 0.007~0.008
+# 안쪽으로 물린다:
+#   좌 0.3884 -> servo 0.05797 (servo_min 여유 0.00797)
+#   우 0.3531 -> servo 0.69299 (servo_max 여유 0.00701)
+# 이 여유는 6런에서 잰 잔여 중립 편차(±0.0024 servo)의 약 3배다.
+# TUNING_STATUS §11 의 런 사이 중립 튐은 이 교체로 멎었다 — 6런 S* 폭 0.0048
+# 로 "연속 3런 ±0.005" 기준을 통과했고, 그래서 단일 offset 이 성립한다.
+# ⚠️ 좌우 비대칭은 이제 진짜 기구 비대칭이다(참 중립 0.3906 이 [0.05,0.70]
+#    한가운데가 아니다). 옛 0.3950/0.3220 은 2.23° 중립 편의를 가린 값이었고
+#    풀락에서만 우연히 상쇄됐다. 남는 좌측 여유를 대칭 스칼라로 되먹이지 말 것
+#    — spliner/steer_kappa_scale 주석 참조.
+MAX_LEFT_STEER = 0.3884
+MAX_RIGHT_STEER = 0.3531
 # 경로 생성과 기존 폐루프 안전 모델은 아직 대칭이므로 구속 방향을 사용한다.
 MAX_STEER = min(MAX_LEFT_STEER, MAX_RIGHT_STEER)
 MAX_STEER_RATE = 2.0    # [rad/s] control 기본 steering-rate limit

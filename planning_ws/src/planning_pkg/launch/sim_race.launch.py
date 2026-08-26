@@ -264,8 +264,8 @@ def launch_setup(context, *args, **kwargs):
     #                          (레이스라인 생성에 쓰는 MU_PROFILE 0.80은 계획용
     #                           derate라 다른 값 — 그건 CSV에 이미 반영돼 있다)
     #   a_max 9.51   -> 4.5   : deployment_profiles.A_ACC_MAX
-    #   s_min -0.4189 -> -0.3220: deployment_profiles.MAX_RIGHT_STEER
-    #   s_max  0.4189 ->  0.3950: deployment_profiles.MAX_LEFT_STEER
+    #   s_min -0.4189 -> -0.3531: deployment_profiles.MAX_RIGHT_STEER
+    #   s_max  0.4189 ->  0.3884: deployment_profiles.MAX_LEFT_STEER
     #                           (실차의 방향별 control clamp와 동일)
     #   v_max 20.0   -> 8.5   : deployment_profiles.RACELINE_V_MAX
     #                          (2026-08-19: vesc.yaml speed_max 40000 / gain
@@ -293,13 +293,18 @@ def launch_setup(context, *args, **kwargs):
     #    대칭 조향 한계가 0.357894 rad 로 내려갔는데 여기만 안 따라가 test_sim_gym_
     #    vehicle_matches_measured_plant 가 레드였다 — sim 이 실차보다 0.6% 더
     #    꺾을 수 있다고 믿은 채였다.)
+    #   (2026-08-26 동기화: s_max 0.3950 -> 0.3884, s_min -0.3220 -> -0.3531.
+    #    바퀴 교체 후 중립 재측정으로 vesc.yaml offset 0.424 -> 0.3906 이 되어
+    #    방향별 파생 한계가 통째로 재계산됐다. 옛 0.3950/0.3220 비대칭은 조향
+    #    능력이 아니라 2.23° 중립 편의였다 — 그 값으로 gym 을 돌리면 sim 이
+    #    좌측을 실차보다 1.7% 더 꺾고 우측은 8.8% 덜 꺾는다.)
     # ⚠️ gym의 accl_constraints는 가감속이 대칭(-a_max)이라 A_DEC_PLANNED 2.38을
     #   여기서 못 준다. control_pkg sim_real_car.yaml의 vehicle/max_decel_mps2
     #   2.38이 명령단에서 그 역할을 한다.
     REAL_CAR_VEHICLE = {
         'vehicle.mu': 0.90,
         'vehicle.a_max': 4.5,
-        'vehicle.s_min': -0.3220, 'vehicle.s_max': 0.3950,
+        'vehicle.s_min': -0.3531, 'vehicle.s_max': 0.3884,
         'vehicle.v_max': 9.0, 'vehicle.v_min': -1.0,
         'vehicle.width': 0.30, 'vehicle.length': 0.55,
         # 실차 Hokuyo /scan 40 Hz (run_0804 실측 748msg/18.5s). gym 기본 250 Hz는

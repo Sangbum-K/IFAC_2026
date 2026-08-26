@@ -48,27 +48,64 @@
     # mechanical slip (servo saver, horn spline, horn screw, tie rod / knuckle
     # re-seating on a wall hit).
     #
-    # 0.424 is the currently configured value. That does NOT retire the
-    # mechanical finding -- see ~/TUNING_STATUS.md section 11 for
-    # the hands-on check and the "three consecutive runs within +-0.005" bar
-    # that has to be cleared before calling the neutral fixed.
-    steering_angle_to_servo_offset: 0.424
+    # 2026-08-26 WHEEL SWAP: the between-run jump is GONE and the "three
+    # consecutive runs within +-0.005" bar of TUNING_STATUS.md section 11 is
+    # CLEARED -- by six runs, not three. Same method as the table above
+    # (delta0 = yaw-rate zero crossing, Theil-Sen on wz/v vs delta, |delta|<0.12,
+    # v>2, drive lag 0.12 s; IMU yaw rate, so independent of the servo model):
+    #
+    #   run_0826_192948   delta0 +0.0387 (+2.22 deg)   S* = 0.3908
+    #   run_0826_193507   delta0 +0.0393 (+2.25 deg)   S* = 0.3904
+    #   run_0826_194106   delta0 +0.0377 (+2.16 deg)   S* = 0.3917
+    #   run_0826_194800   delta0 +0.0404 (+2.31 deg)   S* = 0.3894
+    #   run_0826_195205   delta0 +0.0364 (+2.09 deg)   S* = 0.3928
+    #   run_0826_195627   delta0 +0.0420 (+2.41 deg)   S* = 0.3880
+    #   median 0.3906, total spread 0.0048 (+-0.0024) -- half the bar.
+    #
+    # Robust to the analysis knobs: sweeping lag 0.00-0.18 s and vmin 2.0/3.5
+    # keeps S* inside 0.390-0.394. Within-run 15 s windows scatter more
+    # (sd 0.010) than the between-run spread, so what is left is measurement
+    # noise, not drift. Left- and right-hand slopes k/(delta-delta0) agree
+    # (1.44-1.66 vs 1.17-1.60): a pure neutral offset, NOT a gain error --
+    # the gain is untouched.
+    #
+    # 0.424 was wrong by -0.0334 servo = 2.23 deg of RIGHT bias at commanded
+    # zero. Every command carried it: delta_actual = delta_cmd - 0.0390.
+    # Commanded +0.20 left delivered +0.161 (-20%); commanded -0.20 right
+    # delivered -0.239 (+20%). Path tracking sat 0.065-0.075 m right of the
+    # local path in all six runs. Per-maneuver, left avoidances achieved a
+    # median 0.81 of their planned lateral displacement (49% under 0.8) while
+    # right avoidances achieved 1.08.
+    #
+    # Note the old asymmetric deploy pair (left 0.3950 / right 0.3220)
+    # accidentally cancelled this at FULL LOCK -- it delivered +0.356/-0.361.
+    # The new pair below is set so full lock delivers the same physical angles.
+    # Mid-range steering, which is what avoidance actually uses, was never
+    # compensated and is what this fixes.
+    steering_angle_to_servo_offset: 0.3906
     #
     # Derived limits (delta = (servo - offset)/gain, servo clipped to
-    # [servo_min, servo_max] below):
-    #   right (0.70-0.424)/-0.8564 = -0.322279 rad (18.45 deg) <- binding side
-    #   left  (0.05-0.424)/-0.8564 = +0.436712 rad (25.02 deg)
-    #   symmetric 0.322279 rad -> min turn radius 0.988 m, kappa_max 1.012 1/m
-    # Symmetric planning consumers use 0.3220, just inside the binding limit.
-    # Control uses explicit directional limits: right 0.3220, left 0.3800.
+    # [servo_min, servo_max] below). Recomputed 2026-08-26 for offset 0.3906:
+    #   left  (0.05-0.3906)/-0.8564 = +0.39771 rad (22.79 deg)
+    #   right (0.70-0.3906)/-0.8564 = -0.36128 rad (20.70 deg) <- binding side
+    # Deployed pair backs off ~0.007-0.008 servo from each mechanical end:
+    #   left  0.3884 -> servo 0.05797 (0.00797 above servo_min)
+    #   right 0.3531 -> servo 0.69299 (0.00701 below servo_max)
+    # That margin is ~3x the residual between-run neutral spread (+-0.0024
+    # servo) measured over the six 08-26 runs, so a drift in either direction
+    # steers rather than clips.
+    # Symmetric planning consumers use min(left, right) = 0.3531
+    #   -> min turn radius 0.895 m, kappa_max 1.117 1/m.
     #   planning spliner/vehicle_max_steering_rad, tracker/max_steer_rad,
     #   opponent/max_steer_rad, global_trajectory/validation_max_steer_rad,
     #   deployment_profiles.MAX_STEER, control vehicle/max_{left,right}_steering_angle_rad.
-    # ⚠️ There is now NO margin absorbing the unresolved neutral jump
-    #    (TUNING_STATUS.md section 11: up to 0.036 servo = 0.042 rad between
-    #    runs). When the neutral drifts right, commands near full lock clip at
-    #    servo_max instead of steering -- the car understeers exactly when it is
-    #    asking for maximum steering. Watch for it at the hairpin.
+    # ⚠️ These five must stay equal to min(left, right) or deployment_profiles
+    #    raises at resolve time. The two directional values live only in
+    #    control vehicle/max_{left,right}_steering_angle_rad.
+    # ⚠️ The asymmetry here is real (the true neutral 0.3906 is not centred in
+    #    [0.05, 0.70]), unlike the old 0.3950/0.3220 pair which was the neutral
+    #    bias in disguise. Do NOT feed the spare left range back into a
+    #    symmetric planning scalar -- see spliner/steer_kappa_scale.
     port: /dev/ttyACM0
     # Physical frame used by the AHRS quaternion. bringup_launch.py publishes
     # base_link -> this frame from sensors.yaml.

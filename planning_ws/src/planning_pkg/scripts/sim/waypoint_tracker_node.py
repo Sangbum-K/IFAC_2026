@@ -58,7 +58,7 @@ class WaypointTrackerNode(Node):
         self.declare_parameter('tracker/min_lookahead_m', 0.6)
         self.declare_parameter('tracker/max_lookahead_m', 1.2)
         self.declare_parameter('tracker/wheelbase_m', 0.33)
-        self.declare_parameter('tracker/max_steer_rad', 0.3220)
+        self.declare_parameter('tracker/max_steer_rad', 0.3531)
         self.declare_parameter('tracker/speed_scale', 0.30)
         self.declare_parameter('tracker/max_steering_rate_radps', 2.0)
         self.declare_parameter('tracker/max_accel_mps2', 5.5)
