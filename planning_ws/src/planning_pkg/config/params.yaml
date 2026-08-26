@@ -63,13 +63,13 @@ global_trajectory_node:
     # mkcsv 기본값(build_map MU_PROFILE=1.40)과 짝. 기존 저-mu CSV도 허용한다.
     global_trajectory/validation_mu: 1.40
     global_trajectory/validation_wheelbase_m: 0.33
-    # 현재 VESC 보정(-0.8564 / 0.3906)의 구속측 배포 한계 0.3531.
+    # 현재 VESC 보정(-0.8564 / 0.3906)의 구속측 배포 한계 0.3578.
     # CSV 의 |kappa| 상한을 tan(이 값)/wheelbase 로 정하므로 낮추면 검증이
-    # 엄격해진다. 현재 상한은 tan(0.3531)/0.33 = 1.117 1/m이다.
-    # 2026-08-26 바퀴 교체 후 중립 재측정으로 0.3220 -> 0.3531 (근거는
+    # 엄격해진다. 현재 상한은 tan(0.3578)/0.33 = 1.133 1/m이다.
+    # 2026-08-27 최종 배포값 0.3578 (근거는
     # hardware vesc.yaml / deployment_profiles.py). ⚠️ 올라간 값이므로 검증이
-    # 느슨해진다 — 이 값으로 궤적을 재생성할 것.
-    global_trajectory/validation_max_steer_rad: 0.3531
+    # 느슨해지지만 기존 CSV를 수정하지는 않으며, 기존에 통과하던 CSV는 그대로 통과한다.
+    global_trajectory/validation_max_steer_rad: 0.3578
     global_trajectory/validation_tolerance: 0.03
     global_trajectory/validation_ax_tolerance: 1.0
     # strict | advisory. strict 는 위 마찰원/조향 한계 위반을 거부해 노드를 안 띄운다.
@@ -846,19 +846,17 @@ spliner_node:
     #    delta = (servo - offset)/gain 로 유도한다.
     #    현재 calib(gain -0.8564 / offset 0.3906, servo 0.05~0.70):
     #      우 -0.36128 rad(20.70°) <- 대칭 한계, 좌 +0.39771 rad(22.79°)
-    #      배포값 0.3531 -> Rmin 0.895 m, kappa_max = tan/L = 1.117
-    #    2026-08-26 바퀴 교체 후 중립 재측정으로 0.3220 -> 0.3531.
+    #      배포값 0.3578 -> Rmin 0.883 m, kappa_max = tan/L = 1.133
+    #    2026-08-27 최종 배포값 0.3578.
     #    TUNING_STATUS §11 의 런 사이 중립 튐은 멎었다(6런 S* 폭 0.0048 <
-    #    기준 0.005). 배포값은 servo_max 에서 0.007 안쪽이라 잔여 편차
-    #    (±0.0024 servo)의 약 3배 여유가 있다 — 이제 최대 조향 근처 명령이
-    #    잘리지 않는다.
+    #    기준 0.005). 배포값은 servo_max 에서 0.00298 안쪽이다.
     #    ⚠️ 이건 차가 더 잘 돌게 된 게 아니라 옛 값이 과소평가였던 것이다.
     #    옛 설정에서도 풀락에서 실제로 나가던 각은 좌 0.356 / 우 0.361 이었다.
     #    "차가 더 잘 돈다"를 반영하려고 여기를 올리는 것은 여전히 안 된다 —
     #    아래 steer_kappa_scale 이 그 용도다.
     #    (deployment_profiles.MAX_STEER · control 좌우 한계 중 작은 값과
     #     셋이 같아야 한다. 어긋나면 resolve 단계에서 죽는다.)
-    spliner/vehicle_max_steering_rad: 0.3531
+    spliner/vehicle_max_steering_rad: 0.3578
     spliner/vehicle_max_steering_rate_radps: 2.0
     # --- 조향 기하 게이트 완화 -----------------------------------------------
     # 회피를 "어떤 속도로도 불가"로 포기시키는 경로는 실질적으로 두 곳이고
@@ -1066,7 +1064,7 @@ waypoint_tracker_node:
                                          # lookahead < 코너 R 이어야 함 (was 1.2)
     tracker/max_lookahead_m: 1.2         # S-bend 변곡 오버슛 억제 (was 3.0)
     tracker/wheelbase_m: 0.33
-    tracker/max_steer_rad: 0.3531        # 구속측(우측) 배포 한계 20.23°.
+    tracker/max_steer_rad: 0.3578        # 구속측(우측) 배포 한계 20.50°.
                                          # control 좌우 한계 중 작은 값 및
                                          # deployment_profiles.MAX_STEER와 동일.
                                          # 2026-08-26 중립 재측정(offset 0.3906).
@@ -1158,7 +1156,7 @@ opponent_driver_node:
     opponent/size_m: 0.3             # F1TENTH 실차 폭 (was 0.4)
     opponent/drive_rate_hz: 40.0
     opponent/wheelbase_m: 0.33
-    opponent/max_steer_rad: 0.3531   # 상대도 동급 F1TENTH -> 실차 조향 한계 동일
+    opponent/max_steer_rad: 0.3578   # 상대도 동급 F1TENTH -> 실차 조향 한계 동일
     # (opponent/park_x, park_y 제거: sim_race.launch.py 가 PARK_POSES[map] 값을
     #  params_file 뒤에 항상 덮어쓰고, opponent_driver 를 띄우는 launch 는 그것뿐이라
     #  여기 값은 어떤 실행 경로에서도 쓰이지 않았다. 남아 있던 -79.81/-31.26 은

@@ -140,7 +140,7 @@ SplinerNode::SplinerNode(const std::string &node_name, const rclcpp::NodeOptions
     this->declare_parameter("spliner/lane_blend_out_m", 5.0);
     this->declare_parameter("spliner/early_switch_kappa_max", 0.10);
     this->declare_parameter("spliner/vehicle_wheelbase_m", 0.33);
-    this->declare_parameter("spliner/vehicle_max_steering_rad", 0.3531);
+    this->declare_parameter("spliner/vehicle_max_steering_rad", 0.3578);
     this->declare_parameter("spliner/vehicle_max_steering_rate_radps", 2.0);
     // 조향 기하 게이트 완화 노브 3종. 기본값은 예전 하드코딩과 동일하므로
     // yaml에 없으면 동작이 바뀌지 않는다. 의미는 헤더 멤버 주석 참조.

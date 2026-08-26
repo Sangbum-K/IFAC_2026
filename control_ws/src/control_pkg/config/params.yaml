@@ -285,17 +285,16 @@ control:
     # 2026-08-26: recomputed for the post-wheel-swap neutral. The between-run
     # jump of TUNING_STATUS.md section 11 is gone -- six runs land inside
     # +-0.0024 servo -- so a single offset finally holds. Each side backs
-    # ~0.007-0.008 servo off its mechanical end, ~3x that residual spread, so
-    # a drift steers instead of clipping:
+    # a measured servo margin off each mechanical end:
     #   left  0.3884 -> servo 0.05797 (servo_min 0.05 + 0.00797)
-    #   right 0.3531 -> servo 0.69299 (servo_max 0.70 - 0.00701)
+    #   right 0.3578 -> servo 0.69702 (servo_max 0.70 - 0.00298)
     # The asymmetry is now real geometry (0.3906 is not centred in
     # [0.05, 0.70]); the old 0.3950/0.3220 pair was the 2.23 deg neutral bias
     # in disguise and happened to cancel it at full lock only.
-    # Planning remains symmetric and conservative at min(left, right)=0.3531.
+    # Planning remains symmetric at min(left, right)=0.3578.
     # Control alone may use the extra left range to recover tracking error.
     "vehicle/max_left_steering_angle_rad": 0.3884
-    "vehicle/max_right_steering_angle_rad": 0.3531
+    "vehicle/max_right_steering_angle_rad": 0.3578
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 5.5
     # 2026-07-31: 7.0 -> 4.0 (run_0731_223152 실측 제동 ~4.2 m/s²). 7.0이면

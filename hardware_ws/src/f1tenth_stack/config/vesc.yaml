@@ -88,14 +88,11 @@
     # [servo_min, servo_max] below). Recomputed 2026-08-26 for offset 0.3906:
     #   left  (0.05-0.3906)/-0.8564 = +0.39771 rad (22.79 deg)
     #   right (0.70-0.3906)/-0.8564 = -0.36128 rad (20.70 deg) <- binding side
-    # Deployed pair backs off ~0.007-0.008 servo from each mechanical end:
+    # Deployed pair keeps a measured margin from each mechanical end:
     #   left  0.3884 -> servo 0.05797 (0.00797 above servo_min)
-    #   right 0.3531 -> servo 0.69299 (0.00701 below servo_max)
-    # That margin is ~3x the residual between-run neutral spread (+-0.0024
-    # servo) measured over the six 08-26 runs, so a drift in either direction
-    # steers rather than clips.
-    # Symmetric planning consumers use min(left, right) = 0.3531
-    #   -> min turn radius 0.895 m, kappa_max 1.117 1/m.
+    #   right 0.3578 -> servo 0.69702 (0.00298 below servo_max)
+    # Symmetric planning consumers use min(left, right) = 0.3578
+    #   -> min turn radius 0.883 m, kappa_max 1.133 1/m.
     #   planning spliner/vehicle_max_steering_rad, tracker/max_steer_rad,
     #   opponent/max_steer_rad, global_trajectory/validation_max_steer_rad,
     #   deployment_profiles.MAX_STEER, control vehicle/max_{left,right}_steering_angle_rad.

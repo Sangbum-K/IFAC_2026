@@ -50,8 +50,7 @@ control:
     "vehicle/max_speed_mps": 9.0
     "vehicle/speed_scale": 1.0
     # Offset 0.3906 (2026-08-26 wheel swap, six-run median): +0.3884 rad maps
-    # to servo 0.05797 with 0.00797 left margin; -0.3531 rad to servo 0.69299
-    # with 0.00701 right margin. Both ~3x the residual between-run neutral
-    # spread (+-0.0024 servo). Derivation in hardware vesc.yaml.
+    # to servo 0.05797 with 0.00797 left margin; -0.3578 rad to servo 0.69702
+    # with 0.00298 right margin. Derivation in hardware vesc.yaml.
     "vehicle/max_left_steering_angle_rad": 0.3884
-    "vehicle/max_right_steering_angle_rad": 0.3531
+    "vehicle/max_right_steering_angle_rad": 0.3578

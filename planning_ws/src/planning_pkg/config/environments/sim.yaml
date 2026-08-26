@@ -214,6 +214,8 @@ spliner_node:
     # ⚠️ 실차 미검증.
     spliner/lane_blend_out_m: 3.0
     spliner/early_switch_kappa_max: 0.10
+    # real_car.yaml과 같은 회피 기하 예산으로 비교한다.
+    spliner/steer_kappa_scale: 1.25
     spliner/obs_traj_tresh: 0.45
     spliner/evasion_dist: 0.35
     # ── hold 구간 침범 완화의 속도 문턱 [m/s] ─────────────────────────────

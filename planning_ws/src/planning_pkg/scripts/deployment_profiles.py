@@ -47,11 +47,9 @@ WHEELBASE = 0.33        # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동
 #   delta = (servo - offset) / gain, gain -0.8564 / offset 0.3906
 #   우 (0.70-0.3906)/-0.8564 = -0.36128 rad (20.70°) <- 대칭 한계를 결정
 #   좌 (0.05-0.3906)/-0.8564 = +0.39771 rad (22.79°)
-# 2026-08-26 바퀴 교체 후 재계산. 배포값은 양쪽 다 기구 끝에서 servo 0.007~0.008
-# 안쪽으로 물린다:
+# 2026-08-26 바퀴 교체 후 재계산. 배포값은 기구 끝에서 안쪽으로 물린다:
 #   좌 0.3884 -> servo 0.05797 (servo_min 여유 0.00797)
-#   우 0.3531 -> servo 0.69299 (servo_max 여유 0.00701)
-# 이 여유는 6런에서 잰 잔여 중립 편차(±0.0024 servo)의 약 3배다.
+#   우 0.3578 -> servo 0.69702 (servo_max 여유 0.00298)
 # TUNING_STATUS §11 의 런 사이 중립 튐은 이 교체로 멎었다 — 6런 S* 폭 0.0048
 # 로 "연속 3런 ±0.005" 기준을 통과했고, 그래서 단일 offset 이 성립한다.
 # ⚠️ 좌우 비대칭은 이제 진짜 기구 비대칭이다(참 중립 0.3906 이 [0.05,0.70]
@@ -59,7 +57,7 @@ WHEELBASE = 0.33        # [m] 실차 실측 (hardware vesc.yaml wheelbase와 동
 #    풀락에서만 우연히 상쇄됐다. 남는 좌측 여유를 대칭 스칼라로 되먹이지 말 것
 #    — spliner/steer_kappa_scale 주석 참조.
 MAX_LEFT_STEER = 0.3884
-MAX_RIGHT_STEER = 0.3531
+MAX_RIGHT_STEER = 0.3578
 # 경로 생성과 기존 폐루프 안전 모델은 아직 대칭이므로 구속 방향을 사용한다.
 MAX_STEER = min(MAX_LEFT_STEER, MAX_RIGHT_STEER)
 MAX_STEER_RATE = 2.0    # [rad/s] control 기본 steering-rate limit

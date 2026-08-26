@@ -40,7 +40,7 @@ control:
     #    라 gym 물리 자체는 실차보다 관대하다. 이 명령단 한계가 없으면 sim 이
     #    실차가 낼 수 없는 가감속·조향으로 돌아 검증이 통째로 낙관적이 된다.
     "vehicle/max_left_steering_angle_rad": 0.3884
-    "vehicle/max_right_steering_angle_rad": 0.3531
+    "vehicle/max_right_steering_angle_rad": 0.3578
     "vehicle/max_steering_rate_radps": 2.0
     "vehicle/max_accel_mps2": 4.5
     "vehicle/max_decel_mps2": 2.38

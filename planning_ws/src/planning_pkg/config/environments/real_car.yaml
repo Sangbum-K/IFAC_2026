@@ -625,7 +625,7 @@ spliner_node:
     # 조기 라인 스위치 (근거는 params.yaml 주석). 2026-08-10부터 오프셋 경로의
     # 유효 곡률과 비교하지만, 임계값은 실차 검증된 0.10 을 유지한다.
     spliner/early_switch_kappa_max: 0.10
-    # spliner/steer_kappa_scale: 오버레이 없음 -> params.yaml 의 1.0 을 쓴다.
+    # spliner/steer_kappa_scale: 실차 회피 기하 설정은 아래 1.25 오버레이를 쓴다.
     #
     # 2026-08-10 에 "타이어 교체 후 훨씬 잘 돈다"는 주행 관찰을 근거로 1.10 이
     # 제안됐으나(kappa_max 1.141 -> 1.255 rad/m, 최소 선회반경 0.877 -> 0.797 m
@@ -695,7 +695,9 @@ spliner_node:
     # ■ 다시 올리려면: 편의 교정 후 백에서 위 달성 |kappa| 분포가 실제로
     #   올라간 것을 먼저 확인할 것. 지금은 1.1168 조차 p99(1.05~1.07) 위다.
     #   검증 절차는 위 (a)/(b) 그대로.
-    # 되돌리기: 아래 한 줄에 spliner/steer_kappa_scale: 1.25 를 다시 넣는다.
+    # 2026-08-27: 최종 배포 선택에 따라 1.25 를 다시 적용한다.
+    # 이 값은 서보 한계를 늘리지 않고, 회피 경로의 조향 곡률 예산만 25% 완화한다.
+    spliner/steer_kappa_scale: 1.25
     spliner/geom_floor_margin: 1.00
     spliner/obs_traj_tresh: 0.45        # 0.3은 6 m/s 횡추적오차보다 좁아 옆 장애물을 놓친다
     spliner/evasion_dist: 0.35          # my_track 실폭 median 1.2m라 실차도 0.35가 상한
