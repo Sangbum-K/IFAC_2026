@@ -60,7 +60,11 @@ from launch_ros.actions import Node
 # 접미사를 먼저 떼야 하기 때문이다 (<맵>_tuned.yaml 은 존재하지 않는다).
 # 두 launch 는 서로 다른 워크스페이스라 import 할 수 없어 사본으로 둔다.
 # test/test_line_variant_routing.py 가 두 사본의 동기화를 강제한다.
-LINE_VARIANTS = ('tuned',)
+# 'gotosleep' — 코너를 '직선-정점-직선' 으로 깎은 라인 (build_map
+#   --corner-cut-radius 1.80 --corner-cut-min-turn 100). 헤어핀 두 곳만
+#   깎아 코너 구간을 짧게 하고 나머지 랩에서 횡그립을 비워 둔다. 라인 변형이라
+#   validation_mode 는 advisory 로 뜬다 (이 CSV 자체는 strict 도 통과한다).
+LINE_VARIANTS = ('tuned', 'gotosleep', 'gotosleep_tuned')
 PF_AB_PROFILES = (
     'variant0_no_ground_no_deskew',
     'variant0_no_ground_no_deskew_no_icp',
@@ -68,12 +72,20 @@ PF_AB_PROFILES = (
 
 
 def split_line_variant(name):
-    """'my_track0808_tuned' -> ('my_track0808', 'tuned'), 'my_track0808' -> (..., '')."""
+    """'my_track0808_tuned' -> ('my_track0808', 'tuned'), 'my_track0808' -> (..., '').
+
+    **가장 긴** 접미사를 고른다. 'gotosleep_tuned' 처럼 한 변형의 튜닝본이 다시
+    변형이 되면, 먼저 매칭되는 순서로 고르면 'tuned' 가 이겨서 맵 이름이
+    '<맵>_gotosleep' 이 되고 PF 가 없는 yaml 을 찾다가 죽는다. 목록 순서에
+    의존하지 않도록 길이로 정한다.
+    """
+    best = ''
     for variant in LINE_VARIANTS:
         suffix = '_' + variant
-        if name.endswith(suffix) and len(name) > len(suffix):
-            return name[:-len(suffix)], variant
-    return name, ''
+        if name.endswith(suffix) and len(name) > len(suffix) and \
+                len(variant) > len(best):
+            best = variant
+    return (name[:-len(best) - 1], best) if best else (name, '')
 
 
 def _is_true(value):

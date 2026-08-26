@@ -73,6 +73,24 @@ def test_both_launch_copies_split_identically():
             real_car.split_line_variant(name), name
 
 
+def test_nested_variant_wins_over_its_own_suffix():
+    """'<맵>_gotosleep_tuned' 는 gotosleep 라인의 튜닝본이지 <맵>_gotosleep 맵이 아니다.
+
+    가장 긴 접미사를 고르지 않으면 'tuned' 가 먼저 걸려 맵 이름이
+    '<맵>_gotosleep' 이 되고, PF 가 존재하지 않는 <맵>_gotosleep.yaml 을 찾다가
+    주행 직전에 죽는다. LINE_VARIANTS 의 나열 순서에 의존하면 안 된다.
+    """
+    for launch in (PLANNER_STACK_LAUNCH, REAL_CAR_LAUNCH):
+        module = _load(launch)
+        split = module.split_line_variant
+        nested = [v for v in module.LINE_VARIANTS
+                  if any(v != other and v.endswith('_' + other)
+                         for other in module.LINE_VARIANTS)]
+        assert nested, 'nested 변형이 없으면 이 계약은 검사할 게 없다'
+        for variant in nested:
+            assert split(f'my_track_{variant}') == ('my_track', variant), variant
+
+
 def test_split_line_variant_only_strips_a_real_suffix():
     planner = _load(PLANNER_STACK_LAUNCH, 'planner_stack_launch_probe2')
     split = planner.split_line_variant

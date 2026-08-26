@@ -53,16 +53,28 @@ def _existing(pattern):
 # 뜻한다 — 맵/센터라인/벽/PF 는 <맵> 을 쓰고 레이스라인 CSV 만 <맵>_tuned_ 를 쓴다.
 # ⚠️ integration_pkg/launch/real_car.launch.py 에 같은 목록의 사본이 있다
 #    (localization 에 넘길 맵 이름을 거기서 먼저 떼야 하므로). 하나를 늘리면 둘 다.
-LINE_VARIANTS = ('tuned',)
+# 'gotosleep' — 코너를 '직선-정점-직선' 으로 깎은 라인 (build_map
+#   --corner-cut-radius 1.80 --corner-cut-min-turn 100). 헤어핀 두 곳만
+#   깎아 코너 구간을 짧게 하고 나머지 랩에서 횡그립을 비워 둔다. 라인 변형이라
+#   validation_mode 는 advisory 로 뜬다 (이 CSV 자체는 strict 도 통과한다).
+LINE_VARIANTS = ('tuned', 'gotosleep', 'gotosleep_tuned')
 
 
 def split_line_variant(name):
-    """'my_track0808_tuned' -> ('my_track0808', 'tuned'), 'my_track0808' -> (..., '')."""
+    """'my_track0808_tuned' -> ('my_track0808', 'tuned'), 'my_track0808' -> (..., '').
+
+    **가장 긴** 접미사를 고른다. 'gotosleep_tuned' 처럼 한 변형의 튜닝본이 다시
+    변형이 되면, 먼저 매칭되는 순서로 고르면 'tuned' 가 이겨서 맵 이름이
+    '<맵>_gotosleep' 이 되고 PF 가 없는 yaml 을 찾다가 죽는다. 목록 순서에
+    의존하지 않도록 길이로 정한다.
+    """
+    best = ''
     for variant in LINE_VARIANTS:
         suffix = '_' + variant
-        if name.endswith(suffix) and len(name) > len(suffix):
-            return name[:-len(suffix)], variant
-    return name, ''
+        if name.endswith(suffix) and len(name) > len(suffix) and \
+                len(variant) > len(best):
+            best = variant
+    return (name[:-len(best) - 1], best) if best else (name, '')
 
 
 def _resolve_map_csvs(share_dir, line_name, base_name, suffix=''):
