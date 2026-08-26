@@ -469,7 +469,7 @@ spliner_node:
     #   (b) 전 점 vx=0 은 MAP 컨트롤러의 조향을 죽인다 (0807 코스아웃).
     # 접촉 속도를 낮추는 일은 이 바닥이 아니라 trailing_brake_decel 이 한다.
     # 불변식: 0 <= trailing_creep_speed <= trailing_retry_speed (노드 검증).
-    spliner/trailing_creep_speed: 0.5
+    spliner/trailing_creep_speed: 1.5
     # ── 동적 트레일링 목표 속도의 노이즈 제거 (2026-08-18) ────────────────
     # BuildTrailing 의 v_target 은 obs.vs 를 그대로 쓰는데, 그 vs 는 브릿지가
     # id별 (s,d) 유한차분 + LPF(alpha 0.3) 로 만든 값이라 노이즈 바닥이 신호와
