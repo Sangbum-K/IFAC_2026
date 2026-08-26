@@ -1,25 +1,64 @@
 Panels:
 - Class: rviz_common/Displays
+  Help Height: 78
   Name: Displays
+  Property Tree Widget:
+    Expanded:
+    - /Global Options1
+    - /Status1
+    - /Map1/Topic1
+    Splitter Ratio: 0.5
+  Tree Height: 802
+- Class: rviz_common/Selection
+  Name: Selection
 - Class: rviz_common/Tool Properties
+  Expanded:
+  - /2D Goal Pose1
+  - /Publish Point1
   Name: Tool Properties
+  Splitter Ratio: 0.5886790156364441
+- Class: rviz_common/Views
+  Expanded:
+  - /Current View1
+  Name: Views
+  Splitter Ratio: 0.5
+- Class: pitwall_panel/PitwallPanel
+  Name: PitwallPanel
 Visualization Manager:
   Class: ''
   Displays:
-  - Alpha: 0.7
+  - Alpha: 0.5
+    Cell Size: 1
+    Class: rviz_default_plugins/Grid
+    Color: 160; 160; 164
+    Enabled: true
+    Line Style:
+      Line Width: 0.029999999329447746
+      Value: Lines
+    Name: Grid
+    Normal Cell Count: 0
+    Offset:
+      X: 0
+      Y: 0
+      Z: 0
+    Plane: XY
+    Plane Cell Count: 10
+    Reference Frame: <Fixed Frame>
+    Value: true
+  - Alpha: 0.699999988079071
     Class: rviz_default_plugins/Map
     Color Scheme: map
     Draw Behind: false
     Enabled: true
     Name: Map
     Topic:
-      Depth: 1
+      Depth: 5
       Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /map
     Update Topic:
-      Depth: 1
+      Depth: 5
       Durability Policy: Volatile
       History Policy: Keep Last
       Reliability Policy: Reliable
@@ -29,80 +68,649 @@ Visualization Manager:
   - Alpha: 1
     Autocompute Intensity Bounds: true
     Autocompute Value Bounds:
-      Max Value: 30
-      Min Value: 0
+      Max Value: 30.2736759185791
+      Min Value: -0.7132953405380249
       Value: true
     Axis: X
     Channel Name: intensity
     Class: rviz_default_plugins/LaserScan
     Color: 255; 255; 255
-    Color Transformer: FlatColor
+    Color Transformer: AxisColor
     Decay Time: 0
     Enabled: true
+    Invert Rainbow: false
+    Max Color: 255; 255; 255
+    Max Intensity: 4096
+    Min Color: 0; 0; 0
+    Min Intensity: 0
     Name: LaserScan
     Position Transformer: XYZ
     Selectable: true
     Size (Pixels): 3
-    Size (m): 0.1
+    Size (m): 0.10000000149011612
     Style: Flat Squares
     Topic:
-      Depth: 1
+      Depth: 5
       Durability Policy: Volatile
       History Policy: Keep Last
-      Reliability Policy: Best Effort
+      Reliability Policy: Reliable
       Value: /scan
     Use Fixed Frame: true
+    Use rainbow: true
     Value: true
-  - Alpha: 0.8
-    Arrow Length: 0.2
-    Axes Length: 0.3
-    Axes Radius: 0.01
+  # --- particle_filter 초기 위치 지정용 (pf.rviz에서 병합) ---
+  # 상단 툴바 "2D Pose Estimate"(-> /initialpose)로 위치를 찍고, 주황 파티클이
+  # 한 점으로 뭉치는지 여기서 확인한다. 실차 스택이 뜨기 전부터 유효하다.
+  - Alpha: 0.800000011920929
+    Arrow Length: 0.20000000298023224
+    Axes Length: 0.30000001192092896
+    Axes Radius: 0.009999999776482582
     Class: rviz_default_plugins/PoseArray
     Color: 255; 170; 0
     Enabled: true
-    Head Length: 0.07
-    Head Radius: 0.03
+    Head Length: 0.07000000029802322
+    Head Radius: 0.029999999329447746
     Name: Particles
-    Shaft Length: 0.23
-    Shaft Radius: 0.01
+    Shaft Length: 0.23000000417232513
+    Shaft Radius: 0.009999999776482582
     Shape: Arrow (Flat)
     Topic:
       Depth: 1
       Durability Policy: Volatile
       History Policy: Keep Last
-      Reliability Policy: Best Effort
+      Reliability Policy: Reliable
       Value: /pf/viz/particles
     Value: true
   - Alpha: 1
     Axes Length: 1
-    Axes Radius: 0.1
+    Axes Radius: 0.10000000149011612
     Class: rviz_default_plugins/Pose
     Color: 0; 255; 0
     Enabled: true
-    Head Length: 0.15
-    Head Radius: 0.1
+    Head Length: 0.15000000596046448
+    Head Radius: 0.10000000149011612
     Name: InferredPose
-    Shaft Length: 0.4
-    Shaft Radius: 0.05
+    Shaft Length: 0.4000000059604645
+    Shaft Radius: 0.05000000074505806
     Shape: Arrow
     Topic:
       Depth: 1
       Durability Policy: Volatile
       History Policy: Keep Last
-      Reliability Policy: Best Effort
+      Reliability Policy: Reliable
       Value: /pf/viz/inferred_pose
     Value: true
+  # 차가 바라보는 방향 (odom heading). 항상 켜 둔다 — 초기 위치를 찍기 전에도
+  # odom 이 나오는 순간부터 차의 자세를 볼 수 있어야 한다.
+  # Keep: 1 = 최신 화살표 하나만 (기본값 100 이면 지나온 자리마다 화살표가
+  # 쌓여 트랙이 화살표로 뒤덮인다). Tolerance 0 = 매 메시지 갱신.
+  # 색은 우상단 CurrentPose 텍스트와 같은 하늘색으로 맞춰 뒀다.
+  - Angle Tolerance: 0
+    Class: rviz_default_plugins/Odometry
+    Covariance:
+      Orientation:
+        Alpha: 0.5
+        Color: 255; 255; 127
+        Color Style: Unique
+        Frame: Local
+        Offset: 1
+        Scale: 1
+        Value: false
+      Position:
+        Alpha: 0.30000001192092896
+        Color: 204; 51; 204
+        Scale: 1
+        Value: false
+      Value: false
+    Enabled: true
+    Keep: 1
+    Name: OdomHeadingReal
+    Position Tolerance: 0
+    Shape:
+      Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Color: 140; 210; 255
+      Head Length: 0.11999999731779099
+      Head Radius: 0.05999999865889549
+      Shaft Length: 0.2199999988079071
+      Shaft Radius: 0.02500000037252903
+      Value: Arrow
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /pf/pose/odom
+    Value: true
+  # sim 용 (gym GT odom). 실차/sim 이 동시에 뜨는 일은 없으므로 둘 다 켜 두고
+  # 발행되는 쪽만 그려지게 한다 — EgoModelSim/EgoModelReal 와 같은 방식.
+  - Angle Tolerance: 0
+    Class: rviz_default_plugins/Odometry
+    Covariance:
+      Orientation:
+        Alpha: 0.5
+        Color: 255; 255; 127
+        Color Style: Unique
+        Frame: Local
+        Offset: 1
+        Scale: 1
+        Value: false
+      Position:
+        Alpha: 0.30000001192092896
+        Color: 204; 51; 204
+        Scale: 1
+        Value: false
+      Value: false
+    Enabled: true
+    Keep: 1
+    Name: OdomHeadingSim
+    Position Tolerance: 0
+    Shape:
+      Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Color: 140; 210; 255
+      Head Length: 0.11999999731779099
+      Head Radius: 0.05999999865889549
+      Shaft Length: 0.2199999988079071
+      Shaft Radius: 0.02500000037252903
+      Value: Arrow
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /ego_racecar/odom
+    Value: true
+  # PF가 예측한 가상 스캔. /scan과 겹쳐 보면 수렴 품질을 눈으로 볼 수 있지만
+  # 평소엔 화면이 지저분해져서 꺼 둔다.
+  - Alpha: 1
+    Autocompute Intensity Bounds: true
+    Autocompute Value Bounds:
+      Max Value: 10
+      Min Value: -10
+      Value: true
+    Axis: Z
+    Channel Name: intensity
+    Class: rviz_default_plugins/LaserScan
+    Color: 0; 170; 255
+    Color Transformer: FlatColor
+    Decay Time: 0
+    Enabled: false
+    Invert Rainbow: false
+    Max Color: 255; 255; 255
+    Max Intensity: 4096
+    Min Color: 0; 0; 0
+    Min Intensity: 0
+    Name: FakeScan
+    Position Transformer: XYZ
+    Selectable: true
+    Size (Pixels): 3
+    Size (m): 0.029999999329447746
+    Style: Points
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /pf/viz/fake_scan
+    Use Fixed Frame: true
+    Use rainbow: true
+    Value: false
+  # map->odom->base_link 이 실제로 연결됐는지 확인용. 기본 off.
+  - Class: rviz_default_plugins/TF
+    Enabled: false
+    Frame Timeout: 15
+    Frames:
+      All Enabled: true
+    Marker Scale: 0.5
+    Name: TF
+    Show Arrows: true
+    Show Axes: true
+    Show Names: true
+    Tree Alpha: 1
+    Update Interval: 0
+    Value: false
+  - Alpha: 1
+    Class: rviz_default_plugins/RobotModel
+    Collision Enabled: false
+    Description File: ''
+    Description Source: Topic
+    Description Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /ego_robot_description
+    Enabled: true
+    Links:
+      All Links Enabled: true
+      Expand Joint Details: false
+      Expand Link Details: false
+      Expand Tree: false
+      Link Tree Style: Links in Alphabetic Order
+    Name: EgoModelSim
+    TF Prefix: ''
+    Update Interval: 0
+    Value: true
+    Visual Enabled: true
+  - Alpha: 1
+    Class: rviz_default_plugins/RobotModel
+    Collision Enabled: false
+    Description File: ''
+    Description Source: Topic
+    Description Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /robot_description
+    Enabled: true
+    Links:
+      All Links Enabled: true
+      Expand Joint Details: false
+      Expand Link Details: false
+      Expand Tree: false
+      Link Tree Style: Links in Alphabetic Order
+    Name: EgoModelReal
+    TF Prefix: ''
+    Update Interval: 0
+    Value: true
+    Visual Enabled: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: GlobalRaceline
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /planning/global_waypoints_markers
+    Value: true
+  # 실제로 지나온 궤적 (점마다 속도 색). 회색 고스트는 직전 랩.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: DrivenPath
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/driven_path
+    Value: true
+  # 궤적 -> 레이스라인 사다리. 길고 붉을수록 많이 벗어난 구간.
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: RacelineDeviation
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/deviation_markers
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: false
+    Name: Centerline
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /planning/centerline_markers
+    Value: false
   - Class: rviz_default_plugins/MarkerArray
     Enabled: true
     Name: LocalWaypoints
     Namespaces: {}
     Topic:
-      Depth: 1
+      Depth: 5
       Durability Policy: Volatile
       History Policy: Keep Last
-      Reliability Policy: Best Effort
+      Reliability Policy: Reliable
       Value: /planning/local_waypoints_markers
     Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: AvoidanceSpline
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /planner/avoidance/markers
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: OvertakeSectors
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /planner/ot_sectors/markers
+    Value: true
+  - Alpha: 1
+    Class: rviz_default_plugins/RobotModel
+    Collision Enabled: false
+    Description File: ''
+    Description Source: Topic
+    Description Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /opp_robot_description
+    Enabled: true
+    Links:
+      All Links Enabled: true
+      Expand Joint Details: false
+      Expand Link Details: false
+      Expand Tree: false
+      Link Tree Style: Links in Alphabetic Order
+    Name: OpponentModel
+    TF Prefix: ''
+    Update Interval: 0
+    Value: true
+    Visual Enabled: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: OpponentPrediction
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /opponent_prediction/markers
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: RecoveryMarker
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /planner/recovery/marker
+    Value: true
+  # ── 주행 상태 오버레이 ────────────────────────────────────────────
+  # 레이아웃 규칙 (좌상단 한 덩어리로 묶고 나머지 화면은 비워 둔다):
+  #   행1 y=10    LapInfo                              (흰색, 주 정보)
+  #   행2 y=46    FastestLapTime | MeanLapTime         (랩타임 계열)
+  #   행3 y=82    CurrentCTE | MaxCTE | MeanCTE        (호박색 계열)
+  #   게이지 y=124  Speed | Steering
+  # 모든 박스의 오른쪽 끝을 x=688 로 맞춰 세로선이 하나로 떨어지게 했다.
+  #
+  # height 는 줄 수에 맞춘다 (1줄=32, 2줄=58). 예전엔 전부 128 이었는데,
+  # 40px 간격으로 6개를 쌓으니 반투명 배경이 서로 겹쳐 좌측 화면 절반이
+  # 시커먼 판때기가 됐다. 박스를 내용에 맞추는 게 이 정리의 핵심이다.
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 240; 240; 245
+    Invert Shadow: false
+    Name: LapInfo
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/lap_info
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 10
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 10
+    width: 910
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 125; 230; 140
+    Invert Shadow: false
+    Name: FastestLapTime
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/fastest_lap_time
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 10
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 46
+    width: 430
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 150; 190; 205
+    Invert Shadow: false
+    Name: MeanLapTime
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/mean_lap_time
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 446
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 46
+    width: 474
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 255; 195; 100
+    Invert Shadow: false
+    Name: CurrentCTE
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/current_cte
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 10
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 82
+    width: 290
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 255; 135; 100
+    Invert Shadow: false
+    Name: MaxCTE
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/max_cte
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 306
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 82
+    width: 230
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 200; 170; 130
+    Invert Shadow: false
+    Name: MeanCTE
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/mean_cte
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 542
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 82
+    width: 378
+  # 현재 s 구간의 실제속도 vs 레이스라인 목표속도 (구간별 CSV는 ~/monitor_logs)
+  - Align Bottom: false
+    Background Alpha: 0.6200000047683716
+    Background Color: 18; 20; 26
+    Class: rviz_2d_overlay_plugins/TextOverlay
+    Enabled: true
+    Foreground Alpha: 1
+    Foreground Color: 150; 200; 240
+    Invert Shadow: false
+    Name: SegmentInfo
+    Overtake BG Color Properties: false
+    Overtake FG Color Properties: true
+    Overtake Position Properties: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/segment_info
+    Value: true
+    font: DejaVu Sans Mono
+    height: 32
+    hor_alignment: left
+    hor_dist: 10
+    line width: 2
+    text size: 18
+    ver_alignment: top
+    ver_dist: 118
+    width: 910
+  - Class: rviz_2d_overlay_plugins/PieChartOverlay
+    Enabled: true
+    Name: Speed
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/current_speed
+    Value: true
+    auto color change: true
+    background color: 30; 33; 41
+    backround alpha: 0.550000011920929
+    clockwise rotate direction: true
+    foreground alpha: 0.8500000238418579
+    foreground alpha 2: 0.8500000238418579
+    foreground color: 80; 200; 255
+    left: 10
+    max color: 255; 70; 60
+    max color change threthold: 6
+    max value: 7
+    med color: 255; 200; 0
+    med color change threthold: 4
+    min value: 0
+    show caption: true
+    size: 124
+    text size: 13
+    top: 124
+  # 조향은 좌/우 부호가 있다. min을 0으로 두면 좌조향(음수)에서 게이지가
+  # 텅 비어 "조향 신호가 죽었다"로 오해하게 된다. 하드웨어 한계 ±20.7°
+  # (±0.361 rad)를 담도록 ±0.4 rad 로 잡는다.
+  - Class: rviz_2d_overlay_plugins/PieChartOverlay
+    Enabled: true
+    Name: Steering
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /monitor/steering_input
+    Value: true
+    auto color change: false
+    background color: 30; 33; 41
+    backround alpha: 0.550000011920929
+    clockwise rotate direction: true
+    foreground alpha: 0.8500000238418579
+    foreground alpha 2: 0.8500000238418579
+    foreground color: 190; 150; 255
+    left: 144
+    max color: 255; 70; 60
+    max color change threthold: 0
+    max value: 0.4
+    med color: 255; 200; 0
+    med color change threthold: 0
+    min value: -0.4
+    show caption: true
+    size: 124
+    text size: 13
+    top: 124
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -113,13 +721,32 @@ Visualization Manager:
   - Class: rviz_default_plugins/Interact
     Hide Inactive Objects: true
   - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Select
+  - Class: rviz_default_plugins/FocusCamera
+  - Class: rviz_default_plugins/Measure
+    Line color: 128; 128; 0
   - Class: rviz_default_plugins/SetInitialPose
     Topic:
-      Depth: 1
+      Depth: 5
       Durability Policy: Transient Local
       History Policy: Keep Last
       Reliability Policy: Reliable
       Value: /initialpose
+  - Class: rviz_default_plugins/SetGoal
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /goal_pose
+  - Class: rviz_default_plugins/PublishPoint
+    Single click: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /clicked_point
   Transformation:
     Current:
       Class: rviz_default_plugins/TF
@@ -129,14 +756,14 @@ Visualization Manager:
       Angle: 0
       Class: rviz_default_plugins/TopDownOrtho
       Enable Stereo Rendering:
-        Stereo Eye Separation: 0.06
+        Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Invert Z Axis: false
       Name: Current View
-      Near Clip Distance: 0.01
-      Scale: 49.3
+      Near Clip Distance: 0.009999999776482582
+      Scale: 49.31724548339844
       Target Frame: <Fixed Frame>
       Value: TopDownOrtho (rviz_default_plugins)
       X: 0
@@ -147,9 +774,14 @@ Window Geometry:
     collapsed: false
   Height: 900
   Hide Left Dock: false
-  Hide Right Dock: true
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd000000040000000000000156000003abfc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003b000003ab000000c700fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f000003abfc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073010000003b000003ab000000a000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000004420000003efc0100000002fb0000000800540069006d00650100000000000004420000000000000000fb0000000800540069006d006501000000000000045000000000000000000000075b000003ab00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Selection:
+    collapsed: false
   Tool Properties:
     collapsed: false
-  Width: 1400
-  X: 50
+  Views:
+    collapsed: false
+  Width: 1600
+  X: 52
   Y: 25
