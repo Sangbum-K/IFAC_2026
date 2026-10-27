@@ -1,0 +1,276 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/c8u8wl",
+    "id": "c8u8wl",
+    "slide": 1,
+    "layoutId": "f7938f0f-da70-46ab-a520-058cf1524944",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "9f8d3875-9706-437f-a3a7-ccccfec02bf7",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "MIRU",
+    "colors": {
+      "accent1": "#002060",
+      "accent2": "#0E948B",
+      "accent3": "#ED8A23",
+      "accent4": "#3263AB",
+      "accent5": "#7E56A6",
+      "accent6": "#D84640",
+      "bg1": "#FFFFFF",
+      "bg2": "#F8FAFD",
+      "tx1": "#1C2534",
+      "tx2": "#647089",
+      "dk1": "#000000",
+      "dk2": "#002060",
+      "lt1": "#FFFFFF",
+      "lt2": "#DCE5F2",
+      "hlink": "#3263AB",
+      "folHlink": "#7E56A6"
+    },
+    "typefaces": [
+      "Arial"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "f7938f0f-da70-46ab-a520-058cf1524944",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "9f8d3875-9706-437f-a3a7-ccccfec02bf7",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "9f8d3875-9706-437f-a3a7-ccccfec02bf7",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "image",
+      "scope": "slide",
+      "aid": "im/sfmlcned",
+      "id": "1",
+      "bbox": [
+        13,
+        672,
+        205,
+        38
+      ],
+      "alt": "Hanyang University logo",
+      "contentType": "image/png",
+      "imageFit": "contain",
+      "asset": {
+        "assetId": "9ab3b25e-865b-4ebc-b146-7de022496d93",
+        "contentType": "image/png",
+        "byteLength": 17393
+      }
+    },
+    {
+      "order": 2,
+      "kind": "image",
+      "scope": "slide",
+      "aid": "im/redkjixs",
+      "id": "2",
+      "bbox": [
+        1190,
+        655,
+        78,
+        58
+      ],
+      "alt": "MIRU logo",
+      "contentType": "image/png",
+      "imageFit": "contain",
+      "asset": {
+        "assetId": "8bb6974a-4c1f-4c3b-96ca-bb372615d75b",
+        "contentType": "image/png",
+        "byteLength": 233741
+      }
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7etsnepg",
+      "id": "3",
+      "bbox": [
+        160,
+        232,
+        960,
+        10
+      ],
+      "geometry": "rect",
+      "fillColor": "#002060",
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gj2t0jqx",
+      "id": "4",
+      "bbox": [
+        160,
+        280,
+        960,
+        90
+      ],
+      "geometry": "rect",
+      "text": "Planning",
+      "textPreview": "Planning",
+      "resolvedFontSize": 68,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 68,
+        "typeface": "Arial",
+        "color": "#002060",
+        "bold": true,
+        "alignment": "center",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Planning"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Planning",
+          "resolvedTextStyle": {
+            "fontSize": 68,
+            "typeface": "Arial",
+            "color": "#002060",
+            "bold": true,
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Planning",
+              "fontSize": 68,
+              "typeface": "Arial",
+              "color": "#002060",
+              "bold": true,
+              "alignment": "center"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hkvato7i",
+      "id": "5",
+      "bbox": [
+        160,
+        378,
+        960,
+        42
+      ],
+      "geometry": "rect",
+      "text": "Global & Local Planning",
+      "textPreview": "Global & Local Planning",
+      "resolvedFontSize": 25,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 25,
+        "typeface": "Arial",
+        "color": "#647089",
+        "alignment": "center",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Global & Local Planning"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Global & Local Planning",
+          "resolvedTextStyle": {
+            "fontSize": 25,
+            "typeface": "Arial",
+            "color": "#647089",
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Global & Local Planning",
+              "fontSize": 25,
+              "typeface": "Arial",
+              "color": "#647089",
+              "alignment": "center"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/uhkby987",
+      "id": "6",
+      "bbox": [
+        160,
+        447,
+        960,
+        1
+      ],
+      "geometry": "rect",
+      "fillColor": "#002060",
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

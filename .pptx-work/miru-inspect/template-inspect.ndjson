@@ -1,0 +1,13 @@
+{"kind":"slide","id":"sl/y90nupkv","slide":1,"title":"Slide 1","textShapes":0}
+{"kind":"shape","id":"sh/547294r6","slide":1,"name":"제목 1","placeholder":"title","bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/k3yl0zql","slide":1,"name":"부제목 2","placeholder":"subtitle","bbox":[0,0,0,0]}
+{"kind":"slide","id":"sl/hwbqtkby","slide":2,"title":"2","textShapes":1}
+{"kind":"shape","id":"sh/9072xkry","slide":2,"name":"Title 1","placeholder":"title","bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/ozy1ofad","slide":2,"name":"Content Placeholder 2","bbox":[0,0,0,0]}
+{"kind":"textbox","id":"sh/b29kza94","slide":2,"name":"Slide Number Placeholder 3","placeholder":"slideNumber","text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"slide","id":"sl/ofy9wn61","slide":3,"title":"3","textShapes":1}
+{"kind":"textbox","id":"sh/298ryl4v","slide":3,"name":"Slide Number Placeholder 3","placeholder":"slideNumber","text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/3ah8rqlg","slide":3,"name":"Text Placeholder 4","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"shape","id":"sh/obq90bml","slide":3,"name":"Text Placeholder 5","placeholder":"body","bbox":[0,0,0,0]}
+{"kind":"slide","id":"sl/jyx0ra1s","slide":4,"title":"4","textShapes":1}
+{"kind":"textbox","id":"sh/1cj2d8b6","slide":4,"name":"Slide Number Placeholder 1","placeholder":"slideNumber","text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[0,0,0,0]}

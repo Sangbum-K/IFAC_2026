@@ -1,0 +1,462 @@
+{"kind":"deck","id":"pr/ctnjbm","name":"Deck"}
+{"kind":"layout","layoutId":"/ppt/slideMasters/slideMaster1.xml","name":"","type":"master","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout1.xml","name":"제목 슬라이드","type":"title","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"subtitle","type":"subtitle","textPreview":"클릭하여 마스터 부제목 스타일 편집"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout2.xml","name":"제목 및 내용","type":"obj","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"2","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout3.xml","name":"구역 머리글","type":"secHead","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout4.xml","name":"1_구역 머리글","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout5.xml","name":"콘텐츠 2개","placeholders":[{"name":"2","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"3","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"},{"name":"2","textPreview":"부제목 1"},{"name":"2","textPreview":"부제목 2"},{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout6.xml","name":"Mid-Title","placeholders":[{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"},{"name":"body","type":"body","textPreview":"간지를 입력해주세요"},{"name":"body","type":"body","textPreview":"간지의 목차를 입력해 주세요 |  |"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout7.xml","name":"Custom Layout","placeholders":[{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout8.xml","name":"비교","placeholders":[{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭"},{"name":"3","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭"},{"name":"5","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"},{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout9.xml","name":"제목만","placeholders":[{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"},{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout10.xml","name":"빈 화면","type":"blank","placeholders":[{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout11.xml","name":"캡션 있는 콘텐츠","type":"objTx","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"2","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout12.xml","name":"캡션 있는 그림","type":"picTx","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"picture","type":"picture","textPreview":"그림을 추가하려면 아이콘을 클릭하십시오"},{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout13.xml","name":"제목 및 세로 텍스트","placeholders":[{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"},{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"}]}
+{"kind":"layout","layoutId":"/ppt/slideLayouts/slideLayout14.xml","name":"세로 제목 및 텍스트","type":"vertTitleAndTx","placeholders":[{"name":"title","type":"title","textPreview":"마스터 제목 스타일 편집"},{"name":"body","type":"body","textPreview":"마스터 텍스트 스타일을 편집하려면 클릭 | 두 번째 수준 | 세 번째 수준 | 네 번째 수준 | 다섯 번째 수준"},{"name":"dateTime","type":"dateTime"},{"name":"footer","type":"footer"},{"name":"slideNumber","type":"slideNumber","textPreview":"‹#›"}]}
+{"kind":"slide","id":"sl/lkq08x","slide":1,"title":"Global Raceline","textShapes":25}
+{"kind":"textbox","id":"sh/2hgve9wf","slide":1,"name":"slide-title","text":"Global Raceline","textPreview":"Global Raceline","textChars":15,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/pkrep4fq","slide":1,"name":"slide-subtitle","text":"Build Map 기본 레이스라인","textPreview":"Build Map 기본 레이스라인","textChars":18,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/4jidgje5","slide":1,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"textbox","id":"sh/utgvapw3","slide":1,"text":"목표 속도","textPreview":"목표 속도","textChars":5,"textLines":1,"bbox":[604,188,72,23]}
+{"kind":"shape","id":"sh/hg7ul4fu","slide":1,"bbox":[612,220,20,31]}
+{"kind":"textbox","id":"sh/gvydcze9","slide":1,"text":"9","textPreview":"9","textChars":1,"textLines":1,"bbox":[639,220,28,30]}
+{"kind":"shape","id":"sh/zqtwvyx8","slide":1,"bbox":[612,250,20,31]}
+{"kind":"textbox","id":"sh/ep0vmtwn","slide":1,"text":"8","textPreview":"8","textChars":1,"textLines":1,"bbox":[639,250,28,30]}
+{"kind":"shape","id":"sh/o7utcnil","slide":1,"bbox":[612,280,20,31]}
+{"kind":"textbox","id":"sh/p83alsz6","slide":1,"text":"7","textPreview":"7","textChars":1,"textLines":1,"bbox":[639,280,28,30]}
+{"kind":"shape","id":"sh/25crax0v","slide":1,"bbox":[612,310,20,31]}
+{"kind":"textbox","id":"sh/n6lsjihg","slide":1,"text":"6","textPreview":"6","textChars":1,"textLines":1,"bbox":[639,310,28,30]}
+{"kind":"shape","id":"sh/03a98nip","slide":1,"bbox":[612,340,20,31]}
+{"kind":"textbox","id":"sh/143ahsza","slide":1,"text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[639,340,28,30]}
+{"kind":"shape","id":"sh/ehsr6d0j","slide":1,"bbox":[612,370,20,31]}
+{"kind":"textbox","id":"sh/f21sfih4","slide":1,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[639,370,28,30]}
+{"kind":"shape","id":"sh/sfa943it","slide":1,"bbox":[612,400,20,31]}
+{"kind":"textbox","id":"sh/dgjad8zy","slide":1,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[639,400,28,30]}
+{"kind":"textbox","id":"sh/twbqh4b2","slide":1,"text":"m/s","textPreview":"m/s","textChars":3,"textLines":1,"bbox":[630,433,38,20]}
+{"kind":"textbox","id":"sh/sv2p8zah","slide":1,"text":"자동 생성된 경로와 포인트별 목표 속도","textPreview":"자동 생성된 경로와 포인트별 목표 속도","textChars":21,"textLines":1,"bbox":[688,132,470,31]}
+{"kind":"shape","id":"sh/7at8futw","slide":1,"bbox":[688,174,470,0]}
+{"kind":"textbox","id":"sh/69k76psb","slide":1,"text":"Waypoints","textPreview":"Waypoints","textChars":9,"textLines":1,"bbox":[700,196,190,22]}
+{"kind":"textbox","id":"sh/58rqdkbq","slide":1,"text":"427","textPreview":"427","textChars":3,"textLines":1,"bbox":[700,216,220,28]}
+{"kind":"textbox","id":"sh/k7ip4za5","slide":1,"text":"Lap length","textPreview":"Lap length","textChars":10,"textLines":1,"bbox":[930,196,190,22]}
+{"kind":"textbox","id":"sh/j698but0","slide":1,"text":"42.7 m","textPreview":"42.7 m","textChars":6,"textLines":1,"bbox":[930,216,220,28]}
+{"kind":"textbox","id":"sh/i5072psf","slide":1,"text":"평균 속도","textPreview":"평균 속도","textChars":5,"textLines":1,"bbox":[700,276,190,22]}
+{"kind":"textbox","id":"sh/p4vqpora","slide":1,"text":"5.30 m/s","textPreview":"5.30 m/s","textChars":8,"textLines":1,"bbox":[700,296,220,28]}
+{"kind":"textbox","id":"sh/43m9gjap","slide":1,"text":"속도 범위","textPreview":"속도 범위","textChars":5,"textLines":1,"bbox":[930,276,190,22]}
+{"kind":"textbox","id":"sh/mxwvuh4v","slide":1,"text":"3.55 – 8.25 m/s","textPreview":"3.55 – 8.25 m/s","textChars":15,"textLines":1,"bbox":[930,296,220,28]}
+{"kind":"textbox","id":"sh/ny5wnm5g","slide":1,"text":"계획 랩타임","textPreview":"계획 랩타임","textChars":6,"textLines":1,"bbox":[700,356,190,22]}
+{"kind":"textbox","id":"sh/ozedwrm1","slide":1,"text":"8.51 s","textPreview":"8.51 s","textChars":6,"textLines":1,"bbox":[700,376,220,28]}
+{"kind":"shape","id":"sh/90nepwnm","slide":1,"bbox":[688,420,470,0]}
+{"kind":"shape","id":"sh/e9cvqh4j","slide":1,"bbox":[700,449,7,7]}
+{"kind":"textbox","id":"sh/fulwjm54","slide":1,"text":"점의 색은 각 waypoint의 목표 속도","textPreview":"점의 색은 각 waypoint의 목표 속도","textChars":23,"textLines":1,"bbox":[715,441,415,26]}
+{"kind":"shape","id":"sh/0vudsrmp","slide":1,"bbox":[700,485,7,7]}
+{"kind":"textbox","id":"sh/1wnelcna","slide":1,"text":"선은 waypoint를 연결한 주행 경로","textPreview":"선은 waypoint를 연결한 주행 경로","textChars":22,"textLines":1,"bbox":[715,477,415,26]}
+{"kind":"textbox","id":"sh/y5gf2143","slide":1,"text":"Source: my_track0824_realFinal_iqp_max9.00ms_margin0.08m_mu1.40.csv","textPreview":"Source: my_track0824_realFinal_iqp_max9.00ms_margin0.08m_mu1.40.csv","textChars":67,"textLines":1,"bbox":[700,548,440,42]}
+{"kind":"image","id":"im/q9wj6twn","slide":1,"name":"","geometry":"rect","alt":"Build Map 기본 레이스라인 지도","bbox":[60,128,520,495]}
+{"kind":"notes","id":"nt/lkq08x","slide":1,"text":""}
+{"kind":"slide","id":"sl/ktoctf","slide":2,"title":"Raceline Tuner","textShapes":2}
+{"kind":"textbox","id":"sh/j2pczalg","slide":2,"name":"slide-title","text":"Raceline Tuner","textPreview":"Raceline Tuner","textChars":14,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/k3yt8vml","slide":2,"name":"slide-subtitle","text":"대회 맵에서 라인과 포인트별 속도를 직접 확인하고 조정","textPreview":"대회 맵에서 라인과 포인트별 속도를 직접 확인하고 조정","textChars":30,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/54ru1036","slide":2,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"image","id":"im/za5on2l4","slide":2,"name":"","geometry":"rect","alt":"Raceline Tuner 실행 화면","bbox":[56,122,1168,520]}
+{"kind":"notes","id":"nt/ktoctf","slide":2,"text":""}
+{"kind":"slide","id":"sl/ttxn83","slide":3,"title":"Raceline Tuner 최종 레이스라인","textShapes":25}
+{"kind":"textbox","id":"sh/za1snuhk","slide":3,"name":"slide-title","text":"Raceline Tuner 최종 레이스라인","textPreview":"Raceline Tuner 최종 레이스라인","textChars":23,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/kbatgfy5","slide":3,"name":"slide-subtitle","text":"together.csv · 수동 튜닝된 라인과 포인트별 목표 속도","textPreview":"together.csv · 수동 튜닝된 라인과 포인트별 목표 속도","textChars":36,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/lc3apkza","slide":3,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"textbox","id":"sh/7elcruhg","slide":3,"text":"목표 속도","textPreview":"목표 속도","textChars":5,"textLines":1,"bbox":[604,188,72,23]}
+{"kind":"shape","id":"sh/8futkzy1","slide":3,"bbox":[612,220,20,31]}
+{"kind":"textbox","id":"sh/t03ut4zm","slide":3,"text":"9","textPreview":"9","textChars":1,"textLines":1,"bbox":[639,220,28,30]}
+{"kind":"shape","id":"sh/2h8b650r","slide":3,"bbox":[612,250,20,31]}
+{"kind":"textbox","id":"sh/nihsfahc","slide":3,"text":"8","textPreview":"8","textChars":1,"textLines":1,"bbox":[639,250,28,30]}
+{"kind":"shape","id":"sh/3a9oza1s","slide":3,"bbox":[612,280,20,31]}
+{"kind":"textbox","id":"sh/i90nq507","slide":3,"text":"7","textPreview":"7","textChars":1,"textLines":1,"bbox":[639,280,28,30]}
+{"kind":"shape","id":"sh/5cr610jy","slide":3,"bbox":[612,310,20,31]}
+{"kind":"textbox","id":"sh/4bi5svid","slide":3,"text":"6","textPreview":"6","textChars":1,"textLines":1,"bbox":[639,310,28,30]}
+{"kind":"shape","id":"sh/v6povq1w","slide":3,"bbox":[612,340,20,31]}
+{"kind":"textbox","id":"sh/u5gnml0b","slide":3,"text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[639,340,28,30]}
+{"kind":"shape","id":"sh/h876x0j2","slide":3,"bbox":[612,370,20,31]}
+{"kind":"textbox","id":"sh/g7y5ovih","slide":3,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[639,370,28,30]}
+{"kind":"shape","id":"sh/7ip4r61k","slide":3,"bbox":[612,400,20,31]}
+{"kind":"textbox","id":"sh/6hgnil0z","slide":3,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[639,400,28,30]}
+{"kind":"textbox","id":"sh/adw7a147","slide":3,"text":"m/s","textPreview":"m/s","textChars":3,"textLines":1,"bbox":[630,433,38,20]}
+{"kind":"textbox","id":"sh/be5o36ls","slide":3,"text":"튜닝 결과","textPreview":"튜닝 결과","textChars":5,"textLines":1,"bbox":[688,132,470,31]}
+{"kind":"shape","id":"sh/cfepcbmx","slide":3,"bbox":[688,174,470,0]}
+{"kind":"textbox","id":"sh/xgn65g3i","slide":3,"text":"Waypoints","textPreview":"Waypoints","textChars":9,"textLines":1,"bbox":[700,196,190,22]}
+{"kind":"textbox","id":"sh/yhg7el43","slide":3,"text":"419","textPreview":"419","textChars":3,"textLines":1,"bbox":[700,216,220,28]}
+{"kind":"textbox","id":"sh/zipo7qlo","slide":3,"text":"Lap length","textPreview":"Lap length","textChars":10,"textLines":1,"bbox":[930,196,190,22]}
+{"kind":"textbox","id":"sh/k3ypgvm9","slide":3,"text":"41.9 m","textPreview":"41.9 m","textChars":6,"textLines":1,"bbox":[930,216,220,28]}
+{"kind":"textbox","id":"sh/l476903u","slide":3,"text":"평균 속도","textPreview":"평균 속도","textChars":5,"textLines":1,"bbox":[700,276,190,22]}
+{"kind":"textbox","id":"sh/65g7il4f","slide":3,"text":"5.79 m/s","textPreview":"5.79 m/s","textChars":8,"textLines":1,"bbox":[700,296,220,28]}
+{"kind":"textbox","id":"sh/76pobqlk","slide":3,"text":"속도 범위","textPreview":"속도 범위","textChars":5,"textLines":1,"bbox":[930,276,190,22]}
+{"kind":"textbox","id":"sh/h0ra14n2","slide":3,"text":"3.86 – 8.74 m/s","textPreview":"3.86 – 8.74 m/s","textChars":15,"textLines":1,"bbox":[930,296,220,28]}
+{"kind":"textbox","id":"sh/gzi98z6h","slide":3,"text":"계획 랩타임","textPreview":"계획 랩타임","textChars":6,"textLines":1,"bbox":[700,356,190,22]}
+{"kind":"textbox","id":"sh/vy98zu5w","slide":3,"text":"7.63 s","textPreview":"7.63 s","textChars":6,"textLines":1,"bbox":[700,376,220,28]}
+{"kind":"shape","id":"sh/ux0r6pob","slide":3,"bbox":[688,420,470,0]}
+{"kind":"shape","id":"sh/54ba54ny","slide":3,"bbox":[700,449,7,7]}
+{"kind":"textbox","id":"sh/4329cz6d","slide":3,"text":"점의 색은 각 waypoint의 목표 속도","textPreview":"점의 색은 각 waypoint의 목표 속도","textChars":23,"textLines":1,"bbox":[715,441,415,26]}
+{"kind":"shape","id":"sh/32ts3u5s","slide":3,"bbox":[700,485,7,7]}
+{"kind":"textbox","id":"sh/i1krapon","slide":3,"text":"선은 waypoint를 연결한 주행 경로","textPreview":"선은 waypoint를 연결한 주행 경로","textChars":22,"textLines":1,"bbox":[715,477,415,26]}
+{"kind":"textbox","id":"sh/dsva9ona","slide":3,"text":"Source: together.csv","textPreview":"Source: together.csv","textChars":20,"textLines":1,"bbox":[700,548,440,30]}
+{"kind":"image","id":"im/3mhwzq9k","slide":3,"name":"","geometry":"rect","alt":"Raceline Tuner 최종 레이스라인 지도","bbox":[60,128,520,495]}
+{"kind":"notes","id":"nt/ttxn83","slide":3,"text":""}
+{"kind":"slide","id":"sl/gd93y4","slide":4,"title":"기본 Build Map vs Raceline Tuner","textShapes":15}
+{"kind":"textbox","id":"sh/wzm5gnex","slide":4,"name":"slide-title","text":"기본 Build Map vs Raceline Tuner","textPreview":"기본 Build Map vs Raceline Tuner","textChars":30,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/byd472dc","slide":4,"name":"slide-subtitle","text":"동일한 대회 맵에서 경로 형상과 계획 성능 비교","textPreview":"동일한 대회 맵에서 경로 형상과 계획 성능 비교","textChars":26,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/ax4nexwr","slide":4,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"textbox","id":"sh/ov2lcnel","slide":4,"text":"라인 비교","textPreview":"라인 비교","textChars":5,"textLines":1,"bbox":[690,132,450,30]}
+{"kind":"shape","id":"sh/nut43id0","slide":4,"bbox":[700,198,60,0]}
+{"kind":"textbox","id":"sh/mtk3adwf","slide":4,"text":"Build Map 기본 라인","textPreview":"Build Map 기본 라인","textChars":15,"textLines":1,"bbox":[780,183,300,28]}
+{"kind":"textbox","id":"sh/1sbm18va","slide":4,"text":"42.7 m · 8.51 s · 평균 5.30 m/s","textPreview":"42.7 m · 8.51 s · 평균 5.30 m/s","textChars":29,"textLines":1,"bbox":[780,211,330,24]}
+{"kind":"shape","id":"sh/0r2l83ep","slide":4,"bbox":[700,268,60,0]}
+{"kind":"textbox","id":"sh/a5c36hwb","slide":4,"text":"Raceline Tuner 라인","textPreview":"Raceline Tuner 라인","textChars":17,"textLines":1,"bbox":[780,253,300,28]}
+{"kind":"textbox","id":"sh/v6l4zmdw","slide":4,"text":"41.9 m · 7.63 s · 평균 5.79 m/s","textPreview":"41.9 m · 7.63 s · 평균 5.79 m/s","textChars":29,"textLines":1,"bbox":[780,281,330,24]}
+{"kind":"shape","id":"sh/w7el8re1","slide":4,"bbox":[690,330,470,0]}
+{"kind":"textbox","id":"sh/h8nm1wvm","slide":4,"text":"튜닝 결과","textPreview":"튜닝 결과","textChars":5,"textLines":1,"bbox":[690,349,450,30]}
+{"kind":"textbox","id":"sh/mhc32hwz","slide":4,"text":"계획 랩타임","textPreview":"계획 랩타임","textChars":6,"textLines":1,"bbox":[700,392,190,22]}
+{"kind":"textbox","id":"sh/nil4vmdk","slide":4,"text":"−0.88 s  (−10.3%)","textPreview":"−0.88 s  (−10.3%)","textChars":17,"textLines":1,"bbox":[700,412,220,28]}
+{"kind":"textbox","id":"sh/83ul4re5","slide":4,"text":"평균 목표 속도","textPreview":"평균 목표 속도","textChars":8,"textLines":1,"bbox":[930,392,190,22]}
+{"kind":"textbox","id":"sh/943mxcvq","slide":4,"text":"+0.49 m/s","textPreview":"+0.49 m/s","textChars":9,"textLines":1,"bbox":[930,412,220,28]}
+{"kind":"textbox","id":"sh/yds3yxw3","slide":4,"text":"주행 경로 길이","textPreview":"주행 경로 길이","textChars":8,"textLines":1,"bbox":[700,478,190,22]}
+{"kind":"textbox","id":"sh/ze14r2do","slide":4,"text":"−0.8 m","textPreview":"−0.8 m","textChars":6,"textLines":1,"bbox":[700,498,220,28]}
+{"kind":"textbox","id":"sh/3ih0zytg","slide":4,"text":"겹치는 구간은 빨간 튜너 라인 아래 표시됩니다.","textPreview":"겹치는 구간은 빨간 튜너 라인 아래 표시됩니다.","textChars":26,"textLines":1,"bbox":[700,554,440,32]}
+{"kind":"image","id":"im/0ve1ojy1","slide":4,"name":"","geometry":"rect","alt":"기본 라인과 튜너 라인 중첩 비교","bbox":[60,128,590,500]}
+{"kind":"notes","id":"nt/gd93y4","slide":4,"text":""}
+{"kind":"slide","id":"sl/7zr6vu","slide":5,"title":"Local Raceline","textShapes":27}
+{"kind":"textbox","id":"sh/mhg7at0r","slide":5,"name":"slide-title","text":"Local Raceline","textPreview":"Local Raceline","textChars":14,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/9krql8ji","slide":5,"name":"slide-subtitle","text":"3-Tier 장애물 회피 로직","textPreview":"3-Tier 장애물 회피 로직","textChars":16,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/8jy9c3ix","slide":5,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"shape","id":"sh/vm98ni18","slide":5,"bbox":[58,123,1164,76]}
+{"kind":"textbox","id":"sh/ul0red0n","slide":5,"text":"ObstacleArray + Frenet odom + Global waypoints","textPreview":"ObstacleArray + Frenet odom + Global waypoints","textChars":46,"textLines":1,"bbox":[78,139,350,42]}
+{"kind":"shape","id":"sh/horqp8je","slide":5,"bbox":[438,160,82,0]}
+{"kind":"textbox","id":"sh/wni9gnit","slide":5,"text":"전방 12 m 필터","textPreview":"전방 12 m 필터","textChars":10,"textLines":1,"bbox":[535,145,130,28]}
+{"kind":"shape","id":"sh/bq58be14","slide":5,"bbox":[680,160,72,0]}
+{"kind":"textbox","id":"sh/apw7290j","slide":5,"text":"정적 / 동적 분류","textPreview":"정적 / 동적 분류","textChars":10,"textLines":1,"bbox":[766,145,140,28]}
+{"kind":"textbox","id":"sh/0bmt4vi5","slide":5,"text":"정적 장애물은 Tier 1 → 2 → 3","textPreview":"정적 장애물은 Tier 1 → 2 → 3","textChars":22,"textLines":1,"bbox":[928,135,270,24]}
+{"kind":"textbox","id":"sh/1cvux0jq","slide":5,"text":"동적 상대차는 종방향 Following","textPreview":"동적 상대차는 종방향 Following","textChars":21,"textLines":1,"bbox":[928,160,270,24]}
+{"kind":"shape","id":"sh/ep4b2l0f","slide":5,"bbox":[58,220,354,385]}
+{"kind":"textbox","id":"sh/fadcvq1k","slide":5,"text":"TIER 1","textPreview":"TIER 1","textChars":6,"textLines":1,"bbox":[78,241,76,28]}
+{"kind":"textbox","id":"sh/ofmt8fih","slide":5,"text":"Straight Offset Lane","textPreview":"Straight Offset Lane","textChars":20,"textLines":1,"bbox":[78,279,310,31]}
+{"kind":"textbox","id":"sh/9gvu1kj2","slide":5,"text":"가장 예측 가능한 직선형 회피","textPreview":"가장 예측 가능한 직선형 회피","textChars":16,"textLines":1,"bbox":[78,311,310,23]}
+{"kind":"shape","id":"sh/md4b650b","slide":5,"bbox":[166,348,138,135]}
+{"kind":"shape","id":"sh/nedcza1w","slide":5,"bbox":[182,348,0,135]}
+{"kind":"shape","id":"sh/4j2twbix","slide":5,"bbox":[288,348,0,135]}
+{"kind":"shape","id":"sh/5kbapgji","slide":5,"bbox":[235,360,0,18]}
+{"kind":"shape","id":"sh/l4jid87a","slide":5,"bbox":[235,394,0,18]}
+{"kind":"shape","id":"sh/k3ah436p","slide":5,"bbox":[235,428,0,18]}
+{"kind":"shape","id":"sh/j210bip4","slide":5,"bbox":[235,462,0,18]}
+{"kind":"shape","id":"sh/y1sz2d8j","slide":5,"bbox":[222,435,26,46]}
+{"kind":"shape","id":"sh/ts3ihs76","slide":5,"bbox":[225,427,20,12]}
+{"kind":"shape","id":"sh/87a18n6l","slide":5,"bbox":[218,384,34,34]}
+{"kind":"shape","id":"sh/7610fipg","slide":5,"bbox":[227,393,16,16]}
+{"kind":"shape","id":"sh/65sz6dov","slide":5,"bbox":[227,393,16,16]}
+{"kind":"shape","id":"sh/hw3ils7i","slide":5,"bbox":[213,420,22,15]}
+{"kind":"shape","id":"sh/gvu1cn6x","slide":5,"bbox":[213,379,0,41]}
+{"kind":"shape","id":"sh/ehof6pof","slide":5,"bbox":[213,360,22,19]}
+{"kind":"shape","id":"sh/zixwzu50","slide":5,"bbox":[80,503,7,7]}
+{"kind":"textbox","id":"sh/036x8z6l","slide":5,"text":"작은 횡이동으로 속도 유지","textPreview":"작은 횡이동으로 속도 유지","textChars":14,"textLines":1,"bbox":[95,495,293,26]}
+{"kind":"shape","id":"sh/14fy14nq","slide":5,"bbox":[80,533,7,7]}
+{"kind":"textbox","id":"sh/m5ofa94b","slide":5,"text":"좌우 선택과 경로 고정","textPreview":"좌우 선택과 경로 고정","textChars":12,"textLines":1,"bbox":[95,525,293,26]}
+{"kind":"shape","id":"sh/n6xg3e5w","slide":5,"bbox":[80,563,7,7]}
+{"kind":"textbox","id":"sh/o76xczmh","slide":5,"text":"연속 장애물은 같은 hold로 통과","textPreview":"연속 장애물은 같은 hold로 통과","textChars":19,"textLines":1,"bbox":[95,555,293,26]}
+{"kind":"shape","id":"sh/98fy54n2","slide":5,"bbox":[454,220,354,385]}
+{"kind":"textbox","id":"sh/a98fe94n","slide":5,"text":"TIER 2","textPreview":"TIER 2","textChars":6,"textLines":1,"bbox":[474,241,76,28]}
+{"kind":"textbox","id":"sh/bahg7e58","slide":5,"text":"Free-form Spline","textPreview":"Free-form Spline","textChars":16,"textLines":1,"bbox":[474,279,310,31]}
+{"kind":"textbox","id":"sh/jqdwrexc","slide":5,"text":"Tier 1이 맞지 않을 때 곡선 재생성","textPreview":"Tier 1이 맞지 않을 때 곡선 재생성","textChars":22,"textLines":1,"bbox":[474,311,310,23]}
+{"kind":"shape","id":"sh/ip4fy9wr","slide":5,"bbox":[562,348,138,135]}
+{"kind":"shape","id":"sh/5svetof2","slide":5,"bbox":[578,348,0,135]}
+{"kind":"shape","id":"sh/krmx0jex","slide":5,"bbox":[684,348,0,135]}
+{"kind":"shape","id":"sh/7udgvex8","slide":5,"bbox":[631,360,0,18]}
+{"kind":"shape","id":"sh/6t4f2twn","slide":5,"bbox":[631,394,0,18]}
+{"kind":"shape","id":"sh/twfyxofe","slide":5,"bbox":[631,428,0,18]}
+{"kind":"shape","id":"sh/sv6x4jet","slide":5,"bbox":[631,462,0,18]}
+{"kind":"shape","id":"sh/nytwjux4","slide":5,"bbox":[618,435,26,46]}
+{"kind":"shape","id":"sh/mxkfqpgj","slide":5,"bbox":[621,427,20,12]}
+{"kind":"shape","id":"sh/sryl4rq5","slide":5,"bbox":[614,384,34,34]}
+{"kind":"shape","id":"sh/ds72dwrq","slide":5,"bbox":[623,393,16,16]}
+{"kind":"shape","id":"sh/qpw3218z","slide":5,"bbox":[623,393,16,16]}
+{"kind":"shape","id":"sh/rq5kbm9k","slide":5,"bbox":[631,423,28,12]}
+{"kind":"shape","id":"sh/4nel0rqt","slide":5,"bbox":[659,392,15,31]}
+{"kind":"shape","id":"sh/5on29wre","slide":5,"bbox":[661,363,13,29]}
+{"kind":"shape","id":"sh/i1w3yhs3","slide":5,"bbox":[476,503,7,7]}
+{"kind":"textbox","id":"sh/3m5k7m9o","slide":5,"text":"현재 위치에서 즉시 다시 시작","textPreview":"현재 위치에서 즉시 다시 시작","textChars":16,"textLines":1,"bbox":[491,495,293,26]}
+{"kind":"shape","id":"sh/ojilcbqd","slide":5,"bbox":[476,533,7,7]}
+{"kind":"textbox","id":"sh/pkrmlgry","slide":5,"text":"선택한 한쪽에 절점 배치","textPreview":"선택한 한쪽에 절점 배치","textChars":13,"textLines":1,"bbox":[491,525,293,26]}
+{"kind":"shape","id":"sh/xgn25gj2","slide":5,"bbox":[476,563,7,7]}
+{"kind":"textbox","id":"sh/wfelwbih","slide":5,"text":"벽·차체·시간 충돌검사","textPreview":"벽·차체·시간 충돌검사","textChars":12,"textLines":1,"bbox":[491,555,293,26]}
+{"kind":"shape","id":"sh/ve5k361w","slide":5,"bbox":[850,220,354,385]}
+{"kind":"textbox","id":"sh/adc3u10b","slide":5,"text":"TIER 3","textPreview":"TIER 3","textChars":6,"textLines":1,"bbox":[870,241,76,28]}
+{"kind":"textbox","id":"sh/9c321gjq","slide":5,"text":"Emergency Escape Arc","textPreview":"Emergency Escape Arc","textChars":20,"textLines":1,"bbox":[870,279,310,31]}
+{"kind":"textbox","id":"sh/obulsbi5","slide":5,"text":"복귀보다 충돌 회피가 우선","textPreview":"복귀보다 충돌 회피가 우선","textChars":14,"textLines":1,"bbox":[870,311,310,23]}
+{"kind":"shape","id":"sh/nalkz610","slide":5,"bbox":[958,348,138,135]}
+{"kind":"shape","id":"sh/m9c3q10f","slide":5,"bbox":[974,348,0,135]}
+{"kind":"shape","id":"sh/1832xwju","slide":5,"bbox":[1080,348,0,135]}
+{"kind":"shape","id":"sh/07ulori9","slide":5,"bbox":[1027,360,0,18]}
+{"kind":"shape","id":"sh/qd8zyxg7","slide":5,"bbox":[1027,394,0,18]}
+{"kind":"shape","id":"sh/reh0r2hs","slide":5,"bbox":[1027,428,0,18]}
+{"kind":"shape","id":"sh/cfah07yx","slide":5,"bbox":[1027,462,0,18]}
+{"kind":"shape","id":"sh/dgjitczi","slide":5,"bbox":[1014,435,26,46]}
+{"kind":"shape","id":"sh/2p8zudgv","slide":5,"bbox":[1017,427,20,12]}
+{"kind":"shape","id":"sh/3qh0nihg","slide":5,"bbox":[1010,384,34,34]}
+{"kind":"shape","id":"sh/4rqhwny1","slide":5,"bbox":[1019,393,16,16]}
+{"kind":"shape","id":"sh/pszipszm","slide":5,"bbox":[1019,393,16,16]}
+{"kind":"shape","id":"sh/ulozqdgz","slide":5,"bbox":[1027,417,13,18]}
+{"kind":"shape","id":"sh/fmx0jihk","slide":5,"bbox":[1040,390,25,27]}
+{"kind":"shape","id":"sh/ja1s7qxc","slide":5,"bbox":[1065,355,12,35]}
+{"kind":"shape","id":"sh/i9sbelwr","slide":5,"bbox":[872,503,7,7]}
+{"kind":"textbox","id":"sh/5cja90fi","slide":5,"text":"한쪽 원호로 먼저 이탈","textPreview":"한쪽 원호로 먼저 이탈","textChars":12,"textLines":1,"bbox":[887,495,293,26]}
+{"kind":"shape","id":"sh/kbatgvex","slide":5,"bbox":[872,533,7,7]}
+{"kind":"textbox","id":"sh/vmhs36xg","slide":5,"text":"차량 한계 안의 최대 안전곡률","textPreview":"차량 한계 안의 최대 안전곡률","textChars":16,"textLines":1,"bbox":[887,525,293,26]}
+{"kind":"shape","id":"sh/al8ba1wv","slide":5,"bbox":[872,563,7,7]}
+{"kind":"textbox","id":"sh/x8ja5gf6","slide":5,"text":"불가능하면 감속·제동","textPreview":"불가능하면 감속·제동","textChars":11,"textLines":1,"bbox":[887,555,293,26]}
+{"kind":"shape","id":"sh/w7qtcbe1","slide":5,"bbox":[58,620,1164,42]}
+{"kind":"textbox","id":"sh/filcfaxk","slide":5,"text":"공통 안전 게이트","textPreview":"공통 안전 게이트","textChars":9,"textLines":1,"bbox":[78,628,150,25]}
+{"kind":"textbox","id":"sh/uhcbm5wz","slide":5,"text":"차체 크기 + 인지 위치 오차 여유 + 트랙 경계 + 조향 한계 + 경로 도착시각 충돌검사","textPreview":"차체 크기 + 인지 위치 오차 여유 + 트랙 경계 + 조향 한계 + 경로 도착시각 충돌검사","textChars":50,"textLines":1,"bbox":[240,628,950,25]}
+{"kind":"notes","id":"nt/7zr6vu","slide":5,"text":""}
+{"kind":"slide","id":"sl/9i8tqo","slide":6,"title":"Tier 1 · 직선형 Offset Lane 회피","textShapes":26}
+{"kind":"textbox","id":"sh/czmxw72t","slide":6,"name":"slide-title","text":"Tier 1 · 직선형 Offset Lane 회피","textPreview":"Tier 1 · 직선형 Offset Lane 회피","textChars":27,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/bydw32l8","slide":6,"name":"slide-subtitle","text":"곡선 경로를 새로 최적화하지 않고 정해진 평행 레인으로 이동·유지·복귀","textPreview":"곡선 경로를 새로 최적화하지 않고 정해진 평행 레인으로 이동·유지·복귀","textChars":39,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/ax4fuxk3","slide":6,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"shape","id":"sh/pwve1c3i","slide":6,"bbox":[58,126,560,510]}
+{"kind":"textbox","id":"sh/ovmxs72x","slide":6,"text":"작은 횡이동의 직선형 회피","textPreview":"작은 횡이동의 직선형 회피","textChars":14,"textLines":1,"bbox":[78,144,500,30]}
+{"kind":"textbox","id":"sh/nudwz2lc","slide":6,"text":"필요한 만큼만 옆으로 이동해 직진성과 속도를 유지","textPreview":"필요한 만큼만 옆으로 이동해 직진성과 속도를 유지","textChars":27,"textLines":1,"bbox":[78,176,500,25]}
+{"kind":"shape","id":"sh/294fqxkr","slide":6,"bbox":[188,220,270,285]}
+{"kind":"shape","id":"sh/tszydwjm","slide":6,"bbox":[204,220,0,285]}
+{"kind":"shape","id":"sh/8r6x4r21","slide":6,"bbox":[442,220,0,285]}
+{"kind":"shape","id":"sh/i90vq1wv","slide":6,"bbox":[323,232,0,18]}
+{"kind":"shape","id":"sh/ja9wj6d0","slide":6,"bbox":[323,266,0,18]}
+{"kind":"shape","id":"sh/kbidsbul","slide":6,"bbox":[323,300,0,18]}
+{"kind":"shape","id":"sh/5crelgv6","slide":6,"bbox":[323,334,0,18]}
+{"kind":"shape","id":"sh/a50vmhwj","slide":6,"bbox":[323,368,0,18]}
+{"kind":"shape","id":"sh/v69wfmd4","slide":6,"bbox":[323,402,0,18]}
+{"kind":"shape","id":"sh/w7idorep","slide":6,"bbox":[323,436,0,18]}
+{"kind":"shape","id":"sh/x8rehwva","slide":6,"bbox":[323,470,0,18]}
+{"kind":"shape","id":"sh/u1kvylc3","slide":6,"bbox":[310,453,26,46]}
+{"kind":"shape","id":"sh/f2twrqd8","slide":6,"bbox":[313,445,20,12]}
+{"kind":"textbox","id":"sh/bm5sjit0","slide":6,"text":"Ego","textPreview":"Ego","textChars":3,"textLines":1,"bbox":[295,502,56,18]}
+{"kind":"shape","id":"sh/qlcbadcf","slide":6,"bbox":[306,337,34,34]}
+{"kind":"shape","id":"sh/donalsbq","slide":6,"bbox":[315,346,16,16]}
+{"kind":"shape","id":"sh/cnetcnu5","slide":6,"bbox":[315,346,16,16]}
+{"kind":"shape","id":"sh/za5snitw","slide":6,"bbox":[306,278,34,34]}
+{"kind":"shape","id":"sh/ypwbexcb","slide":6,"bbox":[315,287,16,16]}
+{"kind":"shape","id":"sh/lcnapsb2","slide":6,"bbox":[315,287,16,16]}
+{"kind":"shape","id":"sh/0betgnuh","slide":6,"bbox":[285,420,38,25]}
+{"kind":"shape","id":"sh/nepsr2ts","slide":6,"bbox":[285,325,0,95]}
+{"kind":"shape","id":"sh/mdgbixsn","slide":6,"bbox":[285,260,0,65]}
+{"kind":"shape","id":"sh/kjy987ql","slide":6,"bbox":[285,230,38,30]}
+{"kind":"shape","id":"sh/5k7ahcr6","slide":6,"bbox":[285,315,0,90]}
+{"kind":"textbox","id":"sh/ihgr6x8f","slide":6,"text":"짧은 진입","textPreview":"짧은 진입","textChars":5,"textLines":1,"bbox":[470,410,90,22]}
+{"kind":"textbox","id":"sh/jipsf290","slide":6,"text":"직선 HOLD","textPreview":"직선 HOLD","textChars":7,"textLines":1,"bbox":[470,330,90,22]}
+{"kind":"textbox","id":"sh/wfy94nqp","slide":6,"text":"완만한 복귀","textPreview":"완만한 복귀","textChars":6,"textLines":1,"bbox":[470,240,90,22]}
+{"kind":"textbox","id":"sh/xg7adsra","slide":6,"text":"핵심","textPreview":"핵심","textChars":2,"textLines":1,"bbox":[78,526,58,28]}
+{"kind":"textbox","id":"sh/adgr2x8j","slide":6,"text":"횡이동을 작게 유지해 회피 중 직진성과 속도 손실을 줄임","textPreview":"횡이동을 작게 유지해 회피 중 직진성과 속도 손실을 줄임","textChars":31,"textLines":1,"bbox":[148,526,430,28]}
+{"kind":"textbox","id":"sh/vepsb294","slide":6,"text":"연속 장애물은 같은 d_hold로 묶어 중간 복귀 없이 통과","textPreview":"연속 장애물은 같은 d_hold로 묶어 중간 복귀 없이 통과","textChars":33,"textLines":1,"bbox":[78,563,500,24]}
+{"kind":"textbox","id":"sh/8re90nqd","slide":6,"text":"진입·복귀 가능성도 비슷하면 조향 연속성을 우선","textPreview":"진입·복귀 가능성도 비슷하면 조향 연속성을 우선","textChars":26,"textLines":1,"bbox":[78,592,500,24]}
+{"kind":"shape","id":"sh/9cna9sry","slide":6,"bbox":[642,126,580,510]}
+{"kind":"textbox","id":"sh/dkjylk3e","slide":6,"text":"좌·우 선택과 판단 고정","textPreview":"좌·우 선택과 판단 고정","textChars":13,"textLines":1,"bbox":[664,144,520,30]}
+{"kind":"shape","id":"sh/cjaxsz2t","slide":6,"bbox":[668,202,32,32]}
+{"kind":"textbox","id":"sh/ri1gjulo","slide":6,"text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[668,202,32,32]}
+{"kind":"textbox","id":"sh/qhsfqpk3","slide":6,"text":"먼저 통과 가능한가?","textPreview":"먼저 통과 가능한가?","textChars":11,"textLines":1,"bbox":[713,200,465,28]}
+{"kind":"textbox","id":"sh/183yp43q","slide":6,"text":"좌·우 벽 여유와 장애물 간격을 비교","textPreview":"좌·우 벽 여유와 장애물 간격을 비교","textChars":20,"textLines":1,"bbox":[713,233,465,42]}
+{"kind":"shape","id":"sh/07axwz25","slide":6,"bbox":[668,284,510,0]}
+{"kind":"shape","id":"sh/z61gnulk","slide":6,"bbox":[668,305,32,32]}
+{"kind":"textbox","id":"sh/elsfupkz","slide":6,"text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[668,305,32,32]}
+{"kind":"textbox","id":"sh/hczyd036","slide":6,"text":"둘 다 가능하면 작은 이동","textPreview":"둘 다 가능하면 작은 이동","textChars":14,"textLines":1,"bbox":[713,303,465,28]}
+{"kind":"textbox","id":"sh/gbqxkv21","slide":6,"text":"레이스라인에서 덜 벗어나는 d_apex 방향 선택","textPreview":"레이스라인에서 덜 벗어나는 d_apex 방향 선택","textChars":27,"textLines":1,"bbox":[713,336,465,42]}
+{"kind":"shape","id":"sh/6hovu10j","slide":6,"bbox":[668,387,510,0]}
+{"kind":"shape","id":"sh/7ixcn614","slide":6,"bbox":[668,408,32,32]}
+{"kind":"textbox","id":"sh/8j6dgbip","slide":6,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[668,408,32,32]}
+{"kind":"textbox","id":"sh/tkfupgja","slide":6,"text":"판단이 비슷하면 방향 유지","textPreview":"판단이 비슷하면 방향 유지","textChars":14,"textLines":1,"bbox":[713,406,465,28]}
+{"kind":"textbox","id":"sh/ulovil0v","slide":6,"text":"반대쪽 최악 여유가 0.10 m 이상 좋을 때만 전환","textPreview":"반대쪽 최악 여유가 0.10 m 이상 좋을 때만 전환","textChars":29,"textLines":1,"bbox":[713,439,465,42]}
+{"kind":"shape","id":"sh/vmxwrq1g","slide":6,"bbox":[668,490,510,0]}
+{"kind":"shape","id":"sh/gn6dkvil","slide":6,"bbox":[668,511,32,32]}
+{"kind":"textbox","id":"sh/hofet0j6","slide":6,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[668,511,32,32]}
+{"kind":"textbox","id":"sh/apkvmh0b","slide":6,"text":"회피라인을 Geometry Commit","textPreview":"회피라인을 Geometry Commit","textChars":21,"textLines":1,"bbox":[713,509,465,28]}
+{"kind":"textbox","id":"sh/bqdcfm1w","slide":6,"text":"안정 관측 7회 뒤 경로를 고정하고 속도만 갱신","textPreview":"안정 관측 7회 뒤 경로를 고정하고 속도만 갱신","textChars":26,"textLines":1,"bbox":[713,542,465,42]}
+{"kind":"shape","id":"sh/zu9sniho","slide":6,"bbox":[668,592,510,30]}
+{"kind":"textbox","id":"sh/et0redg3","slide":6,"text":"센서가 흔들려도 선택한 직선 회피라인을 끝까지 추종","textPreview":"센서가 흔들려도 선택한 직선 회피라인을 끝까지 추종","textChars":28,"textLines":1,"bbox":[680,594,486,25]}
+{"kind":"notes","id":"nt/9i8tqo","slide":6,"text":""}
+{"kind":"slide","id":"sl/5n0cdf","slide":7,"title":"Tier 2","textShapes":27}
+{"kind":"textbox","id":"sh/2l8nid4r","slide":7,"name":"slide-title","text":"Tier 2","textPreview":"Tier 2","textChars":6,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/pojmdsn2","slide":7,"name":"slide-subtitle","text":"이미 장애물과 가까워진 상태에서 빠르게 새로운 회피라인 생성","textPreview":"이미 장애물과 가까워진 상태에서 빠르게 새로운 회피라인 생성","textChars":33,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/ona5knmx","slide":7,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"shape","id":"sh/bq14fi58","slide":7,"bbox":[58,130,354,225]}
+{"kind":"textbox","id":"sh/apsnmd4n","slide":7,"text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[76,146,34,28]}
+{"kind":"textbox","id":"sh/xsjmhsne","slide":7,"text":"12 m 안 장애물 인지","textPreview":"12 m 안 장애물 인지","textChars":13,"textLines":1,"bbox":[122,143,265,30]}
+{"kind":"textbox","id":"sh/cra5onmt","slide":7,"text":"정적 후보만 회피 대상으로 전달","textPreview":"정적 후보만 회피 대상으로 전달","textChars":17,"textLines":1,"bbox":[76,183,318,43]}
+{"kind":"shape","id":"sh/zul4j25k","slide":7,"bbox":[168,238,134,90]}
+{"kind":"shape","id":"sh/ytsnqx4z","slide":7,"bbox":[184,238,0,90]}
+{"kind":"shape","id":"sh/s7il0n2x","slide":7,"bbox":[286,238,0,90]}
+{"kind":"shape","id":"sh/t8r2ts3i","slide":7,"bbox":[235,250,0,18]}
+{"kind":"shape","id":"sh/65g3yx4r","slide":7,"bbox":[235,284,0,18]}
+{"kind":"shape","id":"sh/769kr2lc","slide":7,"bbox":[235,318,0,10]}
+{"kind":"shape","id":"sh/gbil472t","slide":7,"bbox":[222,285,26,46]}
+{"kind":"shape","id":"sh/1cr2xc3e","slide":7,"bbox":[225,277,20,12]}
+{"kind":"shape","id":"sh/e9032xk3","slide":7,"bbox":[218,240,34,34]}
+{"kind":"shape","id":"sh/fa9kv2l8","slide":7,"bbox":[227,249,16,16]}
+{"kind":"shape","id":"sh/oz2l8725","slide":7,"bbox":[227,249,16,16]}
+{"kind":"shape","id":"sh/p0bm1c3q","slide":7,"bbox":[340,248,0,58]}
+{"kind":"textbox","id":"sh/xw72lcvu","slide":7,"text":"전방 거리","textPreview":"전방 거리","textChars":5,"textLines":1,"bbox":[310,267,82,22]}
+{"kind":"shape","id":"sh/cvylc7u9","slide":7,"bbox":[446,130,354,225]}
+{"kind":"textbox","id":"sh/bupkj2do","slide":7,"text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[464,146,34,28]}
+{"kind":"textbox","id":"sh/atg3ahc3","slide":7,"text":"Tier 1 직선 레인 먼저","textPreview":"Tier 1 직선 레인 먼저","textChars":15,"textLines":1,"bbox":[510,143,265,30]}
+{"kind":"textbox","id":"sh/lkr2pwvq","slide":7,"text":"좌·우 일정 d_hold 후보를 모두 안전검사","textPreview":"좌·우 일정 d_hold 후보를 모두 안전검사","textChars":25,"textLines":1,"bbox":[464,183,318,43]}
+{"kind":"shape","id":"sh/kjylgru5","slide":7,"bbox":[556,238,134,90]}
+{"kind":"shape","id":"sh/zipknmdk","slide":7,"bbox":[572,238,0,90]}
+{"kind":"shape","id":"sh/yxg3ehcf","slide":7,"bbox":[674,238,0,90]}
+{"kind":"shape","id":"sh/1on2dsvm","slide":7,"bbox":[623,250,0,18]}
+{"kind":"shape","id":"sh/0ne14nu1","slide":7,"bbox":[623,284,0,18]}
+{"kind":"shape","id":"sh/6hsry9on","slide":7,"bbox":[623,318,0,10]}
+{"kind":"shape","id":"sh/7i18rup8","slide":7,"bbox":[606,258,34,34]}
+{"kind":"shape","id":"sh/sja90z6t","slide":7,"bbox":[615,267,16,16]}
+{"kind":"shape","id":"sh/tkjqt47y","slide":7,"bbox":[615,267,16,16]}
+{"kind":"shape","id":"sh/ulsr29oj","slide":7,"bbox":[592,286,14,32]}
+{"kind":"shape","id":"sh/fm18vep4","slide":7,"bbox":[606,250,17,36]}
+{"kind":"shape","id":"sh/gnu94j6p","slide":7,"bbox":[640,286,14,32]}
+{"kind":"shape","id":"sh/ho3axo7a","slide":7,"bbox":[623,250,17,36]}
+{"kind":"shape","id":"sh/ap87qpof","slide":7,"bbox":[834,130,354,225]}
+{"kind":"textbox","id":"sh/vqh8jap0","slide":7,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[852,146,34,28]}
+{"kind":"textbox","id":"sh/bm9on6ho","slide":7,"text":"현재 차량 위치에서 다시 시작","textPreview":"현재 차량 위치에서 다시 시작","textChars":16,"textLines":1,"bbox":[898,143,265,30]}
+{"kind":"textbox","id":"sh/al07u103","slide":7,"text":"지나간 절점은 버리고 현재 s,d를 첫 점으로 삽입","textPreview":"지나간 절점은 버리고 현재 s,d를 첫 점으로 삽입","textChars":28,"textLines":1,"bbox":[852,183,318,43]}
+{"kind":"shape","id":"sh/xor6pgzu","slide":7,"bbox":[913,262,26,46]}
+{"kind":"shape","id":"sh/cnipwbi9","slide":7,"bbox":[916,254,20,12]}
+{"kind":"shape","id":"sh/za9orqh0","slide":7,"bbox":[1097,268,34,34]}
+{"kind":"shape","id":"sh/yp07yl0f","slide":7,"bbox":[1106,277,16,16]}
+{"kind":"shape","id":"sh/lcb6tgzq","slide":7,"bbox":[1106,277,16,16]}
+{"kind":"shape","id":"sh/kbip0vi5","slide":7,"bbox":[956,285,136,0]}
+{"kind":"shape","id":"sh/7etovqhw","slide":7,"bbox":[979,320,113,0]}
+{"kind":"textbox","id":"sh/mdk72l0b","slide":7,"text":"남은 진입 거리","textPreview":"남은 진입 거리","textChars":8,"textLines":1,"bbox":[984,320,130,22]}
+{"kind":"shape","id":"sh/4jm5svep","slide":7,"bbox":[58,385,354,225]}
+{"kind":"textbox","id":"sh/5kv6l0fa","slide":7,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[76,401,34,28]}
+{"kind":"textbox","id":"sh/ihknqlwj","slide":7,"text":"왼쪽 또는 오른쪽 한쪽 선택","textPreview":"왼쪽 또는 오른쪽 한쪽 선택","textChars":15,"textLines":1,"bbox":[122,398,265,30]}
+{"kind":"textbox","id":"sh/jitojqx4","slide":7,"text":"두 점은 서로 다른 쪽이 아니라 같은 선택 측에 배치","textPreview":"두 점은 서로 다른 쪽이 아니라 같은 선택 측에 배치","textChars":29,"textLines":1,"bbox":[76,438,318,43]}
+{"kind":"shape","id":"sh/wf25oved","slide":7,"bbox":[168,493,134,90]}
+{"kind":"shape","id":"sh/hgb6h0fy","slide":7,"bbox":[184,493,0,90]}
+{"kind":"shape","id":"sh/udknmlwn","slide":7,"bbox":[286,493,0,90]}
+{"kind":"shape","id":"sh/vetofqxs","slide":7,"bbox":[235,505,0,18]}
+{"kind":"shape","id":"sh/8ri5kbeh","slide":7,"bbox":[235,539,0,18]}
+{"kind":"shape","id":"sh/9cbmdgf2","slide":7,"bbox":[235,573,0,10]}
+{"kind":"shape","id":"sh/pwju183e","slide":7,"bbox":[218,513,34,34]}
+{"kind":"shape","id":"sh/ovads3mt","slide":7,"bbox":[227,522,16,16]}
+{"kind":"shape","id":"sh/nu1czylo","slide":7,"bbox":[227,522,16,16]}
+{"kind":"shape","id":"sh/298bqd43","slide":7,"bbox":[280,513,9,9]}
+{"kind":"shape","id":"sh/18zux83i","slide":7,"bbox":[280,550,9,9]}
+{"kind":"textbox","id":"sh/g7qto3mx","slide":7,"text":"같은 쪽 apex","textPreview":"같은 쪽 apex","textChars":9,"textLines":1,"bbox":[298,518,92,38]}
+{"kind":"shape","id":"sh/f6hcvylc","slide":7,"bbox":[446,385,354,225]}
+{"kind":"textbox","id":"sh/e58bmt4r","slide":7,"text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[464,401,34,28]}
+{"kind":"textbox","id":"sh/l43u9s3m","slide":7,"text":"남은 거리에 맞춰 곡선 생성","textPreview":"남은 거리에 맞춰 곡선 생성","textChars":15,"textLines":1,"bbox":[510,398,265,30]}
+{"kind":"textbox","id":"sh/k3ud0n21","slide":7,"text":"앞 3점 + apex 2점 + 뒤 3점을 자연스럽게 연결","textPreview":"앞 3점 + apex 2점 + 뒤 3점을 자연스럽게 연결","textChars":31,"textLines":1,"bbox":[464,438,318,43]}
+{"kind":"shape","id":"sh/i94rupkj","slide":7,"bbox":[481,555,55,10]}
+{"kind":"shape","id":"sh/jadsnu14","slide":7,"bbox":[536,520,55,35]}
+{"kind":"shape","id":"sh/4b69wz2p","slide":7,"bbox":[591,483,45,37]}
+{"kind":"shape","id":"sh/5cfap4ja","slide":7,"bbox":[636,483,48,0]}
+{"kind":"shape","id":"sh/u54rqpkn","slide":7,"bbox":[684,483,47,37]}
+{"kind":"shape","id":"sh/v6dsju18","slide":7,"bbox":[731,520,45,40]}
+{"kind":"shape","id":"sh/w7m9sf2d","slide":7,"bbox":[477,561,8,8]}
+{"kind":"shape","id":"sh/h8valkjy","slide":7,"bbox":[532,551,8,8]}
+{"kind":"shape","id":"sh/e1or290r","slide":7,"bbox":[587,516,8,8]}
+{"kind":"shape","id":"sh/f2xsve1c","slide":7,"bbox":[632,479,8,8]}
+{"kind":"shape","id":"sh/nydsfetg","slide":7,"bbox":[680,479,8,8]}
+{"kind":"shape","id":"sh/2x4rm9sv","slide":7,"bbox":[727,516,8,8]}
+{"kind":"shape","id":"sh/9kvahobm","slide":7,"bbox":[772,556,8,8]}
+{"kind":"shape","id":"sh/ozm9oja1","slide":7,"bbox":[834,385,354,225]}
+{"kind":"textbox","id":"sh/fut8butk","slide":7,"text":"6","textPreview":"6","textChars":1,"textLines":1,"bbox":[852,401,34,28]}
+{"kind":"textbox","id":"sh/etkri9sz","slide":7,"text":"완성 경로 검증 후 채택","textPreview":"완성 경로 검증 후 채택","textChars":13,"textLines":1,"bbox":[898,398,265,30]}
+{"kind":"textbox","id":"sh/1wbad4ba","slide":7,"text":"벽·차체·도착시간·조향 한계를 모두 통과할 때 발행","textPreview":"벽·차체·도착시간·조향 한계를 모두 통과할 때 발행","textChars":28,"textLines":1,"bbox":[852,438,318,43]}
+{"kind":"shape","id":"sh/0v29kzap","slide":7,"bbox":[868,510,44,44]}
+{"kind":"textbox","id":"sh/rqt87ut8","slide":7,"text":"벽","textPreview":"벽","textChars":1,"textLines":1,"bbox":[868,510,44,44]}
+{"kind":"shape","id":"sh/qp0repcn","slide":7,"bbox":[914,532,25,0]}
+{"kind":"shape","id":"sh/gvypovql","slide":7,"bbox":[946,510,44,44]}
+{"kind":"textbox","id":"sh/hw76h0r6","slide":7,"text":"차체","textPreview":"차체","textChars":2,"textLines":1,"bbox":[946,510,44,44]}
+{"kind":"shape","id":"sh/u9g7ml8f","slide":7,"bbox":[992,532,25,0]}
+{"kind":"shape","id":"sh/vapofq90","slide":7,"bbox":[1024,510,44,44]}
+{"kind":"textbox","id":"sh/4zipsvqh","slide":7,"text":"시간","textPreview":"시간","textChars":2,"textLines":1,"bbox":[1024,510,44,44]}
+{"kind":"shape","id":"sh/50r6l0r2","slide":7,"bbox":[1070,532,25,0]}
+{"kind":"shape","id":"sh/ixg7q58r","slide":7,"bbox":[1102,510,44,44]}
+{"kind":"textbox","id":"sh/3y9ojq9c","slide":7,"text":"조향","textPreview":"조향","textChars":2,"textLines":1,"bbox":[1102,510,44,44]}
+{"kind":"notes","id":"nt/5n0cdf","slide":7,"text":""}
+{"kind":"slide","id":"sl/ejosnw","slide":8,"title":"Tier 3","textShapes":25}
+{"kind":"textbox","id":"sh/g369cnyd","slide":8,"name":"slide-title","text":"Tier 3","textPreview":"Tier 3","textChars":6,"textLines":1,"bbox":[58,25,1050,50]}
+{"kind":"textbox","id":"sh/f2x83ihs","slide":8,"name":"slide-subtitle","text":"실제 사고 직전 운전자가 큰 조향으로 충돌을 피하는 행동에서 착안한 마지막 긴급 회피","textPreview":"실제 사고 직전 운전자가 큰 조향으로 충돌을 피하는 행동에서 착안한 마지막 긴급 회피","textChars":47,"textLines":1,"bbox":[60,71,1080,27]}
+{"kind":"shape","id":"sh/e1oradg7","slide":8,"name":"title-rule","bbox":[58,105,1164,0]}
+{"kind":"shape","id":"sh/p8zq9sfu","slide":8,"bbox":[58,128,600,510]}
+{"kind":"textbox","id":"sh/o7q9gny9","slide":8,"text":"복귀보다 장애물을 벗어나는 것이 먼저","textPreview":"복귀보다 장애물을 벗어나는 것이 먼저","textChars":20,"textLines":1,"bbox":[78,146,550,30]}
+{"kind":"textbox","id":"sh/36x87iho","slide":8,"text":"Tier 1·2가 요구하는 왕복 횡이동 거리가 부족할 때 사용","textPreview":"Tier 1·2가 요구하는 왕복 횡이동 거리가 부족할 때 사용","textChars":34,"textLines":1,"bbox":[78,178,550,24]}
+{"kind":"textbox","id":"sh/25oredgj","slide":8,"text":"Tier 1·2 시도","textPreview":"Tier 1·2 시도","textChars":11,"textLines":1,"bbox":[120,216,190,24]}
+{"kind":"textbox","id":"sh/5cvqxozq","slide":8,"text":"Tier 3 긴급 이탈","textPreview":"Tier 3 긴급 이탈","textChars":12,"textLines":1,"bbox":[388,216,190,24]}
+{"kind":"shape","id":"sh/4bmp43y5","slide":8,"bbox":[112,244,210,260]}
+{"kind":"shape","id":"sh/y9czil4b","slide":8,"bbox":[128,244,0,260]}
+{"kind":"shape","id":"sh/zalgbqlg","slide":8,"bbox":[306,244,0,260]}
+{"kind":"shape","id":"sh/kbuhkvm1","slide":8,"bbox":[217,256,0,18]}
+{"kind":"shape","id":"sh/lc3yd03m","slide":8,"bbox":[217,290,0,18]}
+{"kind":"shape","id":"sh/mdwzml47","slide":8,"bbox":[217,324,0,18]}
+{"kind":"shape","id":"sh/7e5gfqls","slide":8,"bbox":[217,358,0,18]}
+{"kind":"shape","id":"sh/8fehovmd","slide":8,"bbox":[217,392,0,18]}
+{"kind":"shape","id":"sh/9gnyh03y","slide":8,"bbox":[217,426,0,18]}
+{"kind":"shape","id":"sh/uhwzq543","slide":8,"bbox":[217,460,0,18]}
+{"kind":"shape","id":"sh/vi5gjalo","slide":8,"bbox":[217,494,0,10]}
+{"kind":"shape","id":"sh/r6pg7a1w","slide":8,"bbox":[378,244,210,260]}
+{"kind":"shape","id":"sh/6lgfy50b","slide":8,"bbox":[394,244,0,260]}
+{"kind":"shape","id":"sh/t87y9kj2","slide":8,"bbox":[572,244,0,260]}
+{"kind":"shape","id":"sh/s7yx0fih","slide":8,"bbox":[483,256,0,18]}
+{"kind":"shape","id":"sh/ji5g3a10","slide":8,"bbox":[483,290,0,18]}
+{"kind":"shape","id":"sh/ihwfu50f","slide":8,"bbox":[483,324,0,18]}
+{"kind":"shape","id":"sh/5k7y50jq","slide":8,"bbox":[483,358,0,18]}
+{"kind":"shape","id":"sh/4jexwvi5","slide":8,"bbox":[483,392,0,18]}
+{"kind":"shape","id":"sh/ve5wzq1o","slide":8,"bbox":[483,426,0,18]}
+{"kind":"shape","id":"sh/udwfql03","slide":8,"bbox":[483,460,0,18]}
+{"kind":"shape","id":"sh/kjad0ry1","slide":8,"bbox":[483,494,0,10]}
+{"kind":"shape","id":"sh/lk3u9wzm","slide":8,"bbox":[204,453,26,46]}
+{"kind":"shape","id":"sh/yhsvyhgv","slide":8,"bbox":[207,445,20,12]}
+{"kind":"shape","id":"sh/zi1c7mhg","slide":8,"bbox":[200,338,34,34]}
+{"kind":"shape","id":"sh/8nud4ryx","slide":8,"bbox":[209,347,16,16]}
+{"kind":"shape","id":"sh/9o3udwzi","slide":8,"bbox":[209,347,16,16]}
+{"kind":"shape","id":"sh/mlcv21g7","slide":8,"bbox":[217,420,3,25]}
+{"kind":"shape","id":"sh/7mlcb6hs","slide":8,"bbox":[220,390,28,30]}
+{"kind":"shape","id":"sh/orqts7yt","slide":8,"bbox":[248,365,2,25]}
+{"kind":"shape","id":"sh/pszu1cze","slide":8,"bbox":[232,336,18,29]}
+{"kind":"shape","id":"sh/hkvexw3u","slide":8,"bbox":[217,310,15,26]}
+{"kind":"shape","id":"sh/gzmdor29","slide":8,"bbox":[241,361,20,20]}
+{"kind":"shape","id":"sh/fydcv6lo","slide":8,"bbox":[245,365,12,12]}
+{"kind":"shape","id":"sh/ux4vm1kj","slide":8,"bbox":[245,365,12,12]}
+{"kind":"shape","id":"sh/twvutw3y","slide":8,"bbox":[470,453,26,46]}
+{"kind":"shape","id":"sh/svmdkr2d","slide":8,"bbox":[473,445,20,12]}
+{"kind":"shape","id":"sh/7utcrmls","slide":8,"bbox":[466,338,34,34]}
+{"kind":"shape","id":"sh/6tkvih47","slide":8,"bbox":[475,347,16,16]}
+{"kind":"shape","id":"sh/5sbupc3m","slide":8,"bbox":[475,347,16,16]}
+{"kind":"shape","id":"sh/kr2dg7m1","slide":8,"bbox":[483,420,3,25]}
+{"kind":"shape","id":"sh/algjatwn","slide":8,"bbox":[486,397,18,23]}
+{"kind":"shape","id":"sh/bmpk3yx8","slide":8,"bbox":[504,373,26,24]}
+{"kind":"shape","id":"sh/wny1cjet","slide":8,"bbox":[530,345,18,28]}
+{"kind":"shape","id":"sh/xo725ofe","slide":8,"bbox":[548,310,6,35]}
+{"kind":"shape","id":"sh/2xwj69gr","slide":8,"bbox":[554,270,0,40]}
+{"kind":"shape","id":"sh/nyp0zexc","slide":8,"bbox":[554,270,0,30]}
+{"kind":"textbox","id":"sh/ojy18jex","slide":8,"text":"피했다가 돌아올 거리까지 필요","textPreview":"피했다가 돌아올 거리까지 필요","textChars":16,"textLines":1,"bbox":[105,510,225,23]}
+{"kind":"textbox","id":"sh/9k721ofi","slide":8,"text":"복귀를 미루고 한쪽으로 먼저 이탈","textPreview":"복귀를 미루고 한쪽으로 먼저 이탈","textChars":18,"textLines":1,"bbox":[372,510,226,23]}
+{"kind":"textbox","id":"sh/etwj29gv","slide":8,"text":"아이디어","textPreview":"아이디어","textChars":4,"textLines":1,"bbox":[78,548,76,28]}
+{"kind":"textbox","id":"sh/fu50vex0","slide":8,"text":"충돌 직전에는 완벽한 차선 변경보다 즉시 장애물을 벗어나는 큰 조향이 우선","textPreview":"충돌 직전에는 완벽한 차선 변경보다 즉시 장애물을 벗어나는 큰 조향이 우선","textChars":41,"textLines":1,"bbox":[166,546,455,32]}
+{"kind":"textbox","id":"sh/3y1g3ads","slide":8,"text":"실제 명령은 무조건 최대 조향이 아니라 차량이 버틸 수 있는 범위로 제한","textPreview":"실제 명령은 무조건 최대 조향이 아니라 차량이 버틸 수 있는 범위로 제한","textChars":40,"textLines":1,"bbox":[78,586,545,25]}
+{"kind":"shape","id":"sh/ixszu5wn","slide":8,"bbox":[682,128,540,510]}
+{"kind":"textbox","id":"sh/503y50vy","slide":8,"text":"간단한 작동 순서","textPreview":"간단한 작동 순서","textChars":9,"textLines":1,"bbox":[704,146,480,30]}
+{"kind":"shape","id":"sh/4zuhwfed","slide":8,"bbox":[708,206,32,32]}
+{"kind":"textbox","id":"sh/r2lg7ad4","slide":8,"text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[708,206,32,32]}
+{"kind":"textbox","id":"sh/q1czy5cj","slide":8,"text":"Tier 1·2 모두 거리 부족","textPreview":"Tier 1·2 모두 거리 부족","textChars":17,"textLines":1,"bbox":[753,204,425,28]}
+{"kind":"textbox","id":"sh/d43y9kva","slide":8,"text":"일반적인 진입·유지·복귀 경로가 조향 기하 한계로 실패","textPreview":"일반적인 진입·유지·복귀 경로가 조향 기하 한계로 실패","textChars":30,"textLines":1,"bbox":[753,237,425,42]}
+{"kind":"shape","id":"sh/s3uh0fup","slide":8,"bbox":[708,290,470,0]}
+{"kind":"shape","id":"sh/76hgvqdk","slide":8,"bbox":[708,310,32,32]}
+{"kind":"textbox","id":"sh/658fmlwf","slide":8,"text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[708,310,32,32]}
+{"kind":"textbox","id":"sh/wb6dwrux","slide":8,"text":"긴급 회피가 맞는 상황인지 확인","textPreview":"긴급 회피가 맞는 상황인지 확인","textChars":17,"textLines":1,"bbox":[753,308,425,28]}
+{"kind":"textbox","id":"sh/xcfe5cbi","slide":8,"text":"정적 장애물, 실제 통과폭, 복귀 공간을 검사","textPreview":"정적 장애물, 실제 통과폭, 복귀 공간을 검사","textChars":25,"textLines":1,"bbox":[753,341,425,42]}
+{"kind":"shape","id":"sh/a9ovuhc7","slide":8,"bbox":[708,394,470,0]}
+{"kind":"shape","id":"sh/baxw3mtc","slide":8,"bbox":[708,414,32,32]}
+{"kind":"textbox","id":"sh/o7mds7u1","slide":8,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[708,414,32,32]}
+{"kind":"textbox","id":"sh/98fu1cbm","slide":8,"text":"한쪽 원호로 먼저 이탈","textPreview":"한쪽 원호로 먼저 이탈","textChars":12,"textLines":1,"bbox":[753,412,425,28]}
+{"kind":"textbox","id":"sh/m54vqxcv","slide":8,"text":"조향 한계와 횡그립 중 작은 값으로 최대 안전곡률 결정","textPreview":"조향 한계와 횡그립 중 작은 값으로 최대 안전곡률 결정","textChars":30,"textLines":1,"bbox":[753,445,425,42]}
+{"kind":"shape","id":"sh/n6dcz2tg","slide":8,"bbox":[708,498,470,0]}
+{"kind":"shape","id":"sh/83qd4ba5","slide":8,"bbox":[708,518,32,32]}
+{"kind":"textbox","id":"sh/t4zedgbq","slide":8,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[708,518,32,32]}
+{"kind":"textbox","id":"sh/14jqd83a","slide":8,"text":"완성 경로를 다시 안전검사","textPreview":"완성 경로를 다시 안전검사","textChars":14,"textLines":1,"bbox":[753,516,425,28]}
+{"kind":"textbox","id":"sh/gja9432p","slide":8,"text":"차체·인지오차·벽·다른 장애물과 충돌하지 않을 때만 발행","textPreview":"차체·인지오차·벽·다른 장애물과 충돌하지 않을 때만 발행","textChars":31,"textLines":1,"bbox":[753,549,425,42]}
+{"kind":"shape","id":"sh/fi18bil4","slide":8,"bbox":[708,591,470,30]}
+{"kind":"textbox","id":"sh/uhsr2dkj","slide":8,"text":"Tier 3까지 불가능하면 감속·제동으로 전환","textPreview":"Tier 3까지 불가능하면 감속·제동으로 전환","textChars":25,"textLines":1,"bbox":[722,593,440,25]}
+{"kind":"notes","id":"nt/ejosnw","slide":8,"text":""}
